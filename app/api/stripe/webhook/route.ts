@@ -26,9 +26,6 @@ import { groupTiersByMetric, computeMetricOverage } from '@/lib/tariff'
 import { validateInvoice } from '@/lib/invoice-validator'
 import type { ContractTerms, BillingMeteredItem } from '@/lib/types'
 
-// Raw body needed for Stripe signature verification — disable Next.js body parsing
-export const config = { api: { bodyParser: false } }
-
 export async function POST(req: NextRequest) {
   const rawBody = await req.text()
   const sig     = req.headers.get('stripe-signature') ?? ''
