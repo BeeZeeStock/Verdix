@@ -1,0 +1,39 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-forest: #1A3D2B;
+  --color-sage: #4A7C59;
+  --color-mint: #D4EAD9;
+  --color-cream: #FAF8F4;
+  --color-parchment: #F0EBE1;
+  --color-stone: #6B6660;
+  --color-ink: #1C1917;
+  --color-danger: #DC2626;
+  --color-safe: #16A34A;
+  --color-warn: #D97706;
+
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', Menlo, monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: #FAF8F4;
+  color: #1C1917;
+}
+
+.font-display {
+  font-family: 'Fraunces', Georgia, serif;
+}
+
+.tl-r { width: 10px; height: 10px; border-radius: 50%; background: #FF5F56; flex-shrink: 0; }
+.tl-y { width: 10px; height: 10px; border-radius: 50%; background: #FFBD2E; flex-shrink: 0; }
+.tl-g { width: 10px; height: 10px; border-radius: 50%; background: #27C93F; flex-shrink: 0; }
+
+.ui-tr:hover td { background: #F5F3EE; }

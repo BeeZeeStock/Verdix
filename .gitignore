@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# environment variables — never commit these
+.env
+.env.local
+.env.*.local
+
+# macOS
+.DS_Store
+
+# debug logs
+npm-debug.log*
+
+# Vercel
+.vercel

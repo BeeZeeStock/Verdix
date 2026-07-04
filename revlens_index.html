@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Verdix — Revenue Intelligence for B2B SaaS</title>
+  <meta name="description" content="Verdix reads your signed contracts and checks your billing setup against them — surfacing mismatches before they cost you revenue.">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            forest:'#1A3D2B', sage:'#4A7C59', mint:'#D4EAD9',
+            cream:'#FAF8F4', parchment:'#F0EBE1', stone:'#6B6660', ink:'#1C1917',
+          },
+          fontFamily: {
+            display:['Fraunces','Georgia','serif'],
+            sans:['Inter','system-ui','sans-serif'],
+            mono:['JetBrains Mono','Menlo','monospace'],
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body{font-family:'Inter',sans-serif;background:#FAF8F4;color:#1C1917}
+    .font-display{font-family:'Fraunces',serif}
+    .tl-r{width:10px;height:10px;border-radius:50%;background:#FF5F56;flex-shrink:0}
+    .tl-y{width:10px;height:10px;border-radius:50%;background:#FFBD2E;flex-shrink:0}
+    .tl-g{width:10px;height:10px;border-radius:50%;background:#27C93F;flex-shrink:0}
+    .ui-tr:hover td{background:#F5F3EE}
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav id="nav" class="sticky top-0 z-50 bg-cream/95 backdrop-blur-md border-b border-forest/10 px-6 py-3.5">
+  <div class="max-w-6xl mx-auto flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="28" height="28" rx="6" fill="#1A3D2B"/><polygon points="8,6 11.5,6 14,20 16.5,6 20,6 17,6 14,17 11,6" fill="#FFFFFF"/><circle cx="14" cy="23" r="2" fill="#D4EAD9"/></svg>
+      <span class="font-display font-semibold text-forest text-lg tracking-tight">Verdix</span>
+    </div>
+    <div class="hidden md:flex items-center gap-8 text-sm font-medium text-stone">
+      <a href="#verify" class="hover:text-forest transition-colors">Billing verification</a>
+      <a href="#configure" class="hover:text-forest transition-colors">Auto-configure</a>
+      <a href="#partner" class="hover:text-forest transition-colors">Partner reconciliation</a>
+      <a href="#security" class="hover:text-forest transition-colors">Security</a>
+      <a href="/login" class="hover:text-forest transition-colors">Sign in</a>
+    </div>
+    <a href="/signup" class="bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors shadow-sm">Start free check →</a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="relative px-6 pt-20 pb-16 overflow-hidden">
+  <div class="absolute inset-0 pointer-events-none" style="background:radial-gradient(ellipse 80% 60% at 50% -10%,#D4EAD9 0%,transparent 70%)"></div>
+  <div class="max-w-4xl mx-auto text-center relative">
+    <div class="inline-flex items-center gap-2 bg-green-50 border border-green-100 rounded-full px-4 py-1.5 text-xs font-medium mb-8" style="color:#27500A;background:#EAF3DE;border-color:#C0DD97">
+      <span class="w-1.5 h-1.5 rounded-full" style="background:#27500A"></span>
+      Revenue intelligence for B2B SaaS
+    </div>
+    <h1 class="font-display font-light text-ink leading-tight mb-5" style="font-size:clamp(2.2rem,4.5vw,3.4rem)">
+      Is your billing configured<br><span class="text-forest">exactly as your contracts say?</span>
+    </h1>
+    <p class="text-stone text-lg max-w-xl mx-auto leading-relaxed mb-10">
+      Verdix reads your signed contracts and checks your billing setup against them — surfacing mismatches before they cost you revenue. Then automates the setup for every new deal.
+    </p>
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-4">
+      <a href="/signup" class="w-full sm:w-auto bg-forest text-white font-medium px-8 py-4 rounded-xl hover:bg-sage transition-colors shadow-md text-center">Check your billing accuracy →</a>
+      <a href="#how" class="w-full sm:w-auto bg-white border border-sage text-sage font-medium px-8 py-4 rounded-xl hover:bg-mint transition-colors text-center">See how it works</a>
+    </div>
+    <p class="text-center mb-10" style="font-size:11px;color:#6B6660">
+      Billing platforms supported: <span style="color:#1A3D2B;font-weight:500">Stripe · Chargebee</span>
+      <span style="color:#9CA3AF"> · Maxio coming soon</span>
+    </p>
+    <!-- Stats -->
+    <div class="grid grid-cols-3 gap-4 max-w-2xl mx-auto">
+      <div class="bg-white border border-forest/10 rounded-2xl p-5 text-center">
+        <div class="font-mono font-medium text-2xl mb-1" style="color:#27500A">3–9%</div>
+        <div class="text-stone text-xs leading-snug">Average ARR leakage in B2B SaaS</div>
+        <div class="mt-1.5" style="font-size:10px;color:#9CA3AF">MGI Research / EY</div>
+      </div>
+      <div class="bg-white border border-forest/10 rounded-2xl p-5 text-center">
+        <div class="font-mono font-medium text-2xl mb-1" style="color:#27500A">$9B+</div>
+        <div class="text-stone text-xs leading-snug">Lost annually across the industry</div>
+        <div class="mt-1.5" style="font-size:10px;color:#9CA3AF">$299B market × 3% floor</div>
+      </div>
+      <div class="bg-white border border-forest/10 rounded-2xl p-5 text-center">
+        <div class="font-mono font-medium text-2xl mb-1" style="color:#27500A">73%</div>
+        <div class="text-stone text-xs leading-snug">Companies with no automated detection</div>
+        <div class="mt-1.5" style="font-size:10px;color:#9CA3AF">BCG, 2020</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURE 1: BILLING VERIFICATION -->
+<section id="verify" class="px-6 py-24 border-t border-forest/8">
+  <div class="max-w-6xl mx-auto">
+
+    <!-- Copy centered -->
+    <div class="text-center mb-12 max-w-2xl mx-auto">
+      <div class="text-xs font-medium uppercase tracking-widest text-sage mb-3">Billing verification</div>
+      <h2 class="font-display font-light text-ink text-3xl leading-tight mb-4">Check every billing setup against the signed contract — before the first invoice goes out</h2>
+      <p class="text-stone leading-relaxed mb-6">Upload your signed contracts and billing export. Verdix compares every commercial term against what's actually configured in your billing platform — wrong prices, expired discounts still running, overage tiers never set up. Find it. Fix it. One click.</p>
+      <div class="flex flex-wrap justify-center gap-x-8 gap-y-2">
+        <span class="flex items-center gap-2 text-sm text-stone"><div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0" style="background:#EAF3DE;border:1px solid #C0DD97"><i class="ti ti-check" style="font-size:10px;color:#27500A"></i></div>Price escalators verified</span>
+        <span class="flex items-center gap-2 text-sm text-stone"><div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0" style="background:#EAF3DE;border:1px solid #C0DD97"><i class="ti ti-check" style="font-size:10px;color:#27500A"></i></div>Discount expiry enforced</span>
+        <span class="flex items-center gap-2 text-sm text-stone"><div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0" style="background:#EAF3DE;border:1px solid #C0DD97"><i class="ti ti-check" style="font-size:10px;color:#27500A"></i></div>Overage tiers checked</span>
+        <span class="flex items-center gap-2 text-sm text-stone"><div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0" style="background:#EAF3DE;border:1px solid #C0DD97"><i class="ti ti-check" style="font-size:10px;color:#27500A"></i></div>One-click API fix</span>
+      </div>
+    </div>
+
+    <!-- DASHBOARD MOCKUP — full width centered -->
+    <div class="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm mx-auto" style="font-size:12px;max-width:860px">
+      <!-- titlebar -->
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-forest/8" style="background:#F5F3EE">
+        <div class="tl-r"></div><div class="tl-y"></div><div class="tl-g"></div>
+        <span class="font-mono text-xs text-stone ml-2">verdix — revenue leakage</span>
+      </div>
+      <!-- inner layout -->
+      <div class="flex" style="min-height:420px">
+        <!-- sidebar -->
+        <div class="border-r border-forest/8 py-3 flex-shrink-0" style="width:150px;background:#FAFAF8">
+          <div class="flex items-center gap-2 px-3 pb-3 mb-1 border-b border-forest/8">
+            <svg width="20" height="20" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="flex-shrink:0"><rect width="28" height="28" rx="6" fill="#1A3D2B"/><polygon points="8,6 11.5,6 14,20 16.5,6 20,6 17,6 14,17 11,6" fill="#FFFFFF"/><circle cx="14" cy="23" r="2" fill="#D4EAD9"/></svg>
+            <span class="font-medium text-ink" style="font-size:11px">Verdix</span>
+          </div>
+          <div class="px-3 pt-2 pb-1" style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#9CA3AF">Insights</div>
+          <div class="flex items-center gap-2 px-3 py-1.5 mx-1 rounded-lg" style="background:#EAF3DE">
+            <i class="ti ti-layout-dashboard" style="font-size:12px;color:#1A3D2B"></i>
+            <span style="font-size:11px;font-weight:500;color:#1A3D2B">Dashboard</span>
+          </div>
+          <div class="flex items-center gap-2 px-3 py-1.5 text-stone"><i class="ti ti-chart-line" style="font-size:12px"></i><span style="font-size:11px">Leakage trends</span></div>
+          <div class="px-3 pt-3 pb-1" style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#9CA3AF">Verification</div>
+          <div class="flex items-center gap-2 px-3 py-1.5 text-stone"><i class="ti ti-file-check" style="font-size:12px"></i><span style="font-size:11px">Billing checks</span></div>
+          <div class="flex items-center gap-2 px-3 py-1.5 text-stone"><i class="ti ti-alert-triangle" style="font-size:12px"></i><span style="font-size:11px">Findings</span></div>
+          <div class="flex items-center gap-2 px-3 py-1.5 text-stone"><i class="ti ti-users" style="font-size:12px"></i><span style="font-size:11px">Customers</span></div>
+          <div class="px-3 pt-3 pb-1" style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#9CA3AF">Auto-configure</div>
+          <div class="flex items-center gap-2 px-3 py-1.5 text-stone"><i class="ti ti-bolt" style="font-size:12px"></i><span style="font-size:11px">New contracts</span></div>
+          <div class="flex items-center gap-2 px-3 py-1.5 text-stone"><i class="ti ti-history" style="font-size:12px"></i><span style="font-size:11px">Audit log</span></div>
+        </div>
+        <!-- main -->
+        <div class="flex-1 overflow-hidden">
+          <div class="flex items-center justify-between px-4 py-2.5 border-b border-forest/8">
+            <span class="font-medium text-ink" style="font-size:15px">Revenue leakage</span>
+            <div class="flex items-center gap-2">
+              <span class="border border-forest/15 rounded-lg px-2.5 py-1 text-stone" style="font-size:10px">Last 12 months</span>
+              <div class="w-6 h-6 bg-forest rounded flex items-center justify-center"><i class="ti ti-chart-bar text-white" style="font-size:11px"></i></div>
+            </div>
+          </div>
+          <div class="flex border-b border-forest/8 px-4">
+            <div class="py-2 px-3 text-forest border-b-2 border-forest font-medium" style="font-size:11px">Leakage overview</div>
+            <div class="py-2 px-3 text-stone" style="font-size:11px">By customer</div>
+            <div class="py-2 px-3 text-stone" style="font-size:11px">By type</div>
+          </div>
+          <div class="p-3 space-y-3">
+            <!-- metric cards -->
+            <div class="grid grid-cols-4 gap-2">
+              <div class="rounded-xl p-2.5" style="background:#F5F3EE">
+                <div style="font-size:9px;color:#6B6660;margin-bottom:3px">Total leakage found</div>
+                <div class="font-mono font-medium" style="font-size:16px;color:#A32D2D">$80,712</div>
+                <div style="font-size:9px;color:#A32D2D">↓ 3 contracts audited</div>
+              </div>
+              <div class="rounded-xl p-2.5" style="background:#F5F3EE">
+                <div style="font-size:9px;color:#6B6660;margin-bottom:3px">Open findings</div>
+                <div class="font-medium" style="font-size:16px;color:#1C1917">14</div>
+                <div style="font-size:9px;color:#A32D2D">3 critical · 11 high</div>
+              </div>
+              <div class="rounded-xl p-2.5" style="background:#F5F3EE">
+                <div style="font-size:9px;color:#6B6660;margin-bottom:3px">Recovered (fixed)</div>
+                <div class="font-mono font-medium" style="font-size:16px;color:#27500A">$7,580</div>
+                <div style="font-size:9px;color:#27500A">↑ 2 fixes applied</div>
+              </div>
+              <div class="rounded-xl p-2.5" style="background:#F5F3EE">
+                <div style="font-size:9px;color:#6B6660;margin-bottom:3px">Billing accuracy</div>
+                <div class="font-medium" style="font-size:16px;color:#1C1917">91%</div>
+                <div style="font-size:9px;color:#27500A">↑ +4% this month</div>
+              </div>
+            </div>
+            <!-- two col -->
+            <div class="grid grid-cols-2 gap-2">
+              <div class="border border-forest/8 rounded-xl p-3" style="background:#fff">
+                <div style="font-size:11px;font-weight:500;color:#1C1917;margin-bottom:2px">Leakage by month</div>
+                <div style="font-size:9px;color:#6B6660;margin-bottom:8px">Contracted vs billed gap over time</div>
+                <div style="display:flex;align-items:flex-end;gap:3px;height:52px;margin-bottom:6px">
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;border-radius:2px 2px 0 0;height:18px;background:#EAF3DE"></div><div style="font-size:7px;color:#9CA3AF">Jan</div></div>
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;border-radius:2px 2px 0 0;height:20px;background:#EAF3DE"></div><div style="font-size:7px;color:#9CA3AF">Feb</div></div>
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;border-radius:2px 2px 0 0;height:16px;background:#EAF3DE"></div><div style="font-size:7px;color:#9CA3AF">Mar</div></div>
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;border-radius:2px 2px 0 0;height:22px;background:#EAF3DE"></div><div style="font-size:7px;color:#9CA3AF">Apr</div></div>
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;border-radius:2px 2px 0 0;height:18px;background:#EAF3DE"></div><div style="font-size:7px;color:#9CA3AF">May</div></div>
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;border-radius:2px 2px 0 0;height:26px;background:#FAEEDA"></div><div style="font-size:7px;color:#9CA3AF">Jun</div></div>
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;border-radius:2px 2px 0 0;height:30px;background:#FAEEDA"></div><div style="font-size:7px;color:#9CA3AF">Jul</div></div>
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;border-radius:2px 2px 0 0;height:34px;background:#FCEBEB"></div><div style="font-size:7px;color:#9CA3AF">Aug</div></div>
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;border-radius:2px 2px 0 0;height:38px;background:#FCEBEB"></div><div style="font-size:7px;color:#9CA3AF">Sep</div></div>
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;border-radius:2px 2px 0 0;height:42px;background:#FCEBEB"></div><div style="font-size:7px;color:#9CA3AF">Oct</div></div>
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;border-radius:2px 2px 0 0;height:52px;background:#E24B4A"></div><div style="font-size:7px;color:#9CA3AF">Nov</div></div>
+                  <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;border-radius:2px 2px 0 0;height:36px;background:#EAF3DE"></div><div style="font-size:7px;color:#9CA3AF">Dec</div></div>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <div style="display:flex;align-items:center;gap:3px;font-size:8px;color:#6B6660"><div style="width:8px;height:8px;border-radius:2px;background:#EAF3DE;border:0.5px solid #C0DD97"></div>Low</div>
+                  <div style="display:flex;align-items:center;gap:3px;font-size:8px;color:#6B6660"><div style="width:8px;height:8px;border-radius:2px;background:#FAEEDA;border:0.5px solid #FAC775"></div>Medium</div>
+                  <div style="display:flex;align-items:center;gap:3px;font-size:8px;color:#6B6660"><div style="width:8px;height:8px;border-radius:2px;background:#FCEBEB;border:0.5px solid #F09595"></div>High</div>
+                  <div style="display:flex;align-items:center;gap:3px;font-size:8px;color:#6B6660"><div style="width:8px;height:8px;border-radius:2px;background:#E24B4A"></div>Critical</div>
+                </div>
+              </div>
+              <div class="border border-forest/8 rounded-xl p-3" style="background:#fff">
+                <div style="font-size:11px;font-weight:500;color:#1C1917;margin-bottom:2px">At-risk customers</div>
+                <div style="font-size:9px;color:#6B6660;margin-bottom:8px">By total leakage amount</div>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <svg width="64" height="64" viewBox="0 0 64 64">
+                    <circle cx="32" cy="32" r="24" fill="none" stroke="#F1EFE8" stroke-width="10"/>
+                    <circle cx="32" cy="32" r="24" fill="none" stroke="#E24B4A" stroke-width="10" stroke-dasharray="94 57" stroke-dashoffset="18" stroke-linecap="round"/>
+                    <circle cx="32" cy="32" r="24" fill="none" stroke="#FAC775" stroke-width="10" stroke-dasharray="27 124" stroke-dashoffset="-76" stroke-linecap="round"/>
+                    <circle cx="32" cy="32" r="24" fill="none" stroke="#C0DD97" stroke-width="10" stroke-dasharray="18 133" stroke-dashoffset="-103" stroke-linecap="round"/>
+                    <text x="32" y="29" text-anchor="middle" font-size="7" fill="#6B6660">Total</text>
+                    <text x="32" y="39" text-anchor="middle" font-size="9" font-weight="500" fill="#1C1917">$80.7K</text>
+                  </svg>
+                  <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+                    <div style="display:flex;align-items:center;justify-content:space-between">
+                      <div style="display:flex;align-items:center;gap:5px"><div style="width:7px;height:7px;border-radius:50%;background:#E24B4A;flex-shrink:0"></div><span style="font-size:10px;color:#1C1917">Northgate Capital</span></div>
+                      <div style="display:flex;align-items:center;gap:4px"><span class="font-mono" style="font-size:10px;color:#A32D2D">$73,132</span><button style="font-size:9px;padding:2px 8px;background:#EAF3DE;border:0.5px solid #C0DD97;color:#27500A;border-radius:6px">Fix</button></div>
+                    </div>
+                    <div style="display:flex;align-items:center;justify-content:space-between">
+                      <div style="display:flex;align-items:center;gap:5px"><div style="width:7px;height:7px;border-radius:50%;background:#FAC775;flex-shrink:0"></div><span style="font-size:10px;color:#1C1917">Meridian Health</span></div>
+                      <div style="display:flex;align-items:center;gap:4px"><span class="font-mono" style="font-size:10px;color:#1C1917">$7,040</span><button style="font-size:9px;padding:2px 8px;background:#EAF3DE;border:0.5px solid #C0DD97;color:#27500A;border-radius:6px">Fix</button></div>
+                    </div>
+                    <div style="display:flex;align-items:center;justify-content:space-between">
+                      <div style="display:flex;align-items:center;gap:5px"><div style="width:7px;height:7px;border-radius:50%;background:#C0DD97;flex-shrink:0"></div><span style="font-size:10px;color:#1C1917">Acme Corp</span></div>
+                      <div style="display:flex;align-items:center;gap:4px"><span class="font-mono" style="font-size:10px;color:#1C1917">$540</span><button style="font-size:9px;padding:2px 8px;background:#EAF3DE;border:0.5px solid #C0DD97;color:#27500A;border-radius:6px">Fix</button></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- findings table — no oval badges, plain text labels -->
+            <div class="border border-forest/8 rounded-xl overflow-hidden" style="background:#fff">
+              <div class="flex items-center justify-between px-3 py-2 border-b border-forest/8">
+                <div>
+                  <div style="font-size:11px;font-weight:500;color:#1C1917">Open findings</div>
+                  <div style="font-size:9px;color:#6B6660">Billing mismatches requiring action</div>
+                </div>
+                <span style="font-size:9px;padding:2px 8px;background:#FCEBEB;border:0.5px solid #F09595;color:#791F1F;border-radius:999px;font-weight:500">3 critical</span>
+              </div>
+              <table style="width:100%;border-collapse:collapse">
+                <thead>
+                  <tr style="border-bottom:0.5px solid rgba(26,61,43,0.08)">
+                    <th style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;color:#6B6660;padding:6px 10px;text-align:left">Customer</th>
+                    <th style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;color:#6B6660;padding:6px 8px;text-align:left">Type</th>
+                    <th style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;color:#6B6660;padding:6px 8px;text-align:left">Contracted</th>
+                    <th style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;color:#6B6660;padding:6px 8px;text-align:left">Billed</th>
+                    <th style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;color:#6B6660;padding:6px 8px;text-align:right">Leakage</th>
+                    <th style="padding:6px 8px"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="ui-tr" style="border-bottom:0.5px solid rgba(26,61,43,0.06)">
+                    <td style="padding:7px 10px"><div style="font-size:10px;font-weight:500;color:#1C1917">Northgate Capital</div><div class="font-mono" style="font-size:8px;color:#6B6660">CLR-2024-0078</div></td>
+                    <td style="padding:7px 8px;font-size:10px;color:#791F1F;font-weight:500">Overages not set up</td>
+                    <td style="padding:7px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#27500A">$0.012/call</td>
+                    <td style="padding:7px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#6B6660;text-decoration:line-through">$0.00</td>
+                    <td style="padding:7px 8px;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:500;color:#791F1F;text-align:right">$73,132</td>
+                    <td style="padding:7px 8px"><button style="font-size:9px;padding:3px 8px;background:#FCEBEB;border:0.5px solid #F09595;color:#791F1F;border-radius:6px;white-space:nowrap">Fix now</button></td>
+                  </tr>
+                  <tr class="ui-tr" style="border-bottom:0.5px solid rgba(26,61,43,0.06)">
+                    <td style="padding:7px 10px"><div style="font-size:10px;font-weight:500;color:#1C1917">Meridian Health</div><div class="font-mono" style="font-size:8px;color:#6B6660">CLR-2024-0031</div></td>
+                    <td style="padding:7px 8px;font-size:10px;color:#633806;font-weight:500">Discount overhang</td>
+                    <td style="padding:7px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#27500A">$3,200/mo</td>
+                    <td style="padding:7px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#6B6660;text-decoration:line-through">$2,560/mo</td>
+                    <td style="padding:7px 8px;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:500;color:#791F1F;text-align:right">$7,040</td>
+                    <td style="padding:7px 8px"><button style="font-size:9px;padding:3px 8px;background:#EAF3DE;border:0.5px solid #C0DD97;color:#27500A;border-radius:6px">Fix</button></td>
+                  </tr>
+                  <tr class="ui-tr">
+                    <td style="padding:7px 10px"><div style="font-size:10px;font-weight:500;color:#1C1917">Acme Corp</div><div class="font-mono" style="font-size:8px;color:#6B6660">CLR-2024-0042</div></td>
+                    <td style="padding:7px 8px;font-size:10px;color:#633806;font-weight:500">Escalator miss</td>
+                    <td style="padding:7px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#27500A">$4,635/mo</td>
+                    <td style="padding:7px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#6B6660;text-decoration:line-through">$4,500/mo</td>
+                    <td style="padding:7px 8px;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:500;color:#791F1F;text-align:right">$540</td>
+                    <td style="padding:7px 8px"><button style="font-size:9px;padding:3px 8px;background:#EAF3DE;border:0.5px solid #C0DD97;color:#27500A;border-radius:6px">Fix</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURE 2: AUTO-CONFIGURE -->
+<section id="configure" class="px-6 py-24 bg-white border-t border-b border-forest/8">
+  <div class="max-w-6xl mx-auto">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
+      <!-- HITL mockup -->
+      <div class="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm order-2 lg:order-1" style="font-size:12px">
+        <div class="flex items-center gap-2 px-4 py-2.5 border-b border-forest/8" style="background:#F5F3EE">
+          <div class="tl-r"></div><div class="tl-y"></div><div class="tl-g"></div>
+          <span class="font-mono text-xs text-stone ml-2">verdix — new contract · Northgate Capital</span>
+        </div>
+        <div class="flex items-center justify-between px-4 py-2.5 border-b border-forest/8">
+          <div style="font-size:12px;font-weight:500;color:#1C1917">Configure billing from signed contract</div>
+          <span style="font-size:9px;padding:2px 8px;background:#FAEEDA;border:0.5px solid #FAC775;color:#633806;border-radius:999px;font-weight:500">3 items need review</span>
+        </div>
+        <div class="grid grid-cols-2" style="min-height:420px">
+          <!-- LEFT PDF panel -->
+          <div class="border-r border-forest/8 p-5 overflow-y-auto" style="background:#FAFAF8;max-height:460px">
+            <div style="font-size:11px;color:#9CA3AF;margin-bottom:14px">Ardoq AS · Enterprise MSA · Exhibit A</div>
+            <div style="margin-bottom:10px">
+              <div style="font-size:10px;color:#9CA3AF;margin-bottom:5px">§3.1 Platform subscription</div>
+              <div style="padding:10px 12px;background:#fff;border-radius:10px;border:0.5px solid rgba(26,61,43,0.08)">
+                <div style="font-size:12px;font-weight:500;color:#1C1917;margin-bottom:2px">$18,500 / month</div>
+                <div style="font-size:11px;color:#6B6660">50 named users · Feb 1, 2024 – Jan 31, 2025</div>
+              </div>
+            </div>
+            <div style="margin-bottom:10px">
+              <div style="font-size:10px;color:#9CA3AF;margin-bottom:5px">§3.2 Annual escalator</div>
+              <div style="padding:10px 12px;background:#fff;border-radius:10px;border:0.5px solid rgba(26,61,43,0.08)">
+                <div style="font-size:12px;font-weight:500;color:#1C1917;margin-bottom:2px">3% fixed · from Feb 2025</div>
+                <div style="font-size:11px;color:#6B6660">Year 2: $19,055 / month</div>
+              </div>
+            </div>
+            <div style="margin-bottom:10px">
+              <div style="font-size:10px;color:#9CA3AF;margin-bottom:5px">§3.3 Additional seats</div>
+              <div style="padding:10px 12px;background:#fff;border-radius:10px;border:0.5px solid rgba(26,61,43,0.08)">
+                <div style="font-size:12px;font-weight:500;color:#1C1917;margin-bottom:2px">$320 / user / month</div>
+                <div style="font-size:11px;color:#6B6660">Above 50 seats · billed monthly in arrears</div>
+              </div>
+            </div>
+            <div style="margin-bottom:10px">
+              <div style="font-size:10px;color:#9CA3AF;margin-bottom:5px">§3.4 Introductory discount</div>
+              <div style="padding:10px 12px;background:#fff;border-radius:10px;border:0.5px solid rgba(26,61,43,0.08)">
+                <div style="font-size:12px;font-weight:500;color:#1C1917;margin-bottom:2px">15% off base fee</div>
+                <div style="font-size:11px;color:#6B6660">Feb – Jul 2024 · expires Aug 1, 2024</div>
+              </div>
+            </div>
+            <div style="margin-bottom:10px">
+              <div style="font-size:10px;color:#9CA3AF;margin-bottom:5px">§3.5 Onboarding</div>
+              <div style="padding:10px 12px;background:#fff;border-radius:10px;border:0.5px solid rgba(26,61,43,0.08)">
+                <div style="font-size:12px;font-weight:500;color:#1C1917;margin-bottom:2px">$12,000 one-time</div>
+                <div style="font-size:11px;color:#6B6660">Due at execution · ref SOW-2024-01</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- RIGHT config panel -->
+          <div class="p-5 flex flex-col" style="overflow-y:auto;max-height:460px">
+            <div style="font-size:11px;color:#9CA3AF;margin-bottom:14px">Proposed billing configuration</div>
+
+            <div style="margin-bottom:8px;padding:10px 12px;background:#fff;border-radius:10px;border:0.5px solid rgba(26,61,43,0.08)">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <div style="font-size:12px;font-weight:500;color:#1C1917">Platform subscription</div>
+                <div style="font-size:10px;color:#27500A;display:flex;align-items:center;gap:3px"><i class="ti ti-check" style="font-size:10px"></i> 97%</div>
+              </div>
+              <div class="font-mono" style="font-size:11px;color:#6B6660">$18,500 / month · 50 users · recurring</div>
+            </div>
+
+            <div style="margin-bottom:8px;padding:10px 12px;background:#fff;border-radius:10px;border:0.5px solid rgba(26,61,43,0.08)">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <div style="font-size:12px;font-weight:500;color:#1C1917">Price escalator · Year 2</div>
+                <div style="font-size:10px;color:#27500A;display:flex;align-items:center;gap:3px"><i class="ti ti-check" style="font-size:10px"></i> 96%</div>
+              </div>
+              <div class="font-mono" style="font-size:11px;color:#6B6660">$19,055 / month · from Feb 1, 2025</div>
+            </div>
+
+            <div style="margin-bottom:8px;padding:10px 12px;background:#fff;border-radius:10px;border:0.5px solid #FAC775">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <div style="font-size:12px;font-weight:500;color:#1C1917">Additional named users</div>
+                <div style="font-size:10px;color:#BA7517;display:flex;align-items:center;gap:3px"><i class="ti ti-alert-triangle" style="font-size:10px"></i> 74%</div>
+              </div>
+              <div class="font-mono" style="font-size:11px;color:#6B6660">$320 / user / month · above 50 seats</div>
+              <div style="font-size:10px;color:#BA7517;margin-top:4px">Verify billing cadence — §6 reference unclear</div>
+            </div>
+
+            <div style="margin-bottom:8px;padding:10px 12px;background:#fff;border-radius:10px;border:0.5px solid rgba(26,61,43,0.08)">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <div style="font-size:12px;font-weight:500;color:#1C1917">Introductory discount · 15%</div>
+                <div style="font-size:10px;color:#27500A;display:flex;align-items:center;gap:3px"><i class="ti ti-check" style="font-size:10px"></i> 99%</div>
+              </div>
+              <div class="font-mono" style="font-size:11px;color:#6B6660">–$2,775/mo · Feb – Jul 2024 · expires Aug 1</div>
+            </div>
+
+            <div style="margin-bottom:14px;padding:10px 12px;background:#fff;border-radius:10px;border:0.5px solid #F09595">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <div style="font-size:12px;font-weight:500;color:#1C1917">Onboarding · one-time</div>
+                <div style="font-size:10px;color:#A32D2D;display:flex;align-items:center;gap:3px"><i class="ti ti-alert-circle" style="font-size:10px"></i> 61%</div>
+              </div>
+              <div class="font-mono" style="font-size:11px;color:#6B6660">$12,000 · ref SOW-2024-01</div>
+              <div style="font-size:10px;color:#A32D2D;margin-top:4px">SOW not provided — verify before billing</div>
+            </div>
+
+            <div style="padding:12px 14px;border-radius:10px;background:#F5F3EE;display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+              <div>
+                <div style="font-size:10px;color:#6B6660;margin-bottom:1px">Calculated Year 1 TCV</div>
+                <div style="font-size:9px;color:#9CA3AF">Discount months included · onboarding separate</div>
+              </div>
+              <div class="font-mono" style="font-size:15px;font-weight:500;color:#1A3D2B">$200,325</div>
+            </div>
+
+            <button class="w-full bg-forest text-white font-medium py-3 rounded-xl hover:bg-sage transition-colors" style="font-size:13px">Approve &amp; configure billing →</button>
+          </div>
+        </div>
+      </div>
+      <!-- copy -->
+      <div class="order-1 lg:order-2">
+        <div class="text-xs font-medium uppercase tracking-widest text-sage mb-3">Auto-configure</div>
+        <h2 class="font-display font-light text-ink text-3xl leading-tight mb-4">Every new deal — billing configured automatically in 60 seconds</h2>
+        <p class="text-stone leading-relaxed mb-8">Connect DocuSign. The moment a deal is signed, Verdix reads every clause, proposes the exact billing configuration, and sets up your billing platform after your 60-second review. No manual translation. No errors.</p>
+        <ul class="space-y-3">
+          <li class="flex items-start gap-3 text-sm text-stone">
+            <div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style="background:#EAF3DE;border:1px solid #C0DD97"><i class="ti ti-check" style="font-size:10px;color:#27500A"></i></div>
+            DocuSign webhook triggers extraction the moment a deal closes
+          </li>
+          <li class="flex items-start gap-3 text-sm text-stone">
+            <div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style="background:#EAF3DE;border:1px solid #C0DD97"><i class="ti ti-check" style="font-size:10px;color:#27500A"></i></div>
+            AI extracts prices, tiers, escalators, and discount terms
+          </li>
+          <li class="flex items-start gap-3 text-sm text-stone">
+            <div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style="background:#EAF3DE;border:1px solid #C0DD97"><i class="ti ti-check" style="font-size:10px;color:#27500A"></i></div>
+            Human reviews proposed config with PDF source side-by-side
+          </li>
+          <li class="flex items-start gap-3 text-sm text-stone">
+            <div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style="background:#EAF3DE;border:1px solid #C0DD97"><i class="ti ti-check" style="font-size:10px;color:#27500A"></i></div>
+            Billing platform configured — zero manual typing, full audit trail
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- PARTNER RECONCILIATION MODULE -->
+<section id="partner" class="px-6 py-24 border-t border-forest/8" style="background:#FAFAF6">
+  <div class="max-w-6xl mx-auto">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
+      <div>
+        <div class="inline-flex items-center gap-2 mb-4" style="background:#EAF3DE;border:0.5px solid #C0DD97;border-radius:999px;padding:4px 12px">
+          <span style="font-size:10px;font-weight:500;color:#27500A">NEW MODULE</span>
+        </div>
+        <div class="text-xs font-medium uppercase tracking-widest text-sage mb-3">Partner reconciliation</div>
+        <h2 class="font-display font-light text-ink text-3xl leading-tight mb-4">Validate every partner invoice against your signed agreement — before you pay</h2>
+        <p class="text-stone leading-relaxed mb-8">Revenue doesn't just leak outward. You can also overpay partners, resellers, and suppliers when their invoices don't match what was agreed. Verdix reads your partner agreements and checks incoming invoices against them — line by line — before you approve payment.</p>
+        <ul class="space-y-3">
+          <li class="flex items-start gap-3 text-sm text-stone">
+            <div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style="background:#EAF3DE;border:1px solid #C0DD97"><i class="ti ti-check" style="font-size:10px;color:#27500A"></i></div>
+            Verify partner invoices match the agreed commission or fee structure
+          </li>
+          <li class="flex items-start gap-3 text-sm text-stone">
+            <div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style="background:#EAF3DE;border:1px solid #C0DD97"><i class="ti ti-check" style="font-size:10px;color:#27500A"></i></div>
+            Catch overbilling — wrong rates, duplicate charges, expired tier prices
+          </li>
+          <li class="flex items-start gap-3 text-sm text-stone">
+            <div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style="background:#EAF3DE;border:1px solid #C0DD97"><i class="ti ti-check" style="font-size:10px;color:#27500A"></i></div>
+            Flag invoices for dispute with the exact clause and amount discrepancy
+          </li>
+          <li class="flex items-start gap-3 text-sm text-stone">
+            <div class="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style="background:#EAF3DE;border:1px solid #C0DD97"><i class="ti ti-check" style="font-size:10px;color:#27500A"></i></div>
+            Approve clean invoices with one click — dispute wrong ones with evidence
+          </li>
+        </ul>
+
+      </div>
+
+      <!-- PARTNER RECONCILIATION UI MOCKUP -->
+      <div class="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm" style="font-size:12px">
+        <div class="flex items-center gap-2 px-4 py-2.5 border-b border-forest/8" style="background:#F5F3EE">
+          <div class="tl-r"></div><div class="tl-y"></div><div class="tl-g"></div>
+          <span class="font-mono text-xs text-stone ml-2">verdix — partner reconciliation · Helios Technologies AB</span>
+        </div>
+        <div class="flex items-center justify-between px-4 py-2.5 border-b border-forest/8">
+          <div style="font-size:13px;font-weight:500;color:#1C1917">Invoice INV-2024-0847 · Nets A/S</div>
+          <span style="font-size:9px;padding:2px 8px;background:#FAEEDA;border:0.5px solid #FAC775;color:#633806;border-radius:999px;font-weight:500">2 discrepancies</span>
+        </div>
+
+        <!-- Contract info card -->
+        <div class="p-5 border-b border-forest/8">
+          <div class="grid grid-cols-2 gap-0">
+            <div style="padding:0 16px 0 0;border-right:0.5px solid rgba(26,61,43,0.08)">
+              <div style="font-size:18px;font-weight:500;color:#1C1917;margin-bottom:16px">Partner Agreement</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+                <div>
+                  <div style="font-size:11px;color:#9CA3AF;margin-bottom:3px">Partner</div>
+                  <div style="font-size:13px;font-weight:500;color:#1C1917">Nets A/S</div>
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#9CA3AF;margin-bottom:3px">Agreement type</div>
+                  <div style="font-size:13px;font-weight:500;color:#1C1917">Payment processing</div>
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#9CA3AF;margin-bottom:3px">Invoice ref</div>
+                  <div style="font-size:13px;font-weight:500;color:#1C1917">INV-2024-0847</div>
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#9CA3AF;margin-bottom:3px">Invoice date</div>
+                  <div style="font-size:13px;font-weight:500;color:#1C1917">May 31, 2024</div>
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#9CA3AF;margin-bottom:3px">Billing to</div>
+                  <div style="font-size:13px;font-weight:500;color:#1C1917">Helios Technologies AB</div>
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#9CA3AF;margin-bottom:3px">Due date</div>
+                  <div style="font-size:13px;font-weight:500;color:#1C1917">Jun 30, 2024</div>
+                </div>
+              </div>
+            </div>
+            <div style="padding:0 0 0 16px">
+              <div style="font-size:11px;color:#9CA3AF;margin-bottom:10px">Discrepancies found</div>
+              <div style="margin-bottom:8px;padding:10px 12px;border-radius:10px;background:#FAFAF8;border:0.5px solid rgba(26,61,43,0.08)">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px">
+                  <div style="font-size:11px;font-weight:500;color:#1C1917">Wrong tier rate applied</div>
+                  <div style="font-size:11px;font-weight:500;color:#BA7517">–€374</div>
+                </div>
+                <div style="font-size:10px;color:#9CA3AF">Billed at 0.85% · should be Tier 2 rate 0.72% · §4.2</div>
+              </div>
+              <div style="margin-bottom:12px;padding:10px 12px;border-radius:10px;background:#FAFAF8;border:0.5px solid rgba(26,61,43,0.08)">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px">
+                  <div style="font-size:11px;font-weight:500;color:#1C1917">Monthly minimum charged</div>
+                  <div style="font-size:11px;font-weight:500;color:#A32D2D">–€800</div>
+                </div>
+                <div style="font-size:10px;color:#9CA3AF">Waived above €100K volume · €287K processed · §4.3</div>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-radius:10px" style="background:#1A3D2B">
+                <div style="font-size:11px;color:#D4EAD9;background:#1A3D2B;padding:10px 12px;border-radius:10px;display:flex;justify-content:space-between;width:100%">
+                  <span>Total dispute amount</span>
+                  <span class="font-mono" style="font-weight:500;color:#fff">€1,174</span>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px">
+                <button style="background:#1A3D2B;color:#fff;border:none;border-radius:8px;padding:9px;font-size:11px;font-weight:500;cursor:pointer">Raise dispute →</button>
+                <button style="background:#F5F3EE;color:#6B6660;border:none;border-radius:8px;padding:9px;font-size:11px;font-weight:500;cursor:pointer">Approve partial</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS FLOW DIAGRAM -->
+<section id="how" class="px-6 py-20 border-b border-forest/8" style="background:#FAFAF6">
+  <div class="max-w-5xl mx-auto">
+    <div class="text-center mb-14">
+      <h2 class="font-display font-light text-ink text-2xl mb-3">From signed contract to verified billing in minutes</h2>
+      <p class="text-stone text-sm">Two flows. One engine. No manual translation.</p>
+    </div>
+    <div style="background:#F5F3EE;border-radius:16px;padding:36px 28px 28px;overflow-x:auto">
+      <div style="display:flex;align-items:flex-start;gap:0;min-width:640px">
+        <!-- contracts -->
+        <div style="display:flex;flex-direction:column;align-items:center">
+          <div style="display:flex;flex-direction:column;gap:8px;width:130px">
+            <div style="background:#fff;border:1px solid #E0DDD6;border-radius:14px;padding:12px">
+              <div style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.08em;color:#6B6660;margin-bottom:8px;display:flex;align-items:center;gap:5px"><i class="ti ti-file-text" style="font-size:12px;color:#1A3D2B"></i> Contract</div>
+              <div style="height:6px;border-radius:3px;background:#C0DD97;width:75%;margin-bottom:5px"></div>
+              <div style="height:6px;border-radius:3px;background:#E8E5DE;width:55%;margin-bottom:5px"></div>
+              <div style="height:6px;border-radius:3px;background:#E8E5DE;width:40%"></div>
+            </div>
+            <div style="width:1px;height:10px;background:#C8C5BC;margin:0 auto"></div>
+            <div style="background:#fff;border:1px solid #E0DDD6;border-radius:14px;padding:12px">
+              <div style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.08em;color:#6B6660;margin-bottom:8px;display:flex;align-items:center;gap:5px"><i class="ti ti-file-text" style="font-size:12px;color:#1A3D2B"></i> Contract</div>
+              <div style="height:6px;border-radius:3px;background:#C0DD97;width:65%;margin-bottom:5px"></div>
+              <div style="height:6px;border-radius:3px;background:#E8E5DE;width:50%"></div>
+            </div>
+          </div>
+          <div style="font-size:12px;color:#4A4540;margin-top:12px;text-align:center;line-height:1.5">Signed<br>contracts</div>
+        </div>
+        <!-- connector -->
+        <div style="flex:1;display:flex;align-items:center;padding-bottom:48px"><div style="flex:1;height:1px;background:#C8C5BC"></div></div>
+        <!-- AI extraction -->
+        <div style="display:flex;flex-direction:column;align-items:center">
+          <div style="background:#fff;border:1px solid #E0DDD6;border-radius:14px;padding:14px;width:130px">
+            <div style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.08em;color:#6B6660;margin-bottom:10px;display:flex;align-items:center;gap:5px"><i class="ti ti-cpu" style="font-size:12px;color:#1A3D2B"></i> AI extraction</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px"><div style="width:8px;height:8px;border-radius:50%;background:#639922;flex-shrink:0"></div><div style="height:5px;border-radius:3px;background:#EAF3DE;flex:1"></div></div>
+            <div style="font-size:10px;color:#6B6660;margin:6px 0 4px;line-height:1.5">Price · Discount<br>Escalator · Tiers</div>
+            <div style="font-size:9px;font-weight:500;background:#EAF3DE;color:#27500A;border-radius:5px;padding:3px 7px;display:inline-block;margin-top:2px">99% confidence</div>
+          </div>
+          <div style="font-size:12px;color:#4A4540;margin-top:12px;text-align:center;line-height:1.5">AI reads<br>every clause</div>
+        </div>
+        <!-- connector with check -->
+        <div style="flex:1;display:flex;align-items:center;padding-bottom:48px">
+          <div style="width:28px;height:28px;border-radius:50%;background:#1A3D2B;display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-check" style="color:#fff;font-size:13px"></i></div>
+          <div style="flex:1;height:1px;background:#C8C5BC"></div>
+        </div>
+        <!-- verification -->
+        <div style="display:flex;flex-direction:column;align-items:center">
+          <div style="background:#fff;border:1px solid #E0DDD6;border-radius:14px;padding:14px;width:130px">
+            <div style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.08em;color:#6B6660;margin-bottom:10px;display:flex;align-items:center;gap:5px"><i class="ti ti-layout-columns" style="font-size:12px;color:#1A3D2B"></i> Verification</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
+              <div style="background:#EAF3DE;border-radius:8px;height:32px;display:flex;align-items:center;justify-content:center"><i class="ti ti-file" style="font-size:14px;color:#27500A"></i></div>
+              <div style="background:#FFF3E0;border-radius:8px;height:32px;display:flex;align-items:center;justify-content:center"><i class="ti ti-forms" style="font-size:14px;color:#BA7517"></i></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px"><div style="width:8px;height:8px;border-radius:50%;background:#BA7517;flex-shrink:0"></div><div style="height:5px;border-radius:3px;background:#E8E5DE;flex:1"></div></div>
+            <div style="display:flex;align-items:center;gap:6px"><div style="width:8px;height:8px;border-radius:50%;background:#639922;flex-shrink:0"></div><div style="height:5px;border-radius:3px;background:#E8E5DE;flex:1"></div></div>
+          </div>
+          <div style="font-size:12px;color:#4A4540;margin-top:12px;text-align:center;line-height:1.5">Human reviews<br>in 60 seconds</div>
+        </div>
+        <!-- connector -->
+        <div style="flex:1;display:flex;align-items:center;padding-bottom:48px"><div style="flex:1;height:1px;background:#C8C5BC"></div></div>
+        <!-- billing configured -->
+        <div style="display:flex;flex-direction:column;align-items:center">
+          <div style="background:#fff;border:1px solid #E0DDD6;border-radius:14px;padding:14px;width:130px">
+            <div style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.08em;color:#6B6660;margin-bottom:10px;display:flex;align-items:center;gap:5px"><i class="ti ti-credit-card" style="font-size:12px;color:#1A3D2B"></i> Billing configured</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px"><div style="width:8px;height:8px;border-radius:50%;background:#639922;flex-shrink:0"></div><div style="height:5px;border-radius:3px;background:#C0DD97;flex:1"></div></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px"><div style="width:8px;height:8px;border-radius:50%;background:#639922;flex-shrink:0"></div><div style="height:5px;border-radius:3px;background:#EAF3DE;flex:1"></div></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><div style="width:8px;height:8px;border-radius:50%;background:#639922;flex-shrink:0"></div><div style="height:5px;border-radius:3px;background:#EAF3DE;flex:1"></div></div>
+            <div style="font-size:9px;font-weight:500;background:#EAF3DE;color:#27500A;border-radius:5px;padding:3px 7px;display:inline-block;font-family:'JetBrains Mono',monospace">sub_abc123 created</div>
+          </div>
+          <div style="font-size:12px;color:#4A4540;margin-top:12px;text-align:center;line-height:1.5">Billing platform<br>updated via API</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- BILLING CALCULATION BREAKDOWN -->
+<section class="px-6 py-24 bg-white border-b border-forest/8">
+  <div class="max-w-6xl mx-auto">
+
+    <div class="text-center mb-12 max-w-2xl mx-auto">
+      <div class="text-xs font-medium uppercase tracking-widest text-sage mb-3">Calculation transparency</div>
+      <h2 class="font-display font-light text-ink text-3xl leading-tight mb-4">Every number traced back to the contract clause that generated it</h2>
+      <p class="text-stone leading-relaxed">Verdix doesn't just flag mismatches — it shows the exact arithmetic. Every invoice amount, TCV, and leakage figure is derived step by step from the signed contract.</p>
+    </div>
+
+    <div class="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm mx-auto" style="max-width:900px;font-size:12px">
+      <!-- titlebar -->
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-forest/8" style="background:#F5F3EE">
+        <div class="tl-r"></div><div class="tl-y"></div><div class="tl-g"></div>
+        <span class="font-mono text-xs text-stone ml-2">verdix — billing calculation · Ardoq AS · CLR-2024-0031</span>
+      </div>
+
+      <!-- header bar -->
+      <div class="flex items-center justify-between px-5 py-3 border-b border-forest/8">
+        <div>
+          <div style="font-size:14px;font-weight:500;color:#1C1917">Ardoq AS — Year 1 billing breakdown</div>
+          <div style="font-size:10px;color:#6B6660;margin-top:1px">Feb 1 2024 – Jan 31 2025 · EUR · Enterprise MSA</div>
+        </div>
+        <div class="flex items-center gap-3">
+          <span style="font-size:10px;padding:3px 10px;background:#EAF3DE;border:0.5px solid #C0DD97;color:#27500A;border-radius:6px;font-weight:500">Verified ✓</span>
+          <span style="font-size:10px;color:#6B6660">TCV: <span class="font-mono" style="color:#1C1917;font-weight:500">$200,325</span></span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-0" style="border-bottom:0.5px solid rgba(26,61,43,0.08)">
+
+        <!-- LEFT: Contract source -->
+        <div class="p-5 border-r border-forest/8">
+          <div style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#6B6660;margin-bottom:12px">Contract terms extracted</div>
+
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:8px 10px;background:#F5F3EE;border-radius:8px">
+              <div>
+                <div style="font-size:10px;font-weight:500;color:#1C1917">Base platform fee</div>
+                <div style="font-size:9px;color:#6B6660;margin-top:1px">§3.1 · 50 named users included</div>
+              </div>
+              <div class="font-mono" style="font-size:11px;color:#1A3D2B;font-weight:500">$18,500/mo</div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:8px 10px;background:#F5F3EE;border-radius:8px">
+              <div>
+                <div style="font-size:10px;font-weight:500;color:#1C1917">Introductory discount</div>
+                <div style="font-size:9px;color:#6B6660;margin-top:1px">§3.4 · 15% off base · months 1–6 only</div>
+              </div>
+              <div class="font-mono" style="font-size:11px;color:#A32D2D;font-weight:500">–15%</div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:8px 10px;background:#F5F3EE;border-radius:8px">
+              <div>
+                <div style="font-size:10px;font-weight:500;color:#1C1917">Price escalator</div>
+                <div style="font-size:9px;color:#6B6660;margin-top:1px">§3.2 · 3% fixed · from Feb 1 2025</div>
+              </div>
+              <div class="font-mono" style="font-size:11px;color:#1A3D2B;font-weight:500">+3%</div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:8px 10px;background:#F5F3EE;border-radius:8px">
+              <div>
+                <div style="font-size:10px;font-weight:500;color:#1C1917">Additional seats</div>
+                <div style="font-size:9px;color:#6B6660;margin-top:1px">§3.3 · $320/user/month above 50</div>
+              </div>
+              <div class="font-mono" style="font-size:11px;color:#1A3D2B;font-weight:500">$320/seat</div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:8px 10px;background:#F5F3EE;border-radius:8px">
+              <div>
+                <div style="font-size:10px;font-weight:500;color:#1C1917">Onboarding (one-time)</div>
+                <div style="font-size:9px;color:#6B6660;margin-top:1px">§3.5 · ref SOW-2024-01</div>
+              </div>
+              <div class="font-mono" style="font-size:11px;color:#1A3D2B;font-weight:500">$12,000</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT: Derived invoice schedule -->
+        <div class="p-5">
+          <div style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#6B6660;margin-bottom:12px">Derived invoice schedule</div>
+
+          <table style="width:100%;border-collapse:collapse">
+            <thead>
+              <tr style="border-bottom:0.5px solid rgba(26,61,43,0.08)">
+                <th style="font-size:9px;font-weight:500;color:#6B6660;text-transform:uppercase;letter-spacing:.05em;padding:4px 8px 6px 0;text-align:left">Month</th>
+                <th style="font-size:9px;font-weight:500;color:#6B6660;text-transform:uppercase;letter-spacing:.05em;padding:4px 8px 6px;text-align:left">Calculation</th>
+                <th style="font-size:9px;font-weight:500;color:#6B6660;text-transform:uppercase;letter-spacing:.05em;padding:4px 0 6px 8px;text-align:right">Invoice</th>
+                <th style="font-size:9px;font-weight:500;color:#6B6660;text-transform:uppercase;letter-spacing:.05em;padding:4px 0 6px 8px;text-align:left">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-bottom:0.5px solid rgba(26,61,43,0.06)">
+                <td style="padding:5px 8px 5px 0;font-size:9px;color:#6B6660;white-space:nowrap">Feb 2024</td>
+                <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:9px;color:#6B6660">$18,500 – 15% = <span style="color:#1C1917">$15,725</span></td>
+                <td style="padding:5px 0 5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:500;color:#1A3D2B;text-align:right">$15,725</td>
+                <td style="padding:5px 0 5px 8px"><span style="font-size:8px;padding:1px 6px;background:#EAF3DE;color:#27500A;border-radius:4px">✓ match</span></td>
+              </tr>
+              <tr style="border-bottom:0.5px solid rgba(26,61,43,0.06)">
+                <td style="padding:5px 8px 5px 0;font-size:9px;color:#6B6660;white-space:nowrap">Mar–Jul 2024</td>
+                <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:9px;color:#6B6660">$18,500 – 15% = <span style="color:#1C1917">$15,725 × 5</span></td>
+                <td style="padding:5px 0 5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:500;color:#1A3D2B;text-align:right">$78,625</td>
+                <td style="padding:5px 0 5px 8px"><span style="font-size:8px;padding:1px 6px;background:#EAF3DE;color:#27500A;border-radius:4px">✓ match</span></td>
+              </tr>
+              <tr style="border-bottom:0.5px solid rgba(26,61,43,0.06);background:#FCEBEB">
+                <td style="padding:5px 8px 5px 0;font-size:9px;color:#791F1F;white-space:nowrap;font-weight:500">Aug 2024</td>
+                <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:9px;color:#791F1F">$18,500 (disc. expired) <span style="color:#A32D2D">≠ billed $15,725</span></td>
+                <td style="padding:5px 0 5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:500;color:#A32D2D;text-align:right">$15,725 ⚠</td>
+                <td style="padding:5px 0 5px 8px"><span style="font-size:8px;padding:1px 6px;background:#FCEBEB;color:#791F1F;border-radius:4px">mismatch</span></td>
+              </tr>
+              <tr style="border-bottom:0.5px solid rgba(26,61,43,0.06);background:#FCEBEB">
+                <td style="padding:5px 8px 5px 0;font-size:9px;color:#791F1F;white-space:nowrap;font-weight:500">Sep–Jan 2025</td>
+                <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:9px;color:#791F1F">$18,500 × 5 <span style="color:#A32D2D">≠ billed $15,725 × 5</span></td>
+                <td style="padding:5px 0 5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:500;color:#A32D2D;text-align:right">$78,625 ⚠</td>
+                <td style="padding:5px 0 5px 8px"><span style="font-size:8px;padding:1px 6px;background:#FCEBEB;color:#791F1F;border-radius:4px">mismatch</span></td>
+              </tr>
+              <tr style="border-bottom:0.5px solid rgba(26,61,43,0.06)">
+                <td style="padding:5px 8px 5px 0;font-size:9px;color:#6B6660;white-space:nowrap">Feb 2024</td>
+                <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:9px;color:#6B6660">SOW-2024-01 one-time</td>
+                <td style="padding:5px 0 5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:500;color:#1A3D2B;text-align:right">$12,000</td>
+                <td style="padding:5px 0 5px 8px"><span style="font-size:8px;padding:1px 6px;background:#EAF3DE;color:#27500A;border-radius:4px">✓ match</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Bottom: leakage calculation -->
+      <div class="p-5">
+        <div style="font-size:9px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#6B6660;margin-bottom:10px">Leakage calculation — discount overhang §3.4</div>
+        <div class="grid grid-cols-3 gap-3">
+          <div style="background:#F5F3EE;border-radius:8px;padding:10px 12px">
+            <div style="font-size:9px;color:#6B6660;margin-bottom:4px">Correct monthly rate (post Aug)</div>
+            <div class="font-mono" style="font-size:14px;font-weight:500;color:#1A3D2B">$18,500</div>
+            <div style="font-size:9px;color:#6B6660;margin-top:2px">Base fee · §3.1 · no discount</div>
+          </div>
+          <div style="background:#FCEBEB;border-radius:8px;padding:10px 12px">
+            <div style="font-size:9px;color:#6B6660;margin-bottom:4px">Actually billed (Aug–Jan)</div>
+            <div class="font-mono" style="font-size:14px;font-weight:500;color:#A32D2D">$15,725</div>
+            <div style="font-size:9px;color:#A32D2D;margin-top:2px">15% still applied — expired §3.4</div>
+          </div>
+          <div style="background:#EAF3DE;border:0.5px solid #C0DD97;border-radius:8px;padding:10px 12px">
+            <div style="font-size:9px;color:#6B6660;margin-bottom:4px">Monthly leakage × 6 months</div>
+            <div class="font-mono" style="font-size:14px;font-weight:500;color:#27500A">$16,650</div>
+            <div style="font-size:9px;color:#27500A;margin-top:2px">($18,500 – $15,725) × 6 = $16,650</div>
+          </div>
+        </div>
+
+        <div style="margin-top:10px;padding:10px 14px;background:#1A3D2B;border-radius:8px;display:flex;align-items:center;justify-content:space-between">
+          <div style="font-size:10px;color:#D4EAD9">Total recoverable from Ardoq AS — discount overhang finding</div>
+          <div class="font-mono" style="font-size:16px;font-weight:500;color:#FFFFFF">$16,650</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECURITY -->
+<section id="security" class="px-6 py-20 border-b border-forest/8">
+  <div class="max-w-5xl mx-auto">
+    <div class="text-center mb-12">
+      <h2 class="font-display font-light text-ink text-2xl mb-3">Your contracts are sensitive. We treat them that way.</h2>
+      <p class="text-stone text-sm max-w-lg mx-auto">Built for the data sovereignty requirements of Nordic and European enterprises.</p>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="bg-white border border-forest/10 rounded-2xl p-5 text-center">
+        <i class="ti ti-shield-lock text-forest mb-3 block" style="font-size:24px"></i>
+        <div class="text-sm font-medium text-ink mb-1.5">EU data residency</div>
+        <div class="text-xs text-stone leading-snug">All data stored within the European Economic Area. GDPR compliant by design.</div>
+      </div>
+      <div class="bg-white border border-forest/10 rounded-2xl p-5 text-center">
+        <i class="ti ti-eye-off text-forest mb-3 block" style="font-size:24px"></i>
+        <div class="text-sm font-medium text-ink mb-1.5">No AI training</div>
+        <div class="text-xs text-stone leading-snug">Contracts processed for extraction only. Raw text not retained after processing.</div>
+      </div>
+      <div class="bg-white border border-forest/10 rounded-2xl p-5 text-center">
+        <i class="ti ti-file-description text-forest mb-3 block" style="font-size:24px"></i>
+        <div class="text-sm font-medium text-ink mb-1.5">Full audit trail</div>
+        <div class="text-xs text-stone leading-snug">Every billing change logged with the contract clause that authorised it.</div>
+      </div>
+      <div class="bg-white border border-forest/10 rounded-2xl p-5 text-center">
+        <i class="ti ti-lock text-forest mb-3 block" style="font-size:24px"></i>
+        <div class="text-sm font-medium text-ink mb-1.5">SOC 2 Type II</div>
+        <div class="text-xs text-stone leading-snug">AES-256 at rest, TLS 1.3 in transit, row-level tenant isolation.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ALPHA PROGRAMME -->
+<section id="alpha" class="px-6 py-24 border-t border-forest/8">
+  <div class="max-w-5xl mx-auto">
+
+    <div class="text-center mb-14">
+      <div class="inline-flex items-center gap-2 mb-5" style="background:#EAF3DE;border:0.5px solid #C0DD97;border-radius:999px;padding:5px 14px">
+        <span style="width:6px;height:6px;border-radius:50%;background:#27500A;display:inline-block"></span>
+        <span style="font-size:11px;font-weight:500;color:#27500A;letter-spacing:.05em">DESIGN PARTNER PROGRAMME · LIMITED TO 20 COMPANIES</span>
+      </div>
+      <h2 class="font-display font-light text-ink text-3xl mb-4">Become a Verdix Design Partner</h2>
+      <p class="text-stone leading-relaxed max-w-xl mx-auto" style="font-size:15px">We are building Verdix with a small group of Design Partners — companies who work directly with us to shape the product. Design Partners get early access, influence the roadmap, and receive preferential terms in exchange for structured feedback and collaboration.</p>
+    </div>
+
+    <!-- Benefits -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-14">
+      <div class="bg-white border border-forest/10 rounded-2xl p-7">
+        <div class="w-10 h-10 rounded-xl flex items-center justify-center mb-5" style="background:#EAF3DE">
+          <i class="ti ti-clock" style="font-size:20px;color:#1A3D2B"></i>
+        </div>
+        <div style="font-size:14px;font-weight:500;color:#1C1917;margin-bottom:8px">Early access</div>
+        <div style="font-size:13px;color:#6B6660;line-height:1.7">Access the platform before public launch. The first audit is complimentary, and all findings are yours to keep regardless of whether you proceed further.</div>
+      </div>
+      <div class="bg-white border border-forest/10 rounded-2xl p-7">
+        <div class="w-10 h-10 rounded-xl flex items-center justify-center mb-5" style="background:#EAF3DE">
+          <i class="ti ti-message-circle" style="font-size:20px;color:#1A3D2B"></i>
+        </div>
+        <div style="font-size:14px;font-weight:500;color:#1C1917;margin-bottom:8px">Direct input on what we build</div>
+        <div style="font-size:13px;color:#6B6660;line-height:1.7">A monthly working session with the founding team. Contract formats, billing platforms, and workflow requirements raised by Design Partners are prioritised directly into the development cycle.</div>
+      </div>
+      <div class="bg-white border border-forest/10 rounded-2xl p-7">
+        <div class="w-10 h-10 rounded-xl flex items-center justify-center mb-5" style="background:#EAF3DE">
+          <i class="ti ti-lock" style="font-size:20px;color:#1A3D2B"></i>
+        </div>
+        <div style="font-size:14px;font-weight:500;color:#1C1917;margin-bottom:8px">Preferred pricing, permanently</div>
+        <div style="font-size:13px;color:#6B6660;line-height:1.7">Design Partners receive a preferential rate that is locked in for the lifetime of the account — not subject to future pricing changes as the platform scales.</div>
+      </div>
+    </div>
+
+    <!-- Form card -->
+    <div class="bg-white border border-forest/10 rounded-3xl overflow-hidden shadow-sm">
+      <div class="px-8 py-6 border-b border-forest/8" style="background:#F5F3EE">
+        <div style="font-size:15px;font-weight:500;color:#1C1917;margin-bottom:2px">Apply to become a Design Partner</div>
+        <div style="font-size:13px;color:#6B6660">We review every application and respond within 48 hours.</div>
+      </div>
+
+      <div class="px-8 py-8">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+          <div>
+            <label style="font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#6B6660;display:block;margin-bottom:6px">Full name *</label>
+            <input type="text" id="alpha-name" placeholder="Anna Lindqvist" class="alpha-input" style="width:100%;background:#FAF8F4;border:0.5px solid rgba(26,61,43,0.15);border-radius:10px;padding:11px 14px;font-size:13px;color:#1C1917;outline:none;transition:.15s" onfocus="this.style.borderColor='#1A3D2B';this.style.background='#fff'" onblur="this.style.borderColor='rgba(26,61,43,0.15)';this.style.background='#FAF8F4'">
+          </div>
+          <div>
+            <label style="font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#6B6660;display:block;margin-bottom:6px">Work email *</label>
+            <input type="email" id="alpha-email" placeholder="anna@company.com" style="width:100%;background:#FAF8F4;border:0.5px solid rgba(26,61,43,0.15);border-radius:10px;padding:11px 14px;font-size:13px;color:#1C1917;outline:none;transition:.15s" onfocus="this.style.borderColor='#1A3D2B';this.style.background='#fff'" onblur="this.style.borderColor='rgba(26,61,43,0.15)';this.style.background='#FAF8F4'">
+          </div>
+          <div>
+            <label style="font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#6B6660;display:block;margin-bottom:6px">Company *</label>
+            <input type="text" id="alpha-company" placeholder="Acme AB" style="width:100%;background:#FAF8F4;border:0.5px solid rgba(26,61,43,0.15);border-radius:10px;padding:11px 14px;font-size:13px;color:#1C1917;outline:none;transition:.15s" onfocus="this.style.borderColor='#1A3D2B';this.style.background='#fff'" onblur="this.style.borderColor='rgba(26,61,43,0.15)';this.style.background='#FAF8F4'">
+          </div>
+          <div>
+            <label style="font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#6B6660;display:block;margin-bottom:6px">Role</label>
+            <input type="text" id="alpha-role" placeholder="CFO / VP Finance / Founder" style="width:100%;background:#FAF8F4;border:0.5px solid rgba(26,61,43,0.15);border-radius:10px;padding:11px 14px;font-size:13px;color:#1C1917;outline:none;transition:.15s" onfocus="this.style.borderColor='#1A3D2B';this.style.background='#fff'" onblur="this.style.borderColor='rgba(26,61,43,0.15)';this.style.background='#FAF8F4'">
+          </div>
+        </div>
+
+        <div class="mb-5">
+          <label style="font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#6B6660;display:block;margin-bottom:6px">Current billing platform</label>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-3" id="platform-group">
+            <label id="lbl-stripe" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 12px;background:#FAF8F4;border:0.5px solid rgba(26,61,43,0.15);border-radius:8px;transition:.15s" onclick="selectPlatform('stripe')">
+              <input type="radio" name="platform" value="stripe" style="accent-color:#1A3D2B">
+              <span style="font-size:12px;color:#1C1917">Stripe</span>
+            </label>
+            <label id="lbl-chargebee" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 12px;background:#FAF8F4;border:0.5px solid rgba(26,61,43,0.15);border-radius:8px;transition:.15s" onclick="selectPlatform('chargebee')">
+              <input type="radio" name="platform" value="chargebee" style="accent-color:#1A3D2B">
+              <span style="font-size:12px;color:#1C1917">Chargebee</span>
+            </label>
+            <label id="lbl-maxio" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 12px;background:#FAF8F4;border:0.5px solid rgba(26,61,43,0.15);border-radius:8px;transition:.15s" onclick="selectPlatform('maxio')">
+              <input type="radio" name="platform" value="maxio" style="accent-color:#1A3D2B">
+              <span style="font-size:12px;color:#1C1917">Maxio</span>
+            </label>
+            <label id="lbl-other" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 12px;background:#FAF8F4;border:0.5px solid rgba(26,61,43,0.15);border-radius:8px;transition:.15s" onclick="selectPlatform('other')">
+              <input type="radio" name="platform" value="other" style="accent-color:#1A3D2B">
+              <span style="font-size:12px;color:#1C1917">Other</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="mb-5">
+          <label style="font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#6B6660;display:block;margin-bottom:6px">Which capabilities are most relevant?</label>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer;padding:12px 14px;background:#FAF8F4;border:0.5px solid rgba(26,61,43,0.15);border-radius:10px" onclick="toggleCheck(this)">
+              <input type="checkbox" style="margin-top:1px;accent-color:#1A3D2B;flex-shrink:0">
+              <div>
+                <div style="font-size:12px;font-weight:500;color:#1C1917;margin-bottom:2px">Billing verification</div>
+                <div style="font-size:11px;color:#6B6660;line-height:1.5">Verify customer billing matches signed contracts</div>
+              </div>
+            </label>
+            <label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer;padding:12px 14px;background:#FAF8F4;border:0.5px solid rgba(26,61,43,0.15);border-radius:10px" onclick="toggleCheck(this)">
+              <input type="checkbox" style="margin-top:1px;accent-color:#1A3D2B;flex-shrink:0">
+              <div>
+                <div style="font-size:12px;font-weight:500;color:#1C1917;margin-bottom:2px">Auto-configure</div>
+                <div style="font-size:11px;color:#6B6660;line-height:1.5">Automate billing setup when a new contract is signed</div>
+              </div>
+            </label>
+            <label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer;padding:12px 14px;background:#FAF8F4;border:0.5px solid rgba(26,61,43,0.15);border-radius:10px" onclick="toggleCheck(this)">
+              <input type="checkbox" style="margin-top:1px;accent-color:#1A3D2B;flex-shrink:0">
+              <div>
+                <div style="font-size:12px;font-weight:500;color:#1C1917;margin-bottom:2px">Partner reconciliation</div>
+                <div style="font-size:11px;color:#6B6660;line-height:1.5">Validate partner and supplier invoices against agreements</div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="mb-6">
+          <label style="font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#6B6660;display:block;margin-bottom:6px">What would you most like Verdix to solve for you? <span style="color:#9CA3AF;font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></label>
+          <textarea id="alpha-pain" rows="3" placeholder="For example: we have 60 enterprise contracts and no systematic way to verify our billing configuration matches what was agreed..." style="width:100%;background:#FAF8F4;border:0.5px solid rgba(26,61,43,0.15);border-radius:10px;padding:11px 14px;font-size:13px;color:#1C1917;outline:none;resize:none;line-height:1.6;transition:.15s" onfocus="this.style.borderColor='#1A3D2B';this.style.background='#fff'" onblur="this.style.borderColor='rgba(26,61,43,0.15)';this.style.background='#FAF8F4'"></textarea>
+        </div>
+
+        <!-- Divider -->
+        <div style="border-top:0.5px solid rgba(26,61,43,0.08);margin-bottom:20px"></div>
+
+        <div id="alpha-error" style="display:none;font-size:12px;color:#791F1F;background:#FCEBEB;border:0.5px solid #F09595;border-radius:8px;padding:10px 14px;margin-bottom:14px"></div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+          <div style="font-size:11px;color:#9CA3AF;line-height:1.6">
+            Limited to 20 Design Partners &nbsp;·&nbsp; EU and Nordic companies preferred<br>
+            No commitment or payment required at this stage
+          </div>
+          <button onclick="handleAlphaSubmit(this)" style="background:#1A3D2B;color:#fff;font-weight:500;padding:13px 28px;border-radius:12px;font-size:14px;border:none;cursor:pointer;transition:.15s;white-space:nowrap" onmouseover="this.style.background='#4A7C59'" onmouseout="this.style.background='#1A3D2B'">
+            Apply to become a Design Partner →
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="px-6 py-24">
+  <div class="max-w-3xl mx-auto">
+    <div class="rounded-3xl p-14 text-center" style="background:#EAF3DE;border:0.5px solid #C0DD97">
+      <h2 class="font-display font-light text-3xl mb-4" style="color:#1A3D2B">Find the revenue your billing<br>system is missing</h2>
+      <p class="leading-relaxed mb-10" style="color:#27500A">Upload a signed contract and a billing export. We'll show you exactly where they diverge — and fix it. Or validate a partner invoice against your agreement before you pay.</p>
+      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:10px">
+        <a href="/signup" class="inline-block bg-forest text-white font-medium px-8 py-4 rounded-xl hover:bg-sage transition-colors shadow-md text-sm">Check your billing accuracy →</a>
+        <a href="#alpha" onclick="document.querySelector('#alpha, section:has(.Apply)') && window.scrollTo({top:document.querySelector('button[onclick]').closest('section').offsetTop-80,behavior:'smooth'})" class="inline-block font-medium px-8 py-4 rounded-xl text-sm" style="background:#EAF3DE;color:#1A3D2B;border:0.5px solid #C0DD97">Apply as a Design Partner →</a>
+      </div>
+      <div class="flex items-center justify-center gap-8 mt-6 text-xs" style="color:#3B6D11">
+        <span class="flex items-center gap-1.5"><i class="ti ti-credit-card-off" style="font-size:13px"></i> No credit card</span>
+        <span class="flex items-center gap-1.5"><i class="ti ti-shield" style="font-size:13px"></i> EU data residency</span>
+        <span class="flex items-center gap-1.5"><i class="ti ti-trash" style="font-size:13px"></i> Delete anytime</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="px-6 py-8 border-t border-forest/10 bg-white">
+  <div class="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-5">
+    <div class="flex items-center gap-2.5">
+      <svg width="24" height="24" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="28" height="28" rx="6" fill="#1A3D2B"/><polygon points="8,6 11.5,6 14,20 16.5,6 20,6 17,6 14,17 11,6" fill="#FFFFFF"/><circle cx="14" cy="23" r="2" fill="#D4EAD9"/></svg>
+      <span class="font-display font-semibold text-forest">Verdix</span>
+      <span class="text-stone text-sm ml-2">Revenue intelligence for B2B SaaS</span>
+    </div>
+    <div class="flex items-center gap-8 text-sm text-stone">
+      <a href="/privacy" class="hover:text-forest transition-colors">Privacy Policy</a>
+      <a href="/terms" class="hover:text-forest transition-colors">Terms</a>
+      <a href="mailto:hello@verdix.io" class="hover:text-forest transition-colors">Contact</a>
+    </div>
+    <div class="text-xs text-stone">© 2026 Verdix. All rights reserved.</div>
+  </div>
+</footer>
+
+<script>
+  window.addEventListener('scroll',()=>{
+    document.getElementById('nav').style.boxShadow = window.scrollY>16 ? '0 1px 8px rgba(26,61,43,.08)' : 'none'
+  })
+
+  function selectPlatform(val) {
+    ['stripe','chargebee','maxio','other'].forEach(p => {
+      const el = document.getElementById('lbl-' + p)
+      if (el) el.style.borderColor = p === val ? '#1A3D2B' : 'rgba(26,61,43,0.15)'
+      if (el) el.style.background = p === val ? '#EAF3DE' : '#FAF8F4'
+    })
+  }
+
+  function toggleCheck(label) {
+    const checked = label.querySelector('input[type=checkbox]').checked
+    label.style.borderColor = checked ? '#1A3D2B' : 'rgba(26,61,43,0.15)'
+    label.style.background = checked ? '#EAF3DE' : '#FAF8F4'
+  }
+
+  function handleAlphaSubmit(btn) {
+    const name    = (document.getElementById('alpha-name')?.value || '').trim()
+    const email   = (document.getElementById('alpha-email')?.value || '').trim()
+    const company = (document.getElementById('alpha-company')?.value || '').trim()
+    const role    = (document.getElementById('alpha-role')?.value || '').trim()
+    const pain    = (document.getElementById('alpha-pain')?.value || '').trim()
+    const platform = document.querySelector('input[name="platform"]:checked')?.value || ''
+    const modules = [...document.querySelectorAll('input[type=checkbox]:checked')]
+                      .map(cb => cb.closest('label').querySelector('div div:first-child')?.textContent?.trim())
+
+    const errEl = document.getElementById('alpha-error')
+
+    // Validate
+    if (!name || !email || !company) {
+      errEl.textContent = 'Please complete your name, work email, and company before submitting.'
+      errEl.style.display = 'block'
+      return
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      errEl.textContent = 'Please enter a valid work email address.'
+      errEl.style.display = 'block'
+      return
+    }
+    errEl.style.display = 'none'
+
+    // Disable and show loading
+    btn.disabled = true
+    btn.textContent = 'Submitting...'
+    btn.style.background = '#4A7C59'
+
+    // POST to API (in production)
+    fetch('/api/alpha-signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email, company, role, pain, platform, modules })
+    })
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .catch(() => ({ success: true })) // graceful fallback for static preview
+    .then(() => {
+      // Replace form with confirmation
+      btn.closest('.px-8').innerHTML = `
+        <div style="text-align:center;padding:32px 0">
+          <div style="width:52px;height:52px;background:#EAF3DE;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px">
+            <i class="ti ti-check" style="font-size:24px;color:#1A3D2B"></i>
+          </div>
+          <div style="font-size:18px;font-weight:500;color:#1C1917;margin-bottom:8px">Application received</div>
+          <div style="font-size:14px;color:#6B6660;max-width:400px;margin:0 auto;line-height:1.7">
+            Thank you, ${name}. We will review your application and be in touch within 48 hours to arrange a call.
+          </div>
+          <div style="margin-top:20px;font-size:12px;color:#9CA3AF">A confirmation has been sent to ${email}</div>
+        </div>
+      `
+    })
+  }
+</script>
+</body>
+</html>

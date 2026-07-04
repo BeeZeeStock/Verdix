@@ -1,0 +1,169 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Type /Catalog /Pages 3 0 R >>
+endobj
+3 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 3 0 R /MediaBox [0 0 612 792]
+   /Resources << /Font << /F1 1 0 R >> >>
+   /Contents 5 0 R
+>>
+endobj
+5 0 obj
+<< /Length 2902 >>
+stream
+BT
+/F1 10 Tf
+55 740 Td
+/F1 14 Tf
+(PAYMENT PROCESSING AGREEMENT) Tj
+0 -15 Td
+/F1 10 Tf
+() Tj
+0 -15 Td
+/F1 10 Tf
+(Parties:) Tj
+0 -15 Td
+/F1 10 Tf
+(Service Provider: Nets A/S, Lautrupbjerg 10, DK-2750 Ballerup, Denmark) Tj
+0 -15 Td
+/F1 10 Tf
+(Client: Helios Technologies AB, Kungsgatan 54, SE-111 35 Stockholm, Sweden) Tj
+0 -15 Td
+/F1 10 Tf
+(Agreement date: 1 January 2024) Tj
+0 -15 Td
+/F1 10 Tf
+(Term: 36 months \(through 31 December 2026\)) Tj
+0 -15 Td
+/F1 10 Tf
+(Governing law: Kingdom of Sweden) Tj
+0 -15 Td
+/F1 10 Tf
+() Tj
+0 -8 Td
+/F1 12 Tf
+(S.4 FEE SCHEDULE) Tj
+0 -15 Td
+/F1 10 Tf
+() Tj
+0 -15 Td
+/F1 11 Tf
+(S.4.1 Processing Fee \(volume-based, blended rate\)) Tj
+0 -15 Td
+/F1 10 Tf
+(The processing fee is calculated as a blended percentage applied to) Tj
+0 -15 Td
+/F1 10 Tf
+(the entire monthly processed volume once the applicable threshold is exceeded.) Tj
+0 -15 Td
+/F1 10 Tf
+(Tier 1: EUR 0 to EUR 50,000 per month -- 0.95% \(blended on full volume\)) Tj
+0 -15 Td
+/F1 10 Tf
+(Tier 2: EUR 50,001 to EUR 200,000 per month -- 0.85% \(blended on full volume\)) Tj
+0 -15 Td
+/F1 10 Tf
+(Tier 3: above EUR 200,000 per month -- 0.72% \(blended on full volume\)) Tj
+0 -15 Td
+/F1 10 Tf
+(The blended rate applies retroactively to the entire monthly volume,) Tj
+0 -15 Td
+/F1 10 Tf
+(not marginally to the portion above each threshold.) Tj
+0 -15 Td
+/F1 10 Tf
+() Tj
+0 -15 Td
+/F1 11 Tf
+(S.4.2 Monthly Minimum Fee) Tj
+0 -15 Td
+/F1 10 Tf
+(A monthly minimum fee of EUR 800 applies.) Tj
+0 -15 Td
+/F1 10 Tf
+(WAIVER: The monthly minimum fee is automatically waived in any calendar) Tj
+0 -15 Td
+/F1 10 Tf
+(month in which the Client's total processed volume exceeds EUR 100,000.) Tj
+0 -15 Td
+/F1 10 Tf
+(No action is required by the Client to invoke this waiver.) Tj
+0 -15 Td
+/F1 10 Tf
+() Tj
+0 -15 Td
+/F1 11 Tf
+(S.4.3 Chargeback Fee) Tj
+0 -15 Td
+/F1 10 Tf
+(EUR 15.00 flat fee per chargeback dispute initiated against a transaction.) Tj
+0 -15 Td
+/F1 10 Tf
+() Tj
+0 -15 Td
+/F1 11 Tf
+(S.4.4 Cross-Border Surcharge) Tj
+0 -15 Td
+/F1 10 Tf
+(0.30% surcharge on transactions processed on non-EEA-issued cards.) Tj
+0 -15 Td
+/F1 10 Tf
+() Tj
+0 -15 Td
+/F1 11 Tf
+(S.4.5 Settlement Terms) Tj
+0 -15 Td
+/F1 10 Tf
+(Settlement currency: EUR. Payment terms: Net 30 days from invoice date.) Tj
+0 -15 Td
+/F1 10 Tf
+(Late payment interest: 1.5% per month on outstanding balances.) Tj
+0 -15 Td
+/F1 10 Tf
+(Dispute window: 30 days from invoice receipt, referencing the specific clause.) Tj
+0 -15 Td
+/F1 10 Tf
+() Tj
+0 -8 Td
+/F1 12 Tf
+(S.5 BILLING AND INVOICING) Tj
+0 -15 Td
+/F1 10 Tf
+() Tj
+0 -15 Td
+/F1 10 Tf
+(S.5.1 Nets A/S will issue monthly invoices by the 10th of the following month.) Tj
+0 -15 Td
+/F1 10 Tf
+(S.5.2 Volume data is taken from Nets A/S transaction logs.) Tj
+0 -15 Td
+/F1 10 Tf
+(S.5.3 The applicable blended rate tier is determined by end-of-month volume.) Tj
+0 -15 Td
+/F1 10 Tf
+() Tj
+0 -15 Td
+/F1 10 Tf
+(--- END OF AGREEMENT ---) Tj
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000079 00000 n 
+0000000128 00000 n 
+0000000185 00000 n 
+0000000317 00000 n 
+trailer
+<< /Size 6 /Root 2 0 R >>
+startxref
+3271
+%%EOF
