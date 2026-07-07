@@ -41,7 +41,7 @@ function Nav() {
 /* ─────────────── HERO ─────────────── */
 function Hero() {
   return (
-    <section className="relative px-6 pt-20 pb-16 overflow-hidden">
+    <section className="relative px-6 pt-12 md:pt-20 pb-12 md:pb-16 overflow-hidden">
       <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 80% 60% at 50% -10%,#D4EAD9 0%,transparent 70%)' }} />
       <div className="max-w-4xl mx-auto text-center relative">
         <div className="inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-medium mb-8" style={{ color: '#27500A', background: '#EAF3DE', border: '1px solid #C0DD97' }}>
@@ -66,7 +66,7 @@ function Hero() {
           Billing platforms supported: <span style={{ color: '#1A3D2B', fontWeight: 500 }}>Stripe · Chargebee</span>
           <span style={{ color: '#9CA3AF' }}> · Maxio coming soon</span>
         </p>
-        <div className="grid grid-cols-3 gap-4 max-w-2xl mx-auto">
+        <div className="grid grid-cols-3 gap-3 max-w-2xl mx-auto">
           <div className="bg-white border border-forest/10 rounded-2xl p-5 text-center">
             <div className="font-mono font-medium text-2xl mb-1" style={{ color: '#27500A' }}>3–9%</div>
             <div className="text-stone text-xs leading-snug">Average ARR leakage in B2B SaaS</div>
@@ -110,7 +110,8 @@ function BillingVerificationSection() {
         </div>
 
         {/* Dashboard mockup */}
-        <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm mx-auto" style={{ fontSize: 12, maxWidth: 860 }}>
+        <div className="overflow-x-auto -mx-6 px-6 md:mx-0 md:px-0">
+        <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm mx-auto" style={{ fontSize: 12, maxWidth: 860, minWidth: 640 }}>
           <div className="flex items-center gap-2 px-4 py-2.5 border-b border-forest/8" style={{ background: '#F5F3EE' }}>
             <div className="tl-r" /><div className="tl-y" /><div className="tl-g" />
             <span className="font-mono text-xs text-stone ml-2">verdix — revenue leakage</span>
@@ -271,6 +272,7 @@ function BillingVerificationSection() {
               </div>
             </div>
           </div>
+        </div>
         </div>
       </div>
     </section>
@@ -574,7 +576,8 @@ function CalculationBreakdown() {
           <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Every number traced back to the contract clause that generated it</h2>
           <p className="text-stone leading-relaxed">Verdix doesn&apos;t just flag mismatches — it shows the exact arithmetic. Every invoice amount, TCV, and leakage figure is derived step by step from the signed contract.</p>
         </div>
-        <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm mx-auto" style={{ maxWidth: 900, fontSize: 12 }}>
+        <div className="overflow-x-auto -mx-6 px-6 md:mx-0 md:px-0">
+        <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm mx-auto" style={{ maxWidth: 900, minWidth: 700, fontSize: 12 }}>
           <div className="flex items-center gap-2 px-4 py-2.5 border-b border-forest/8" style={{ background: '#F5F3EE' }}>
             <div className="tl-r" /><div className="tl-y" /><div className="tl-g" />
             <span className="font-mono text-xs text-stone ml-2">verdix — billing calculation · Ardoq AS · CLR-2024-0031</span>
@@ -666,6 +669,7 @@ function CalculationBreakdown() {
               <div className="font-mono" style={{ fontSize: 16, fontWeight: 500, color: '#FFFFFF' }}>$16,650</div>
             </div>
           </div>
+        </div>
         </div>
       </div>
     </section>
@@ -892,7 +896,7 @@ function CTA() {
   return (
     <section className="px-6 py-24">
       <div className="max-w-3xl mx-auto">
-        <div className="rounded-3xl p-14 text-center" style={{ background: '#EAF3DE', border: '0.5px solid #C0DD97' }}>
+        <div className="rounded-3xl p-8 md:p-14 text-center" style={{ background: '#EAF3DE', border: '0.5px solid #C0DD97' }}>
           <h2 className="font-display font-light text-3xl mb-4" style={{ color: '#1A3D2B' }}>Find the revenue your billing<br />system is missing</h2>
           <p className="leading-relaxed mb-10" style={{ color: '#27500A' }}>Upload a signed contract and a billing export. We&apos;ll show you exactly where they diverge — and fix it. Or validate a partner invoice against your agreement before you pay.</p>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
