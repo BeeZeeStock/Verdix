@@ -105,11 +105,7 @@ async function extractFromChunk(text: string, learningContext: string): Promise<
     messages: [
       {
         role: 'user',
-        content: `Extract contract terms from this document:\n\n<contract>\n${text}\n</contract>\n\nReturn only valid JSON, no markdown, no explanation.`,
-      },
-      {
-        role: 'assistant',
-        content: '{',
+        content: `Extract contract terms from this document:\n\n<contract>\n${text}\n</contract>\n\nIMPORTANT: Your entire response must be a single valid JSON object. Do not include any explanation, reasoning, markdown, or text before or after the JSON.`,
       },
     ],
   })
@@ -117,12 +113,11 @@ async function extractFromChunk(text: string, learningContext: string): Promise<
   const content = response.content[0]
   if (content.type !== 'text') throw new Error('Unexpected response type from Claude')
 
+  // Extract the JSON object — handles cases where model emits reasoning before/after
+  const jsonMatch = content.text.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) throw new Error(`Failed to parse extraction response: ${content.text.slice(0, 200)}`)
+
   try {
-    // Model response continues from the pre-filled '{' — prepend it back
-    const raw = ('{' + content.text).trim()
-    // Strip any markdown fences or leading prose, then extract the JSON object
-    const jsonMatch = raw.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) throw new Error('No JSON object found in response')
     return JSON.parse(jsonMatch[0]) as ContractTerms
   } catch {
     throw new Error(`Failed to parse extraction response: ${content.text.slice(0, 200)}`)
