@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useSession } from 'next-auth/react'
+import { useState, useEffect } from 'react'
 import { VerdixLogo } from '@/components/VerdixLogo'
 
 const navSections = [
@@ -38,7 +39,13 @@ const navSections = [
   },
 ]
 
-export function Sidebar() {
+const settingsItems = [
+  { href: '/settings', icon: 'ti-settings', label: 'Settings', exact: true },
+  { href: '/settings/team', icon: 'ti-users', label: 'Team', exact: false },
+  { href: '/settings/learned-rules', icon: 'ti-brain', label: 'Learned rules', exact: false },
+]
+
+function NavContent({ onNav }: { onNav?: () => void }) {
   const pathname = usePathname()
   const { data: session } = useSession()
 
@@ -46,20 +53,25 @@ export function Sidebar() {
   const userEmail = session?.user?.email ?? ''
   const initials  = userName.slice(0, 1).toUpperCase()
 
-  const isActive = (href: string) => {
-    if (href === '/dashboard') return pathname === '/dashboard'
+  const isActive = (href: string, exact = false) => {
+    if (exact || href === '/dashboard') return pathname === href
     return pathname.startsWith(href)
   }
 
+  const linkCls = (active: boolean) => ({
+    background: active ? '#EAF3DE' : 'transparent',
+    color: active ? '#1A3D2B' : '#6B6660',
+    fontWeight: active ? 500 : 400,
+  } as React.CSSProperties)
+
   return (
-    <aside className="w-56 flex-shrink-0 border-r border-forest/10 h-screen sticky top-0 flex flex-col" style={{ background: '#FAFAF8' }}>
-      {/* Logo */}
-      <div className="flex items-center gap-3 px-4 py-4 border-b border-forest/10">
+    <div className="flex flex-col h-full" style={{ background: '#FAFAF8' }}>
+      {/* Logo — only shown in desktop sidebar */}
+      <div className="hidden md:flex items-center gap-3 px-4 py-4 border-b border-forest/10">
         <VerdixLogo size={26} />
         <span className="font-sans font-semibold text-[15px]" style={{ color: '#1A3D2B', letterSpacing: '0.02em' }}>Verdix</span>
       </div>
 
-      {/* Nav */}
       <nav className="flex-1 overflow-y-auto py-3">
         {navSections.map(section => (
           <div key={section.label} className="mb-1">
@@ -70,47 +82,36 @@ export function Sidebar() {
               <Link
                 key={item.href}
                 href={item.href}
-                className="flex items-center gap-2.5 mx-2 px-3 py-1.5 rounded-lg text-sm transition-colors"
-                style={{
-                  background: isActive(item.href) ? '#EAF3DE' : 'transparent',
-                  color: isActive(item.href) ? '#1A3D2B' : '#6B6660',
-                  fontWeight: isActive(item.href) ? 500 : 400,
-                }}
+                onClick={onNav}
+                className="flex items-center gap-2.5 mx-2 px-3 py-2 rounded-lg text-sm transition-colors"
+                style={linkCls(isActive(item.href))}
               >
-                <i className={`ti ${item.icon}`} style={{ fontSize: 14 }} />
+                <i className={`ti ${item.icon}`} style={{ fontSize: 16 }} />
                 {item.label}
               </Link>
             ))}
           </div>
         ))}
 
-        {/* Settings */}
         <div className="mb-1 mt-2">
           <div className="px-4 pt-3 pb-1 text-xs font-medium uppercase tracking-widest" style={{ color: '#9CA3AF', letterSpacing: '.07em' }}>Settings</div>
-          <Link href="/settings"
-            className="flex items-center gap-2.5 mx-2 px-3 py-1.5 rounded-lg text-sm transition-colors"
-            style={{ background: isActive('/settings') && !pathname.startsWith('/settings/') ? '#EAF3DE' : 'transparent', color: isActive('/settings') && !pathname.startsWith('/settings/') ? '#1A3D2B' : '#6B6660' }}
-          >
-            <i className="ti ti-settings" style={{ fontSize: 14 }} /> Settings
-          </Link>
-          <Link href="/settings/team"
-            className="flex items-center gap-2.5 mx-2 px-3 py-1.5 rounded-lg text-sm transition-colors"
-            style={{ background: pathname.startsWith('/settings/team') ? '#EAF3DE' : 'transparent', color: pathname.startsWith('/settings/team') ? '#1A3D2B' : '#6B6660', fontWeight: pathname.startsWith('/settings/team') ? 500 : 400 }}
-          >
-            <i className="ti ti-users" style={{ fontSize: 14 }} /> Team
-          </Link>
-          <Link href="/settings/learned-rules"
-            className="flex items-center gap-2.5 mx-2 px-3 py-1.5 rounded-lg text-sm transition-colors"
-            style={{ background: pathname.startsWith('/settings/learned-rules') ? '#EAF3DE' : 'transparent', color: pathname.startsWith('/settings/learned-rules') ? '#1A3D2B' : '#6B6660', fontWeight: pathname.startsWith('/settings/learned-rules') ? 500 : 400 }}
-          >
-            <i className="ti ti-brain" style={{ fontSize: 14 }} /> Learned rules
-          </Link>
+          {settingsItems.map(item => (
+            <Link
+              key={item.href}
+              href={item.href}
+              onClick={onNav}
+              className="flex items-center gap-2.5 mx-2 px-3 py-2 rounded-lg text-sm transition-colors"
+              style={linkCls(isActive(item.href, item.exact))}
+            >
+              <i className={`ti ${item.icon}`} style={{ fontSize: 16 }} />
+              {item.label}
+            </Link>
+          ))}
         </div>
       </nav>
 
-      {/* User */}
       <div className="border-t border-forest/10 px-4 py-3 flex items-center gap-3">
-        <div className="w-7 h-7 rounded-full bg-forest flex items-center justify-center flex-shrink-0 text-white text-xs font-semibold flex-shrink-0">
+        <div className="w-7 h-7 rounded-full bg-forest flex items-center justify-center flex-shrink-0 text-white text-xs font-semibold">
           {initials}
         </div>
         <div className="flex-1 min-w-0">
@@ -121,6 +122,69 @@ export function Sidebar() {
           <i className="ti ti-logout" style={{ fontSize: 14 }} />
         </a>
       </div>
-    </aside>
+    </div>
+  )
+}
+
+export function Sidebar() {
+  const [open, setOpen] = useState(false)
+  const pathname = usePathname()
+  const { data: session } = useSession()
+  const userName = session?.user?.name ?? session?.user?.email?.split('@')[0] ?? 'Account'
+  const initials = userName.slice(0, 1).toUpperCase()
+
+  useEffect(() => { setOpen(false) }, [pathname])
+
+  return (
+    <>
+      {/* ── Desktop sidebar ─────────────────────────────────────── */}
+      <aside className="hidden md:flex w-56 flex-shrink-0 border-r border-forest/10 h-screen sticky top-0 flex-col" style={{ background: '#FAFAF8' }}>
+        <NavContent />
+      </aside>
+
+      {/* ── Mobile: top bar ─────────────────────────────────────── */}
+      <header className="md:hidden flex items-center justify-between px-4 py-3 border-b border-forest/10 sticky top-0 z-30" style={{ background: '#FAFAF8' }}>
+        <div className="flex items-center gap-2.5">
+          <VerdixLogo size={22} />
+          <span className="font-sans font-semibold text-[14px]" style={{ color: '#1A3D2B' }}>Verdix</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="w-7 h-7 rounded-full bg-forest flex items-center justify-center text-white text-xs font-semibold">
+            {initials}
+          </div>
+          <button onClick={() => setOpen(true)} className="p-1.5 rounded-lg hover:bg-forest/5 transition-colors" aria-label="Open menu">
+            <i className="ti ti-menu-2" style={{ fontSize: 20, color: '#1A3D2B' }} />
+          </button>
+        </div>
+      </header>
+
+      {/* ── Mobile: drawer backdrop ──────────────────────────────── */}
+      {open && (
+        <div
+          className="fixed inset-0 bg-black/40 z-40 md:hidden"
+          onClick={() => setOpen(false)}
+        />
+      )}
+
+      {/* ── Mobile: slide-out drawer ─────────────────────────────── */}
+      <div
+        className={`fixed top-0 left-0 h-full w-72 z-50 md:hidden shadow-xl transition-transform duration-300 ease-in-out ${open ? 'translate-x-0' : '-translate-x-full'}`}
+        style={{ background: '#FAFAF8' }}
+      >
+        {/* Drawer header */}
+        <div className="flex items-center justify-between px-4 py-4 border-b border-forest/10">
+          <div className="flex items-center gap-2.5">
+            <VerdixLogo size={24} />
+            <span className="font-sans font-semibold text-[15px]" style={{ color: '#1A3D2B' }}>Verdix</span>
+          </div>
+          <button onClick={() => setOpen(false)} className="p-1.5 rounded-lg hover:bg-forest/5" aria-label="Close menu">
+            <i className="ti ti-x" style={{ fontSize: 18, color: '#6B6660' }} />
+          </button>
+        </div>
+        <div className="h-[calc(100%-57px)] overflow-y-auto">
+          <NavContent onNav={() => setOpen(false)} />
+        </div>
+      </div>
+    </>
   )
 }

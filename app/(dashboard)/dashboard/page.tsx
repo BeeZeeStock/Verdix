@@ -160,14 +160,14 @@ export default async function DashboardPage() {
   ]
 
   return (
-    <div className="p-8">
-      <div className="mb-8">
+    <div className="p-4 md:p-8">
+      <div className="mb-6 md:mb-8">
         <h1 className="font-display font-light text-ink text-2xl mb-1">Dashboard</h1>
         <p className="text-stone text-sm">Your revenue intelligence overview</p>
       </div>
 
       {/* Row 1 — Billing audits */}
-      <div className="grid grid-cols-3 gap-4 mb-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-3">
         {auditMetrics.map(m => (
           <Link key={m.label} href={m.href} className="bg-parchment border border-forest/10 rounded-2xl p-5 hover:border-forest/25 transition-colors">
             <div className="flex items-center justify-between mb-3">
@@ -180,7 +180,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* Row 2 — New contracts (4 cols) */}
-      <div className="grid grid-cols-4 gap-4 mb-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-3">
         {contractMetrics.map(m => (
           <Link key={m.label} href={m.href} className="bg-white border border-forest/10 rounded-2xl p-5 hover:border-forest/25 transition-colors">
             <div className="flex items-center justify-between mb-3">
@@ -193,7 +193,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* Row 3 — Partner reconciliation */}
-      <div className="grid grid-cols-3 gap-4 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
         {partnerMetrics.map(m => (
           <Link key={m.label} href={m.href} className="bg-white border border-forest/10 rounded-2xl p-5 hover:border-forest/25 transition-colors">
             <div className="flex items-center justify-between mb-3">
@@ -211,7 +211,7 @@ export default async function DashboardPage() {
           <i className="ti ti-brain text-forest" style={{ fontSize: 16 }} />
           <span className="font-medium text-ink text-sm">Extraction accuracy</span>
         </div>
-        <div className="grid grid-cols-4 gap-6">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
           <div>
             <div className="text-[10px] text-stone uppercase tracking-widest mb-2">Corrections made</div>
             <div className="text-2xl font-medium text-ink">{correctionCount}</div>
@@ -240,7 +240,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* Three-column panels */}
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
 
         {/* Recent billing checks */}
         <div className="bg-white border border-forest/10 rounded-2xl p-6">
