@@ -69,12 +69,23 @@ export default async function PartnerListPage() {
           <tbody>
             {jobs.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-6 py-16 text-center">
-                  <i className="ti ti-receipt text-stone/25 block mb-3" style={{ fontSize: 36 }} />
-                  <p className="text-sm text-stone mb-4">No partner reconciliations yet.</p>
-                  <Link href="/partner/new" className="inline-flex items-center gap-2 bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors">
-                    Start first reconciliation →
-                  </Link>
+                <td colSpan={6} className="px-6 py-12 text-center">
+                  <div className="max-w-sm mx-auto">
+                    <div className="w-12 h-12 rounded-2xl bg-purple-50 flex items-center justify-center mx-auto mb-4">
+                      <i className="ti ti-receipt" style={{ fontSize: 22, color: '#7C3AED' }} />
+                    </div>
+                    <p className="text-sm font-semibold text-ink mb-1.5">No partner checks yet</p>
+                    <p className="text-sm text-stone leading-relaxed mb-5">
+                      Upload a partner or supplier invoice alongside your signed agreement. Verdix
+                      identifies overcharges and discrepancies before you approve payment.
+                    </p>
+                    <Link
+                      href="/partner/new"
+                      className="inline-flex items-center gap-2 bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors"
+                    >
+                      <i className="ti ti-receipt" style={{ fontSize: 14 }} /> Run your first check
+                    </Link>
+                  </div>
                 </td>
               </tr>
             ) : jobs.map(job => {

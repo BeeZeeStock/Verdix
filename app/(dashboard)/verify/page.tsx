@@ -67,12 +67,23 @@ export default async function VerifyListPage() {
           <tbody>
             {jobs.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-6 py-16 text-center">
-                  <i className="ti ti-file-check text-stone/25 block mb-3" style={{ fontSize: 36 }} />
-                  <p className="text-sm text-stone mb-4">No billing checks yet.</p>
-                  <Link href="/verify/new" className="inline-flex items-center gap-2 bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors">
-                    Start your first audit →
-                  </Link>
+                <td colSpan={6} className="px-6 py-12 text-center">
+                  <div className="max-w-sm mx-auto">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-50 flex items-center justify-center mx-auto mb-4">
+                      <i className="ti ti-file-check" style={{ fontSize: 22, color: '#D97706' }} />
+                    </div>
+                    <p className="text-sm font-semibold text-ink mb-1.5">No billing checks yet</p>
+                    <p className="text-sm text-stone leading-relaxed mb-5">
+                      Upload a customer invoice and the matching contract. Verdix compares them line by
+                      line and flags any billing discrepancies so you can recover the difference.
+                    </p>
+                    <Link
+                      href="/verify/new"
+                      className="inline-flex items-center gap-2 bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors"
+                    >
+                      <i className="ti ti-search" style={{ fontSize: 14 }} /> Start your first audit
+                    </Link>
+                  </div>
                 </td>
               </tr>
             ) : jobs.map(job => {

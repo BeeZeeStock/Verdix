@@ -80,12 +80,23 @@ export default async function ConfigureListPage() {
           <tbody>
             {jobs.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-6 py-16 text-center">
-                  <i className="ti ti-bolt text-stone/25 block mb-3" style={{ fontSize: 36 }} />
-                  <p className="text-sm text-stone mb-4">No contracts executed yet.</p>
-                  <Link href="/configure/new" className="inline-flex items-center gap-2 bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors">
-                    Upload a contract →
-                  </Link>
+                <td colSpan={5} className="px-6 py-12 text-center">
+                  <div className="max-w-sm mx-auto">
+                    <div className="w-12 h-12 rounded-2xl bg-blue-50 flex items-center justify-center mx-auto mb-4">
+                      <i className="ti ti-bolt" style={{ fontSize: 22, color: '#2563EB' }} />
+                    </div>
+                    <p className="text-sm font-semibold text-ink mb-1.5">No contracts yet</p>
+                    <p className="text-sm text-stone leading-relaxed mb-5">
+                      Upload a customer contract as a PDF. Verdix extracts the billing terms automatically
+                      — fees, overages, escalators, and payment schedule — ready for your billing system.
+                    </p>
+                    <Link
+                      href="/configure/new"
+                      className="inline-flex items-center gap-2 bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors"
+                    >
+                      <i className="ti ti-upload" style={{ fontSize: 14 }} /> Upload your first contract
+                    </Link>
+                  </div>
                 </td>
               </tr>
             ) : jobs.map(job => {

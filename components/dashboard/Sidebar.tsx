@@ -40,6 +40,7 @@ const navSections = [
 ]
 
 const settingsItems = [
+  { href: '/setup', icon: 'ti-rocket', label: 'Setup guide', exact: true },
   { href: '/settings', icon: 'ti-settings', label: 'Settings', exact: true },
   { href: '/settings/team', icon: 'ti-users', label: 'Team', exact: false },
   { href: '/settings/learned-rules', icon: 'ti-brain', label: 'Learned rules', exact: false },
@@ -94,7 +95,7 @@ function NavContent({ onNav }: { onNav?: () => void }) {
         ))}
 
         <div className="mb-1 mt-2">
-          <div className="px-4 pt-3 pb-1 text-xs font-medium uppercase tracking-widest" style={{ color: '#9CA3AF', letterSpacing: '.07em' }}>Settings</div>
+          <div className="px-4 pt-3 pb-1 text-xs font-medium uppercase tracking-widest" style={{ color: '#9CA3AF', letterSpacing: '.07em' }}>Account</div>
           {settingsItems.map(item => (
             <Link
               key={item.href}
