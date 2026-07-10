@@ -673,25 +673,49 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
           {(() => {
             const chevColors = ['#73C99B', '#3BAD6E', '#27AE60', '#1F8A4A', '#1F7A4A', '#0F5A35']
             const nc = numBuckets
-            const segW = tlW / nc   // each segment owns its full slice — no overlap
+            const segW = tlW / nc
             const midY = chevY + chevH / 2
+            const R = 7  // corner radius
+
+            // Convert polygon vertices to a smooth rounded-corner SVG path.
+            // At each vertex, pull back r px along each edge and draw a quadratic bezier.
+            function roundedPath(pts: [number, number][]): string {
+              const n = pts.length
+              let d = ''
+              for (let i = 0; i < n; i++) {
+                const prev = pts[(i - 1 + n) % n]
+                const curr = pts[i]
+                const next = pts[(i + 1) % n]
+                const v1x = prev[0] - curr[0], v1y = prev[1] - curr[1]
+                const v2x = next[0] - curr[0], v2y = next[1] - curr[1]
+                const d1  = Math.sqrt(v1x * v1x + v1y * v1y)
+                const d2  = Math.sqrt(v2x * v2x + v2y * v2y)
+                const rc  = Math.min(R, d1 / 2, d2 / 2)
+                const p1x = curr[0] + (v1x / d1) * rc
+                const p1y = curr[1] + (v1y / d1) * rc
+                const p2x = curr[0] + (v2x / d2) * rc
+                const p2y = curr[1] + (v2y / d2) * rc
+                d += i === 0 ? `M ${p1x},${p1y} ` : `L ${p1x},${p1y} `
+                d += `Q ${curr[0]},${curr[1]} ${p2x},${p2y} `
+              }
+              return d + 'Z'
+            }
+
             return annualBuckets.map((b, yi) => {
               const x0  = tlx1 + yi * segW
               const x1  = x0 + segW
               const col = chevColors[Math.min(yi, chevColors.length - 1)]
-              let pts: string
+              let polyPts: [number, number][]
               if (nc === 1)
-                pts = `${x0},${chevY} ${x1},${chevY} ${x1},${chevY+chevH} ${x0},${chevY+chevH}`
+                polyPts = [[x0,chevY],[x1,chevY],[x1,chevY+chevH],[x0,chevY+chevH]]
               else if (yi === 0)
-                // first: flat left, arrow tip on right
-                pts = `${x0},${chevY} ${x1-notch},${chevY} ${x1},${midY} ${x1-notch},${chevY+chevH} ${x0},${chevY+chevH}`
+                polyPts = [[x0,chevY],[x1-notch,chevY],[x1,midY],[x1-notch,chevY+chevH],[x0,chevY+chevH]]
               else
-                // middle + last: concave notch left + arrow tip right
-                pts = `${x0},${chevY} ${x1-notch},${chevY} ${x1},${midY} ${x1-notch},${chevY+chevH} ${x0},${chevY+chevH} ${x0+notch},${midY}`
+                polyPts = [[x0,chevY],[x1-notch,chevY],[x1,midY],[x1-notch,chevY+chevH],[x0,chevY+chevH],[x0+notch,midY]]
               const cx = x0 + segW / 2 + (yi === 0 ? -notch / 4 : notch / 4)
               return (
                 <g key={yi}>
-                  <polygon points={pts} fill={col} />
+                  <path d={roundedPath(polyPts)} fill={col} />
                   <text x={cx} y={midY - 7} textAnchor="middle" fontSize={13} fontWeight={700} fill="white" letterSpacing="0.04em">
                     {b.label.toUpperCase()}
                   </text>
