@@ -219,6 +219,12 @@ export function RevenueScheduleTable({
     })
   )
 
+  // ── Cumulative recurring totals per year (for derivation remarks) ─────────
+  const cumByYear = annualBuckets.reduce<number[]>((acc, b) => {
+    acc.push((acc[acc.length - 1] ?? 0) + b.total)
+    return acc
+  }, [])
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="overflow-x-auto">
@@ -265,12 +271,17 @@ export function RevenueScheduleTable({
                     {fmt(b.total, cur)}
                   </td>
                   <td className="py-3 text-[10px]" style={{ color: '#4A7C59' }}>
-                    {b.creditNetted < 0 ? `Net of ${fmt(b.creditNetted, cur)} credit · ` : ''}
-                    {segs.length > 1
-                      ? `${segs.length} pricing segments`
-                      : isYearPricing
-                      ? `Year ${yi + 1} price from contract pricing schedule`
-                      : 'Single pricing period'}
+                    {(() => {
+                      const creditNote = b.creditNetted < 0 ? `Net of ${fmt(b.creditNetted, cur)} credit · ` : ''
+                      if (segs.length > 1) return `${creditNote}${segs.length} pricing segments`
+                      if (isYearPricing) {
+                        if (yi === 0)
+                          return `${creditNote}Year 1 subscription — base year · cumulative contract value: ${fmt(cumByYear[0], cur)}`
+                        const prev = cumByYear[yi - 1]
+                        return `${creditNote}Prior years (${fmt(prev, cur)}) + Year ${yi + 1} (${fmt(b.total, cur)}) = ${fmt(cumByYear[yi], cur)} cumulative`
+                      }
+                      return `${creditNote}Single pricing period`
+                    })()}
                   </td>
                 </tr>
 
@@ -285,21 +296,34 @@ export function RevenueScheduleTable({
                   const grossTotal   = p.gross * p.months                      // always in same unit
                   const discountAmt  = p.subtotal - grossTotal                 // negative when discounted
 
+                  // ── Situation-specific arithmetic remark ──────────────────
                   let baseRemark: string
-                  if (isRampBilling && p.inDiscount)
-                    baseRemark = `Ramp rate (gross) · ${p.discountPct}% discount applied below`
-                  else if (isRampBilling)
-                    baseRemark = `Ramp rate`
-                  else if (p.inDiscount && p.escalated)
-                    baseRemark = `Gross rate before ${p.discountPct}% discount + escalator (×${p.escalationMult.toFixed(3)})`
-                  else if (p.inDiscount)
-                    baseRemark = `Gross rate before ${p.discountPct}% discount`
-                  else if (p.escalated)
-                    baseRemark = `Price escalator applied · ×${p.escalationMult.toFixed(3)} cumulative`
-                  else if (isYearPricing)
-                    baseRemark = `Year ${yi + 1} annual price · directly from contract's pricing schedule`
-                  else
-                    baseRemark = 'Base subscription rate'
+                  if (isYearPricing && !p.inDiscount && !p.escalated) {
+                    // Show year-over-year derivation with actual numbers
+                    if (yi === 0) {
+                      baseRemark = `Year 1 contract price: ${fmt(displayRate, cur)}/yr — base year, set in pricing schedule`
+                    } else {
+                      const prevAnnual = annualBuckets[yi - 1].total
+                      const delta      = displayRate - prevAnnual
+                      const deltaPct   = ((delta / prevAnnual) * 100).toFixed(0)
+                      baseRemark = `Year ${yi + 1} contract price: ${fmt(displayRate, cur)}/yr — ${delta > 0 ? 'up' : 'down'} ${fmt(Math.abs(delta), cur)} (${delta > 0 ? '+' : ''}${deltaPct}%) from Year ${yi} (${fmt(prevAnnual, cur)})`
+                    }
+                  } else if (isYearPricing && p.inDiscount) {
+                    // Gross annual price before discount is shown; discount row follows
+                    baseRemark = `Gross Year ${yi + 1} contract price before ${p.discountPct}% discount is applied`
+                  } else if (p.inDiscount && p.escalated) {
+                    const baseMonthlyGross = p.gross / p.escalationMult
+                    baseRemark = `Gross rate: base ${fmt(baseMonthlyGross, cur)}/mo × escalator ×${p.escalationMult.toFixed(3)} = ${fmt(p.gross, cur)}/mo (before ${p.discountPct}% discount)`
+                  } else if (p.inDiscount) {
+                    baseRemark = `Gross base rate — ${p.discountPct}% discount applied below`
+                  } else if (p.escalated) {
+                    const baseMonthlyGross = baseMonthly
+                    baseRemark = `Base ${fmt(baseMonthlyGross, cur)}/mo × escalator ×${p.escalationMult.toFixed(3)} = ${fmt(p.rate, cur)}/mo (cumulative increase Year ${yi + 1})`
+                  } else if (isRampBilling) {
+                    baseRemark = `Ramp ${pi + 1} rate set in contract schedule`
+                  } else {
+                    baseRemark = 'Base subscription rate from contract'
+                  }
 
                   return (
                     <Fragment key={`y${yi}s${pi}`}>
@@ -342,7 +366,7 @@ export function RevenueScheduleTable({
                             -{fmt(Math.abs(discountAmt), cur)}
                           </td>
                           <td className="py-2 text-[11px]" style={{ color: '#B45309' }}>
-                            Net rate: {fmt(displayRate, cur)}/{isYearPricing ? 'yr' : 'mo'} · saving {fmt(Math.abs(discountAmt), cur)} over period
+                            {fmt(p.inDiscount ? grossRate : displayRate, cur)} × {p.discountPct}% = {fmt(Math.abs(isYearPricing ? grossRate - displayRate : p.gross - p.rate), cur)} saving → net {fmt(displayRate, cur)}/{isYearPricing ? 'yr' : 'mo'}
                           </td>
                         </tr>
                       )}
@@ -401,7 +425,9 @@ export function RevenueScheduleTable({
                     <td className="py-2.5 pr-5 text-right text-[11px] font-medium tabular-nums" style={{ color: '#3A3A38' }}>
                       {fmt(ot.amount, cur)}
                     </td>
-                    <td className="py-2.5 text-[11px]" style={{ color: '#9CA3AF' }}>One-time fee</td>
+                    <td className="py-2.5 text-[11px]" style={{ color: '#9CA3AF' }}>
+                      One-time fee · not recurring · adds {fmt(ot.amount, cur)} to TCV
+                    </td>
                   </tr>
                 )
               })}
@@ -417,7 +443,12 @@ export function RevenueScheduleTable({
               {fmt(totalTcv, cur)}
             </td>
             <td className="py-4 text-[11px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
-              Total net contract value · all discounts and credits applied
+              {(() => {
+                const recurringTotal = months.reduce((s, m) => s + m.sub, 0) + creditTotal
+                if (oneTimeFees > 0)
+                  return `Recurring subscription (${fmt(recurringTotal, cur)}) + one-time fees (${fmt(oneTimeFees, cur)}) = ${fmt(totalTcv, cur)}`
+                return 'Total net contract value · all discounts and credits applied'
+              })()}
             </td>
           </tr>
         </tbody>
