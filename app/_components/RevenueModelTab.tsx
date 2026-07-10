@@ -188,8 +188,15 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
 
   if (!start || !end) {
     return (
-      <div className="flex-1 flex items-center justify-center text-stone text-sm">
-        Contract start and end dates are required for revenue modeling.
+      <div className="flex-1 flex items-center justify-center">
+        <div className="text-center max-w-xs">
+          <i className="ti ti-calendar-off block mb-3" style={{ fontSize: 32, color: '#D97706' }} />
+          <p className="text-sm font-medium text-ink mb-1">Contract dates required</p>
+          <p className="text-xs text-stone leading-relaxed">
+            {!start && !end ? 'Start and end dates are' : !start ? 'A start date is' : 'An end date is'} missing.
+            Go to the <strong>Contract terms</strong> tab and click the date to add it — TCV and this model will calculate automatically.
+          </p>
+        </div>
       </div>
     )
   }

@@ -161,6 +161,77 @@ function Stat({ label, value, sub }: { label: string; value?: string | null; sub
   )
 }
 
+function EditableStat({ label, value, sub, inputType = 'text', placeholder, onSave }: {
+  label: string
+  value?: string | null
+  sub?: string
+  inputType?: 'text' | 'date' | 'number'
+  placeholder?: string
+  onSave: (v: string) => Promise<void>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const startEdit = () => { setDraft(value ?? ''); setEditing(true) }
+  const cancel    = () => setEditing(false)
+  const save      = async () => {
+    if (!draft.trim()) return
+    setSaving(true)
+    try { await onSave(draft.trim()); setEditing(false) } finally { setSaving(false) }
+  }
+
+  if (editing) return (
+    <div>
+      <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">{label}</p>
+      <div className="flex items-center gap-1.5">
+        <input
+          autoFocus
+          type={inputType}
+          value={draft}
+          placeholder={placeholder}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') cancel() }}
+          className="flex-1 text-sm font-medium text-ink border border-forest/30 rounded-lg px-2.5 py-1.5 outline-none focus:border-forest min-w-0"
+        />
+        <button onClick={cancel} className="text-stone/50 hover:text-ink p-1 transition-colors flex-shrink-0" title="Cancel">
+          <i className="ti ti-x" style={{ fontSize: 13 }} />
+        </button>
+        <button
+          onClick={save}
+          disabled={saving || !draft.trim()}
+          className="flex items-center justify-center w-7 h-7 rounded-lg text-white flex-shrink-0 transition-colors disabled:opacity-50"
+          style={{ background: '#1A3D2B' }}
+          title="Save"
+        >
+          {saving
+            ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 12 }} />
+            : <i className="ti ti-check" style={{ fontSize: 12 }} />}
+        </button>
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="group">
+      <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">{label}</p>
+      <div className="flex items-start gap-1">
+        <div className="flex-1 min-w-0">
+          <p className="text-[15px] font-medium text-ink leading-snug">{value ?? <span className="text-stone/40">—</span>}</p>
+          {sub && <p className="text-[11px] text-stone mt-0.5">{sub}</p>}
+        </div>
+        <button
+          onClick={startEdit}
+          title={`Edit ${label.toLowerCase()}`}
+          className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 p-1 rounded hover:bg-forest/5 mt-0.5"
+        >
+          <i className="ti ti-pencil-minus" style={{ fontSize: 11, color: '#9CA3AF' }} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function BigValue({ label, value, unit, warn, note, children }: {
   label: string; value: string; unit?: string; warn?: boolean; note?: string; children?: React.ReactNode
 }) {
@@ -1095,6 +1166,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [escEditing,   setEscEditing]   = useState<number | null>(null)
   const [escEditValue, setEscEditValue] = useState('')
   const [escSaving,    setEscSaving]    = useState(false)
+  const [dateDraftStart, setDateDraftStart] = useState('')
+  const [dateDraftEnd,   setDateDraftEnd]   = useState('')
+  const [dateEditing,    setDateEditing]    = useState<'start' | 'end' | null>(null)
+  const [dateSaving,     setDateSaving]     = useState(false)
 
   const terms: Terms | undefined = job?.contract_terms?.[0]
   const cur = terms?.currency ?? job?.currency ?? 'EUR'
@@ -1137,6 +1212,42 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       await fetchJob()
     } finally {
       setEscSaving(false)
+    }
+  }
+
+  const saveField = async (field: string, raw: string) => {
+    const numFields = ['contract_term_months', 'payment_terms_days', 'base_monthly_fee', 'base_annual_fee']
+    const body: Record<string, unknown> = {}
+    if (numFields.includes(field)) {
+      const n = parseFloat(raw.replace(/[^0-9.]/g, ''))
+      if (isNaN(n)) return
+      body[field] = n
+    } else {
+      body[field] = raw
+    }
+    await fetch(`/api/jobs/${id}/terms`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    await fetchJob()
+  }
+
+  const saveDateField = async (field: 'start' | 'end') => {
+    const value = field === 'start' ? dateDraftStart : dateDraftEnd
+    if (!value) return
+    setDateSaving(true)
+    try {
+      const key = field === 'start' ? 'contract_start_date' : 'contract_end_date'
+      await fetch(`/api/jobs/${id}/terms`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: value }),
+      })
+      setDateEditing(null)
+      await fetchJob()
+    } finally {
+      setDateSaving(false)
     }
   }
 
@@ -1352,16 +1463,101 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             <div className="bg-white rounded-2xl border border-forest/10 p-6">
               <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-5">Contract overview</h2>
               <div className="grid grid-cols-3 gap-x-8 gap-y-6">
-                <Stat label="Customer" value={terms?.customer_name} sub={terms?.customer_address ?? undefined} />
-                <Stat
-                  label="Contract term"
-                  value={terms?.contract_term_months ? `${terms.contract_term_months} months` : '—'}
-                  sub={terms?.contract_start_date
-                    ? `${fmtDate(terms.contract_start_date)} – ${fmtDate(terms.contract_end_date)}`
-                    : undefined}
+                <EditableStat
+                  label="Customer"
+                  value={terms?.customer_name}
+                  sub={terms?.customer_address ?? undefined}
+                  onSave={v => saveField('customer_name', v)}
                 />
-                <Stat label="Payment terms" value={terms?.payment_terms_text ?? (terms?.payment_terms_days ? `Net ${terms.payment_terms_days} days` : null)} />
-                <Stat label="Billing contact" value={terms?.billing_contact ?? terms?.customer_name ?? null} />
+
+                {/* Contract term — special: start and end date each independently editable */}
+                <div className="group">
+                  <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Contract term</p>
+                  <p className="text-[15px] font-medium text-ink leading-snug">
+                    {terms?.contract_term_months ? `${terms.contract_term_months} months` : '—'}
+                  </p>
+                  {/* Date range row */}
+                  <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                    {/* Start date */}
+                    {dateEditing === 'start' ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          autoFocus
+                          type="date"
+                          value={dateDraftStart}
+                          onChange={e => setDateDraftStart(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') saveDateField('start'); if (e.key === 'Escape') setDateEditing(null) }}
+                          className="text-[11px] border border-forest/30 rounded px-1.5 py-0.5 outline-none focus:border-forest"
+                        />
+                        <button onClick={() => setDateEditing(null)} className="text-stone/50 hover:text-ink transition-colors" title="Cancel">
+                          <i className="ti ti-x" style={{ fontSize: 11 }} />
+                        </button>
+                        <button
+                          onClick={() => saveDateField('start')}
+                          disabled={dateSaving || !dateDraftStart}
+                          className="flex items-center justify-center w-5 h-5 rounded text-white disabled:opacity-50"
+                          style={{ background: '#1A3D2B', fontSize: 10 }}
+                          title="Save"
+                        >
+                          {dateSaving ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 10 }} /> : <i className="ti ti-check" style={{ fontSize: 10 }} />}
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => { setDateDraftStart(terms?.contract_start_date ?? ''); setDateEditing('start') }}
+                        className="text-[11px] text-stone hover:text-forest hover:underline transition-colors"
+                        title="Edit start date"
+                      >
+                        {fmtDate(terms?.contract_start_date)}
+                      </button>
+                    )}
+                    <span className="text-[11px] text-stone/40">–</span>
+                    {/* End date */}
+                    {dateEditing === 'end' ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          autoFocus
+                          type="date"
+                          value={dateDraftEnd}
+                          onChange={e => setDateDraftEnd(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') saveDateField('end'); if (e.key === 'Escape') setDateEditing(null) }}
+                          className="text-[11px] border border-forest/30 rounded px-1.5 py-0.5 outline-none focus:border-forest"
+                        />
+                        <button onClick={() => setDateEditing(null)} className="text-stone/50 hover:text-ink transition-colors" title="Cancel">
+                          <i className="ti ti-x" style={{ fontSize: 11 }} />
+                        </button>
+                        <button
+                          onClick={() => saveDateField('end')}
+                          disabled={dateSaving || !dateDraftEnd}
+                          className="flex items-center justify-center w-5 h-5 rounded text-white disabled:opacity-50"
+                          style={{ background: '#1A3D2B', fontSize: 10 }}
+                          title="Save"
+                        >
+                          {dateSaving ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 10 }} /> : <i className="ti ti-check" style={{ fontSize: 10 }} />}
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => { setDateDraftEnd(terms?.contract_end_date ?? ''); setDateEditing('end') }}
+                        className={`text-[11px] hover:underline transition-colors ${terms?.contract_end_date ? 'text-stone hover:text-forest' : 'text-amber-600 hover:text-amber-700 font-medium'}`}
+                        title="Edit end date"
+                      >
+                        {terms?.contract_end_date ? fmtDate(terms.contract_end_date) : 'Add end date'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <EditableStat
+                  label="Payment terms"
+                  value={terms?.payment_terms_text ?? (terms?.payment_terms_days ? `Net ${terms.payment_terms_days} days` : null)}
+                  onSave={v => saveField('payment_terms_text', v)}
+                />
+                <EditableStat
+                  label="Billing contact"
+                  value={terms?.billing_contact ?? terms?.customer_name ?? null}
+                  onSave={v => saveField('billing_contact', v)}
+                />
                 <Stat
                   label="Currency"
                   value={cur}
@@ -1724,13 +1920,35 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
+            {/* Warning banner when dates missing */}
+            {(!terms?.contract_start_date || !terms?.contract_end_date) && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 flex items-start gap-3">
+                <i className="ti ti-alert-triangle flex-shrink-0 mt-0.5" style={{ fontSize: 16, color: '#D97706' }} />
+                <div>
+                  <p className="text-sm font-medium text-amber-900 mb-0.5">
+                    {!terms?.contract_start_date && !terms?.contract_end_date
+                      ? 'Contract start and end dates are missing'
+                      : !terms?.contract_start_date
+                      ? 'Contract start date is missing'
+                      : 'Contract end date is missing'}
+                  </p>
+                  <p className="text-xs text-amber-800">
+                    TCV cannot be calculated without both dates. Click the date fields above in the Contract overview to add them.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* TCV + Approve / Configured */}
             <div className="bg-forest text-white rounded-2xl px-6 py-5 flex items-center justify-between">
               <div>
                 <p className="text-[10px] font-semibold text-mint/60 uppercase tracking-[0.14em] mb-1">Total contract value</p>
                 <p className="text-[32px] font-medium leading-none font-mono" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {fmt(tcv, cur)}
+                  {tcv > 0 ? fmt(tcv, cur) : <span style={{ opacity: 0.45 }}>€0</span>}
                 </p>
+                {tcv === 0 && (terms?.contract_start_date || terms?.contract_end_date) && (
+                  <p className="text-[10px] text-mint/50 mt-1">Add missing dates above to calculate</p>
+                )}
               </div>
               {isConfigured ? (
                 <div className="text-right">

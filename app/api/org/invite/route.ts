@@ -30,9 +30,9 @@ export async function POST(req: NextRequest) {
 
   // Send invite email
   const resend = new Resend(process.env.RESEND_API_KEY)
-  const appUrl = process.env.NEXTAUTH_URL ?? 'https://verdix.io'
+  const appUrl = process.env.NEXTAUTH_URL ?? 'https://lynoraai.com'
 
-  resend.emails.send({
+  const { error: emailError } = await resend.emails.send({
     from: 'Verdix <noreply@lynoraai.com>',
     to: email,
     subject: `You've been invited to ${org.orgName} on Verdix`,
@@ -59,7 +59,12 @@ export async function POST(req: NextRequest) {
         </div>
       </div>
     `,
-  }).catch(err => console.error('[invite] email failed', err))
+  })
+
+  if (emailError) {
+    console.error('[invite] email failed:', emailError)
+    return NextResponse.json({ error: `Membership created but invite email failed: ${emailError.message}` }, { status: 500 })
+  }
 
   return NextResponse.json({ ok: true, email, role })
 }
