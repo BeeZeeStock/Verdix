@@ -129,8 +129,10 @@ export function RevenueScheduleTable({
     loopIdx++
   }
 
-  const n          = months.length
-  const numBuckets = Math.ceil(n / 12)
+  const n             = months.length
+  const numBuckets    = Math.ceil(n / 12)
+  const isYearPricing = !!yearPricing   // billing model: fixed annual prices per year
+  const isRampBilling = !!rampSchedule  // billing model: step-ramp monthly fees
 
   // ── One-time / credit split ───────────────────────────────────────────────
   const oneTimeFromItems = items.filter(i => /one.?time/i.test(i.billing_period))
@@ -231,7 +233,7 @@ export function RevenueScheduleTable({
         </colgroup>
         <thead>
           <tr style={{ borderBottom: '1.5px solid #C5DECA' }}>
-            {(['Component', 'Period', 'Rate / mo', 'Months', 'Amount', 'Remarks'] as const).map((h, i) => (
+            {(['Component', 'Period', isYearPricing ? 'Rate / yr' : 'Rate / mo', isYearPricing ? 'Years' : 'Months', 'Amount', 'Remarks'] as const).map((h, i) => (
               <th
                 key={h}
                 className={`pb-3 text-[10px] font-bold uppercase tracking-[0.1em] text-stone ${i === 3 ? 'text-center' : i >= 2 && i <= 4 ? 'text-right' : 'text-left'} ${i < 5 ? 'pr-5' : ''}`}
@@ -264,41 +266,87 @@ export function RevenueScheduleTable({
                   </td>
                   <td className="py-3 text-[10px]" style={{ color: '#4A7C59' }}>
                     {b.creditNetted < 0 ? `Net of ${fmt(b.creditNetted, cur)} credit · ` : ''}
-                    {segs.length > 1 ? `${segs.length} pricing segments` : 'Single pricing period'}
+                    {segs.length > 1
+                      ? `${segs.length} pricing segments`
+                      : isYearPricing
+                      ? `Year ${yi + 1} price from contract pricing schedule`
+                      : 'Single pricing period'}
                   </td>
                 </tr>
 
                 {/* Segment rows */}
                 {segs.map((p, pi) => {
                   const lbl = labels[pi] ?? `Period ${pi + 1}`
-                  let remark: string
-                  if (rampSchedule && p.inDiscount)
-                    remark = `${p.discountPct}% discount · gross ${fmt(p.gross, cur)}/mo → net ${fmt(p.rate, cur)}/mo`
-                  else if (rampSchedule)
-                    remark = `Ramp rate ${fmt(p.rate, cur)}/mo`
+
+                  // For year_pricing: show annual rate; for all others: show monthly rate
+                  const displayRate  = isYearPricing ? p.rate * 12 : p.rate
+                  const displayUnits = isYearPricing ? 1 : p.months          // 1 year vs N months
+                  const grossRate    = isYearPricing ? p.gross * 12 : p.gross // pre-discount gross
+                  const grossTotal   = p.gross * p.months                      // always in same unit
+                  const discountAmt  = p.subtotal - grossTotal                 // negative when discounted
+
+                  let baseRemark: string
+                  if (isRampBilling && p.inDiscount)
+                    baseRemark = `Ramp rate (gross) · ${p.discountPct}% discount applied below`
+                  else if (isRampBilling)
+                    baseRemark = `Ramp rate`
                   else if (p.inDiscount && p.escalated)
-                    remark = `${p.discountPct}% discount + price escalator (×${p.escalationMult.toFixed(4)})`
+                    baseRemark = `Gross rate before ${p.discountPct}% discount + escalator (×${p.escalationMult.toFixed(3)})`
                   else if (p.inDiscount)
-                    remark = `${p.discountPct}% introductory discount · gross ${fmt(baseMonthly || p.gross, cur)}/mo → net ${fmt(p.rate, cur)}/mo`
+                    baseRemark = `Gross rate before ${p.discountPct}% discount`
                   else if (p.escalated)
-                    remark = `Price escalator · ×${p.escalationMult.toFixed(4)} cumulative (Year ${yi + 1})`
+                    baseRemark = `Price escalator applied · ×${p.escalationMult.toFixed(3)} cumulative`
+                  else if (isYearPricing)
+                    baseRemark = `Year ${yi + 1} annual price · directly from contract's pricing schedule`
                   else
-                    remark = 'Base subscription rate'
+                    baseRemark = 'Base subscription rate'
+
                   return (
-                    <tr key={`y${yi}s${pi}`} style={{ borderBottom: '1px solid #EFF1EE', background: 'white' }}>
-                      <td className="py-2.5 pr-5 text-[11px]" style={{ paddingLeft: 28, color: '#3A3A38' }}>{lbl}</td>
-                      <td className="py-2.5 pr-5 text-[11px]" style={{ color: '#6B6660' }}>
-                        {smy(p.from)}&thinsp;–&thinsp;{smy(p.to)}
-                      </td>
-                      <td className="py-2.5 pr-5 text-right text-[11px] font-medium tabular-nums" style={{ color: '#3A3A38' }}>
-                        {fmt(p.rate, cur)}
-                      </td>
-                      <td className="py-2.5 pr-5 text-center text-[11px]" style={{ color: '#6B6660' }}>{p.months}</td>
-                      <td className="py-2.5 pr-5 text-right text-[11px] font-medium tabular-nums" style={{ color: '#3A3A38' }}>
-                        {fmt(p.subtotal, cur)}
-                      </td>
-                      <td className="py-2.5 text-[11px]" style={{ color: '#9CA3AF' }}>{remark}</td>
-                    </tr>
+                    <Fragment key={`y${yi}s${pi}`}>
+                      {/* Base / gross rate row */}
+                      <tr style={{ borderBottom: p.inDiscount ? undefined : '1px solid #EFF1EE', background: 'white' }}>
+                        <td className="py-2.5 pr-5 text-[11px]" style={{ paddingLeft: 28, color: '#3A3A38' }}>
+                          {p.inDiscount ? `${lbl} (gross)` : lbl}
+                        </td>
+                        <td className="py-2.5 pr-5 text-[11px]" style={{ color: '#6B6660' }}>
+                          {smy(p.from)}&thinsp;–&thinsp;{smy(p.to)}
+                        </td>
+                        <td className="py-2.5 pr-5 text-right text-[11px] font-medium tabular-nums" style={{ color: '#3A3A38' }}>
+                          {fmt(p.inDiscount ? grossRate : displayRate, cur)}
+                        </td>
+                        <td className="py-2.5 pr-5 text-center text-[11px]" style={{ color: '#6B6660' }}>
+                          {p.inDiscount ? p.months : displayUnits}
+                        </td>
+                        <td className="py-2.5 pr-5 text-right text-[11px] font-medium tabular-nums" style={{ color: '#3A3A38' }}>
+                          {fmt(p.inDiscount ? grossTotal : p.subtotal, cur)}
+                        </td>
+                        <td className="py-2.5 text-[11px]" style={{ color: '#9CA3AF' }}>{baseRemark}</td>
+                      </tr>
+
+                      {/* Discount breakdown row — only when a discount applies */}
+                      {p.inDiscount && (
+                        <tr style={{ borderBottom: '1px solid #EFF1EE', background: '#FFFDF5' }}>
+                          <td className="py-2 pr-5 text-[11px] font-medium" style={{ paddingLeft: 28, color: '#B45309' }}>
+                            Less {p.discountPct}% discount
+                          </td>
+                          <td className="py-2 pr-5 text-[11px]" style={{ color: '#B45309' }}>
+                            {smy(p.from)}&thinsp;–&thinsp;{smy(p.to)}
+                          </td>
+                          <td className="py-2 pr-5 text-right text-[11px] font-medium tabular-nums" style={{ color: '#B45309' }}>
+                            -{fmt(Math.abs(isYearPricing ? (grossRate - displayRate) : (p.gross - p.rate)), cur)}
+                          </td>
+                          <td className="py-2 pr-5 text-center text-[11px]" style={{ color: '#B45309' }}>
+                            {p.months}
+                          </td>
+                          <td className="py-2 pr-5 text-right text-[11px] font-medium tabular-nums" style={{ color: '#B45309' }}>
+                            -{fmt(Math.abs(discountAmt), cur)}
+                          </td>
+                          <td className="py-2 text-[11px]" style={{ color: '#B45309' }}>
+                            Net rate: {fmt(displayRate, cur)}/{isYearPricing ? 'yr' : 'mo'} · saving {fmt(Math.abs(discountAmt), cur)} over period
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   )
                 })}
 
