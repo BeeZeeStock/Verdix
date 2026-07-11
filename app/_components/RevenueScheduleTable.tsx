@@ -12,8 +12,8 @@ interface ScheduleTerms {
   base_annual_fee?: number
   year_pricing?: Record<string, number>
   ramp_schedule?: { start_date: string; end_date: string; monthly_fee: number; label?: string }[]
-  escalators?: { escalator_pct?: number; effective_date?: string }[]
-  discounts?:  { discount_pct?: number; start_date?: string; end_date?: string }[]
+  escalators?: { escalator_pct?: number; effective_date?: string; description?: string }[]
+  discounts?:  { discount_pct?: number; discount_type?: string; description?: string; start_date?: string; end_date?: string }[]
   one_time_fees?: { fee_label: string; amount: number; due_date?: string | null }[]
 }
 interface ScheduleItem {
@@ -86,8 +86,8 @@ export function RevenueScheduleTable({
   // ── Build month-by-month revenue using contract defaults ──────────────────
   type MM = {
     date: Date; sub: number; gross: number
-    inDiscount: boolean; discountPct: number
-    escalated: boolean; escalationMult: number
+    inDiscount: boolean; discountPct: number; discountName: string
+    escalated: boolean; escalationMult: number; escalatorDesc: string
   }
   const months: MM[] = []
   let loopIdx = 0
@@ -97,16 +97,20 @@ export function RevenueScheduleTable({
     const md = new Date(cursor)
     const effectiveBase = monthlyBaseFor(loopIdx, md)
 
-    let inDiscount = false, discountPct = 0
+    let inDiscount = false, discountPct = 0, discountName = ''
     for (const d of discounts) {
       if (!d.start_date || !d.end_date) continue
       if (md >= parseLD(d.start_date) && md <= parseLD(d.end_date)) {
-        inDiscount = true; discountPct = d.discount_pct ?? 0; break
+        inDiscount   = true
+        discountPct  = d.discount_pct ?? 0
+        // Prefer the human-readable description; fall back to the type label
+        discountName = d.description || d.discount_type || ''
+        break
       }
     }
 
     // Escalators are skipped when ramp_schedule is present (rates already baked in)
-    let escalated = false, escalationMult = 1
+    let escalated = false, escalationMult = 1, escalatorDesc = ''
     if (!yearPricing && !rampSchedule) {
       for (const e of escalators) {
         const ed = e.effective_date ? parseLD(e.effective_date) : null
@@ -114,7 +118,9 @@ export function RevenueScheduleTable({
           const msSince = (md.getFullYear() - ed.getFullYear()) * 12 + (md.getMonth() - ed.getMonth())
           const yi      = Math.floor(msSince / 12)
           const mult    = Math.pow(1 + escPct / 100, yi + 1)
-          escalationMult = mult; escalated = mult > 1; break
+          escalationMult = mult; escalated = mult > 1
+          escalatorDesc  = e.description || ''
+          break
         }
       }
     }
@@ -124,7 +130,7 @@ export function RevenueScheduleTable({
     const gross = sub  // before discount — used in remarks
     if (inDiscount) sub *= (1 - discountPct / 100)
 
-    months.push({ date: md, sub, gross: inDiscount ? gross : sub, inDiscount, discountPct, escalated, escalationMult })
+    months.push({ date: md, sub, gross: inDiscount ? gross : sub, inDiscount, discountPct, discountName, escalated, escalationMult, escalatorDesc })
     cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)
     loopIdx++
   }
@@ -181,7 +187,8 @@ export function RevenueScheduleTable({
   // ── Segment detection within each year ───────────────────────────────────
   type Seg = {
     from: Date; to: Date; months: number; rate: number; gross: number; subtotal: number
-    inDiscount: boolean; discountPct: number; escalated: boolean; escalationMult: number
+    inDiscount: boolean; discountPct: number; discountName: string
+    escalated: boolean; escalationMult: number; escalatorDesc: string
   }
   const yearSegs: Seg[][] = []
   for (let yi = 0; yi < numBuckets; yi++) {
@@ -200,8 +207,8 @@ export function RevenueScheduleTable({
         segs.push({
           from: seg[0].date, to: seg[seg.length - 1].date,
           months: seg.length, rate: prev.sub, gross: prev.gross, subtotal: prev.sub * seg.length,
-          inDiscount: prev.inDiscount, discountPct: prev.discountPct,
-          escalated: prev.escalated, escalationMult: prev.escalationMult,
+          inDiscount: prev.inDiscount, discountPct: prev.discountPct, discountName: prev.discountName,
+          escalated: prev.escalated, escalationMult: prev.escalationMult, escalatorDesc: prev.escalatorDesc,
         })
         ss = i
       }
@@ -297,30 +304,33 @@ export function RevenueScheduleTable({
                   const discountAmt  = p.subtotal - grossTotal                 // negative when discounted
 
                   // ── Situation-specific arithmetic remark ──────────────────
+                  // Human-readable discount label (name from contract, or fallback)
+                  const dLabel = p.discountName
+                    ? `"${p.discountName}"`
+                    : `${p.discountPct}% discount`
+                  const eLabel = p.escalatorDesc ? `"${p.escalatorDesc}"` : 'price escalator'
+
                   let baseRemark: string
                   if (isYearPricing && !p.inDiscount && !p.escalated) {
-                    // Show year-over-year derivation with actual numbers
                     if (yi === 0) {
-                      baseRemark = `Year 1 contract price: ${fmt(displayRate, cur)}/yr — base year, set in pricing schedule`
+                      baseRemark = `Base price Year 1: ${fmt(displayRate, cur)}/yr — set in contract pricing schedule`
                     } else {
                       const prevAnnual = annualBuckets[yi - 1].total
                       const delta      = displayRate - prevAnnual
                       const deltaPct   = ((delta / prevAnnual) * 100).toFixed(0)
-                      baseRemark = `Year ${yi + 1} contract price: ${fmt(displayRate, cur)}/yr — ${delta > 0 ? 'up' : 'down'} ${fmt(Math.abs(delta), cur)} (${delta > 0 ? '+' : ''}${deltaPct}%) from Year ${yi} (${fmt(prevAnnual, cur)})`
+                      baseRemark = `Base price Year ${yi + 1}: ${fmt(displayRate, cur)}/yr — ${delta > 0 ? 'up' : 'down'} ${fmt(Math.abs(delta), cur)} (${delta > 0 ? '+' : ''}${deltaPct}%) from Year ${yi} base (${fmt(prevAnnual, cur)})`
                     }
                   } else if (isYearPricing && p.inDiscount) {
-                    // Gross annual price before discount is shown; discount row follows
-                    baseRemark = `Gross Year ${yi + 1} contract price before ${p.discountPct}% discount is applied`
+                    baseRemark = `Base price Year ${yi + 1}: ${fmt(grossRate, cur)}/yr — ${dLabel} applied below`
                   } else if (p.inDiscount && p.escalated) {
                     const baseMonthlyGross = p.gross / p.escalationMult
-                    baseRemark = `Gross rate: base ${fmt(baseMonthlyGross, cur)}/mo × escalator ×${p.escalationMult.toFixed(3)} = ${fmt(p.gross, cur)}/mo (before ${p.discountPct}% discount)`
+                    baseRemark = `Base ${fmt(baseMonthlyGross, cur)}/mo × ${eLabel} ×${p.escalationMult.toFixed(3)} = ${fmt(p.gross, cur)}/mo gross (before ${dLabel})`
                   } else if (p.inDiscount) {
-                    baseRemark = `Gross base rate — ${p.discountPct}% discount applied below`
+                    baseRemark = `Base price: ${fmt(grossRate, cur)}/${isYearPricing ? 'yr' : 'mo'} — ${dLabel} applied below`
                   } else if (p.escalated) {
-                    const baseMonthlyGross = baseMonthly
-                    baseRemark = `Base ${fmt(baseMonthlyGross, cur)}/mo × escalator ×${p.escalationMult.toFixed(3)} = ${fmt(p.rate, cur)}/mo (cumulative increase Year ${yi + 1})`
+                    baseRemark = `Base ${fmt(baseMonthly, cur)}/mo × ${eLabel} ×${p.escalationMult.toFixed(3)} = ${fmt(p.rate, cur)}/mo (Year ${yi + 1} cumulative)`
                   } else if (isRampBilling) {
-                    baseRemark = `Ramp ${pi + 1} rate set in contract schedule`
+                    baseRemark = `Ramp ${pi + 1} rate from contract schedule`
                   } else {
                     baseRemark = 'Base subscription rate from contract'
                   }
@@ -351,7 +361,7 @@ export function RevenueScheduleTable({
                       {p.inDiscount && (
                         <tr style={{ borderBottom: '1px solid #EFF1EE', background: '#FFFDF5' }}>
                           <td className="py-2 pr-5 text-[11px] font-medium" style={{ paddingLeft: 28, color: '#B45309' }}>
-                            Less {p.discountPct}% discount
+                            {p.discountName ? `Less ${p.discountPct}% — ${p.discountName}` : `Less ${p.discountPct}% discount`}
                           </td>
                           <td className="py-2 pr-5 text-[11px]" style={{ color: '#B45309' }}>
                             {smy(p.from)}&thinsp;–&thinsp;{smy(p.to)}
@@ -366,7 +376,7 @@ export function RevenueScheduleTable({
                             -{fmt(Math.abs(discountAmt), cur)}
                           </td>
                           <td className="py-2 text-[11px]" style={{ color: '#B45309' }}>
-                            {fmt(p.inDiscount ? grossRate : displayRate, cur)} × {p.discountPct}% = {fmt(Math.abs(isYearPricing ? grossRate - displayRate : p.gross - p.rate), cur)} saving → net {fmt(displayRate, cur)}/{isYearPricing ? 'yr' : 'mo'}
+                            Base ({fmt(grossRate, cur)}) × {p.discountPct}% = {fmt(Math.abs(isYearPricing ? grossRate - displayRate : p.gross - p.rate), cur)} saving → net {fmt(displayRate, cur)}/{isYearPricing ? 'yr' : 'mo'}
                           </td>
                         </tr>
                       )}
