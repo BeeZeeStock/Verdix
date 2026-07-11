@@ -282,10 +282,11 @@ export function RevenueScheduleTable({
                       const creditNote = b.creditNetted < 0 ? `Net of ${fmt(b.creditNetted, cur)} credit · ` : ''
                       if (segs.length > 1) return `${creditNote}${segs.length} pricing segments`
                       if (isYearPricing) {
-                        if (yi === 0)
-                          return `${creditNote}Year 1 subscription — base year · cumulative contract value: ${fmt(cumByYear[0], cur)}`
-                        const prev = cumByYear[yi - 1]
-                        return `${creditNote}Prior years (${fmt(prev, cur)}) + Year ${yi + 1} (${fmt(b.total, cur)}) = ${fmt(cumByYear[yi], cur)} cumulative`
+                        // Show the running sum of independent year values clearly
+                        const parts = annualBuckets.slice(0, yi + 1).map((ab, i) => `Year ${i + 1} (${fmt(ab.total, cur)})`)
+                        const sum   = fmt(cumByYear[yi], cur)
+                        if (yi === 0) return `${creditNote}${parts[0]} = ${sum} · standalone year price`
+                        return `${creditNote}${parts.join(' + ')} = ${sum} total to date`
                       }
                       return `${creditNote}Single pricing period`
                     })()}
@@ -455,6 +456,12 @@ export function RevenueScheduleTable({
             <td className="py-4 text-[11px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
               {(() => {
                 const recurringTotal = months.reduce((s, m) => s + m.sub, 0) + creditTotal
+                if (isYearPricing) {
+                  const yearParts = annualBuckets.map((ab, i) => `Year ${i + 1} (${fmt(ab.total, cur)})`).join(' + ')
+                  if (oneTimeFees > 0)
+                    return `${yearParts} = ${fmt(recurringTotal, cur)} recurring + one-time fees (${fmt(oneTimeFees, cur)}) = ${fmt(totalTcv, cur)} Net TCV`
+                  return `${yearParts} = ${fmt(totalTcv, cur)} Net TCV`
+                }
                 if (oneTimeFees > 0)
                   return `Recurring subscription (${fmt(recurringTotal, cur)}) + one-time fees (${fmt(oneTimeFees, cur)}) = ${fmt(totalTcv, cur)}`
                 return 'Total net contract value · all discounts and credits applied'
