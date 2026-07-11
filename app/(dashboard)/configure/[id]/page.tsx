@@ -235,11 +235,37 @@ function buildContractSummary(
 }
 
 // Finds the sentence in extraction_notes that discusses a specific year's calculation.
+// Split on semicolons or sentence-ending periods (negative lookbehind avoids splitting on decimals like 0.9).
+function splitCalcNotes(notes: string): string[] {
+  return notes.split(/;\s*|(?<!\d)\.\s+(?=[A-Z])/).map(s => s.trim()).filter(Boolean)
+}
+
+// Formats raw calculation text:
+//   1. Adds comma separators to integers ≥ 4 digits (456987 → 456,987)
+//   2. Replaces * with ×
+//   3. Moves any trailing "(description)" to the top as the formula label
+function formatCalcNote(raw: string): string {
+  // Strip leading "Year N =" prefix so we don't show redundant info
+  const stripped = raw.replace(/^.*?year\s*\d+\s*=\s*/i, '').trim()
+  // Detect trailing parenthetical: "...= 436288 (base after discount plus 10 users)"
+  const trailingParen = stripped.match(/^([\s\S]+?)\s*\(([^)]+)\)\s*$/)
+  const calcBody = trailingParen ? trailingParen[1].trim() : stripped
+  const description = trailingParen ? trailingParen[2].trim() : null
+  const fmtNums = (s: string) =>
+    s
+      .replace(/\b(\d{4,})\b/g, n => parseInt(n, 10).toLocaleString('en-US'))
+      .replace(/\s*\*\s*/g, ' × ')
+  return description
+    ? `${description}\n\n${fmtNums(calcBody)}`
+    : fmtNums(stripped)
+}
+
 function getYearNote(notes: string | undefined, yearKey: string): string | undefined {
   if (!notes) return undefined
   const yr = yearKey.replace('year', '')
-  const parts = notes.split(/[.;]\s*/)
-  return parts.find(s => new RegExp(`year\\s*${yr}\\b`, 'i').test(s))?.trim() || notes.split(/[.;]\s*/)[0]?.trim()
+  const parts = splitCalcNotes(notes)
+  const match = parts.find(s => new RegExp(`year\\s*${yr}\\b`, 'i').test(s)) ?? parts[0]
+  return match ? formatCalcNote(match) : undefined
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────
@@ -341,7 +367,7 @@ function CalcTooltip({ calc, children }: { calc?: string | null; children: React
           <p className="text-[9px] font-bold uppercase tracking-[0.15em] mb-1.5" style={{ color: 'rgba(255,255,255,0.45)' }}>
             How this is calculated
           </p>
-          <p className="text-[11px] leading-relaxed" style={{ color: 'rgba(255,255,255,0.88)' }}>{calc}</p>
+          <p className="text-[11px] leading-relaxed whitespace-pre-line" style={{ color: 'rgba(255,255,255,0.88)' }}>{calc}</p>
           <div className="absolute left-1/2 -translate-x-1/2 top-full" style={{ width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderTop: '6px solid #1A3D2B' }} />
         </div>
       )}
