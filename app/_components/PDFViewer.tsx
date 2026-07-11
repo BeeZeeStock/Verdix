@@ -124,11 +124,13 @@ export default function PDFViewer({ url, section }: Props) {
       : (wrapper.clientWidth || 680)
     const vp = page.getViewport({ scale: cw / page.getViewport({ scale: 1 }).width })
 
-    wrapper.style.cssText = `position:relative;width:100%;height:${vp.height}px;`
+    // No explicit height — the canvas (display:block; height:auto) controls it
+    wrapper.style.cssText = `position:relative;width:100%;overflow:hidden;`
 
     const canvas = document.createElement('canvas')
     canvas.width = vp.width; canvas.height = vp.height
-    canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;display:block;'
+    // height:auto causes the canvas to scale proportionally with width, preventing distortion
+    canvas.style.cssText = 'display:block;width:100%;height:auto;'
     wrapper.appendChild(canvas)
     await page.render({ canvasContext: canvas.getContext('2d')!, viewport: vp }).promise
 

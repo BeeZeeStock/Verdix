@@ -790,9 +790,10 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
               const armLen   = 28
               const vertDrop = 18
               const vy = isTop ? chevEdge - vertDrop : chevEdge + vertDrop
-              const hx = isStart ? mx - armLen : mx + armLen
-              const ta = isStart ? 'end' : 'start'
-              const lbx = isStart ? hx - 5 : hx + 5
+              // Arms point inward so labels stay within the SVG viewBox
+              const hx = isStart ? mx + armLen : mx - armLen
+              const ta = isStart ? 'start' : 'end'
+              const lbx = isStart ? hx + 5 : hx - 5
               return (
                 <g key={i}>
                   {/* Vertical jog from chevron edge */}

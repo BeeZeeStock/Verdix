@@ -4,6 +4,7 @@ import { requireOrg } from '@/lib/org'
 import { extractContractTerms } from '@/lib/contract-extractor'
 import { parseBillingCSV } from '@/lib/billing-parser'
 import { reconcile } from '@/lib/reconciler'
+import { resolveStorageUrl } from '@/lib/storage'
 
 export async function POST(
   _req: NextRequest,
@@ -46,13 +47,19 @@ async function runAuditPipeline(
 ) {
   if (!contractUrl || !billingUrl) throw new Error('Missing contract or billing file')
 
-  // Download files from Supabase storage
-  const [contractBuffer, billingBuffer] = await Promise.all([
-    fetchFile(contractUrl),
-    fetchFile(billingUrl),
+  // Resolve storage paths / expired signed URLs to fresh fetchable URLs
+  const [resolvedContractUrl, resolvedBillingUrl] = await Promise.all([
+    resolveStorageUrl(contractUrl),
+    resolveStorageUrl(billingUrl),
   ])
 
-  const contractText = await extractTextFromBuffer(contractBuffer, contractUrl)
+  // Download files from Supabase storage
+  const [contractBuffer, billingBuffer] = await Promise.all([
+    fetchFile(resolvedContractUrl),
+    fetchFile(resolvedBillingUrl),
+  ])
+
+  const contractText = await extractTextFromBuffer(contractBuffer, resolvedContractUrl)
   const billingText = billingBuffer.toString('utf-8')
 
   // Extract contract terms

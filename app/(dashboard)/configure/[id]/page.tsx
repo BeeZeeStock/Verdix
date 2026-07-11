@@ -1145,6 +1145,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [approveError, setApproveError] = useState<string | null>(null)
   const [approved, setApproved]       = useState<{ stripeSubscriptionId: string; dashboardUrl?: string } | null>(null)
   const [drawer, setDrawer]   = useState<{ open: boolean; section?: string }>({ open: false })
+  const [pdfUrl, setPdfUrl]   = useState<string | null>(null)
+  const [pdfUrlError, setPdfUrlError] = useState(false)
+  const [pdfRenderKey, setPdfRenderKey] = useState(0)
   const [panelWidth, setPanelWidth] = useState(60)   // % of viewport
   const isDragging  = useRef(false)
   const dragOrigin  = useRef({ x: 0, w: 0 })
@@ -1156,11 +1159,29 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       const next  = dragOrigin.current.w + (delta / window.innerWidth) * 100
       setPanelWidth(Math.min(85, Math.max(30, next)))
     }
-    const onUp = () => { isDragging.current = false; document.body.style.userSelect = '' }
+    const onUp = () => {
+      if (isDragging.current) setPdfRenderKey(k => k + 1)  // re-render PDF at new panel width
+      isDragging.current = false
+      document.body.style.userSelect = ''
+    }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup',   onUp)
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
   }, [])
+
+  // Fetch a fresh signed URL whenever the PDF drawer opens (stored URL may be expired)
+  useEffect(() => {
+    if (!drawer.open || pdfUrl) return
+    setPdfUrlError(false)
+    fetch(`/api/jobs/${id}/pdf-url`)
+      .then(async r => {
+        if (!r.ok) throw new Error(`${r.status}`)
+        const { url } = await r.json()
+        setPdfUrl(url)
+      })
+      .catch(() => setPdfUrlError(true))
+  }, [drawer.open, id, pdfUrl])
+
   const [activeTab, setActiveTab]       = useState<'terms' | 'model' | 'invoices'>('terms')
   const [reviewPanelOpen, setReviewPanelOpen] = useState(false)
   const [escEditing,   setEscEditing]   = useState<number | null>(null)
@@ -1252,6 +1273,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   }
 
   const openPDF = (section?: string) => setDrawer({ open: true, section })
+  const closePDF = () => { setDrawer({ open: false }); setPdfUrl(null); setPdfUrlError(false) }
 
   const correction = (itemId: string) => corrections[itemId]?.value ?? ''
   const setCorr    = (itemId: string, value: string) =>
@@ -2008,7 +2030,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       {/* ── PDF Drawer ──────────────────────────────────────────────────── */}
       {drawer.open && (
         <div className="fixed inset-0 z-40 flex justify-end">
-          <div className="absolute inset-0 bg-black/35" onClick={() => setDrawer({ open: false })} />
+          <div className="absolute inset-0 bg-black/35" onClick={() => closePDF()} />
           <div className="relative h-full bg-white shadow-2xl flex flex-col" style={{ width: `${panelWidth}%` }}>
             {/* ── Resize handle ── */}
             <div
@@ -2024,14 +2046,14 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               <div className="w-0.5 h-16 rounded-full bg-forest/20 group-hover:bg-forest/50 transition-colors" />
             </div>
             <div className="flex items-center justify-between px-5 py-3 border-b border-forest/10 bg-white">
-              <div>
-                <span className="text-sm font-medium text-ink">Signed contract</span>
+              <div className="min-w-0 flex-1 mr-2 flex items-center overflow-hidden">
+                <span className="text-sm font-medium text-ink whitespace-nowrap">Signed contract</span>
                 {drawer.section && (
-                  <span className="ml-2 text-[11px] text-stone">· jumping to §{drawer.section}</span>
+                  <span className="ml-2 text-[11px] text-stone truncate">· jumping to §{drawer.section}</span>
                 )}
               </div>
               <button
-                onClick={() => setDrawer({ open: false })}
+                onClick={() => closePDF()}
                 className="text-stone hover:text-ink transition-colors w-7 h-7 flex items-center justify-center rounded-lg hover:bg-cream"
               >
                 <i className="ti ti-x" style={{ fontSize: 14 }} />
@@ -2039,7 +2061,22 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             </div>
             <div className="flex-1 overflow-hidden">
               {job.contract_pdf_url
-                ? <PDFViewer url={job.contract_pdf_url} section={drawer.section} />
+                ? pdfUrlError
+                  ? <div className="h-full flex items-center justify-center">
+                      <div className="text-center">
+                        <i className="ti ti-alert-circle block mb-2 text-danger/60" style={{ fontSize: 28 }} />
+                        <p className="text-sm text-stone">Could not load PDF</p>
+                        <button
+                          onClick={() => { setPdfUrl(null); setPdfUrlError(false) }}
+                          className="mt-3 text-xs text-forest underline"
+                        >Try again</button>
+                      </div>
+                    </div>
+                  : pdfUrl
+                    ? <PDFViewer key={pdfRenderKey} url={pdfUrl} section={drawer.section} />
+                    : <div className="h-full flex items-center justify-center">
+                        <div className="w-8 h-8 border-2 border-forest border-t-transparent rounded-full animate-spin" />
+                      </div>
                 : <div className="h-full flex items-center justify-center text-stone text-sm">No PDF available</div>
               }
             </div>

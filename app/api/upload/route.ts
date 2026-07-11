@@ -37,26 +37,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Upload failed: ${uploadError.message}` }, { status: 500 })
   }
 
-  // Use a long-lived signed URL (7 days) since the bucket is private
-  const { data: signedData, error: signError } = await supabaseServer.storage
-    .from(BUCKET)
-    .createSignedUrl(path, 60 * 60 * 24 * 7)
-
-  if (signError || !signedData?.signedUrl) {
-    return NextResponse.json({ error: `Signing failed: ${signError?.message}` }, { status: 500 })
-  }
-
-  const url = signedData.signedUrl
+  // Store the raw storage path (not a signed URL) so it never expires.
+  // Signed URLs are generated on demand via /api/jobs/[id]/pdf-url.
   const column = fileType === 'billing' ? 'billing_csv_url' : 'contract_pdf_url'
 
   const { error: updateError } = await supabaseServer
     .from('jobs')
-    .update({ [column]: url })
+    .update({ [column]: path })
     .eq('id', jobId)
 
   if (updateError) {
     return NextResponse.json({ error: `DB update failed: ${updateError.message}` }, { status: 500 })
   }
 
-  return NextResponse.json({ path, url })
+  // Also return a short-lived signed URL for immediate use by the caller
+  const { data: signedData } = await supabaseServer.storage
+    .from(BUCKET)
+    .createSignedUrl(path, 60 * 60 * 2)
+
+  return NextResponse.json({ path, url: signedData?.signedUrl ?? path })
 }

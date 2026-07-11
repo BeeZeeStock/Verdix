@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { extractContractTerms } from '@/lib/contract-extractor'
+import { resolveStorageUrl } from '@/lib/storage'
 
 export async function POST(
   _req: NextRequest,
@@ -38,11 +39,12 @@ export async function POST(
 async function runExecutePipeline(jobId: string, contractUrl: string | null, currency: string) {
   if (!contractUrl) throw new Error('Missing contract file')
 
-  const res = await fetch(contractUrl)
+  const resolvedUrl = await resolveStorageUrl(contractUrl)
+  const res = await fetch(resolvedUrl)
   if (!res.ok) throw new Error(`Failed to download contract`)
   const buffer = Buffer.from(await res.arrayBuffer())
 
-  const contractText = await extractPDFText(buffer, contractUrl)
+  const contractText = await extractPDFText(buffer, resolvedUrl)
   const terms = await extractContractTerms(contractText)
 
   // Build proposed line items from contract terms

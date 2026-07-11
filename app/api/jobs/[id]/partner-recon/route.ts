@@ -7,6 +7,7 @@ import {
   reconcilePartner,
   aiReconcile,
 } from '@/lib/partner-reconciler'
+import { resolveStorageUrl } from '@/lib/storage'
 
 export async function POST(
   _req: NextRequest,
@@ -63,14 +64,19 @@ async function runPartnerReconPipeline(
 ) {
   if (!agreementUrl || !invoiceUrl) throw new Error('Missing agreement or invoice file')
 
+  const [resolvedAgreementUrl, resolvedInvoiceUrl] = await Promise.all([
+    resolveStorageUrl(agreementUrl),
+    resolveStorageUrl(invoiceUrl),
+  ])
+
   const [agreementBuffer, invoiceBuffer] = await Promise.all([
-    fetchBuffer(agreementUrl),
-    fetchBuffer(invoiceUrl),
+    fetchBuffer(resolvedAgreementUrl),
+    fetchBuffer(resolvedInvoiceUrl),
   ])
 
   const [agreementText, invoiceText] = await Promise.all([
-    extractText(agreementBuffer, agreementUrl),
-    extractText(invoiceBuffer, invoiceUrl),
+    extractText(agreementBuffer, resolvedAgreementUrl),
+    extractText(invoiceBuffer, resolvedInvoiceUrl),
   ])
 
   // Extract invoice first (in parallel is fine — agreement extraction doesn't need volume)
