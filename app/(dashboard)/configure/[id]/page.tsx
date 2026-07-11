@@ -1548,16 +1548,123 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 <p className="text-[10px] font-bold uppercase tracking-[0.16em] mb-3" style={{ color: '#4A7C59' }}>
                   Contract at a glance
                 </p>
-                <div className="space-y-0.5">
-                  {summaryLines.map((line, i) => (
-                    <p key={i} className="text-[13px] text-ink leading-snug">{line}</p>
-                  ))}
+
+                {/* Headline sentence */}
+                <p className="text-[13px] text-ink leading-snug mb-4">{summaryLines[0]}</p>
+
+                {/* Two-column: pricing table (left) · key terms (right) */}
+                <div className="grid gap-5" style={{ gridTemplateColumns: (terms?.year_pricing && Object.keys(terms.year_pricing).length > 0) ? '1fr 1fr' : '1fr' }}>
+
+                  {/* ── Pricing table ── */}
+                  {terms?.year_pricing && Object.keys(terms.year_pricing).length > 0 ? (
+                    <div>
+                      <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-2">Annual fees</p>
+                      <table className="w-full">
+                        <tbody>
+                          {Object.entries(terms.year_pricing).map(([yr, price]) => (
+                            <tr key={yr} style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                              <td className="py-1 text-xs text-stone">{yr.replace('year', 'Year ')}</td>
+                              <td className="py-1 text-xs font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(price, cur)}</td>
+                            </tr>
+                          ))}
+                          {tcv > 0 && (
+                            <tr>
+                              <td className="pt-2 text-[10px] font-semibold text-stone">Total (TCV)</td>
+                              <td className="pt-2 text-xs font-semibold text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(tcv, cur)}</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+
+                  {/* ── Key terms list ── */}
+                  <div>
+                    <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-2">Key terms</p>
+                    <table className="w-full">
+                      <tbody>
+                        {terms?.billing_frequency && (
+                          <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                            <td className="py-1 text-xs text-stone w-1/2">Billing</td>
+                            <td className="py-1 text-xs text-ink text-right capitalize">{terms.billing_frequency}</td>
+                          </tr>
+                        )}
+                        {(terms?.payment_terms_text || terms?.payment_terms_days) && (
+                          <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                            <td className="py-1 text-xs text-stone">Payment</td>
+                            <td className="py-1 text-xs text-ink text-right">
+                              {terms?.payment_terms_text ?? `Net ${terms?.payment_terms_days}`}
+                            </td>
+                          </tr>
+                        )}
+                        <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                          <td className="py-1 text-xs text-stone">Auto-renew</td>
+                          <td className="py-1 text-xs text-right">
+                            {terms?.auto_renews === true
+                              ? <span className="text-ink">Yes{terms.renewal_notice_days ? ` (${terms.renewal_notice_days}d notice)` : ''}</span>
+                              : terms?.auto_renews === false
+                              ? <span className="text-ink">No</span>
+                              : <span style={{ color: '#B45309' }}>Unclear — review</span>
+                            }
+                          </td>
+                        </tr>
+                        {terms?.discounts && terms.discounts.length > 0 && (
+                          <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                            <td className="py-1 text-xs text-stone">Discount</td>
+                            <td className="py-1 text-xs text-ink text-right">
+                              {terms.discounts[0].discount_pct != null ? `${terms.discounts[0].discount_pct}%` : ''}
+                              {terms.discounts[0].discount_type ? ` ${terms.discounts[0].discount_type.replace(/_/g, ' ')}` : ''}
+                              {terms.discounts[0].end_date ? ` · until ${fmtDate(terms.discounts[0].end_date)}` : ''}
+                            </td>
+                          </tr>
+                        )}
+                        {userTiers.length > 0 && (() => {
+                          const min = Math.min(...userTiers.map(t => t.rate_per_unit ?? 0).filter(v => v > 0))
+                          return (
+                            <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                              <td className="py-1 text-xs text-stone">User overages</td>
+                              <td className="py-1 text-xs text-ink text-right">{min > 0 ? `from ${fmt(min, cur)}/user/mo` : 'tiered'}</td>
+                            </tr>
+                          )
+                        })()}
+                        {apiTiers.length > 0 && (
+                          <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                            <td className="py-1 text-xs text-stone">API overages</td>
+                            <td className="py-1 text-xs text-ink text-right">tiered</td>
+                          </tr>
+                        )}
+                        {(terms?.escalators?.length ?? 0) > 0 && (
+                          <tr>
+                            <td className="py-1 text-xs text-stone">Escalator</td>
+                            <td className="py-1 text-xs text-ink text-right">
+                              {terms!.escalators![0].escalator_pct != null
+                                ? `${terms!.escalators![0].escalator_pct}% / yr`
+                                : 'see contract'}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
+
+                {/* Extraction notes as bullets */}
                 {terms?.extraction_notes && (
-                  <p className="mt-3 pt-3 text-[11px] text-stone/70 italic" style={{ borderTop: '1px solid rgba(74,124,89,0.12)' }}>
-                    <i className="ti ti-info-circle mr-1" style={{ fontSize: 11 }} />
-                    {terms.extraction_notes}
-                  </p>
+                  <div className="mt-4 pt-3" style={{ borderTop: '1px solid rgba(74,124,89,0.12)' }}>
+                    <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Extraction notes</p>
+                    <ul className="space-y-1">
+                      {terms.extraction_notes
+                        .split(/\.\s+(?=[A-Z])|;\s*/)
+                        .map(s => s.trim().replace(/\.$/, ''))
+                        .filter(s => s.length > 4)
+                        .map((note, i) => (
+                          <li key={i} className="flex items-start gap-1.5">
+                            <i className="ti ti-info-circle flex-shrink-0 mt-0.5" style={{ fontSize: 10, color: '#D97706' }} />
+                            <span className="text-[11px] text-stone">{note}.</span>
+                          </li>
+                        ))}
+                    </ul>
+                  </div>
                 )}
               </div>
             )}
