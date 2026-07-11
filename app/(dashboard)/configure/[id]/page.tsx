@@ -149,6 +149,91 @@ function computeContractTCV(terms: Terms | undefined, lineItems: LineItem[]): nu
   return total + oneTimeTotal
 }
 
+// Builds 2–3 natural-language sentences summarising the contract for the
+// "at a glance" card. Pure data transform — no React, no side-effects.
+function buildContractSummary(
+  terms: Terms | undefined,
+  cur: string,
+  tcv: number,
+  userTiers: Tier[],
+  apiTiers: Tier[],
+): string[] {
+  if (!terms) return []
+  const lines: string[] = []
+
+  // ── Sentence 1: pricing structure · customer · dates · TCV ───────────────
+  let pricing: string
+  if (terms.ramp_schedule && terms.ramp_schedule.length > 0) {
+    const first = terms.ramp_schedule[0]
+    const last  = terms.ramp_schedule[terms.ramp_schedule.length - 1]
+    pricing = first.monthly_fee === last.monthly_fee
+      ? `flat ${fmt(first.monthly_fee, cur)}/month subscription`
+      : `${terms.ramp_schedule.length}-stage ramp (${fmt(first.monthly_fee, cur)} → ${fmt(last.monthly_fee, cur)}/mo)`
+  } else if (terms.year_pricing && Object.keys(terms.year_pricing).length > 0) {
+    const vals = Object.values(terms.year_pricing)
+    pricing = vals.length === 1
+      ? `${fmt(vals[0], cur)}/year subscription`
+      : `multi-year pricing (${vals.map(v => fmt(v, cur)).join(' → ')}/yr)`
+  } else if (terms.base_monthly_fee) {
+    pricing = `flat ${fmt(terms.base_monthly_fee, cur)}/month subscription`
+  } else if (terms.base_annual_fee) {
+    pricing = `${fmt(terms.base_annual_fee, cur)}/year subscription`
+  } else {
+    pricing = 'subscription'
+  }
+
+  const duration = terms.contract_term_months ? `${terms.contract_term_months}-month ` : ''
+  const customer = terms.customer_name ? ` with ${terms.customer_name}` : ''
+  const dates    = terms.contract_start_date && terms.contract_end_date
+    ? `, running ${fmtDate(terms.contract_start_date)} to ${fmtDate(terms.contract_end_date)}`
+    : terms.contract_start_date ? `, starting ${fmtDate(terms.contract_start_date)}` : ''
+  const tcvStr   = tcv > 0 ? `, valued at ${fmt(tcv, cur)}` : ''
+  lines.push(`${duration}contract${customer}${dates} — ${pricing}${tcvStr}.`)
+
+  // ── Sentence 2: billing cadence · payment terms · auto-renewal ───────────
+  const bits: string[] = []
+  if (terms.billing_frequency) bits.push(`billed ${terms.billing_frequency.toLowerCase()}`)
+  if (terms.payment_terms_text) bits.push(terms.payment_terms_text)
+  else if (terms.payment_terms_days) bits.push(`Net ${terms.payment_terms_days}`)
+  if (terms.auto_renews === true) {
+    const notice = terms.renewal_notice_days ? `${terms.renewal_notice_days}-day notice required` : 'advance notice required'
+    bits.push(`auto-renews (${notice})`)
+  } else if (terms.auto_renews === false) {
+    bits.push('does not auto-renew')
+  } else {
+    bits.push('auto-renewal terms unclear — review contract')
+  }
+  if (bits.length > 0) lines.push(bits.join(' · ') + '.')
+
+  // ── Sentence 3: escalators · discounts · overages ────────────────────────
+  const extras: string[] = []
+  if (terms.escalators && terms.escalators.length > 0) {
+    const e = terms.escalators[0]
+    const cap = e.cap_pct ? ` capped at ${e.cap_pct}%` : ''
+    extras.push(e.escalator_pct != null
+      ? `${e.escalator_pct}% annual escalator${cap}`
+      : 'price escalator (rate unclear — review contract)')
+  }
+  if (terms.discounts && terms.discounts.length > 0) {
+    const d    = terms.discounts[0]
+    const pct  = d.discount_pct != null ? `${d.discount_pct}%` : ''
+    const type = d.discount_type ? ` ${d.discount_type.replace(/_/g, ' ')}` : ''
+    const till = d.end_date ? ` through ${fmtDate(d.end_date)}` : ''
+    extras.push(`${pct}${type} discount${till}`.trim())
+  }
+  if (userTiers.length > 0) {
+    const min = Math.min(...userTiers.map(t => t.rate_per_unit ?? 0).filter(v => v > 0))
+    extras.push(min > 0 ? `user overages from ${fmt(min, cur)}/user/mo` : 'user overage tiers')
+  }
+  if (apiTiers.length > 0) extras.push('API call overages apply')
+  if (extras.length > 0) {
+    const s = extras.join(' · ')
+    lines.push(s.charAt(0).toUpperCase() + s.slice(1) + '.')
+  }
+
+  return lines
+}
+
 // ── Sub-components ─────────────────────────────────────────────────────────
 
 function Stat({ label, value, sub }: { label: string; value?: string | null; sub?: string }) {
@@ -1375,6 +1460,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
   const src = terms?.field_sources ?? {}
   const tcv = computeContractTCV(terms, items)
+  const summaryLines = buildContractSummary(terms, cur, tcv, userTiers, apiTiers)
 
   const baseItem = findItem('base subscription')
 
@@ -1455,6 +1541,50 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
           {/* ── Terms tab: single-column contract detail ──────────────────── */}
           <div className={`flex-1 overflow-y-auto px-8 py-8 space-y-6 ${activeTab !== 'terms' ? 'hidden' : ''}`}>
+
+            {/* ── Contract at a glance ── */}
+            {summaryLines.length > 0 && (
+              <div className="rounded-2xl p-5" style={{ background: 'linear-gradient(135deg, #EEF9F2 0%, #F6FCF8 100%)', border: '1px solid rgba(74,124,89,0.18)' }}>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] mb-3" style={{ color: '#4A7C59' }}>
+                  Contract at a glance
+                </p>
+                <div className="space-y-1.5">
+                  {summaryLines.map((line, i) => (
+                    <p key={i} className="text-[13px] text-ink leading-relaxed">{line}</p>
+                  ))}
+                </div>
+                {terms?.extraction_notes && (
+                  <p className="mt-3 pt-3 text-[11px] text-stone/70 italic" style={{ borderTop: '1px solid rgba(74,124,89,0.12)' }}>
+                    <i className="ti ti-info-circle mr-1" style={{ fontSize: 11 }} />
+                    {terms.extraction_notes}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* ── Items need review callout ── */}
+            {needsReview > 0 && (
+              <div className="rounded-2xl px-5 py-4 flex items-center justify-between gap-4" style={{ background: '#FFFBEB', border: '1px solid #FCD34D' }}>
+                <div className="flex items-start gap-3">
+                  <i className="ti ti-alert-triangle flex-shrink-0 mt-0.5" style={{ fontSize: 15, color: '#D97706' }} />
+                  <div>
+                    <p className="text-sm font-medium" style={{ color: '#92400E' }}>
+                      {needsReview} extracted value{needsReview > 1 ? 's' : ''} flagged for review
+                    </p>
+                    <p className="text-xs mt-0.5" style={{ color: '#B45309' }}>
+                      Verify and correct these before approving — low confidence means the extraction was uncertain.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setReviewPanelOpen(true)}
+                  className="flex-shrink-0 text-xs font-semibold px-4 py-2 rounded-xl transition-colors whitespace-nowrap"
+                  style={{ background: '#FEF3C7', color: '#92400E', border: '1px solid #F59E0B' }}
+                >
+                  Review items →
+                </button>
+              </div>
+            )}
 
             {/* Stripe configured banner */}
             {isConfigured && (
