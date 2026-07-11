@@ -243,21 +243,38 @@ function splitCalcNotes(notes: string): string[] {
 // Formats raw calculation text:
 //   1. Adds comma separators to integers ≥ 4 digits (456987 → 456,987)
 //   2. Replaces * with ×
-//   3. Moves any trailing "(description)" to the top as the formula label
+//   3. If there's a trailing text description (words, not numbers), shows it first
+//   4. Splits each = step onto its own line for readability
+//   5. Humanises internal variable names (Year1_fee → Year 1 fee)
 function formatCalcNote(raw: string): string {
-  // Strip leading "Year N =" prefix so we don't show redundant info
-  const stripped = raw.replace(/^.*?year\s*\d+\s*=\s*/i, '').trim()
-  // Detect trailing parenthetical: "...= 436288 (base after discount plus 10 users)"
-  const trailingParen = stripped.match(/^([\s\S]+?)\s*\(([^)]+)\)\s*$/)
-  const calcBody = trailingParen ? trailingParen[1].trim() : stripped
-  const description = trailingParen ? trailingParen[2].trim() : null
   const fmtNums = (s: string) =>
     s
       .replace(/\b(\d{4,})\b/g, n => parseInt(n, 10).toLocaleString('en-US'))
       .replace(/\s*\*\s*/g, ' × ')
-  return description
-    ? `${description}\n\n${fmtNums(calcBody)}`
-    : fmtNums(stripped)
+
+  // Strip the redundant "Year N = " prefix
+  const stripped = raw.replace(/^.*?year\s*\d+\s*=\s*/i, '').trim()
+
+  // Detect trailing parenthetical — only treat as a formula description if it
+  // contains real words (not just numbers and operators like "(456987 + 20*2500)")
+  const trailingParen = stripped.match(/^([\s\S]+?)\s*\(([^)]+)\)\s*$/)
+  if (trailingParen) {
+    const candidate = trailingParen[2].trim()
+    const isTextDesc = /[a-zA-Z]{3,}/.test(candidate) && !/^\s*[\d(]/.test(candidate)
+    if (isTextDesc) {
+      // Description first, then each calculation step on its own line
+      const steps = trailingParen[1].trim().split(/\s*=\s*/)
+      return `${candidate}\n\n${steps.map(fmtNums).join('\n= ')}`
+    }
+  }
+
+  // No text description: split on = so each simplification step gets its own line,
+  // and humanise variable names in the first (formula) step
+  const steps = stripped.split(/\s*=\s*/)
+  steps[0] = steps[0]
+    .replace(/year(\d+)\s*\+\s*year(\d+)\s*fees?/gi, (_, a, b) => `Year ${a} + Year ${b} fees`)
+    .replace(/year(\d+)_?fee/gi, (_, n) => `Year ${n} fee`)
+  return steps.map(fmtNums).join('\n= ')
 }
 
 function getYearNote(notes: string | undefined, yearKey: string): string | undefined {
