@@ -234,6 +234,14 @@ function buildContractSummary(
   return lines
 }
 
+// Finds the sentence in extraction_notes that discusses a specific year's calculation.
+function getYearNote(notes: string | undefined, yearKey: string): string | undefined {
+  if (!notes) return undefined
+  const yr = yearKey.replace('year', '')
+  const parts = notes.split(/[.;]\s*/)
+  return parts.find(s => new RegExp(`year\\s*${yr}\\b`, 'i').test(s))?.trim() || notes.split(/[.;]\s*/)[0]?.trim()
+}
+
 // ── Sub-components ─────────────────────────────────────────────────────────
 
 function Stat({ label, value, sub }: { label: string; value?: string | null; sub?: string }) {
@@ -317,8 +325,32 @@ function EditableStat({ label, value, sub, inputType = 'text', placeholder, onSa
   )
 }
 
-function BigValue({ label, value, unit, warn, note, children }: {
-  label: string; value: string; unit?: string; warn?: boolean; note?: string; children?: React.ReactNode
+function CalcTooltip({ calc, children }: { calc?: string | null; children: React.ReactNode }) {
+  const [show, setShow] = useState(false)
+  if (!calc) return <>{children}</>
+  return (
+    <span className="relative inline-block" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      <span className="cursor-help border-b border-dashed" style={{ borderColor: 'rgba(26,61,43,0.35)' }}>
+        {children}
+      </span>
+      {show && (
+        <div
+          className="absolute z-50 bottom-full mb-2.5 rounded-xl shadow-xl pointer-events-none text-left"
+          style={{ background: '#1A3D2B', color: '#fff', padding: '10px 13px', width: 290, left: '50%', transform: 'translateX(-50%)' }}
+        >
+          <p className="text-[9px] font-bold uppercase tracking-[0.15em] mb-1.5" style={{ color: 'rgba(255,255,255,0.45)' }}>
+            How this is calculated
+          </p>
+          <p className="text-[11px] leading-relaxed" style={{ color: 'rgba(255,255,255,0.88)' }}>{calc}</p>
+          <div className="absolute left-1/2 -translate-x-1/2 top-full" style={{ width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderTop: '6px solid #1A3D2B' }} />
+        </div>
+      )}
+    </span>
+  )
+}
+
+function BigValue({ label, value, unit, warn, note, calcNote, children }: {
+  label: string; value: string; unit?: string; warn?: boolean; note?: string; calcNote?: string; children?: React.ReactNode
 }) {
   return (
     <div>
@@ -331,7 +363,9 @@ function BigValue({ label, value, unit, warn, note, children }: {
         )}
       </p>
       <div className="flex items-baseline gap-1.5">
-        <span className="text-[30px] font-medium leading-none" style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }}>{value}</span>
+        <CalcTooltip calc={calcNote}>
+          <span className="text-[30px] font-medium leading-none" style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }}>{value}</span>
+        </CalcTooltip>
         {unit && <span className="text-[12px] text-stone">{unit}</span>}
       </div>
       {note && <p className="text-[11px] text-stone mt-1">{note}</p>}
@@ -1564,7 +1598,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           {Object.entries(terms.year_pricing).map(([yr, price]) => (
                             <tr key={yr} style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
                               <td className="py-1 text-xs text-stone">{yr.replace('year', 'Year ')}</td>
-                              <td className="py-1 text-xs font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(price, cur)}</td>
+                              <td className="py-1 text-xs font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                                <CalcTooltip calc={getYearNote(terms?.extraction_notes, yr)}>
+                                  {fmt(price, cur)}
+                                </CalcTooltip>
+                              </td>
                             </tr>
                           ))}
                           {tcv > 0 && (
@@ -1648,24 +1686,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   </div>
                 </div>
 
-                {/* Extraction notes as bullets */}
-                {terms?.extraction_notes && (
-                  <div className="mt-4 pt-3" style={{ borderTop: '1px solid rgba(74,124,89,0.12)' }}>
-                    <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Extraction notes</p>
-                    <ul className="space-y-1">
-                      {terms.extraction_notes
-                        .split(/\.\s+(?=[A-Z])|;\s*/)
-                        .map(s => s.trim().replace(/\.$/, ''))
-                        .filter(s => s.length > 4)
-                        .map((note, i) => (
-                          <li key={i} className="flex items-start gap-1.5">
-                            <i className="ti ti-info-circle flex-shrink-0 mt-0.5" style={{ fontSize: 10, color: '#D97706' }} />
-                            <span className="text-[11px] text-stone">{note}.</span>
-                          </li>
-                        ))}
-                    </ul>
-                  </div>
-                )}
               </div>
             )}
 
@@ -1866,6 +1886,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             value={fmt(price, cur)}
                             unit="/ year"
                             warn={yItem ? yItem.confidence_score < 0.95 && !correction(yItem.id) : false}
+                            calcNote={getYearNote(terms?.extraction_notes, year)}
                           >
                             {yItem && yItem.confidence_score < 0.95 && (
                               <CorrectionInput value={correction(yItem.id)} onChange={v => setCorr(yItem.id, v)} />
