@@ -1548,9 +1548,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 <p className="text-[10px] font-bold uppercase tracking-[0.16em] mb-3" style={{ color: '#4A7C59' }}>
                   Contract at a glance
                 </p>
-                <div className="space-y-1.5">
+                <div className="space-y-0.5">
                   {summaryLines.map((line, i) => (
-                    <p key={i} className="text-[13px] text-ink leading-relaxed">{line}</p>
+                    <p key={i} className="text-[13px] text-ink leading-snug">{line}</p>
                   ))}
                 </div>
                 {terms?.extraction_notes && (
