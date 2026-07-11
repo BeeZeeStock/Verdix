@@ -1166,7 +1166,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
       )}
 
       {/* ── Revenue actuals ───────────────────────────────────────────── */}
-      {actualInvoices.length > 0 && (() => {
+      {projectedTcv > 0 && (() => {
         // Waterfall bars: One-time → Base billed → Overage billed → Remaining → TCV projected
         type ABar = { label: string; sub?: string; amount: number; kind: 'segment' | 'total'; color: string; dashed?: boolean }
         const aBars: ABar[] = [
