@@ -10,6 +10,30 @@ import { supabaseServer } from './supabase'
 
 export type BillingPlatform = 'stripe' | 'chargebee'
 
+async function getOrgConfig(orgId: string, connector: string): Promise<Record<string, string> | null> {
+  const { data } = await supabaseServer
+    .from('org_integrations')
+    .select('config')
+    .eq('org_id', orgId)
+    .eq('connector_name', connector)
+    .eq('is_active', true)
+    .single()
+  return (data?.config as Record<string, string>) ?? null
+}
+
+async function detectOrgPlatform(orgId: string): Promise<BillingPlatform> {
+  const { data } = await supabaseServer
+    .from('org_integrations')
+    .select('connector_name')
+    .eq('org_id', orgId)
+    .eq('connector_type', 'billing')
+    .eq('is_active', true)
+    .limit(1)
+    .single()
+  if (data?.connector_name === 'chargebee') return 'chargebee'
+  return 'stripe'
+}
+
 export interface LineItemInput {
   product_name: string
   quantity: number
@@ -31,18 +55,20 @@ export interface ConfigureResult {
 export async function configureBilling(
   terms: ContractTerms,
   lineItems: LineItemInput[],
-  platform: BillingPlatform = detectPlatform(),
-  jobId?: string
+  platform?: BillingPlatform,
+  jobId?: string,
+  orgId?: string
 ): Promise<ConfigureResult> {
-  if (platform === 'chargebee') {
-    return configureChargebee(terms, lineItems, jobId)
-  }
-  return configureStripe(terms, lineItems, jobId)
+  const resolved = platform ?? (orgId ? await detectOrgPlatform(orgId) : detectPlatform())
+  if (resolved === 'chargebee') return configureChargebee(terms, lineItems, jobId, orgId)
+  return configureStripe(terms, lineItems, jobId, orgId)
 }
 
-async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[], jobId?: string): Promise<ConfigureResult> {
+async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[], jobId?: string, orgId?: string): Promise<ConfigureResult> {
   const { default: Stripe } = await import('stripe')
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+  const orgConfig = orgId ? await getOrgConfig(orgId, 'stripe') : null
+  const stripeKey = orgConfig?.secret_key ?? process.env.STRIPE_SECRET_KEY!
+  const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
 
   const cur         = (terms.currency ?? 'EUR').toLowerCase()
   const contractId  = terms.contract_id ?? jobId ?? 'unknown'
@@ -156,10 +182,11 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
   }
 }
 
-async function configureChargebee(terms: ContractTerms, lineItems: LineItemInput[], jobId?: string): Promise<ConfigureResult> {
+async function configureChargebee(terms: ContractTerms, lineItems: LineItemInput[], jobId?: string, orgId?: string): Promise<ConfigureResult> {
   // Chargebee REST API — using native fetch
-  const site = process.env.CHARGEBEE_SITE!
-  const apiKey = process.env.CHARGEBEE_API_KEY!
+  const orgConfig = orgId ? await getOrgConfig(orgId, 'chargebee') : null
+  const site   = orgConfig?.site    ?? process.env.CHARGEBEE_SITE!
+  const apiKey = orgConfig?.api_key ?? process.env.CHARGEBEE_API_KEY!
   const base = `https://${site}.chargebee.com/api/v2`
   const headers = {
     'Authorization': `Basic ${Buffer.from(`${apiKey}:`).toString('base64')}`,

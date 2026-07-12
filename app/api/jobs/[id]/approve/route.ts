@@ -32,7 +32,7 @@ export async function POST(
   }>
 
   try {
-    const result = await configureBilling(terms, lineItems, undefined, id)
+    const result = await configureBilling(terms, lineItems, undefined, id, org.orgId)
 
     await supabaseServer.from('jobs').update({
       execute_status: 'COMPLETED',

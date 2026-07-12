@@ -42,6 +42,7 @@ const navSections = [
 const settingsItems = [
   { href: '/setup', icon: 'ti-rocket', label: 'Setup guide', exact: true },
   { href: '/settings', icon: 'ti-settings', label: 'Settings', exact: true },
+  { href: '/settings/integrations', icon: 'ti-plug-connected', label: 'Integrations', exact: false },
   { href: '/settings/team', icon: 'ti-users', label: 'Team', exact: false },
   { href: '/settings/learned-rules', icon: 'ti-brain', label: 'Learned rules', exact: false },
 ]
