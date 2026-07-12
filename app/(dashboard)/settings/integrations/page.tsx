@@ -286,8 +286,9 @@ function PlatformCard({
       setMsg({ ok: true, text: 'Connected successfully.' })
       setForm({})
       setOpen(false)
-    } catch {
-      setMsg({ ok: false, text: 'Failed to save credentials. Check the values and try again.' })
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'Unknown error'
+      setMsg({ ok: false, text: detail })
     } finally {
       setSaving(false)
     }
