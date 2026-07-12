@@ -162,8 +162,7 @@ const BILLING_PLATFORMS: Platform[] = [
     description: 'Push approved subscriptions directly to Stripe. Handles recurring billing, metered usage, and invoicing.',
     status:      'live',
     fields: [
-      { key: 'secret_key',       label: 'Secret key',       placeholder: 'sk_live_…',  secret: true },
-      { key: 'publishable_key',  label: 'Publishable key',  placeholder: 'pk_live_…' },
+      { key: 'secret_key', label: 'Secret key', placeholder: 'sk_live_… (or sk_test_… for sandbox)', secret: true },
     ],
   },
   {
