@@ -43,11 +43,25 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'config is required' }, { status: 400 })
   }
 
+  const connectorType = CONNECTOR_TYPES[connector_name]
+
+  // Deactivate any existing active connector of the same type (billing or crm)
+  // so only one can be active at a time.
+  const { error: deactivateError } = await supabaseServer
+    .from('org_integrations')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('org_id', org.orgId)
+    .eq('connector_type', connectorType)
+    .eq('is_active', true)
+    .neq('connector_name', connector_name)
+
+  if (deactivateError) return NextResponse.json({ error: deactivateError.message }, { status: 500 })
+
   const { error } = await supabaseServer
     .from('org_integrations')
     .upsert({
       org_id:         org.orgId,
-      connector_type: CONNECTOR_TYPES[connector_name],
+      connector_type: connectorType,
       connector_name,
       config,
       is_active:      true,

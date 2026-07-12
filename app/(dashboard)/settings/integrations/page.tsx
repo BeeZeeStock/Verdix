@@ -258,12 +258,14 @@ const CRM_PLATFORMS: Platform[] = [
 function PlatformCard({
   platform,
   connected,
+  activeOfType,
   isAdmin,
   onConnect,
   onDisconnect,
 }: {
   platform:     Platform
   connected:    boolean
+  activeOfType: string | null   // name of the currently active connector of this type (if any)
   isAdmin:      boolean
   onConnect:    (id: string, config: Record<string, string>) => Promise<void>
   onDisconnect: (id: string) => Promise<void>
@@ -276,6 +278,8 @@ function PlatformCard({
 
   const Logo = LOGOS[platform.id]
   const isLive = platform.status === 'live'
+  // Another platform of the same type is already connected (and it's not this one)
+  const willReplace = activeOfType !== null && activeOfType !== platform.id && !connected
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
@@ -345,9 +349,9 @@ function PlatformCard({
           <button
             onClick={() => { setOpen(o => !o); setMsg(null) }}
             className="flex-shrink-0 text-xs font-semibold px-4 py-2 rounded-xl border transition-colors"
-            style={{ borderColor: 'rgba(26,61,43,0.2)', color: '#1A3D2B' }}
+            style={{ borderColor: willReplace ? 'rgba(217,119,6,0.35)' : 'rgba(26,61,43,0.2)', color: willReplace ? '#B45309' : '#1A3D2B' }}
           >
-            {open ? 'Cancel' : 'Connect'}
+            {open ? 'Cancel' : willReplace ? 'Switch' : 'Connect'}
           </button>
         )}
         {isAdmin && connected && (
@@ -368,6 +372,17 @@ function PlatformCard({
       {/* Credential form */}
       {open && !connected && isLive && platform.fields && (
         <div className="border-t px-5 pb-5 pt-4" style={{ borderColor: 'rgba(26,61,43,0.08)', background: '#FAFAF8' }}>
+          {willReplace && (
+            <div className="mb-3 flex items-start gap-2 rounded-xl px-3 py-2.5 text-xs"
+              style={{ background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(217,119,6,0.2)', color: '#92400E' }}>
+              <i className="ti ti-alert-triangle flex-shrink-0 mt-0.5" style={{ fontSize: 13 }} />
+              <span>
+                Connecting {platform.name} will automatically disconnect{' '}
+                <strong>{BILLING_PLATFORMS.concat(CRM_PLATFORMS).find(p => p.id === activeOfType)?.name ?? activeOfType}</strong>.
+                Only one {platform.type === 'billing' ? 'billing platform' : 'CRM'} can be active at a time.
+              </span>
+            </div>
+          )}
           <form onSubmit={handleSave} className="flex flex-col gap-3">
             {platform.fields.map(field => (
               <div key={field.key}>
@@ -390,7 +405,7 @@ function PlatformCard({
                 disabled={saving}
                 className="bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors disabled:opacity-50"
               >
-                {saving ? 'Saving…' : 'Save credentials'}
+                {saving ? 'Saving…' : willReplace ? `Switch to ${platform.name}` : 'Save credentials'}
               </button>
               {msg && (
                 <p className={`text-xs ${msg.ok ? 'text-forest' : 'text-red-600'}`}>{msg.text}</p>
@@ -436,6 +451,14 @@ export default function IntegrationsPage() {
   const isConnected = (id: string) =>
     integrations.some(i => i.connector_name === id && i.is_active)
 
+  const activeBilling = integrations.find(i =>
+    i.is_active && BILLING_PLATFORMS.some(p => p.id === i.connector_name)
+  )?.connector_name ?? null
+
+  const activeCrm = integrations.find(i =>
+    i.is_active && CRM_PLATFORMS.some(p => p.id === i.connector_name)
+  )?.connector_name ?? null
+
   const isAdmin = org?.role === 'owner' || org?.role === 'admin'
 
   const handleConnect = async (connectorName: string, config: Record<string, string>) => {
@@ -456,8 +479,8 @@ export default function IntegrationsPage() {
     await load()
   }
 
-  const connectedBilling = BILLING_PLATFORMS.filter(p => isConnected(p.id)).length
-  const connectedCrm     = CRM_PLATFORMS.filter(p => isConnected(p.id)).length
+  const connectedBilling = activeBilling !== null
+  const connectedCrm     = activeCrm !== null
 
   if (loading) {
     return (
@@ -491,10 +514,8 @@ export default function IntegrationsPage() {
               Verdix pushes approved subscriptions to these systems.
             </p>
           </div>
-          {connectedBilling > 0 && (
-            <span className="text-xs text-forest font-medium">
-              {connectedBilling} connected
-            </span>
+          {connectedBilling && (
+            <span className="text-xs text-forest font-medium">1 connected</span>
           )}
         </div>
         <div className="flex flex-col gap-2">
@@ -503,6 +524,7 @@ export default function IntegrationsPage() {
               key={p.id}
               platform={p}
               connected={isConnected(p.id)}
+              activeOfType={activeBilling}
               isAdmin={isAdmin}
               onConnect={handleConnect}
               onDisconnect={handleDisconnect}
@@ -522,10 +544,8 @@ export default function IntegrationsPage() {
               Verdix pulls deals and writes subscription IDs back when billing is configured.
             </p>
           </div>
-          {connectedCrm > 0 && (
-            <span className="text-xs text-forest font-medium">
-              {connectedCrm} connected
-            </span>
+          {connectedCrm && (
+            <span className="text-xs text-forest font-medium">1 connected</span>
           )}
         </div>
         <div className="flex flex-col gap-2">
@@ -534,6 +554,7 @@ export default function IntegrationsPage() {
               key={p.id}
               platform={p}
               connected={isConnected(p.id)}
+              activeOfType={activeCrm}
               isAdmin={isAdmin}
               onConnect={handleConnect}
               onDisconnect={handleDisconnect}
