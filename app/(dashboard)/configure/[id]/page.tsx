@@ -1039,22 +1039,31 @@ function ReviewPanel({
   const confirmItem = async (item: LineItem) => {
     setSaving(item.id)
     try {
-      // Record as confirmed (no change needed) so future extractions learn this is acceptable
-      await fetch('/api/corrections', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jobId,
-          fieldName:         'product_name',
-          extractedValue:    item.product_name,
-          correctedValue:    item.product_name,
-          correctionReason:  'confirmed_correct',
-          applyToFuture:     true,
+      await Promise.all([
+        // Record as confirmed so future extractions learn this is acceptable
+        fetch('/api/corrections', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobId,
+            fieldName:         'product_name',
+            extractedValue:    item.product_name,
+            correctedValue:    item.product_name,
+            correctionReason:  'confirmed_correct',
+            applyToFuture:     true,
+          }),
         }),
-      })
+        // Persist confidence_score = 1 so the banner doesn't reappear after reload
+        fetch(`/api/jobs/${jobId}/line-items`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ itemId: item.id, fields: { confidence_score: 1 } }),
+        }),
+      ])
       onCorrect(item.id, item.product_name)
       setResolved(r => ({ ...r, [item.id]: 'confirmed' }))
       setEditing(null)
+      onRefresh()
     } finally {
       setSaving(null)
     }
@@ -1068,13 +1077,13 @@ function ReviewPanel({
         const price = raw ? parseFloat(raw.replace(/[^0-9.]/g, '')) : null
 
         if (price !== null && !isNaN(price)) {
-          // Update the line item record directly
+          // Update the line item record directly (confidence_score: 1 prevents banner from reappearing)
           await fetch(`/api/jobs/${jobId}/line-items`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               itemId: item.id,
-              fields: { unit_price: price, total_amount: price * (item.quantity || 1) },
+              fields: { unit_price: price, total_amount: price * (item.quantity || 1), confidence_score: 1 },
             }),
           })
           // Log the correction for future learning
@@ -1095,17 +1104,24 @@ function ReviewPanel({
       } else {
         const name = draftName[item.id]?.trim()
         if (!name) return
-        await fetch('/api/corrections', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jobId,
-            fieldName:        'product_name',
-            extractedValue:   item.product_name,
-            correctedValue:   name,
-            applyToFuture:    true,
+        await Promise.all([
+          fetch('/api/corrections', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jobId,
+              fieldName:        'product_name',
+              extractedValue:   item.product_name,
+              correctedValue:   name,
+              applyToFuture:    true,
+            }),
           }),
-        })
+          fetch(`/api/jobs/${jobId}/line-items`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ itemId: item.id, fields: { confidence_score: 1 } }),
+          }),
+        ])
         onCorrect(item.id, name)
       }
 

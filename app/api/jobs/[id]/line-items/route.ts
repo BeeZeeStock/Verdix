@@ -14,7 +14,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'itemId and fields are required' }, { status: 400 })
   }
 
-  const allowed = ['product_name', 'unit_price', 'quantity', 'billing_period', 'total_amount']
+  const allowed = ['product_name', 'unit_price', 'quantity', 'billing_period', 'total_amount', 'confidence_score']
   const update: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(fields)) {
     if (allowed.includes(k)) update[k] = v
