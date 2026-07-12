@@ -19,6 +19,8 @@ type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null;
 
 type Terms = {
   id?: string
+  contract_id?: string
+  crm_id?: string
   customer_name?: string; customer_address?: string; billing_contact?: string
   vendor_name?: string;   vendor_address?: string
   contract_start_date?: string; contract_end_date?: string; contract_term_months?: number
@@ -140,10 +142,13 @@ function computeContractTCV(terms: Terms | undefined, lineItems: LineItem[]): nu
     loopIdx++
   }
 
-  // Prefer structured line items; fall back to terms.one_time_fees if none exist yet
-  const oneTimeFromItems = lineItems.filter(i => /one.?time/i.test(i.billing_period))
-  const oneTimeTotal = oneTimeFromItems.length > 0
-    ? oneTimeFromItems.reduce((s, i) => s + i.total_amount, 0)
+  // Include all non-recurring line items (one-time fees, services, setup, implementation).
+  // The old filter only matched "one_time" billing_period which missed service charges.
+  const nonRecurringItems = lineItems.filter(i =>
+    !/^(monthly|annual|quarterly|semi.?annual|yearly|recurring)/i.test((i.billing_period ?? '').trim())
+  )
+  const oneTimeTotal = nonRecurringItems.length > 0
+    ? nonRecurringItems.reduce((s, i) => s + i.total_amount, 0)
     : (terms.one_time_fees ?? []).reduce((s, f) => s + (f.amount ?? 0), 0)
 
   return total + oneTimeTotal
@@ -234,6 +239,45 @@ function buildContractSummary(
   return lines
 }
 
+// Derives billing model from contract structure (no LLM required)
+function deriveBillingModel(terms: Terms | undefined): 'fixed' | 'hybrid' | 'consumption' {
+  const hasTiers = (terms?.overage_tiers?.length ?? 0) > 0
+  const hasFixed = !!(terms?.base_monthly_fee || terms?.base_annual_fee ||
+    terms?.year_pricing || (terms?.ramp_schedule?.length ?? 0) > 0)
+  if (hasTiers && hasFixed) return 'hybrid'
+  if (hasTiers) return 'consumption'
+  return 'fixed'
+}
+
+// Classifies a one-time fee label into service / hardware / other
+function classifyFee(label: string): 'service' | 'hardware' | 'other' {
+  const l = label.toLowerCase()
+  if (/service|implement|setup|onboard|profession|training|consult|deploy|migration/.test(l)) return 'service'
+  if (/hardware|device|equipment|physical|machine|sensor/.test(l)) return 'hardware'
+  return 'other'
+}
+
+// Exports billing line items as a Stripe-compatible CSV
+function downloadBillingCSV(items: LineItem[], jobName: string, cur: string) {
+  const headers = ['Product Name', 'Quantity', 'Unit Price', 'Total Amount', 'Billing Period', 'Currency']
+  const rows = items.map(i => [
+    `"${(i.product_name ?? '').replace(/"/g, '""')}"`,
+    i.quantity,
+    i.unit_price,
+    i.total_amount,
+    `"${i.billing_period}"`,
+    i.currency || cur,
+  ])
+  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${jobName.replace(/[^a-z0-9]/gi, '-').toLowerCase()}-billing.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 // Finds the sentence in extraction_notes that discusses a specific year's calculation.
 // Split on semicolons or sentence-ending periods (negative lookbehind avoids splitting on decimals like 0.9).
 function splitCalcNotes(notes: string): string[] {
@@ -271,9 +315,22 @@ function formatCalcNote(raw: string): string {
   // No text description: split on = so each simplification step gets its own line,
   // and humanise variable names in the first (formula) step
   const steps = stripped.split(/\s*=\s*/)
-  steps[0] = steps[0]
+  const lhs = steps[0]
     .replace(/year(\d+)\s*\+\s*year(\d+)\s*fees?/gi, (_, a, b) => `Year ${a} + Year ${b} fees`)
     .replace(/year(\d+)_?fee/gi, (_, n) => `Year ${n} fee`)
+  steps[0] = lhs
+
+  // When the LHS has year carry-forward refs + an incremental fee block (base + users*rate),
+  // generate a natural-language description so the user knows what each number means.
+  const yearRefs = [...lhs.matchAll(/year\s*\d+(?:\s*\+\s*year\s*\d+)*/gi)].map(m => m[0].trim())
+  const incrMatch = lhs.match(/\(\s*(\d{4,})\s*\+\s*(\d+)\s*[*×]\s*(\d+)\s*\)/)
+  if (yearRefs.length > 0 && incrMatch) {
+    const [, base, users, rate] = incrMatch
+    const prevStr = [...new Set(yearRefs)].join(' + ')
+    const desc = `${prevStr} carried forward + base annual fee (${parseInt(base).toLocaleString('en-US')}) + ${users} users × ${parseInt(rate).toLocaleString('en-US')} annual per-user fee (not per month)`
+    return `${desc}\n\n${steps.map(fmtNums).join('\n= ')}`
+  }
+
   return steps.map(fmtNums).join('\n= ')
 }
 
@@ -287,6 +344,20 @@ function getYearNote(notes: string | undefined, yearKey: string): string | undef
 
 // ── Sub-components ─────────────────────────────────────────────────────────
 
+function BillingModelBadge({ model }: { model: 'fixed' | 'hybrid' | 'consumption' }) {
+  const map = {
+    fixed:       { label: 'Fixed — Subscription',        bg: '#EEF9F2', color: '#1A3D2B', border: 'rgba(74,124,89,0.25)' },
+    hybrid:      { label: 'Hybrid — Fixed + Consumption', bg: '#EFF6FF', color: '#1E40AF', border: 'rgba(59,130,246,0.25)' },
+    consumption: { label: 'Consumption',                  bg: '#FEF9C3', color: '#854D0E', border: 'rgba(234,179,8,0.4)' },
+  }[model]
+  return (
+    <span className="text-[10px] font-semibold px-3 py-1.5 rounded-full"
+      style={{ background: map.bg, color: map.color, border: `1px solid ${map.border}` }}>
+      {map.label}
+    </span>
+  )
+}
+
 function Stat({ label, value, sub }: { label: string; value?: string | null; sub?: string }) {
   return (
     <div>
@@ -297,10 +368,11 @@ function Stat({ label, value, sub }: { label: string; value?: string | null; sub
   )
 }
 
-function EditableStat({ label, value, sub, inputType = 'text', placeholder, onSave }: {
+function EditableStat({ label, value, sub, hint, inputType = 'text', placeholder, onSave }: {
   label: string
   value?: string | null
   sub?: string
+  hint?: string
   inputType?: 'text' | 'date' | 'number'
   placeholder?: string
   onSave: (v: string) => Promise<void>
@@ -355,6 +427,7 @@ function EditableStat({ label, value, sub, inputType = 'text', placeholder, onSa
         <div className="flex-1 min-w-0">
           <p className="text-[15px] font-medium text-ink leading-snug">{value ?? <span className="text-stone/40">—</span>}</p>
           {sub && <p className="text-[11px] text-stone mt-0.5">{sub}</p>}
+          {!value && hint && <p className="text-[11px] mt-0.5 leading-snug" style={{ color: '#B45309' }}>{hint}</p>}
         </div>
         <button
           onClick={startEdit}
@@ -1399,12 +1472,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   }
 
   const saveField = async (field: string, raw: string) => {
-    const numFields = ['contract_term_months', 'payment_terms_days', 'base_monthly_fee', 'base_annual_fee']
+    const numFields = ['contract_term_months', 'payment_terms_days', 'base_monthly_fee', 'base_annual_fee', 'renewal_notice_days']
+    const boolFields = ['auto_renews']
     const body: Record<string, unknown> = {}
     if (numFields.includes(field)) {
       const n = parseFloat(raw.replace(/[^0-9.]/g, ''))
       if (isNaN(n)) return
       body[field] = n
+    } else if (boolFields.includes(field)) {
+      const lower = raw.toLowerCase().trim()
+      body[field] = lower === 'yes' || lower === 'true' || lower === 'y'
     } else {
       body[field] = raw
     }
@@ -1531,10 +1608,29 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       : null)
 
   const tiers = terms?.overage_tiers ?? []
+
+  // Group overage tiers by unit_type for dynamic display
+  const chargingGroups = new Map<string, typeof tiers>()
+  for (const t of tiers) {
+    const key = t.unit_type ?? 'Other'
+    if (!chargingGroups.has(key)) chargingGroups.set(key, [])
+    chargingGroups.get(key)!.push(t)
+  }
+
+  // Keep backward-compat refs used by buildContractSummary
   const userTiers  = tiers.filter(t => t.unit_type?.toLowerCase().includes('user'))
   const apiTiers   = tiers.filter(t => t.unit_type?.toLowerCase().includes('api') || t.unit_type?.toLowerCase().includes('call'))
-  const otherTiers = tiers.filter(t => !userTiers.includes(t) && !apiTiers.includes(t))
 
+  // Classify one-time fees into services / hardware / credits / other
+  const allFees      = terms?.one_time_fees ?? []
+  const serviceFees  = allFees.filter(f => f.amount >= 0 && classifyFee(f.fee_label) === 'service')
+  const hardwareFees = allFees.filter(f => f.amount >= 0 && classifyFee(f.fee_label) === 'hardware')
+  const otherPosFees = allFees.filter(f => f.amount >= 0 && classifyFee(f.fee_label) === 'other')
+  const creditFees   = allFees.filter(f => f.amount < 0)
+  const serviceFeeTotal  = serviceFees.reduce((s, f) => s + f.amount, 0)
+  const hardwareFeeTotal = hardwareFees.reduce((s, f) => s + f.amount, 0)
+
+  const billingModel = deriveBillingModel(terms)
   const src = terms?.field_sources ?? {}
   const tcv = computeContractTCV(terms, items)
   const summaryLines = buildContractSummary(terms, cur, tcv, userTiers, apiTiers)
@@ -1579,21 +1675,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             <span className="text-xs font-semibold px-3 py-1 rounded-full flex items-center gap-1.5" style={{ background: '#D4EAD9', border: '1px solid rgba(74,124,89,0.3)', color: '#1A3D2B' }}>
               <i className="ti ti-circle-check" style={{ fontSize: 12 }} /> Configured in Stripe
             </span>
-          ) : needsReview > 0 ? (
-            <button
-              onClick={() => setReviewPanelOpen(true)}
-              className="text-xs font-semibold px-3 py-1 rounded-full flex items-center gap-1.5 transition-opacity hover:opacity-80"
-              style={{ background: '#FAEEDA', border: '1px solid #FAC775', color: '#633806' }}
-            >
-              <i className="ti ti-alert-triangle" style={{ fontSize: 11 }} />
-              {needsReview} item{needsReview > 1 ? 's' : ''} need review
-              <i className="ti ti-chevron-right" style={{ fontSize: 11 }} />
-            </button>
-          ) : (
+          ) : needsReview === 0 ? (
             <span className="text-xs font-semibold px-3 py-1 rounded-full flex items-center gap-1.5" style={{ background: '#D4EAD9', border: '1px solid rgba(74,124,89,0.3)', color: '#1A3D2B' }}>
               <i className="ti ti-circle-check" style={{ fontSize: 12 }} /> Ready to approve
             </span>
-          )}
+          ) : null}
         </div>
 
         {/* Content row */}
@@ -1616,119 +1702,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             </div>
           )}
 
-          {/* ── Terms tab: single-column contract detail ──────────────────── */}
+          {/* ── Terms tab ────────────────────────────────────────────────── */}
           <div className={`flex-1 overflow-y-auto px-8 py-8 space-y-6 ${activeTab !== 'terms' ? 'hidden' : ''}`}>
 
-            {/* ── Contract at a glance ── */}
+            {/* ── 1. Contract Brief ── */}
             {summaryLines.length > 0 && (
               <div className="rounded-2xl p-5" style={{ background: 'linear-gradient(135deg, #EEF9F2 0%, #F6FCF8 100%)', border: '1px solid rgba(74,124,89,0.18)' }}>
                 <p className="text-[10px] font-bold uppercase tracking-[0.16em] mb-3" style={{ color: '#4A7C59' }}>
-                  Contract at a glance
+                  Contract brief
                 </p>
-
-                {/* Headline sentence */}
-                <p className="text-[13px] text-ink leading-snug mb-4">{summaryLines[0]}</p>
-
-                {/* Two-column: pricing table (left) · key terms (right) */}
-                <div className="grid gap-5" style={{ gridTemplateColumns: (terms?.year_pricing && Object.keys(terms.year_pricing).length > 0) ? '1fr 1fr' : '1fr' }}>
-
-                  {/* ── Pricing table ── */}
-                  {terms?.year_pricing && Object.keys(terms.year_pricing).length > 0 ? (
-                    <div>
-                      <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-2">Annual fees</p>
-                      <table className="w-full">
-                        <tbody>
-                          {Object.entries(terms.year_pricing).map(([yr, price]) => (
-                            <tr key={yr} style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                              <td className="py-1 text-xs text-stone">{yr.replace('year', 'Year ')}</td>
-                              <td className="py-1 text-xs font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                                <CalcTooltip calc={getYearNote(terms?.extraction_notes, yr)}>
-                                  {fmt(price, cur)}
-                                </CalcTooltip>
-                              </td>
-                            </tr>
-                          ))}
-                          {tcv > 0 && (
-                            <tr>
-                              <td className="pt-2 text-[10px] font-semibold text-stone">Total (TCV)</td>
-                              <td className="pt-2 text-xs font-semibold text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(tcv, cur)}</td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : null}
-
-                  {/* ── Key terms list ── */}
-                  <div>
-                    <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-2">Key terms</p>
-                    <table className="w-full">
-                      <tbody>
-                        {terms?.billing_frequency && (
-                          <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                            <td className="py-1 text-xs text-stone w-1/2">Billing</td>
-                            <td className="py-1 text-xs text-ink text-right capitalize">{terms.billing_frequency}</td>
-                          </tr>
-                        )}
-                        {(terms?.payment_terms_text || terms?.payment_terms_days) && (
-                          <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                            <td className="py-1 text-xs text-stone">Payment</td>
-                            <td className="py-1 text-xs text-ink text-right">
-                              {terms?.payment_terms_text ?? `Net ${terms?.payment_terms_days}`}
-                            </td>
-                          </tr>
-                        )}
-                        <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                          <td className="py-1 text-xs text-stone">Auto-renew</td>
-                          <td className="py-1 text-xs text-right">
-                            {terms?.auto_renews === true
-                              ? <span className="text-ink">Yes{terms.renewal_notice_days ? ` (${terms.renewal_notice_days}d notice)` : ''}</span>
-                              : terms?.auto_renews === false
-                              ? <span className="text-ink">No</span>
-                              : <span style={{ color: '#B45309' }}>Unclear — review</span>
-                            }
-                          </td>
-                        </tr>
-                        {terms?.discounts && terms.discounts.length > 0 && (
-                          <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                            <td className="py-1 text-xs text-stone">Discount</td>
-                            <td className="py-1 text-xs text-ink text-right">
-                              {terms.discounts[0].discount_pct != null ? `${terms.discounts[0].discount_pct}%` : ''}
-                              {terms.discounts[0].discount_type ? ` ${terms.discounts[0].discount_type.replace(/_/g, ' ')}` : ''}
-                              {terms.discounts[0].end_date ? ` · until ${fmtDate(terms.discounts[0].end_date)}` : ''}
-                            </td>
-                          </tr>
-                        )}
-                        {userTiers.length > 0 && (() => {
-                          const min = Math.min(...userTiers.map(t => t.rate_per_unit ?? 0).filter(v => v > 0))
-                          return (
-                            <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                              <td className="py-1 text-xs text-stone">User overages</td>
-                              <td className="py-1 text-xs text-ink text-right">{min > 0 ? `from ${fmt(min, cur)}/user/mo` : 'tiered'}</td>
-                            </tr>
-                          )
-                        })()}
-                        {apiTiers.length > 0 && (
-                          <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                            <td className="py-1 text-xs text-stone">API overages</td>
-                            <td className="py-1 text-xs text-ink text-right">tiered</td>
-                          </tr>
-                        )}
-                        {(terms?.escalators?.length ?? 0) > 0 && (
-                          <tr>
-                            <td className="py-1 text-xs text-stone">Escalator</td>
-                            <td className="py-1 text-xs text-ink text-right">
-                              {terms!.escalators![0].escalator_pct != null
-                                ? `${terms!.escalators![0].escalator_pct}% / yr`
-                                : 'see contract'}
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
+                {summaryLines.map((line, i) => (
+                  <p key={i} className={`text-[13px] text-ink leading-snug ${i < summaryLines.length - 1 ? 'mb-1.5' : ''}`}>{line}</p>
+                ))}
               </div>
             )}
 
@@ -1756,114 +1741,82 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
-            {/* Stripe configured banner */}
-            {isConfigured && (
-              <div className="bg-forest text-white rounded-2xl px-6 py-4 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
-                    <i className="ti ti-circle-check text-mint" style={{ fontSize: 16 }} />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium">Billing configured in {billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}</p>
-                    {subId && <p className="text-mint/60 text-[11px] font-mono mt-0.5">{subId}</p>}
-                  </div>
-                </div>
-                {dashboardUrl && (
-                  <a
-                    href={dashboardUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex-shrink-0 inline-flex items-center gap-1.5 bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-colors"
-                  >
-                    View in {billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'} →
-                  </a>
-                )}
-              </div>
-            )}
-
-            {/* Contract overview card */}
+            {/* ── 2. Contract Overview ── */}
             <div className="bg-white rounded-2xl border border-forest/10 p-6">
               <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-5">Contract overview</h2>
               <div className="grid grid-cols-3 gap-x-8 gap-y-6">
                 <EditableStat
-                  label="Customer"
+                  label="Contract ID / Number"
+                  value={terms?.contract_id ?? null}
+                  placeholder="e.g. CLR-2024-0001"
+                  onSave={v => saveField('contract_id', v)}
+                />
+                <EditableStat
+                  label="CRM ID"
+                  value={terms?.crm_id ?? null}
+                  placeholder="Enter CRM deal ID"
+                  onSave={v => saveField('crm_id', v)}
+                />
+                <EditableStat
+                  label="Customer name"
                   value={terms?.customer_name}
-                  sub={terms?.customer_address ?? undefined}
                   onSave={v => saveField('customer_name', v)}
                 />
+                <EditableStat
+                  label="Customer billing address"
+                  value={terms?.customer_address ?? null}
+                  onSave={v => saveField('customer_address', v)}
+                />
+                <Stat label="Currency" value={cur} />
 
-                {/* Contract term — special: start and end date each independently editable */}
+                {/* Contract term — start and end date each independently editable */}
                 <div className="group">
                   <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Contract term</p>
                   <p className="text-[15px] font-medium text-ink leading-snug">
                     {terms?.contract_term_months ? `${terms.contract_term_months} months` : '—'}
                   </p>
-                  {/* Date range row */}
                   <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-                    {/* Start date */}
                     {dateEditing === 'start' ? (
                       <div className="flex items-center gap-1">
-                        <input
-                          autoFocus
-                          type="date"
-                          value={dateDraftStart}
+                        <input autoFocus type="date" value={dateDraftStart}
                           onChange={e => setDateDraftStart(e.target.value)}
                           onKeyDown={e => { if (e.key === 'Enter') saveDateField('start'); if (e.key === 'Escape') setDateEditing(null) }}
-                          className="text-[11px] border border-forest/30 rounded px-1.5 py-0.5 outline-none focus:border-forest"
-                        />
+                          className="text-[11px] border border-forest/30 rounded px-1.5 py-0.5 outline-none focus:border-forest" />
                         <button onClick={() => setDateEditing(null)} className="text-stone/50 hover:text-ink transition-colors" title="Cancel">
                           <i className="ti ti-x" style={{ fontSize: 11 }} />
                         </button>
-                        <button
-                          onClick={() => saveDateField('start')}
-                          disabled={dateSaving || !dateDraftStart}
+                        <button onClick={() => saveDateField('start')} disabled={dateSaving || !dateDraftStart}
                           className="flex items-center justify-center w-5 h-5 rounded text-white disabled:opacity-50"
-                          style={{ background: '#1A3D2B', fontSize: 10 }}
-                          title="Save"
-                        >
+                          style={{ background: '#1A3D2B', fontSize: 10 }} title="Save">
                           {dateSaving ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 10 }} /> : <i className="ti ti-check" style={{ fontSize: 10 }} />}
                         </button>
                       </div>
                     ) : (
-                      <button
-                        onClick={() => { setDateDraftStart(terms?.contract_start_date ?? ''); setDateEditing('start') }}
-                        className="text-[11px] text-stone hover:text-forest hover:underline transition-colors"
-                        title="Edit start date"
-                      >
+                      <button onClick={() => { setDateDraftStart(terms?.contract_start_date ?? ''); setDateEditing('start') }}
+                        className="text-[11px] text-stone hover:text-forest hover:underline transition-colors" title="Edit start date">
                         {fmtDate(terms?.contract_start_date)}
                       </button>
                     )}
                     <span className="text-[11px] text-stone/40">–</span>
-                    {/* End date */}
                     {dateEditing === 'end' ? (
                       <div className="flex items-center gap-1">
-                        <input
-                          autoFocus
-                          type="date"
-                          value={dateDraftEnd}
+                        <input autoFocus type="date" value={dateDraftEnd}
                           onChange={e => setDateDraftEnd(e.target.value)}
                           onKeyDown={e => { if (e.key === 'Enter') saveDateField('end'); if (e.key === 'Escape') setDateEditing(null) }}
-                          className="text-[11px] border border-forest/30 rounded px-1.5 py-0.5 outline-none focus:border-forest"
-                        />
+                          className="text-[11px] border border-forest/30 rounded px-1.5 py-0.5 outline-none focus:border-forest" />
                         <button onClick={() => setDateEditing(null)} className="text-stone/50 hover:text-ink transition-colors" title="Cancel">
                           <i className="ti ti-x" style={{ fontSize: 11 }} />
                         </button>
-                        <button
-                          onClick={() => saveDateField('end')}
-                          disabled={dateSaving || !dateDraftEnd}
+                        <button onClick={() => saveDateField('end')} disabled={dateSaving || !dateDraftEnd}
                           className="flex items-center justify-center w-5 h-5 rounded text-white disabled:opacity-50"
-                          style={{ background: '#1A3D2B', fontSize: 10 }}
-                          title="Save"
-                        >
+                          style={{ background: '#1A3D2B', fontSize: 10 }} title="Save">
                           {dateSaving ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 10 }} /> : <i className="ti ti-check" style={{ fontSize: 10 }} />}
                         </button>
                       </div>
                     ) : (
-                      <button
-                        onClick={() => { setDateDraftEnd(terms?.contract_end_date ?? ''); setDateEditing('end') }}
+                      <button onClick={() => { setDateDraftEnd(terms?.contract_end_date ?? ''); setDateEditing('end') }}
                         className={`text-[11px] hover:underline transition-colors ${terms?.contract_end_date ? 'text-stone hover:text-forest' : 'text-amber-600 hover:text-amber-700 font-medium'}`}
-                        title="Edit end date"
-                      >
+                        title="Edit end date">
                         {terms?.contract_end_date ? fmtDate(terms.contract_end_date) : 'Add end date'}
                       </button>
                     )}
@@ -1871,369 +1824,414 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 </div>
 
                 <EditableStat
+                  label="Billing cycle"
+                  value={terms?.billing_frequency ?? null}
+                  placeholder="e.g. monthly, annual"
+                  onSave={v => saveField('billing_frequency', v)}
+                />
+                <EditableStat
                   label="Payment terms"
                   value={terms?.payment_terms_text ?? (terms?.payment_terms_days ? `Net ${terms.payment_terms_days} days` : null)}
+                  hint="e.g. Net 30 days from invoice date"
+                  placeholder="e.g. Net 30 days from invoice date"
                   onSave={v => saveField('payment_terms_text', v)}
                 />
                 <EditableStat
-                  label="Billing contact"
-                  value={terms?.billing_contact ?? terms?.customer_name ?? null}
-                  onSave={v => saveField('billing_contact', v)}
-                />
-                <Stat
-                  label="Currency"
-                  value={cur}
-                  sub={terms?.billing_frequency ? `Billed ${terms.billing_frequency}` : undefined}
-                />
-                <Stat
-                  label="Auto-renews"
-                  value={terms?.auto_renews == null ? '—' : terms.auto_renews ? 'Yes' : 'No'}
+                  label="Auto-renewal"
+                  value={terms?.auto_renews == null ? null : terms.auto_renews ? 'Yes' : 'No'}
+                  hint="Enter Yes or No"
+                  placeholder="Yes or No"
                   sub={terms?.renewal_notice_days ? `${terms.renewal_notice_days} days notice required` : undefined}
+                  onSave={v => saveField('auto_renews', v)}
                 />
               </div>
             </div>
 
-            {/* Billing configuration */}
+            {/* ── 3. Commercial Terms ── */}
             <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
+              {/* Header with billing model badge */}
+              <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Commercial terms</h2>
+                <BillingModelBadge model={billingModel} />
+              </div>
 
-              {/* Base subscription */}
-              {(terms?.base_monthly_fee || terms?.year_pricing ||
-                (terms?.ramp_schedule && terms.ramp_schedule.length > 0)) && (
-                <div className="p-6">
-                  <SectionHeader
-                    title="Subscription fees"
-                    section={src.base_monthly_fee ?? src.year_pricing ?? src.ramp_schedule}
-                    onSection={openPDF}
-                  />
-                  {/* Flat monthly or year-pricing display */}
-                  {(terms?.base_monthly_fee || terms?.year_pricing) && (
-                    <div className="grid grid-cols-3 gap-8">
-                      {terms?.base_monthly_fee && (
-                        <BigValue
-                          label="Monthly fee"
-                          value={fmt(terms.base_monthly_fee, cur)}
-                          unit="/ month"
-                          warn={baseItem ? baseItem.confidence_score < 0.95 && !correction(baseItem.id) : false}
-                        >
-                          {baseItem && baseItem.confidence_score < 0.95 && (
-                            <CorrectionInput value={correction(baseItem.id)} onChange={v => setCorr(baseItem.id, v)} />
-                          )}
-                        </BigValue>
-                      )}
-                      {terms?.year_pricing && Object.entries(terms.year_pricing).map(([year, price]) => {
-                        const yItem = findItem(`${year} pricing`)
-                        return (
-                          <BigValue
-                            key={year}
-                            label={`${year.replace('year', 'Year ')} annual value`}
-                            value={fmt(price, cur)}
-                            unit="/ year"
-                            warn={yItem ? yItem.confidence_score < 0.95 && !correction(yItem.id) : false}
-                            calcNote={getYearNote(terms?.extraction_notes, year)}
-                          >
-                            {yItem && yItem.confidence_score < 0.95 && (
-                              <CorrectionInput value={correction(yItem.id)} onChange={v => setCorr(yItem.id, v)} />
-                            )}
-                          </BigValue>
-                        )
-                      })}
-                    </div>
-                  )}
-                  {/* Ramp schedule display */}
-                  {terms?.ramp_schedule && terms.ramp_schedule.length > 0 && (
-                    <div className={`grid gap-6 ${terms.ramp_schedule.length <= 2 ? 'grid-cols-2' : terms.ramp_schedule.length === 3 ? 'grid-cols-3' : 'grid-cols-4'}`}>
-                      {terms.ramp_schedule.map((step, i) => {
-                        const disc = (terms?.discounts ?? []).find(d => {
-                          const ds = d.start_date ? parseLocalDate(d.start_date) : null
-                          const de = d.end_date   ? parseLocalDate(d.end_date)   : null
-                          const ss = parseLocalDate(step.start_date)
-                          return ds && de && ss >= ds && ss <= de
-                        })
-                        const netFee = disc?.discount_pct ? step.monthly_fee * (1 - disc.discount_pct / 100) : null
-                        return (
-                          <BigValue
-                            key={i}
-                            label={step.label ?? `Ramp ${i + 1}`}
-                            value={fmt(step.monthly_fee, cur)}
-                            unit="/ month gross"
-                            note={[
-                              `${fmtDate(step.start_date)} – ${fmtDate(step.end_date)}`,
-                              netFee ? `Net after ${disc!.discount_pct}% discount: ${fmt(netFee, cur)}/mo` : null,
-                            ].filter(Boolean).join(' · ')}
-                          />
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Price escalators */}
-              {(terms?.escalators?.length ?? 0) > 0 && (
-                <>
-                  <Divider />
-                  <div className="p-6">
-                    <SectionHeader title="Price escalator" section={src.escalators} onSection={openPDF} />
-                    <div className="grid grid-cols-3 gap-8">
-                      {terms!.escalators!.map((e, i) => {
-                        const isEditing = escEditing === i
-                        const label = e.escalator_type === 'fixed_pct' ? 'Fixed annual increase' : e.escalator_type ?? 'Escalator'
-                        const note  = e.effective_date
-                          ? `Effective ${fmtDate(e.effective_date)}${e.cap_pct ? ` · capped at ${e.cap_pct}%` : ''}`
-                          : e.description ?? undefined
-                        return (
-                          <div
-                            key={i}
-                            className="rounded-xl p-4 transition-all"
-                            style={isEditing
-                              ? { background: '#FFFBEB', border: '1px solid #F59E0B' }
-                              : { background: 'transparent' }}
-                          >
-                            {/* Label row */}
-                            <div className="flex items-center justify-between mb-2">
-                              <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em]">{label}</p>
-                              {!isEditing && (
-                                <button
-                                  onClick={() => {
-                                    setEscEditValue(e.escalator_pct != null ? `${e.escalator_pct}` : '')
-                                    setEscEditing(i)
-                                  }}
-                                  title="Edit this value"
-                                  className="text-stone/35 hover:text-forest transition-colors"
-                                >
-                                  <i className="ti ti-pencil-minus" style={{ fontSize: 12 }} />
-                                </button>
-                              )}
-                            </div>
-
-                            {isEditing ? (
-                              /* ── Edit mode: amber cell ── */
-                              <div className="flex items-center gap-2 mt-1">
-                                <input
-                                  autoFocus
-                                  type="text"
-                                  value={escEditValue}
-                                  onChange={e => setEscEditValue(e.target.value)}
-                                  onKeyDown={ev => {
-                                    if (ev.key === 'Enter') saveEscalatorPct(i)
-                                    if (ev.key === 'Escape') setEscEditing(null)
-                                  }}
-                                  placeholder="e.g. 3"
-                                  className="flex-1 text-[28px] font-medium bg-transparent outline-none leading-none"
-                                  style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }}
-                                />
-                                <span className="text-sm text-stone self-end pb-0.5">%</span>
-                                <button
-                                  onClick={() => setEscEditing(null)}
-                                  className="text-stone/50 hover:text-ink transition-colors p-1 flex-shrink-0"
-                                  title="Cancel"
-                                >
-                                  <i className="ti ti-x" style={{ fontSize: 13 }} />
-                                </button>
-                                {escEditValue && (
-                                  <button
-                                    onClick={() => saveEscalatorPct(i)}
-                                    disabled={escSaving}
-                                    title="Save"
-                                    className="flex items-center justify-center w-8 h-8 rounded-lg text-white transition-colors flex-shrink-0 disabled:opacity-50"
-                                    style={{ background: '#1A3D2B' }}
-                                  >
-                                    {escSaving
-                                      ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} />
-                                      : <i className="ti ti-check" style={{ fontSize: 13 }} />}
-                                  </button>
-                                )}
-                              </div>
-                            ) : (
-                              /* ── View mode: normal white ── */
-                              <>
-                                <div className="flex items-baseline gap-1.5">
-                                  <span
-                                    className="text-[30px] font-medium leading-none"
-                                    style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }}
-                                  >
-                                    {e.escalator_pct != null ? `${e.escalator_pct}%` : '—'}
-                                  </span>
-                                  <span className="text-[12px] text-stone">per year</span>
-                                </div>
-                                {note && <p className="text-[11px] text-stone mt-1">{note}</p>}
-                              </>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                </>
-              )}
+              {/* Products & Services table */}
+              <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-3">Products & services</p>
+                <table className="w-full">
+                  <thead>
+                    <tr>
+                      {(['Description', 'Price', 'Type'] as const).map((h, i) => (
+                        <th key={h} className="text-[10px] font-semibold text-stone/60 tracking-[0.1em] pb-2 pr-4 last:pr-0"
+                          style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: i === 0 ? 'left' : 'right' }}>
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {terms?.base_monthly_fee && (
+                      <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                        <td className="py-2.5 pr-4 text-[13px] text-ink">{src.base_monthly_fee ?? 'Platform subscription'}</td>
+                        <td className="py-2.5 pr-4 text-[13px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                          {fmt(terms.base_monthly_fee, cur)}<span className="text-stone text-[11px] font-normal">/mo</span>
+                        </td>
+                        <td className="py-2.5 text-[11px] text-stone text-right">Recurring</td>
+                      </tr>
+                    )}
+                    {terms?.year_pricing && Object.entries(terms.year_pricing).map(([yr, price]) => (
+                      <tr key={yr} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                        <td className="py-2.5 pr-4 text-[13px] text-ink">
+                          Platform subscription · <span className="text-stone">{yr.replace('year', 'Year ')}</span>
+                        </td>
+                        <td className="py-2.5 pr-4 text-[13px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                          {fmt(price, cur)}<span className="text-stone text-[11px] font-normal">/yr</span>
+                        </td>
+                        <td className="py-2.5 text-[11px] text-stone text-right">Recurring</td>
+                      </tr>
+                    ))}
+                    {terms?.ramp_schedule && terms.ramp_schedule.map((step, i) => (
+                      <tr key={i} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                        <td className="py-2.5 pr-4 text-[13px] text-ink">
+                          {step.label ?? `Ramp stage ${i + 1}`}
+                          <span className="text-stone text-[11px] ml-2">{fmtDate(step.start_date)} – {fmtDate(step.end_date)}</span>
+                        </td>
+                        <td className="py-2.5 pr-4 text-[13px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                          {fmt(step.monthly_fee, cur)}<span className="text-stone text-[11px] font-normal">/mo</span>
+                        </td>
+                        <td className="py-2.5 text-[11px] text-stone text-right">Recurring</td>
+                      </tr>
+                    ))}
+                    {serviceFees.map((f, i) => (
+                      <tr key={`svc-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                        <td className="py-2.5 pr-4 text-[13px] text-ink">
+                          {f.fee_label}
+                          {f.description && <span className="text-stone text-[11px] block">{f.description}</span>}
+                        </td>
+                        <td className="py-2.5 pr-4 text-[13px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(f.amount, cur)}</td>
+                        <td className="py-2.5 text-[11px] text-stone text-right">Services</td>
+                      </tr>
+                    ))}
+                    {hardwareFees.map((f, i) => (
+                      <tr key={`hw-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                        <td className="py-2.5 pr-4 text-[13px] text-ink">
+                          {f.fee_label}
+                          {f.description && <span className="text-stone text-[11px] block">{f.description}</span>}
+                        </td>
+                        <td className="py-2.5 pr-4 text-[13px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(f.amount, cur)}</td>
+                        <td className="py-2.5 text-[11px] text-stone text-right">Hardware</td>
+                      </tr>
+                    ))}
+                    {otherPosFees.map((f, i) => (
+                      <tr key={`oth-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                        <td className="py-2.5 pr-4 text-[13px] text-ink">
+                          {f.fee_label}
+                          {f.description && <span className="text-stone text-[11px] block">{f.description}</span>}
+                        </td>
+                        <td className="py-2.5 pr-4 text-[13px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(f.amount, cur)}</td>
+                        <td className="py-2.5 text-[11px] text-stone text-right">One-time</td>
+                      </tr>
+                    ))}
+                    {creditFees.map((f, i) => (
+                      <tr key={`cr-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                        <td className="py-2.5 pr-4 text-[13px]" style={{ color: '#B45309' }}>{f.fee_label}</td>
+                        <td className="py-2.5 pr-4 text-[13px] font-medium text-right" style={{ fontVariantNumeric: 'tabular-nums', color: '#B45309' }}>{fmt(f.amount, cur)}</td>
+                        <td className="py-2.5 text-[11px] text-right" style={{ color: '#B45309' }}>Credit</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
 
               {/* Discounts */}
               {(terms?.discounts?.length ?? 0) > 0 && (
-                <>
-                  <Divider />
-                  <div className="p-6">
-                    <SectionHeader title="Discounts" section={src.discounts} onSection={openPDF} />
-                    <div className="grid grid-cols-3 gap-8">
-                      {terms!.discounts!.map((d, i) => {
-                        const discountedFee = terms?.base_monthly_fee && d.discount_pct
-                          ? terms.base_monthly_fee * (1 - d.discount_pct / 100)
-                          : null
-                        // For ramp schedules, show the discounted first-step rate as a reference
-                        const rampNote = !discountedFee && terms?.ramp_schedule?.length && d.discount_pct
-                          ? `Applied to each ramp rate — e.g. ${fmt(terms.ramp_schedule[0].monthly_fee * (1 - d.discount_pct / 100), cur)}/mo net in Ramp 1`
-                          : null
-                        return (
-                          <BigValue
-                            key={i}
-                            label={d.discount_type === 'introductory' ? 'Introductory discount'
-                              : d.discount_type === 'channel_partner' ? 'Channel partner discount'
-                              : d.discount_type ?? 'Discount'}
-                            value={d.discount_pct != null ? `${d.discount_pct}%` : fmt(d.discount_amount, cur)}
-                            unit="off"
-                            note={
-                              [
-                                d.start_date && d.end_date ? `${fmtDate(d.start_date)} – ${fmtDate(d.end_date)}` : null,
-                                discountedFee ? `Discounted fee: ${fmt(discountedFee, cur)}/mo` : null,
-                                rampNote,
-                              ].filter(Boolean).join(' · ') || undefined
-                            }
-                          />
-                        )
-                      })}
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* User overages */}
-              {userTiers.length > 0 && (
-                <>
-                  <Divider />
-                  <div className="p-6">
-                    <SectionHeader title="Additional user overages" section={src.overage_tiers} onSection={openPDF} />
-                    <div className="grid grid-cols-3 gap-8">
-                      {userTiers.map((t, i) => (
-                        <BigValue
-                          key={i}
-                          label={t.tier_label ?? `Tier ${i + 1}`}
-                          value={fmt(t.rate_per_unit, cur)}
-                          unit={`/ ${(t.unit_type ?? 'user').replace(/\s*(per\s*month|\/\s*mo)\s*/gi, '').trim()} / mo`}
-                          note={t.from_unit != null && (!t.tier_label || !/\d/.test(t.tier_label))
-                            ? `From user ${t.from_unit}${t.to_unit ? ` to ${t.to_unit}` : '+'}`
-                            : undefined}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* API overages */}
-              {apiTiers.length > 0 && (
-                <>
-                  <Divider />
-                  <div className="p-6">
-                    <SectionHeader title="API call overages" section={src.overage_tiers ?? src.api_tiers} onSection={openPDF} />
-                    <div className="grid grid-cols-3 gap-8">
-                      {apiTiers.map((t, i) => (
-                        <BigValue
-                          key={i}
-                          label={t.tier_label ?? `Tier ${i + 1}`}
-                          value={t.rate_per_unit != null ? `${cur === 'EUR' ? '€' : '$'}${t.rate_per_unit.toFixed(4).replace(/\.?0+$/, '')}` : '—'}
-                          unit={`/ ${t.unit_type ?? 'API call'}`}
-                          note={t.from_unit != null
-                            ? `Calls ${t.from_unit.toLocaleString()}${t.to_unit != null ? ` – ${t.to_unit.toLocaleString()}` : '+'}`
-                            : undefined}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* Other overages */}
-              {otherTiers.length > 0 && (
-                <>
-                  <Divider />
-                  <div className="p-6">
-                    <SectionHeader title="Other overages" section={src.overage_tiers} onSection={openPDF} />
-                    <div className="grid grid-cols-3 gap-8">
-                      {otherTiers.map((t, i) => (
-                        <BigValue
-                          key={i}
-                          label={t.tier_label ?? `Tier ${i + 1}`}
-                          value={fmt(t.rate_per_unit, cur)}
-                          unit={`/ ${t.unit_type ?? 'unit'}`}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* One-time fees (positive) */}
-              {(terms?.one_time_fees ?? []).filter(f => f.amount >= 0).length > 0 && (
-                <>
-                  <Divider />
-                  <div className="p-6">
-                    <SectionHeader title="One-time fees" section={src.one_time_fees} onSection={openPDF} />
-                    <div className="grid grid-cols-3 gap-8">
-                      {(terms?.one_time_fees ?? []).filter(f => f.amount >= 0).map((f, i) => (
-                        <BigValue
-                          key={i}
-                          label={f.fee_label}
-                          value={fmt(f.amount, cur)}
+                <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                  <SectionHeader title="Discounts" section={src.discounts} onSection={openPDF} />
+                  <div className="grid grid-cols-3 gap-8">
+                    {terms!.discounts!.map((d, i) => {
+                      const typeLabel = d.discount_type === 'introductory' ? 'One-time · introductory'
+                        : d.discount_type === 'volume' ? 'Recurring · volume'
+                        : d.discount_type === 'negotiated' ? 'Recurring · negotiated'
+                        : d.discount_type?.replace(/_/g, ' ') ?? 'Discount'
+                      const discountedFee = terms?.base_monthly_fee && d.discount_pct
+                        ? terms.base_monthly_fee * (1 - d.discount_pct / 100) : null
+                      const rampNote = !discountedFee && terms?.ramp_schedule?.length && d.discount_pct
+                        ? `Applied to ramp rates — e.g. ${fmt(terms.ramp_schedule[0].monthly_fee * (1 - d.discount_pct / 100), cur)}/mo net in Ramp 1`
+                        : null
+                      return (
+                        <BigValue key={i} label={typeLabel}
+                          value={d.discount_pct != null ? `${d.discount_pct}%` : fmt(d.discount_amount, cur)}
+                          unit="off"
                           note={[
-                            f.due_date ? `Due ${new Date(f.due_date).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}` : null,
-                            f.description,
+                            d.start_date && d.end_date ? `${fmtDate(d.start_date)} – ${fmtDate(d.end_date)}` : null,
+                            discountedFee ? `Net fee: ${fmt(discountedFee, cur)}/mo` : null,
+                            rampNote,
+                            d.applies_to ? `Applies to: ${d.applies_to}` : null,
                           ].filter(Boolean).join(' · ') || undefined}
                         />
-                      ))}
-                    </div>
+                      )
+                    })}
                   </div>
-                </>
+                </div>
               )}
 
-              {/* Credits (negative one-time amounts) */}
-              {(terms?.one_time_fees ?? []).filter(f => f.amount < 0).length > 0 && (
-                <>
-                  <Divider />
-                  <div className="p-6" style={{ background: '#FFFBEB' }}>
-                    <div className="flex items-center justify-between mb-5">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-[11px] font-bold uppercase tracking-[0.14em]" style={{ color: '#B45309' }}>Credits</h3>
-                        <span className="text-[9px] font-semibold px-2 py-0.5 rounded-full" style={{ background: '#FEF3C7', color: '#B45309', border: '1px solid #F59E0B' }}>
-                          reduces net TCV
-                        </span>
+              {/* Charging parameters — dynamic groups by unit_type, only if tiers exist */}
+              {chargingGroups.size > 0 && (
+                <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                  <SectionHeader title="Charging parameters" section={src.overage_tiers} onSection={openPDF} />
+                  <div className="space-y-6">
+                    {Array.from(chargingGroups.entries()).map(([unitType, tierList]) => (
+                      <div key={unitType}>
+                        <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-3 capitalize">{unitType}</p>
+                        <div className="grid grid-cols-3 gap-8">
+                          {tierList.map((t, i) => (
+                            <BigValue key={i}
+                              label={t.tier_label ?? `Tier ${i + 1}`}
+                              value={t.rate_per_unit != null
+                                ? (t.rate_per_unit < 0.01
+                                    ? `${cur === 'EUR' ? '€' : '$'}${t.rate_per_unit.toFixed(4).replace(/\.?0+$/, '')}`
+                                    : fmt(t.rate_per_unit, cur))
+                                : '—'}
+                              unit={`/ ${t.unit_type ?? 'unit'}`}
+                              note={t.from_unit != null
+                                ? `From unit ${t.from_unit.toLocaleString()}${t.to_unit != null ? ` to ${t.to_unit.toLocaleString()}` : '+'}`
+                                : undefined}
+                            />
+                          ))}
+                        </div>
                       </div>
-                      <SectionChip heading={src.one_time_fees} onClick={() => src.one_time_fees && openPDF(src.one_time_fees)} />
-                    </div>
-                    <div className="grid grid-cols-3 gap-8">
-                      {(terms?.one_time_fees ?? []).filter(f => f.amount < 0).map((f, i) => (
-                        <div key={i}>
-                          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] mb-2" style={{ color: '#B45309' }}>{f.fee_label}</p>
-                          <div className="flex items-baseline gap-1.5 mb-1">
-                            <span className="text-[28px] font-medium leading-none" style={{ color: '#B45309', fontVariantNumeric: 'tabular-nums' }}>
-                              {fmt(f.amount, cur)}
-                            </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Price escalations */}
+              {(terms?.escalators?.length ?? 0) > 0 && (
+                <div className="p-6">
+                  <SectionHeader title="Price escalations" section={src.escalators} onSection={openPDF} />
+                  <div className="grid grid-cols-3 gap-8">
+                    {terms!.escalators!.map((e, i) => {
+                      const isEditing = escEditing === i
+                      const label = e.escalator_type === 'fixed_pct' ? 'Fixed annual increase' : e.escalator_type ?? 'Escalator'
+                      const note  = e.effective_date
+                        ? `Effective ${fmtDate(e.effective_date)}${e.cap_pct ? ` · capped at ${e.cap_pct}%` : ''}`
+                        : e.description ?? undefined
+                      return (
+                        <div key={i} className="rounded-xl p-4 transition-all"
+                          style={isEditing ? { background: '#FFFBEB', border: '1px solid #F59E0B' } : { background: 'transparent' }}>
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em]">{label}</p>
+                            {!isEditing && (
+                              <button onClick={() => { setEscEditValue(e.escalator_pct != null ? `${e.escalator_pct}` : ''); setEscEditing(i) }}
+                                title="Edit this value" className="text-stone/35 hover:text-forest transition-colors">
+                                <i className="ti ti-pencil-minus" style={{ fontSize: 12 }} />
+                              </button>
+                            )}
                           </div>
-                          {(f.due_date || f.description) && (
-                            <p className="text-[11px]" style={{ color: '#92400E' }}>
-                              {[
-                                f.due_date ? `Applied ${new Date(f.due_date).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}` : null,
-                                f.description,
-                              ].filter(Boolean).join(' · ')}
-                            </p>
+                          {isEditing ? (
+                            <div className="flex items-center gap-2 mt-1">
+                              <input autoFocus type="text" value={escEditValue}
+                                onChange={e => setEscEditValue(e.target.value)}
+                                onKeyDown={ev => { if (ev.key === 'Enter') saveEscalatorPct(i); if (ev.key === 'Escape') setEscEditing(null) }}
+                                placeholder="e.g. 3"
+                                className="flex-1 text-[28px] font-medium bg-transparent outline-none leading-none"
+                                style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }} />
+                              <span className="text-sm text-stone self-end pb-0.5">%</span>
+                              <button onClick={() => setEscEditing(null)} className="text-stone/50 hover:text-ink transition-colors p-1 flex-shrink-0" title="Cancel">
+                                <i className="ti ti-x" style={{ fontSize: 13 }} />
+                              </button>
+                              {escEditValue && (
+                                <button onClick={() => saveEscalatorPct(i)} disabled={escSaving} title="Save"
+                                  className="flex items-center justify-center w-8 h-8 rounded-lg text-white transition-colors flex-shrink-0 disabled:opacity-50"
+                                  style={{ background: '#1A3D2B' }}>
+                                  {escSaving ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : <i className="ti ti-check" style={{ fontSize: 13 }} />}
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex items-baseline gap-1.5">
+                                <span className="text-[30px] font-medium leading-none" style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }}>
+                                  {e.escalator_pct != null ? `${e.escalator_pct}%` : '—'}
+                                </span>
+                                <span className="text-[12px] text-stone">per year</span>
+                              </div>
+                              {note && <p className="text-[11px] text-stone mt-1">{note}</p>}
+                            </>
                           )}
                         </div>
-                      ))}
-                    </div>
+                      )
+                    })}
                   </div>
-                </>
+                </div>
               )}
             </div>
 
-            {/* Revenue schedule breakdown */}
+            {/* ── 4. Pricing ── */}
+            {(terms?.base_monthly_fee || terms?.year_pricing ||
+              (terms?.ramp_schedule?.length ?? 0) > 0 ||
+              serviceFeeTotal > 0 || hardwareFeeTotal > 0) && (
+              <div className="bg-white rounded-2xl border border-forest/10 p-6">
+                <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-5">Pricing</h2>
+                <div className="grid grid-cols-3 gap-8">
+                  {terms?.base_monthly_fee && (
+                    <BigValue label="Monthly fee" value={fmt(terms.base_monthly_fee, cur)} unit="/ month"
+                      warn={baseItem ? baseItem.confidence_score < 0.95 && !correction(baseItem.id) : false}>
+                      {baseItem && baseItem.confidence_score < 0.95 && (
+                        <CorrectionInput value={correction(baseItem.id)} onChange={v => setCorr(baseItem.id, v)} />
+                      )}
+                    </BigValue>
+                  )}
+                  {terms?.year_pricing && Object.entries(terms.year_pricing).map(([year, price]) => {
+                    const yItem = findItem(`${year} pricing`)
+                    return (
+                      <BigValue key={year} label={`${year.replace('year', 'Year ')} annual value`}
+                        value={fmt(price, cur)} unit="/ year"
+                        warn={yItem ? yItem.confidence_score < 0.95 && !correction(yItem.id) : false}>
+                        {yItem && yItem.confidence_score < 0.95 && (
+                          <CorrectionInput value={correction(yItem.id)} onChange={v => setCorr(yItem.id, v)} />
+                        )}
+                      </BigValue>
+                    )
+                  })}
+                  {terms?.ramp_schedule && terms.ramp_schedule.map((step, i) => {
+                    const disc = (terms?.discounts ?? []).find(d => {
+                      const ds = d.start_date ? parseLocalDate(d.start_date) : null
+                      const de = d.end_date   ? parseLocalDate(d.end_date)   : null
+                      const ss = parseLocalDate(step.start_date)
+                      return ds && de && ss >= ds && ss <= de
+                    })
+                    const netFee = disc?.discount_pct ? step.monthly_fee * (1 - disc.discount_pct / 100) : null
+                    return (
+                      <BigValue key={i} label={step.label ?? `Ramp ${i + 1}`} value={fmt(step.monthly_fee, cur)} unit="/ month gross"
+                        note={[
+                          `${fmtDate(step.start_date)} – ${fmtDate(step.end_date)}`,
+                          netFee ? `Net after ${disc!.discount_pct}% discount: ${fmt(netFee, cur)}/mo` : null,
+                        ].filter(Boolean).join(' · ')} />
+                    )
+                  })}
+                  {serviceFeeTotal > 0 && (
+                    <BigValue label="Services total" value={fmt(serviceFeeTotal, cur)}
+                      note={`${serviceFees.length} fee${serviceFees.length > 1 ? 's' : ''} · one-time`} />
+                  )}
+                  {hardwareFeeTotal > 0 && (
+                    <BigValue label="Hardware / physical" value={fmt(hardwareFeeTotal, cur)}
+                      note={`${hardwareFees.length} item${hardwareFees.length > 1 ? 's' : ''} · one-time`} />
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── 5. Pricing Calculations ── */}
+            {terms?.extraction_notes && terms?.year_pricing && (() => {
+              const calcRows = Object.keys(terms.year_pricing).map(yr => ({
+                label: yr.replace('year', 'Year '),
+                note: getYearNote(terms.extraction_notes, yr),
+              })).filter(r => r.note)
+              if (calcRows.length === 0) return null
+              return (
+                <div className="bg-white rounded-2xl border border-forest/10 p-6">
+                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-1">Pricing calculations</h2>
+                  <p className="text-[11px] text-stone mb-5">How the contracted values were computed — formulas as extracted from the agreement</p>
+                  <div>
+                    {calcRows.map(({ label, note }, i) => (
+                      <div key={i} className="flex gap-6 py-4"
+                        style={{ borderBottom: i < calcRows.length - 1 ? '1px solid rgba(26,61,43,0.07)' : undefined }}>
+                        <p className="text-[11px] font-semibold text-stone w-16 flex-shrink-0 pt-0.5">{label}</p>
+                        <p className="text-[11.5px] leading-relaxed whitespace-pre-line"
+                          style={{ fontFamily: 'ui-monospace, monospace', color: '#1A3D2B' }}>{note}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
+
+            {/* ── 6. Billing Configuration ── */}
+            <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
+              <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                <div>
+                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Billing configuration</h2>
+                  <p className="text-[11px] text-stone mt-1">Line items to be configured in the billing platform</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  {items.length > 0 && (
+                    <button onClick={() => downloadBillingCSV(items, job.name, cur)}
+                      className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl transition-colors"
+                      style={{ background: '#EEF9F2', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.25)' }}>
+                      <i className="ti ti-download" style={{ fontSize: 12 }} /> Download CSV
+                    </button>
+                  )}
+                  {isConfigured && (
+                    <span className="text-xs font-semibold px-3 py-2 rounded-xl flex items-center gap-1.5"
+                      style={{ background: '#D4EAD9', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.3)' }}>
+                      <i className="ti ti-circle-check" style={{ fontSize: 12 }} />
+                      Configured in {billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {items.length > 0 && (
+                <div className="p-6">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr>
+                          {(['Product', 'Qty', 'Unit price', 'Total', 'Period'] as const).map((h, idx) => (
+                            <th key={h} className="text-[10px] font-semibold text-stone/60 tracking-[0.1em] pb-2"
+                              style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: idx === 0 ? 'left' : 'right', paddingRight: idx < 4 ? 16 : 0 }}>
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {items.map(item => (
+                          <tr key={item.id} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                            <td className="py-2.5 pr-4 text-[12px] text-ink">
+                              {item.confidence_score < 0.95 && !correction(item.id) && (
+                                <i className="ti ti-alert-triangle mr-1.5" style={{ fontSize: 11, color: '#D97706' }} />
+                              )}
+                              {correction(item.id) || item.product_name}
+                              {item.source_section && (
+                                <button onClick={() => openPDF(item.source_section)} className="ml-1.5 text-stone/40 hover:text-forest transition-colors" title="View in PDF">
+                                  <i className="ti ti-file-text" style={{ fontSize: 10 }} />
+                                </button>
+                              )}
+                            </td>
+                            <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{item.quantity}</td>
+                            <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(item.unit_price, cur)}</td>
+                            <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(item.total_amount, cur)}</td>
+                            <td className="py-2.5 text-[11px] text-stone text-right capitalize">{item.billing_period}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-[10px] text-stone/50 mt-4">
+                    Platform: <span className="font-medium text-stone/70">Stripe</span>
+                    <span className="mx-1.5">·</span>CRM integrations (Salesforce, HubSpot) coming soon
+                  </p>
+                </div>
+              )}
+
+              {isConfigured && dashboardUrl && (
+                <div className="px-6 py-4 flex items-center justify-between" style={{ background: 'rgba(26,61,43,0.04)', borderTop: '1px solid rgba(26,61,43,0.07)' }}>
+                  <div>
+                    <p className="text-[11px] font-semibold text-ink">Active subscription in {billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}</p>
+                    {subId && <p className="text-[10px] text-stone font-mono mt-0.5">{subId}</p>}
+                  </div>
+                  <a href={dashboardUrl} target="_blank" rel="noreferrer"
+                    className="text-xs font-semibold px-4 py-2 rounded-xl text-white transition-colors"
+                    style={{ background: '#1A3D2B' }}>
+                    View in {billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'} →
+                  </a>
+                </div>
+              )}
+            </div>
+
+            {/* ── Revenue schedule ── */}
             {terms?.contract_start_date && terms?.contract_end_date &&
               (terms?.base_monthly_fee || terms?.base_annual_fee || terms?.year_pricing ||
                (terms?.ramp_schedule && terms.ramp_schedule.length > 0)) && (
@@ -2243,7 +2241,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
-            {/* Warning banner when dates missing */}
+            {/* ── Warning: missing dates ── */}
             {(!terms?.contract_start_date || !terms?.contract_end_date) && (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 flex items-start gap-3">
                 <i className="ti ti-alert-triangle flex-shrink-0 mt-0.5" style={{ fontSize: 16, color: '#D97706' }} />
@@ -2251,18 +2249,17 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   <p className="text-sm font-medium text-amber-900 mb-0.5">
                     {!terms?.contract_start_date && !terms?.contract_end_date
                       ? 'Contract start and end dates are missing'
-                      : !terms?.contract_start_date
-                      ? 'Contract start date is missing'
+                      : !terms?.contract_start_date ? 'Contract start date is missing'
                       : 'Contract end date is missing'}
                   </p>
                   <p className="text-xs text-amber-800">
-                    TCV cannot be calculated without both dates. Click the date fields above in the Contract overview to add them.
+                    TCV cannot be calculated without both dates. Click the date fields above in Contract overview to add them.
                   </p>
                 </div>
               </div>
             )}
 
-            {/* TCV + Approve / Configured */}
+            {/* ── TCV + Approve footer ── */}
             <div className="bg-forest text-white rounded-2xl px-6 py-5 flex items-center justify-between">
               <div>
                 <p className="text-[10px] font-semibold text-mint/60 uppercase tracking-[0.14em] mb-1">Total contract value</p>
@@ -2276,37 +2273,25 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               {isConfigured ? (
                 <div className="text-right">
                   {dashboardUrl && (
-                    <a
-                      href={dashboardUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-2 bg-white text-forest font-semibold text-sm px-8 py-3 rounded-xl hover:bg-mint transition-colors"
-                    >
+                    <a href={dashboardUrl} target="_blank" rel="noreferrer"
+                      className="inline-flex items-center gap-2 bg-white text-forest font-semibold text-sm px-8 py-3 rounded-xl hover:bg-mint transition-colors">
                       View in {billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'} →
                     </a>
                   )}
-                  {subId && (
-                    <p className="text-[11px] text-mint/50 mt-2 font-mono">{subId}</p>
-                  )}
+                  {subId && <p className="text-[11px] text-mint/50 mt-2 font-mono">{subId}</p>}
                 </div>
               ) : (
                 <div className="text-right">
-                  <button
-                    onClick={handleApprove}
-                    disabled={approving || needsReview > 0}
-                    className="bg-white text-forest font-semibold text-sm px-8 py-3 rounded-xl hover:bg-mint transition-colors disabled:opacity-50 flex items-center gap-2"
-                  >
+                  <button onClick={handleApprove} disabled={approving || needsReview > 0}
+                    className="bg-white text-forest font-semibold text-sm px-8 py-3 rounded-xl hover:bg-mint transition-colors disabled:opacity-50 flex items-center gap-2">
                     {approving
                       ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 14 }} /> Pushing to Stripe...</>
-                      : 'Approve & configure billing →'
-                    }
+                      : 'Approve & configure billing →'}
                   </button>
                   {needsReview > 0 && (
                     <p className="text-[11px] text-mint/60 mt-2">Review {needsReview} flagged item{needsReview > 1 ? 's' : ''} above before approving</p>
                   )}
-                  {approveError && (
-                    <p className="text-[11px] text-red-300 mt-2 max-w-xs">{approveError}</p>
-                  )}
+                  {approveError && <p className="text-[11px] text-red-300 mt-2 max-w-xs">{approveError}</p>}
                 </div>
               )}
             </div>

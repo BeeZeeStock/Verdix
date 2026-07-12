@@ -27,6 +27,7 @@ Rules:
   - For graduated/incremental tiers: each call falls into exactly one bracket and is billed at that bracket's rate. Encode as distinct non-overlapping from_unit/to_unit ranges.
   - For volume tiers (all-or-nothing): if the contract specifies a single rate that applies to the entire volume once a threshold is hit, set from_unit to the threshold and to_unit:null for each tier.
 - one_time_fees: non-recurring charges paid once (e.g. onboarding, implementation, setup, migration, professional services fees). Each entry: fee_label (short name), amount (number), due_date (ISO date or null), description (brief note or null). Do NOT include recurring fees here.
+- contract_id: the contract reference, PO number, order number, or agreement ID printed on the document (e.g. "CLR-2024-0001", "PO-12345"). Use null if no reference number is found.
 - field_sources: object mapping each extracted field to the section heading it was taken from (e.g. {"base_monthly_fee": "1.1 Base Platform Fee", "escalators": "1.2 Annual Price Escalator"})
 - extraction_confidence: "high" if all core commercial terms are clear, "medium" if some ambiguity, "low" if significant gaps
 - extraction_notes: brief note on what could not be determined`

@@ -42,6 +42,7 @@ export interface RampStep {
 
 export interface ContractTerms {
   contract_id: string | null
+  crm_id: string | null
   customer_name: string | null
   customer_address: string | null
   billing_contact: string | null
