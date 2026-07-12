@@ -1025,7 +1025,7 @@ function ReviewPanel({
   const [draftPrice, setDraftPrice] = useState<Record<string, string>>({})
   const [draftName,  setDraftName]  = useState<Record<string, string>>({})
 
-  const resolvedCount = items.filter(i => resolved[i.id] || corrections[i.id]?.value).length
+  const resolvedCount = items.filter(i => resolved[i.id] || i.id in corrections).length
   const allDone = resolvedCount === items.length
 
   // Group by source_section so the same section header doesn't repeat per card
@@ -1182,7 +1182,7 @@ function ReviewPanel({
                 {groupItems.map(item => {
                   const kind        = classifyItem(item)
                   const ctx         = getReviewContext(item, kind)
-                  const isResolved  = !!(resolved[item.id] || corrections[item.id]?.value)
+                  const isResolved  = !!(resolved[item.id] || item.id in corrections)
                   const isEditing   = editing === item.id
                   const isSaving    = saving === item.id
                   const score       = item.confidence_score
@@ -1446,7 +1446,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const terms: Terms | undefined = job?.contract_terms?.[0]
   const cur = terms?.currency ?? job?.currency ?? 'EUR'
 
-  const needsReview = items.filter(i => i.confidence_score < 0.95 && !corrections[i.id]?.value).length
+  const needsReview = items.filter(i => i.confidence_score < 0.95 && !(i.id in corrections)).length
 
   const fetchJob = async () => {
     const res = await fetch(`/api/jobs/${id}`)
