@@ -353,10 +353,10 @@ function AutoConfigureSection() {
           <div className="order-1 lg:order-2">
             <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Auto-configure</div>
             <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Every new deal — billing configured automatically in 60 seconds</h2>
-            <p className="text-stone leading-relaxed mb-8">Connect DocuSign. The moment a deal is signed, Verdix reads every clause, proposes the exact billing configuration, and sets up your billing platform after your 60-second review. No manual translation. No errors.</p>
+            <p className="text-stone leading-relaxed mb-8">Connect your CRM. The moment a deal is marked Closed Won, Verdix reads every clause, proposes the exact billing configuration, and sets up your billing platform after your 60-second review. No manual translation. No errors.</p>
             <ul className="space-y-3">
               {[
-                'DocuSign webhook triggers extraction the moment a deal closes',
+                'CRM webhook triggers extraction the moment a deal is Closed Won',
                 'AI extracts prices, tiers, escalators, and discount terms',
                 'Human reviews proposed config with PDF source side-by-side',
                 'Billing platform configured — zero manual typing, full audit trail',
