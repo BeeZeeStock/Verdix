@@ -1,17 +1,25 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { writeFileSync } from 'fs'
 import { ContractTerms } from './types'
 import { buildLearningContext } from './learning-context'
+import { getAIClient, AI_PROVIDER } from './ai-client'
 
-const client = new Anthropic()
+const client = getAIClient()
+const DEBUG_EXTRACTION = process.env.DEBUG_EXTRACTION === 'true'
 
 const SYSTEM_PROMPT = `You are a contract analysis specialist. Extract structured billing and commercial terms from SaaS contracts and order forms.
 
 Output a single JSON object. All numeric fields must be numbers (not strings). Dates must be ISO 8601 (YYYY-MM-DD). Use null for any field you cannot determine with confidence.
 
 Rules:
-- base_monthly_fee: recurring monthly fee for the base subscription (not overage)
+- base_monthly_fee: recurring monthly fee for the base subscription (not overage). This is always the TOTAL base fee payable per period — the amount the customer pays for the platform regardless of user count.
+  CRITICAL RULE for "base price × users" language: SaaS contracts commonly state additional user fees separately (e.g. "base platform fee: €456,987/yr + additional users at €2,500/user/yr"). In this pattern, base_monthly_fee or base_annual_fee = the platform fee alone (€456,987), and the user fees go into overage_tiers or a separate line. NEVER multiply the platform fee by the user count — that would be double-counting. The only time you multiply a rate by users is when the contract EXPLICITLY states a per-seat price (e.g. "€500/user/month for 10 users = €5,000/month total") where the stated per-seat figure is small and clearly a unit rate. A base annual platform fee in the hundreds of thousands is never a per-seat rate.
 - base_annual_fee: annual fee if billed annually
-- year_pricing: year-by-year fee schedule as {"year1": 50000, "year2": 55000, ...}. Use ONLY when the contract specifies distinct totals per contract year with no intermediate dates. If the fee changes on specific calendar dates (a "ramp schedule"), use ramp_schedule instead and set year_pricing to null.
+- year_pricing: year-by-year fee schedule as {"year1": 50000, "year2": 55000, ...}. Each value is the INVOICE AMOUNT DUE IN THAT YEAR ONLY — never cumulative totals.
+  CRITICAL RULE: Some contracts express multi-year pricing cumulatively, e.g. "Year 2 = Year 1 fee + base annual fee + user fees" or "Year 3 = Year 1 + Year 2 + new fees". This is describing Total Contract Value (TCV) building up over time, NOT what is invoiced in each year. You must extract what is actually INVOICED / OWED in each individual year:
+    - year1 = the annual fee for Year 1 only (e.g. base after discount + Year 1 user fees)
+    - year2 = the annual fee for Year 2 only (e.g. base + Year 2 user fees) — NOT Year 1 + Year 2 combined
+    - year3 = the annual fee for Year 3 only (e.g. base + Year 3 user fees) — NOT Year 1 + Year 2 + Year 3 combined
+  Example: contract says "Year 1: €436,288 | Year 2: Year 1 fee (€436,288) + base (€456,987) + 10 users × €2,500 | Year 3: Year 1 + Year 2 + base + 20 users × €2,500". Correct extraction: year1=436288, year2=481987, year3=506987. WRONG extraction: year1=436288, year2=918275, year3=1425262.
 - ramp_schedule: use when the contract defines a step-up fee schedule tied to specific calendar date ranges (e.g. Month 1-6, Month 7-12, etc.). Each entry: { "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "monthly_fee": <number>, "label": "<optional short label>" }. When ramp_schedule is populated, set year_pricing to null and base_monthly_fee/base_annual_fee to null. Escalators are already baked into the ramp rates — do not also populate escalators.
 - customer_address: full mailing address of the customer (street, city, country)
 - billing_contact: billing contact email or name from the contract
@@ -33,6 +41,10 @@ Rules:
 - extraction_notes: brief note on what could not be determined`
 
 const FEW_SHOT_EXAMPLE = `<example>
+RULES REMINDER before you read the example:
+1. year_pricing values = what is invoiced in THAT year alone, never cumulative. {"year1": 436288, "year2": 481987} means €436k is the Year 1 invoice and €481k is the Year 2 invoice — even if the contract phrases it as "Year 2 = Year 1 fee + new fees".
+2. base_annual_fee / base_monthly_fee = the platform fee total. Never multiply it by user count. User fees are separate line items.
+
 Input: "Order Form CLR-2024-0001. Vendor: Verdix Corp, 123 Main St, Oslo, Norway. Customer: Acme Inc, 14 Innovation Drive, Stockholm, Sweden. Billing contact: finance@acme.com. Contract term: 36 months, Feb 1 2024 – Jan 31 2027, auto-renewing with 90 days notice. Section 1.1 Base Platform Fee: 100 seats at $4,200/month. Year 1: $50,400, Year 2: $52,000. Section 1.2 Price Escalator: 5% fixed annually. Section 1.3 Introductory Discount: 20% off months 1-6. Payment: Net 30 days from invoice date. Section 2: API overages at $0.02/call."
 
 Output:
@@ -119,7 +131,23 @@ async function extractFromChunk(text: string, learningContext: string): Promise<
   if (!jsonMatch) throw new Error(`Failed to parse extraction response: ${content.text.slice(0, 200)}`)
 
   try {
-    return JSON.parse(jsonMatch[0]) as ContractTerms
+    const parsed = JSON.parse(jsonMatch[0]) as ContractTerms
+
+    if (DEBUG_EXTRACTION) {
+      const ts        = new Date().toISOString().replace(/[:.]/g, '-')
+      const provider  = AI_PROVIDER.replace(/[^a-z0-9]/gi, '_')
+      const logPath   = `/tmp/extraction_${provider}_${ts}.json`
+      const logData   = {
+        provider:   AI_PROVIDER,
+        timestamp:  new Date().toISOString(),
+        raw_response: content.text,
+        parsed,
+      }
+      writeFileSync(logPath, JSON.stringify(logData, null, 2))
+      console.log(`[extraction debug] written to ${logPath}`)
+    }
+
+    return parsed
   } catch {
     throw new Error(`Failed to parse extraction response: ${content.text.slice(0, 200)}`)
   }

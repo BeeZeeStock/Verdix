@@ -121,7 +121,7 @@ export default async function ConfigureListPage() {
                     </Link>
                   </td>
                   <td className="px-4 py-3">
-                    <DeleteJobButton jobId={job.id} label="contract" />
+                    <DeleteJobButton jobId={job.id} label="contract" isConfigured={job.execute_status === 'COMPLETED'} />
                   </td>
                 </tr>
               )

@@ -1,5 +1,5 @@
-import Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
+import { getAIClient } from './ai-client'
 
 export type PartnerFindingType = 'WRONG_RATE' | 'WAIVED_FEE' | 'DUPLICATE_CHARGE' | 'EXPIRED_RATE' | 'INCORRECT_CALC'
 
@@ -45,7 +45,7 @@ export interface PartnerInvoiceLine {
   reference: string | null
 }
 
-const client = new Anthropic()
+const client = getAIClient()
 
 export async function extractPartnerAgreement(agreementText: string): Promise<PartnerAgreementTerms> {
   const response = await client.messages.create({

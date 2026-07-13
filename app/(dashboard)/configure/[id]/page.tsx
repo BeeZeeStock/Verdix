@@ -80,9 +80,13 @@ function parseLocalDate(s: string): Date {
 // Math is deterministic code — LLM only extracts the raw values.
 function computeContractTCV(terms: Terms | undefined, lineItems: LineItem[]): number {
   if (!terms?.contract_start_date || !terms.contract_end_date) return 0
+
+  // One-time fees are included regardless of whether recurring pricing exists.
+  const oneTimeFees = (terms.one_time_fees ?? []).reduce((s, f) => s + Number(f.amount ?? 0), 0)
+
   const hasFee = terms.base_monthly_fee || terms.base_annual_fee || terms.year_pricing ||
     (terms.ramp_schedule && terms.ramp_schedule.length > 0)
-  if (!hasFee) return 0
+  if (!hasFee) return oneTimeFees
 
   const start        = parseLocalDate(terms.contract_start_date)
   const end          = parseLocalDate(terms.contract_end_date)
@@ -142,16 +146,7 @@ function computeContractTCV(terms: Terms | undefined, lineItems: LineItem[]): nu
     loopIdx++
   }
 
-  // Include all non-recurring line items (one-time fees, services, setup, implementation).
-  // The old filter only matched "one_time" billing_period which missed service charges.
-  const nonRecurringItems = lineItems.filter(i =>
-    !/^(monthly|annual|quarterly|semi.?annual|yearly|recurring)/i.test((i.billing_period ?? '').trim())
-  )
-  const oneTimeTotal = nonRecurringItems.length > 0
-    ? nonRecurringItems.reduce((s, i) => s + i.total_amount, 0)
-    : (terms.one_time_fees ?? []).reduce((s, f) => s + (f.amount ?? 0), 0)
-
-  return total + oneTimeTotal
+  return total + oneTimeFees
 }
 
 // Builds 2–3 natural-language sentences summarising the contract for the
@@ -1468,6 +1463,19 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     const cycle = setInterval(() => setMsgIdx(i => (i + 1) % PROCESSING_MESSAGES.length), 2000)
     return () => clearInterval(cycle)
   }, [id])
+
+  // When the last flagged item is reviewed, promote the DB status so the list reflects "Ready to approve".
+  useEffect(() => {
+    if (needsReview !== 0) return
+    if (job?.execute_status !== 'PENDING_HUMAN_REVIEW') return
+    if (!items.length) return
+    fetch(`/api/jobs/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ execute_status: 'READY_TO_APPROVE' }),
+    }).then(() => fetchJob()).catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsReview, job?.execute_status, id, items.length])
 
   const saveEscalatorPct = async (idx: number) => {
     const pct = parseFloat(escEditValue.replace(/[^0-9.]/g, ''))

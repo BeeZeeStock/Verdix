@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
+import Anthropic from '@anthropic-ai/sdk'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { extractContractTerms } from '@/lib/contract-extractor'
 import { resolveStorageUrl } from '@/lib/storage'
+
+// PDF text extraction always uses the Anthropic SDK directly because the document
+// content type (base64 PDF upload) is not yet supported in our Bedrock shim.
+const anthropicDirect = new Anthropic()
 
 export async function POST(
   _req: NextRequest,
@@ -191,9 +196,7 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
 async function extractPDFText(buffer: Buffer, url: string): Promise<string> {
   const pathname = new URL(url).pathname
   if (pathname.endsWith('.pdf')) {
-    const Anthropic = (await import('@anthropic-ai/sdk')).default
-    const client = new Anthropic()
-    const response = await client.messages.create({
+    const response = await anthropicDirect.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 8192,
       messages: [{

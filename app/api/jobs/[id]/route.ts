@@ -1,6 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
+import Stripe from 'stripe'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
+
+async function getStripeKey(orgId: string): Promise<string> {
+  const { data } = await supabaseServer
+    .from('org_integrations')
+    .select('config')
+    .eq('org_id', orgId)
+    .eq('connector_name', 'stripe')
+    .eq('is_active', true)
+    .single()
+  return (data?.config as Record<string, string>)?.secret_key ?? process.env.STRIPE_SECRET_KEY!
+}
 
 export async function DELETE(
   _req: NextRequest,
@@ -12,9 +24,50 @@ export async function DELETE(
   const { id } = await params
 
   const { data: job } = await supabaseServer
-    .from('jobs').select('org_id').eq('id', id).single()
+    .from('jobs')
+    .select('org_id, billing_platform, billing_subscription_id')
+    .eq('id', id)
+    .single()
   if (!job || job.org_id !== org.orgId)
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+  // Cancel the billing subscription before removing DB records.
+  if (job.billing_subscription_id) {
+    try {
+      if (job.billing_platform === 'chargebee') {
+        const { data: integration } = await supabaseServer
+          .from('org_integrations')
+          .select('config')
+          .eq('org_id', org.orgId)
+          .eq('connector_name', 'chargebee')
+          .eq('is_active', true)
+          .single()
+        const cfg = integration?.config as Record<string, string> | null
+        const site   = cfg?.site   ?? process.env.CHARGEBEE_SITE!
+        const apiKey = cfg?.api_key ?? process.env.CHARGEBEE_API_KEY!
+        await fetch(
+          `https://${site}.chargebee.com/api/v2/subscriptions/${job.billing_subscription_id}/cancel_for_items`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Basic ${Buffer.from(apiKey + ':').toString('base64')}`,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+          }
+        )
+      } else {
+        const stripeKey = await getStripeKey(org.orgId)
+        const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+        await stripe.subscriptions.cancel(job.billing_subscription_id)
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return NextResponse.json(
+        { error: `Failed to cancel billing subscription: ${message}` },
+        { status: 502 }
+      )
+    }
+  }
 
   // Delete child rows first in case DB lacks cascade rules
   await supabaseServer.from('partner_findings').delete().eq('job_id', id)
@@ -24,6 +77,34 @@ export async function DELETE(
   await supabaseServer.from('contract_terms').delete().eq('job_id', id)
 
   const { error } = await supabaseServer.from('jobs').delete().eq('id', id)
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ ok: true })
+}
+
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  let org
+  try { org = await requireOrg() } catch (res) { return res as Response }
+
+  const { id } = await params
+  const body = await req.json()
+  const { execute_status } = body
+
+  if (execute_status !== 'READY_TO_APPROVE')
+    return NextResponse.json({ error: 'Invalid status' }, { status: 400 })
+
+  const { data: job } = await supabaseServer
+    .from('jobs').select('org_id, execute_status').eq('id', id).single()
+  if (!job || job.org_id !== org.orgId)
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+  if (job.execute_status !== 'PENDING_HUMAN_REVIEW')
+    return NextResponse.json({ error: 'Cannot promote from current status' }, { status: 400 })
+
+  const { error } = await supabaseServer
+    .from('jobs').update({ execute_status: 'READY_TO_APPROVE' }).eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true })
 }

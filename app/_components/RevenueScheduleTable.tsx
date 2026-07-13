@@ -282,11 +282,10 @@ export function RevenueScheduleTable({
                       const creditNote = b.creditNetted < 0 ? `Net of ${fmt(b.creditNetted, cur)} credit · ` : ''
                       if (segs.length > 1) return `${creditNote}${segs.length} pricing segments`
                       if (isYearPricing) {
-                        // Show the running sum of independent year values clearly
-                        const parts = annualBuckets.slice(0, yi + 1).map((ab, i) => `Year ${i + 1} (${fmt(ab.total, cur)})`)
-                        const sum   = fmt(cumByYear[yi], cur)
-                        if (yi === 0) return `${creditNote}${parts[0]} = ${sum} · standalone year price`
-                        return `${creditNote}${parts.join(' + ')} = ${sum} total to date`
+                        // Each year's Amount column shows the STANDALONE annual invoice for that year only.
+                        // cumByYear[yi] is the running total for context, not what's invoiced in this year.
+                        const cumNote = `cumulative through Year ${yi + 1}: ${fmt(cumByYear[yi], cur)}`
+                        return `${creditNote}${fmt(b.total, cur)} · standalone year price · ${cumNote}`
                       }
                       return `${creditNote}Single pricing period`
                     })()}

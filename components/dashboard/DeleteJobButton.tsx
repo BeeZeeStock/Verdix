@@ -3,19 +3,33 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-export function DeleteJobButton({ jobId, label = 'job' }: { jobId: string; label?: string }) {
+export function DeleteJobButton({
+  jobId,
+  label = 'job',
+  isConfigured = false,
+}: {
+  jobId: string
+  label?: string
+  isConfigured?: boolean
+}) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
 
   async function handleDelete() {
-    if (!window.confirm(`Delete this ${label}? This cannot be undone.`)) return
+    const msg = isConfigured
+      ? `Delete this ${label}? This will also cancel the active billing subscription in Stripe. This cannot be undone.`
+      : `Delete this ${label}? This cannot be undone.`
+    if (!window.confirm(msg)) return
     setBusy(true)
     try {
       const res = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Delete failed')
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error ?? `Delete failed (${res.status})`)
+      }
       router.refresh()
-    } catch {
-      alert('Failed to delete. Please try again.')
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to delete. Please try again.')
       setBusy(false)
     }
   }
