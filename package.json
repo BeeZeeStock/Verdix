@@ -12,6 +12,7 @@
     "@anthropic-ai/sdk": "^0.106.0",
     "@aws-sdk/client-bedrock-runtime": "^3.1085.0",
     "@supabase/supabase-js": "^2.108.2",
+    "compromise": "^14.15.1",
     "lucide-react": "^1.21.0",
     "next": "16.2.9",
     "next-auth": "^5.0.0-beta.31",
