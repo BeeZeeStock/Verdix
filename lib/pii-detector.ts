@@ -174,14 +174,22 @@ export function detectPII(text: string): PIIDetectionResult {
   for (const name of (doc.people().out('array') as string[])) {
     if (name.length > 3 && !name.startsWith('[')) addEntity('PERSON', name, 80, 'nlp')
   }
+  // Generic service/admin terms that compromise.js misclassifies as organisations
+  const NLP_ORG_BLOCKLIST = /\b(administration|configuration|implementation|training|support|services|onboarding|setup|migration)\b/i
+
   for (const org of (doc.organizations().out('array') as string[])) {
-    // Require: not a token, at least 2 words, at least 6 chars, no leading punctuation,
-    // and not a generic phrase (all-lowercase words like "implementation & configuration")
     const wordCount = org.trim().split(/\s+/).length
     const hasProperNoun = /[A-ZÀ-Ö]/.test(org)
-    if (!org.startsWith('[') && org.length >= 6 && wordCount >= 2 && hasProperNoun) {
-      addEntity('ORG', org, 75, 'nlp')
-    }
+    // Reject tokens, short/single-word matches, leading punctuation, and generic phrases
+    if (
+      org.startsWith('[') ||
+      org.startsWith('(') ||
+      org.length < 6 ||
+      wordCount < 2 ||
+      !hasProperNoun ||
+      NLP_ORG_BLOCKLIST.test(org)
+    ) continue
+    addEntity('ORG', org, 75, 'nlp')
   }
 
   return { entities, tokenMap, reverseMap }
