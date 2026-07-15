@@ -6,7 +6,7 @@ import { VerdixLogo } from '@/components/VerdixLogo'
 
 export default function SignOutPage() {
   useEffect(() => {
-    signOut({ callbackUrl: '/login' })
+    signOut({ callbackUrl: '/' })
   }, [])
 
   return (
