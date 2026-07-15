@@ -59,14 +59,28 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async session({ session, token }) {
       if (token.sub) session.user.id = token.sub
       if (token.provider) session.user.provider = token.provider as string
+      if (typeof token.needsConsent === 'boolean') session.user.needsConsent = token.needsConsent
       return session
     },
-    async jwt({ token, user, account }) {
+    async jwt({ token, user, account, trigger }) {
       // Use email as the stable identifier — OAuth provider IDs change across sessions
       if (user?.email) token.sub = user.email
       else if (user?.id) token.sub = user.id
       // Store the sign-in provider on first login so the session can expose it
       if (account?.provider) token.provider = account.provider
+
+      // For Google users: check consent on each OAuth sign-in or explicit session update.
+      // Email users capture consent at signup, so only Google needs this gate.
+      if (token.provider === 'google' && (account || trigger === 'update')) {
+        const { supabaseServer } = await import('./supabase')
+        const { data } = await supabaseServer
+          .from('user_consents')
+          .select('privacy_consent_at')
+          .eq('email', token.sub as string)
+          .maybeSingle()
+        token.needsConsent = !data
+      }
+
       return token
     },
   },
