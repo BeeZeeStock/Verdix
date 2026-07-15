@@ -55,13 +55,13 @@ export default async function ConfigureListPage() {
   const customerNames = await getCustomerNames(jobs.map(j => j.id))
 
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-8">
+    <div className="p-4 md:p-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-8">
         <div>
           <h1 className="font-display font-light text-ink text-2xl mb-1">New contracts</h1>
           <p className="text-stone text-sm">Auto-configure billing from signed contracts</p>
         </div>
-        <Link href="/configure/new" className="flex items-center gap-2 bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors shadow-sm">
+        <Link href="/configure/new" className="flex items-center gap-2 bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors shadow-sm self-start sm:self-auto">
           <i className="ti ti-plus" style={{ fontSize: 14 }} /> Upload contract
         </Link>
       </div>
@@ -71,6 +71,7 @@ export default async function ConfigureListPage() {
           <span className="text-sm font-medium text-ink">All contracts</span>
           <span className="text-xs text-stone">{jobs.length} job{jobs.length !== 1 ? 's' : ''}</span>
         </div>
+        <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
             <tr className="border-b border-forest/8">
@@ -133,6 +134,7 @@ export default async function ConfigureListPage() {
             })}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   )

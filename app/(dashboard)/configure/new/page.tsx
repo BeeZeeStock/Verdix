@@ -40,7 +40,7 @@ export default function NewConfigurePage() {
   }
 
   return (
-    <div className="p-8 max-w-2xl mx-auto">
+    <div className="p-4 md:p-8 max-w-2xl mx-auto">
       <div className="mb-8">
         <Link href="/configure" className="text-sm text-stone hover:text-forest flex items-center gap-1 mb-4">
           <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> Back

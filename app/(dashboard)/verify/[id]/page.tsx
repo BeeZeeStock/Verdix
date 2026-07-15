@@ -165,7 +165,7 @@ export default function VerifyResultsPage({ params }: { params: Promise<{ id: st
     new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n)
 
   return (
-    <div className="p-8">
+    <div className="p-4 md:p-8">
       {/* Top summary bar */}
       <div className="bg-forest text-white rounded-2xl px-6 py-5 mb-6 flex items-center justify-between">
         <div>
@@ -179,7 +179,7 @@ export default function VerifyResultsPage({ params }: { params: Promise<{ id: st
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-6 bg-parchment rounded-xl p-1 w-fit">
+      <div className="flex gap-1 mb-6 bg-parchment rounded-xl p-1 overflow-x-auto">
         {([
           { key: 'summary', label: 'Summary' },
           { key: 'all',      label: `All (${counts.all})` },
@@ -211,7 +211,7 @@ export default function VerifyResultsPage({ params }: { params: Promise<{ id: st
               <h2 className="font-medium text-ink">Discrepancy summary</h2>
               <p className="text-xs text-stone mt-0.5">One row per finding type · individual months in the All tab</p>
             </div>
-            <table className="w-full">
+            <div className="overflow-x-auto"><table className="w-full">
               <thead>
                 <tr className="border-b border-forest/8">
                   {['Priority', 'Finding', 'Period', 'Contracted / mo', 'Billed / mo', 'Gap / mo', 'Months', 'Total leakage'].map(h => (
@@ -275,11 +275,11 @@ export default function VerifyResultsPage({ params }: { params: Promise<{ id: st
                   </tr>
                 </tfoot>
               )}
-            </table>
+            </table></div>
           </div>
 
           {/* Quick count cards */}
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {([['CRITICAL', counts.CRITICAL], ['HIGH', counts.HIGH], ['MEDIUM', counts.MEDIUM]] as const).map(([p, n]) => {
               const color = PRIORITY_COLORS[p]
               return (
@@ -303,7 +303,7 @@ export default function VerifyResultsPage({ params }: { params: Promise<{ id: st
       {/* ── All / priority-filtered tabs ────────────────────────────────── */}
       {tab !== 'summary' && (
         <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden">
-          <table className="w-full">
+          <div className="overflow-x-auto"><table className="w-full">
             <thead>
               <tr className="border-b border-forest/8">
                 {['Priority', 'Type', 'Customer', 'Period', 'Contracted', 'Billed', 'Leakage', 'Status', ''].map(h => (
@@ -372,7 +372,7 @@ export default function VerifyResultsPage({ params }: { params: Promise<{ id: st
                 )
               })}
             </tbody>
-          </table>
+          </table></div>
         </div>
       )}
 

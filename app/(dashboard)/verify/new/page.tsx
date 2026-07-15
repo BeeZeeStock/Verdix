@@ -110,7 +110,7 @@ export default function NewVerifyPage() {
   }
 
   return (
-    <div className="p-8 max-w-3xl mx-auto">
+    <div className="p-4 md:p-8 max-w-3xl mx-auto">
       <div className="mb-8">
         <Link href="/verify" className="text-sm text-stone hover:text-forest flex items-center gap-1 mb-4">
           <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> Back to billing checks
@@ -173,8 +173,8 @@ export default function NewVerifyPage() {
 
       {/* Step 2 */}
       {step === 2 && (
-        <div className="bg-white border border-forest/10 rounded-2xl p-8">
-          <div className="flex gap-6">
+        <div className="bg-white border border-forest/10 rounded-2xl p-6 md:p-8">
+          <div className="flex flex-col sm:flex-row gap-6">
             <UploadZone
               label="Contract PDFs"
               sublabel="Drop signed order forms here"

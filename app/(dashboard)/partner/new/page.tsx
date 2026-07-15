@@ -61,7 +61,7 @@ export default function NewPartnerPage() {
   const STEPS = ['Partner details', 'Upload files', 'Review & start']
 
   return (
-    <div className="p-8 max-w-2xl mx-auto">
+    <div className="p-4 md:p-8 max-w-2xl mx-auto">
       <div className="mb-8 flex items-start justify-between">
         <div>
           <Link href="/partner" className="text-sm text-stone hover:text-forest flex items-center gap-1 mb-4">
@@ -137,7 +137,7 @@ export default function NewPartnerPage() {
       {/* Step 2 — Upload files */}
       {step === 2 && (
         <div className="bg-white border border-forest/10 rounded-2xl p-8 space-y-6">
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             {[
               { label: 'Partner agreement', sub: 'Signed reseller or supplier agreement', id: 'agr', accept: '.pdf', file: agreement, set: (f: File) => setAgreement(f) },
               { label: 'Invoice received', sub: 'PDF or CSV invoice from the partner', id: 'inv', accept: '.pdf,.csv,.xlsx', file: invoice, set: (f: File) => setInvoice(f) },

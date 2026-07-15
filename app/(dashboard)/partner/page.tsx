@@ -41,13 +41,13 @@ export default async function PartnerListPage() {
   const jobs = await getJobs(org.orgId)
 
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-8">
+    <div className="p-4 md:p-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-8">
         <div>
           <h1 className="font-display font-light text-ink text-2xl mb-1">Partner checks</h1>
           <p className="text-stone text-sm">Validate partner invoices against signed agreements</p>
         </div>
-        <Link href="/partner/new" className="flex items-center gap-2 bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors shadow-sm">
+        <Link href="/partner/new" className="flex items-center gap-2 bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors shadow-sm self-start sm:self-auto">
           <i className="ti ti-plus" style={{ fontSize: 14 }} /> New reconciliation
         </Link>
       </div>
@@ -58,6 +58,7 @@ export default async function PartnerListPage() {
           <span className="text-xs text-stone">{jobs.length} job{jobs.length !== 1 ? 's' : ''}</span>
         </div>
 
+        <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
             <tr className="border-b border-forest/8">
@@ -118,6 +119,7 @@ export default async function PartnerListPage() {
             })}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   )

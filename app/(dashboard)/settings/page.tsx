@@ -123,7 +123,7 @@ export default function SettingsPage() {
   const isOAuthUser = session?.user?.provider === 'google'
 
   return (
-    <div className="p-8 max-w-xl">
+    <div className="p-4 md:p-8 max-w-xl">
       <div className="mb-8">
         <h1 className="font-display font-light text-ink text-2xl mb-1">Settings</h1>
         <p className="text-stone text-sm">Manage your account and organization</p>

@@ -88,12 +88,12 @@ export default function TeamSettingsPage() {
 
   const canManage = org && ROLE_RANK[org.role] >= ROLE_RANK['admin']
 
-  if (loading) return <div className="p-8 text-stone text-sm">Loading…</div>
-  if (error) return <div className="p-8 text-red-600 text-sm">{error}</div>
+  if (loading) return <div className="p-4 md:p-8 text-stone text-sm">Loading…</div>
+  if (error) return <div className="p-4 md:p-8 text-red-600 text-sm">{error}</div>
   if (!org) return null
 
   return (
-    <div className="p-8 max-w-2xl">
+    <div className="p-4 md:p-8 max-w-2xl">
       <div className="mb-8">
         <h1 className="font-display font-light text-ink text-2xl mb-1">Team</h1>
         <p className="text-stone text-sm">Manage members of <strong>{org.orgName}</strong></p>

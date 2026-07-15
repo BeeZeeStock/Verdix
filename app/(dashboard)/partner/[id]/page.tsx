@@ -250,13 +250,13 @@ export default function PartnerResultsPage({ params }: { params: Promise<{ id: s
   }
 
   return (
-    <div className="p-8 space-y-6">
+    <div className="p-4 md:p-8 space-y-6">
       {/* Breadcrumb + title */}
       <div>
         <Link href="/partner" className="text-sm text-stone hover:text-forest flex items-center gap-1 mb-2">
           <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> Partner checks
         </Link>
-        <div className="flex items-start justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h1 className="font-display font-light text-ink text-2xl">{job.name}</h1>
             {invoice && (
@@ -287,7 +287,7 @@ export default function PartnerResultsPage({ params }: { params: Promise<{ id: s
       </div>
 
       {/* Overview cards */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white border border-forest/10 rounded-2xl p-5">
           <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-3">Invoice</div>
           <div className="font-mono text-2xl font-medium text-ink mb-1">{invoice ? fmt(invoice.invoice_amount, cur) : '—'}</div>
@@ -350,7 +350,7 @@ export default function PartnerResultsPage({ params }: { params: Promise<{ id: s
           </div>
 
           {/* Findings table */}
-          <table className="w-full">
+          <div className="overflow-x-auto"><table className="w-full">
             <thead>
               <tr className="border-b border-forest/8">
                 {['', 'Type', 'Description', 'Agreed', 'Billed', 'Discrepancy', 'Action'].map(h => (
@@ -419,7 +419,7 @@ export default function PartnerResultsPage({ params }: { params: Promise<{ id: s
                 )
               })}
             </tbody>
-          </table>
+          </table></div>
 
           {/* Dispute action bar */}
           <div
@@ -449,7 +449,7 @@ export default function PartnerResultsPage({ params }: { params: Promise<{ id: s
       {/* Summary: what was analyzed */}
       <div className="bg-white border border-forest/10 rounded-2xl p-5">
         <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-3">Analysis summary</div>
-        <div className="grid grid-cols-2 gap-6 text-sm">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 text-sm">
           <div className="space-y-1.5">
             <div className="text-xs font-medium text-stone uppercase tracking-widest mb-2">Agreement</div>
             <div className="flex justify-between">
