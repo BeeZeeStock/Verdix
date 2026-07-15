@@ -71,14 +71,18 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
     tokenMap      = result.tokenMap
     reverseMap    = result.reverseMap
     textToExtract = maskText(contractText, tokenMap)
+    console.log('[PII] token map:', JSON.stringify(Object.fromEntries(tokenMap)))
+    console.log('[PII] masked text (first 500 chars):', textToExtract.slice(0, 500))
   }
 
   const rawTerms = await extractContractTerms(textToExtract, undefined, PII_MASKING_ENABLED && tokenMap.size > 0)
+  console.log('[PII] raw extraction customer_name:', rawTerms.customer_name, '| vendor_name:', rawTerms.vendor_name)
 
   // Restore PII tokens in string fields so the saved record has real values.
   const terms = PII_MASKING_ENABLED
     ? restoreTokensInObject(rawTerms, reverseMap)
     : rawTerms
+  console.log('[PII] after restore customer_name:', terms.customer_name, '| vendor_name:', terms.vendor_name)
 
   // Build proposed line items from contract terms
   const lineItems = buildLineItems(terms, currency)
