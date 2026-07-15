@@ -47,7 +47,7 @@ export default function ConsentPage() {
                 <li><span className="font-medium text-ink">PII masking</span> — names, emails, and identifiers are detected and masked locally before being sent to AI for analysis.</li>
                 <li><span className="font-medium text-ink">AI processing</span> is performed via Amazon Bedrock infrastructure. Your contract data is never used to train AI models.</li>
                 <li><span className="font-medium text-ink">Extracted terms</span> (prices, dates, discounts) power your dashboard only and are never shared with other organisations.</li>
-                <li><span className="font-medium text-ink">Storage</span> is handled by Supabase with encryption at rest. EU hosting is available on request.</li>
+                <li><span className="font-medium text-ink">Storage</span> is handled by Supabase with encryption at rest, hosted in the EU (Frankfurt).</li>
               </ul>
             </div>
 
