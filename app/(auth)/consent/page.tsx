@@ -21,7 +21,6 @@ export default function ConsentPage() {
     try {
       const res = await fetch('/api/consent', { method: 'POST' })
       if (!res.ok) throw new Error('Failed to record consent')
-      // Refresh the JWT so needsConsent clears and middleware lets us through
       await update()
       router.push('/dashboard')
     } catch {
