@@ -33,8 +33,9 @@ export default function NewConfigurePage() {
       const { jobId } = await res.json()
       const fd = new FormData(); fd.append('file', file); fd.append('jobId', jobId); fd.append('fileType', 'signed_contract')
       await fetch('/api/upload', { method: 'POST', body: fd })
-      await fetch(`/api/jobs/${jobId}/execute`, { method: 'POST' })
-      router.push(`/configure/${jobId}`)
+      // Detect PII first; user reviews before extraction runs
+      await fetch(`/api/jobs/${jobId}/detect-pii`, { method: 'POST' })
+      router.push(`/configure/${jobId}/pii-review`)
     } catch { setLoading(false) }
   }
 

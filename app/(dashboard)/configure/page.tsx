@@ -41,6 +41,8 @@ const STATUS_STYLE: Record<string, { color: string; label: string }> = {
   COMPLETED:            { color: '#4A7C59', label: 'Configured' },
   READY_TO_APPROVE:     { color: '#4A7C59', label: 'Ready to approve' },
   PENDING_HUMAN_REVIEW: { color: '#D97706', label: 'Needs review' },
+  PENDING_PII_REVIEW:   { color: '#7C3AED', label: 'PII review' },
+  DETECTING_PII:        { color: '#2563EB', label: 'Detecting PII…' },
   EXTRACTING:           { color: '#2563EB', label: 'Extracting…' },
   FAILED:               { color: '#DC2626', label: 'Failed' },
   PENDING:              { color: '#9CA3AF', label: 'Pending' },
@@ -116,8 +118,11 @@ export default async function ConfigureListPage() {
                   </td>
                   <td className="px-4 py-3 text-xs text-stone">{timeAgo(job.created_at)}</td>
                   <td className="px-4 py-3">
-                    <Link href={`/configure/${job.id}`} className="text-xs text-forest hover:underline">
-                      View →
+                    <Link
+                      href={job.execute_status === 'PENDING_PII_REVIEW' ? `/configure/${job.id}/pii-review` : `/configure/${job.id}`}
+                      className="text-xs text-forest hover:underline"
+                    >
+                      {job.execute_status === 'PENDING_PII_REVIEW' ? 'Review PII →' : 'View →'}
                     </Link>
                   </td>
                   <td className="px-4 py-3">

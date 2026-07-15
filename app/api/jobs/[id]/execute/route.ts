@@ -4,7 +4,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { extractContractTerms } from '@/lib/contract-extractor'
 import { resolveStorageUrl } from '@/lib/storage'
-import { detectPII, maskText, restoreTokensInObject, type PIIEntity } from '@/lib/pii-detector'
+import { detectPII, maskText, restoreTokensInObject } from '@/lib/pii-detector'
 
 const PII_MASKING_ENABLED = process.env.PII_MASKING_ENABLED === 'true'
 
@@ -54,17 +54,15 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
 
   const contractText = await extractPDFText(buffer, resolvedUrl)
 
-  // PII masking: replace names, emails, IBANs etc. with typed tokens before
-  // sending to the AI, then restore real values in the extracted terms after.
-  let piiEntities: PIIEntity[] = []
+  // PII masking: use approved entities from DB (set during PII review step).
+  // Falls back to auto-detection if no reviewed entities exist yet.
   let textToExtract = contractText
   let reverseMap = new Map<string, string>()
 
   if (PII_MASKING_ENABLED) {
-    const detection = detectPII(contractText)
-    piiEntities = detection.entities
-    reverseMap  = detection.reverseMap
-    textToExtract = maskText(contractText, detection.tokenMap)
+    const { tokenMap, reverseMap: rm } = await buildMaskFromDB(jobId, orgId, contractText)
+    reverseMap    = rm
+    textToExtract = maskText(contractText, tokenMap)
   }
 
   const rawTerms = await extractContractTerms(textToExtract)
@@ -123,11 +121,6 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
     .select('id')
     .single()
   if (termsError) throw new Error(`Failed to save contract terms: ${termsError.message}`)
-
-  // Persist detected PII entities for later review
-  if (PII_MASKING_ENABLED && piiEntities.length > 0) {
-    await savePIIEntities(jobId, orgId, piiEntities)
-  }
 
   // Save line items
   if (lineItems.length > 0) {
@@ -220,42 +213,50 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
   return items
 }
 
-async function savePIIEntities(jobId: string, orgId: string, entities: PIIEntity[]) {
-  for (const entity of entities) {
-    // Upsert entity into org-level library (unique on org_id + original_value)
-    const { data: saved, error } = await supabaseServer
-      .from('pii_entities')
-      .upsert(
-        {
-          org_id:         orgId,
-          entity_type:    entity.type,
-          original_value: entity.value,
-          token:          entity.token,
-          approved:       false,
-          source_job_id:  jobId,
-          updated_at:     new Date().toISOString(),
-        },
-        { onConflict: 'org_id,original_value', ignoreDuplicates: false }
-      )
-      .select('id')
-      .single()
+// Build tokenMap/reverseMap from approved PII entities in DB.
+// Loads org-level approved library + any entity linked to this job (including manual additions).
+// Falls back to auto-detecting if no entities exist yet.
+async function buildMaskFromDB(jobId: string, orgId: string, contractText: string) {
+  // Entities linked to this specific job (approved or manually added)
+  const { data: jobEntities } = await supabaseServer
+    .from('job_pii_occurrences')
+    .select(`pii_entity:pii_entities(id, original_value, token, approved)`)
+    .eq('job_id', jobId)
 
-    if (error || !saved) continue
+  // Org-level approved entities not already in this job
+  const { data: orgEntities } = await supabaseServer
+    .from('pii_entities')
+    .select('id, original_value, token, approved')
+    .eq('org_id', orgId)
+    .eq('approved', true)
 
-    // Record this entity appearing in this specific job
-    await supabaseServer
-      .from('job_pii_occurrences')
-      .upsert(
-        {
-          job_id:           jobId,
-          pii_entity_id:    saved.id,
-          detection_source: entity.source,
-          confidence_pct:   entity.confidence,
-          was_masked:       true,
-        },
-        { onConflict: 'job_id,pii_entity_id', ignoreDuplicates: true }
-      )
+  const tokenMap   = new Map<string, string>()
+  const reverseMap = new Map<string, string>()
+
+  // Job-level first (includes manual adds, rejected entities excluded at review step)
+  for (const row of jobEntities ?? []) {
+    // Supabase returns foreign-key joins as an object (not array) when the FK is many-to-one
+    const e = (row.pii_entity as unknown) as { original_value: string; token: string; approved: boolean } | null
+    if (!e || !e.approved) continue
+    tokenMap.set(e.original_value, e.token)
+    reverseMap.set(e.token, e.original_value)
   }
+
+  // Org-level approved (add any not already covered)
+  for (const e of orgEntities ?? []) {
+    if (!tokenMap.has(e.original_value)) {
+      tokenMap.set(e.original_value, e.token)
+      reverseMap.set(e.token, e.original_value)
+    }
+  }
+
+  // If no reviewed entities exist, fall back to auto-detection (new job, PII not yet reviewed)
+  if (tokenMap.size === 0) {
+    const { tokenMap: detected, reverseMap: detectedReverse } = detectPII(contractText)
+    return { tokenMap: detected, reverseMap: detectedReverse }
+  }
+
+  return { tokenMap, reverseMap }
 }
 
 async function extractPDFText(buffer: Buffer, url: string): Promise<string> {
