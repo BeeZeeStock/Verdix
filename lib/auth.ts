@@ -1,6 +1,7 @@
 import NextAuth from 'next-auth'
 import Google from 'next-auth/providers/google'
 import Credentials from 'next-auth/providers/credentials'
+import { TERMS_VERSION } from './terms-version'
 
 if (!process.env.AUTH_SECRET) {
   throw new Error('AUTH_SECRET environment variable is not set')
@@ -69,16 +70,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // Store the sign-in provider on first login so the session can expose it
       if (account?.provider) token.provider = account.provider
 
-      // Check consent for all users on first sign-in or explicit session update.
-      // Result is cached in the token so there's no DB hit on every request.
+      // Check consent on every sign-in and after explicit session update.
+      // Cached in the JWT — no DB hit on every request.
+      // needsConsent = true when: no record exists, OR record is for an older terms version.
       if ((account || trigger === 'update') && token.sub) {
         const { supabaseServer } = await import('./supabase')
         const { data } = await supabaseServer
           .from('user_consents')
-          .select('privacy_consent_at')
+          .select('terms_version')
           .eq('email', token.sub as string)
           .maybeSingle()
-        token.needsConsent = !data
+        token.needsConsent = !data || data.terms_version !== TERMS_VERSION
       }
 
       return token

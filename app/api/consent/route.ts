@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { auth } from '@/lib/auth'
 import { supabaseServer } from '@/lib/supabase'
+import { TERMS_VERSION } from '@/lib/terms-version'
 
 export async function POST() {
   const session = await auth()
@@ -11,7 +12,11 @@ export async function POST() {
   const { error } = await supabaseServer
     .from('user_consents')
     .upsert(
-      { email: session.user.email, privacy_consent_at: new Date().toISOString() },
+      {
+        email: session.user.email,
+        privacy_consent_at: new Date().toISOString(),
+        terms_version: TERMS_VERSION,
+      },
       { onConflict: 'email' }
     )
 

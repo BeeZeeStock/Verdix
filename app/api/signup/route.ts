@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { createOrg } from '@/lib/org'
 import { Resend } from 'resend'
+import { TERMS_VERSION } from '@/lib/terms-version'
 
 const NOTIFY_TO = process.env.DESIGN_PARTNER_NOTIFY_EMAIL ?? 'bilal@lynoraai.com'
 
@@ -39,7 +40,7 @@ export async function POST(req: NextRequest) {
 
   // Record consent so the JWT gate passes immediately after email signup
   await supabaseServer.from('user_consents').upsert(
-    { email, privacy_consent_at: privacyConsentAt },
+    { email, privacy_consent_at: privacyConsentAt, terms_version: TERMS_VERSION },
     { onConflict: 'email' }
   )
 
