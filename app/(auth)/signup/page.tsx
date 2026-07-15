@@ -32,6 +32,7 @@ export default function SignupPage() {
           email: form.email,
           company: form.company,
           password: form.password,
+          privacyConsentAt: new Date().toISOString(),
         }),
       })
       const json = await res.json()
@@ -107,8 +108,20 @@ export default function SignupPage() {
               </div>
             ))}
 
-            {/* GDPR consent — REQUIRED */}
-            <label className="flex items-start gap-3 cursor-pointer mt-2">
+            {/* Data privacy notice */}
+            <div className="rounded-xl border border-forest/15 bg-cream p-4 space-y-2.5 mt-2">
+              <p className="text-xs font-semibold text-ink">Your data stays yours</p>
+              <ul className="space-y-1.5 text-xs text-stone leading-relaxed list-none">
+                <li><span className="font-medium text-ink">Contract files</span> are stored securely and only accessible by your organisation.</li>
+                <li><span className="font-medium text-ink">PII masking</span> — names, emails, and identifiers are detected and masked locally before being sent to AI for analysis.</li>
+                <li><span className="font-medium text-ink">AI processing</span> is performed via Amazon Bedrock infrastructure. Your contract data is never used to train AI models.</li>
+                <li><span className="font-medium text-ink">Extracted terms</span> (prices, dates, discounts) power your dashboard only and are never shared with other organisations.</li>
+                <li><span className="font-medium text-ink">Storage</span> is handled by Supabase with encryption at rest. EU hosting is available on request.</li>
+              </ul>
+            </div>
+
+            {/* Consent checkbox — mandatory */}
+            <label className="flex items-start gap-3 cursor-pointer">
               <input
                 type="checkbox"
                 checked={gdpr}
@@ -117,10 +130,10 @@ export default function SignupPage() {
                 style={{ accentColor: '#1A3D2B' }}
               />
               <span className="text-xs text-stone leading-relaxed">
-                I have read and agree to the{' '}
-                <Link href="/privacy" target="_blank" className="text-forest underline">Privacy Policy</Link> and{' '}
+                I understand how Verdix processes my data as described above, and I agree to the{' '}
+                <Link href="/privacy" target="_blank" className="text-forest underline">Privacy Policy</Link>
+                {' '}and{' '}
                 <Link href="/terms" target="_blank" className="text-forest underline">Terms of Service</Link>.
-                I understand how Verdix processes my data under GDPR.
               </span>
             </label>
 

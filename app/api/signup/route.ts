@@ -6,10 +6,14 @@ import { Resend } from 'resend'
 const NOTIFY_TO = process.env.DESIGN_PARTNER_NOTIFY_EMAIL ?? 'bilal@lynoraai.com'
 
 export async function POST(req: NextRequest) {
-  const { fullName, email, company, password } = await req.json()
+  const { fullName, email, company, password, privacyConsentAt } = await req.json()
 
   if (!fullName || !email || !company || !password) {
     return NextResponse.json({ error: 'All fields are required.' }, { status: 400 })
+  }
+
+  if (!privacyConsentAt) {
+    return NextResponse.json({ error: 'You must accept the Privacy Policy and Terms to continue.' }, { status: 400 })
   }
 
   if (password.length < 8) {
@@ -20,7 +24,7 @@ export async function POST(req: NextRequest) {
     email,
     password,
     email_confirm: true,
-    user_metadata: { full_name: fullName, company },
+    user_metadata: { full_name: fullName, company, privacy_consent_at: privacyConsentAt },
   })
 
   if (error) {
