@@ -207,8 +207,8 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
           <table className="w-full">
             <thead>
               <tr className="border-b border-forest/8">
-                {['Type', 'Value', 'Masked as', 'Source', 'Confidence', ''].map(h => (
-                  <th key={h} className="px-4 py-3 text-left text-[10px] font-semibold text-stone uppercase tracking-wider">{h}</th>
+                {['Type', 'Value', 'Masked as', 'Source', 'Confidence', ''].map((h, i) => (
+                  <th key={h} className={`py-3 text-left text-[10px] font-semibold text-stone uppercase tracking-wider ${i === 5 ? 'pl-4 pr-6' : 'px-4'}`}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -230,7 +230,7 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
                     <td className="px-4 py-3 text-xs text-stone font-mono">{e.token}</td>
                     <td className="px-4 py-3 text-xs text-stone capitalize">{occ.detection_source?.replace('_', ' ')}</td>
                     <td className="px-4 py-3 text-xs text-stone">{occ.confidence_pct != null ? `${occ.confidence_pct}%` : '—'}</td>
-                    <td className="px-4 py-3">
+                    <td className="pl-4 pr-6 py-3">
                       <div className="flex items-center gap-2 justify-end">
                         {e.approved ? (
                           <span className="text-xs text-forest flex items-center gap-1">
