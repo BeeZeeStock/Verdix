@@ -63,8 +63,8 @@ function Hero() {
           </a>
         </div>
         <p className="text-center mb-10" style={{ fontSize: 11, color: '#6B6660' }}>
-          Billing platforms supported: <span style={{ color: '#1A3D2B', fontWeight: 500 }}>Stripe · Chargebee</span>
-          <span style={{ color: '#9CA3AF' }}> · Maxio coming soon</span>
+          Billing platforms supported: <span style={{ color: '#1A3D2B', fontWeight: 500 }}>Stripe</span>
+          <span style={{ color: '#9CA3AF' }}> · Others coming soon · </span><span style={{ color: '#6B6660' }}>available on request</span>
         </p>
         <div className="grid grid-cols-3 gap-3 max-w-2xl mx-auto">
           <div className="bg-white border border-forest/10 rounded-2xl p-5 text-center">
