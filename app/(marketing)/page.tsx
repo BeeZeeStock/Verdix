@@ -476,10 +476,10 @@ function HowItWorks() {
           <p className="text-stone text-sm">Two flows. One engine. No manual translation.</p>
         </div>
         <div style={{ background: '#F5F3EE', borderRadius: 16, padding: '36px 28px 28px', overflowX: 'auto' }}>
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0, minWidth: 640 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0, minWidth: 780 }}>
             {/* Contracts */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 130 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 118 }}>
                 {[['75%','55%','40%'],['65%','50%']].map((widths, i) => (
                   <div key={i}>
                     <div style={{ background: '#fff', border: '1px solid #E0DDD6', borderRadius: 14, padding: 12 }}>
@@ -498,9 +498,23 @@ function HowItWorks() {
               <div style={{ fontSize: 12, color: '#4A4540', marginTop: 12, textAlign: 'center', lineHeight: 1.5 }}>Signed<br />contracts</div>
             </div>
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', paddingBottom: 48 }}><div style={{ flex: 1, height: 1, background: '#C8C5BC' }} /></div>
+            {/* PII Review */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <div style={{ background: '#fff', border: '1px solid #DDD6FE', borderRadius: 14, padding: 14, width: 118 }}>
+                <div style={{ fontSize: 9, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.08em', color: '#7C3AED', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <i className="ti ti-shield-lock" style={{ fontSize: 12, color: '#7C3AED' }} /> PII review
+                </div>
+                {[['[PERSON_1]','#EDE9FE','#7C3AED'],['[ORG_1]','#EDE9FE','#7C3AED'],['[EMAIL_1]','#EDE9FE','#7C3AED']].map(([label, bg, tc], i) => (
+                  <div key={i} style={{ fontSize: 8, fontWeight: 500, background: bg, color: tc, borderRadius: 4, padding: '2px 5px', display: 'inline-block', marginBottom: 4, fontFamily: "'JetBrains Mono',monospace" }}>{label}</div>
+                ))}
+                <div style={{ fontSize: 9, fontWeight: 500, background: '#EDE9FE', color: '#5B21B6', borderRadius: 5, padding: '3px 7px', display: 'inline-block', marginTop: 4 }}>Masked before AI</div>
+              </div>
+              <div style={{ fontSize: 12, color: '#4A4540', marginTop: 12, textAlign: 'center', lineHeight: 1.5 }}>Data masked<br />locally</div>
+            </div>
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', paddingBottom: 48 }}><div style={{ flex: 1, height: 1, background: '#C8C5BC' }} /></div>
             {/* AI extraction */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <div style={{ background: '#fff', border: '1px solid #E0DDD6', borderRadius: 14, padding: 14, width: 130 }}>
+              <div style={{ background: '#fff', border: '1px solid #E0DDD6', borderRadius: 14, padding: 14, width: 118 }}>
                 <div style={{ fontSize: 9, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.08em', color: '#6B6660', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
                   <i className="ti ti-cpu" style={{ fontSize: 12, color: '#1A3D2B' }} /> AI extraction
                 </div>
@@ -521,7 +535,7 @@ function HowItWorks() {
             </div>
             {/* Verification */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <div style={{ background: '#fff', border: '1px solid #E0DDD6', borderRadius: 14, padding: 14, width: 130 }}>
+              <div style={{ background: '#fff', border: '1px solid #E0DDD6', borderRadius: 14, padding: 14, width: 118 }}>
                 <div style={{ fontSize: 9, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.08em', color: '#6B6660', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
                   <i className="ti ti-layout-columns" style={{ fontSize: 12, color: '#1A3D2B' }} /> Verification
                 </div>
@@ -545,7 +559,7 @@ function HowItWorks() {
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', paddingBottom: 48 }}><div style={{ flex: 1, height: 1, background: '#C8C5BC' }} /></div>
             {/* Billing configured */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <div style={{ background: '#fff', border: '1px solid #E0DDD6', borderRadius: 14, padding: 14, width: 130 }}>
+              <div style={{ background: '#fff', border: '1px solid #E0DDD6', borderRadius: 14, padding: 14, width: 118 }}>
                 <div style={{ fontSize: 9, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.08em', color: '#6B6660', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
                   <i className="ti ti-credit-card" style={{ fontSize: 12, color: '#1A3D2B' }} /> Billing configured
                 </div>
