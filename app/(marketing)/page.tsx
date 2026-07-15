@@ -473,7 +473,7 @@ function HowItWorks() {
       <div className="max-w-5xl mx-auto">
         <div className="text-center mb-14">
           <h2 className="font-display font-light text-ink text-2xl mb-3">From signed contract to verified billing in minutes</h2>
-          <p className="text-stone text-sm">Two flows. One engine. No manual translation.</p>
+          <p className="text-stone text-sm">Verify existing billing. Automate every new deal.</p>
         </div>
         <div style={{ background: '#F5F3EE', borderRadius: 16, padding: '36px 28px 28px', overflowX: 'auto' }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0, minWidth: 780 }}>
@@ -500,14 +500,14 @@ function HowItWorks() {
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', paddingBottom: 48 }}><div style={{ flex: 1, height: 1, background: '#C8C5BC' }} /></div>
             {/* PII Review */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <div style={{ background: '#fff', border: '1px solid #DDD6FE', borderRadius: 14, padding: 14, width: 118 }}>
-                <div style={{ fontSize: 9, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.08em', color: '#7C3AED', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <i className="ti ti-shield-lock" style={{ fontSize: 12, color: '#7C3AED' }} /> PII review
+              <div style={{ background: '#fff', border: '1px solid #C0DD97', borderRadius: 14, padding: 14, width: 118 }}>
+                <div style={{ fontSize: 9, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.08em', color: '#27500A', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <i className="ti ti-shield-lock" style={{ fontSize: 12, color: '#1A3D2B' }} /> PII review
                 </div>
-                {[['[PERSON_1]','#EDE9FE','#7C3AED'],['[ORG_1]','#EDE9FE','#7C3AED'],['[EMAIL_1]','#EDE9FE','#7C3AED']].map(([label, bg, tc], i) => (
-                  <div key={i} style={{ fontSize: 8, fontWeight: 500, background: bg, color: tc, borderRadius: 4, padding: '2px 5px', display: 'inline-block', marginBottom: 4, fontFamily: "'JetBrains Mono',monospace" }}>{label}</div>
+                {['[PERSON_1]','[ORG_1]','[EMAIL_1]'].map((label, i) => (
+                  <div key={i} style={{ fontSize: 8, fontWeight: 500, background: '#EAF3DE', color: '#27500A', borderRadius: 4, padding: '2px 5px', display: 'inline-block', marginBottom: 4, fontFamily: "'JetBrains Mono',monospace" }}>{label}</div>
                 ))}
-                <div style={{ fontSize: 9, fontWeight: 500, background: '#EDE9FE', color: '#5B21B6', borderRadius: 5, padding: '3px 7px', display: 'inline-block', marginTop: 4 }}>Masked before AI</div>
+                <div style={{ fontSize: 9, fontWeight: 500, background: '#EAF3DE', color: '#27500A', borderRadius: 5, padding: '3px 7px', display: 'inline-block', marginTop: 4 }}>Masked before AI</div>
               </div>
               <div style={{ fontSize: 12, color: '#4A4540', marginTop: 12, textAlign: 'center', lineHeight: 1.5 }}>Data masked<br />locally</div>
             </div>
