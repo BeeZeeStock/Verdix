@@ -120,7 +120,7 @@ function NavContent({ onNav }: { onNav?: () => void }) {
           <div className="text-xs font-medium text-ink truncate">{userName}</div>
           {userEmail && <div className="text-xs text-stone truncate">{userEmail}</div>}
         </div>
-        <a href="/api/auth/signout?callbackUrl=/" className="text-stone hover:text-forest transition-colors">
+        <a href="/signout" className="text-stone hover:text-forest transition-colors">
           <i className="ti ti-logout" style={{ fontSize: 14 }} />
         </a>
       </div>
