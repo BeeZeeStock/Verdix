@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { waitUntil } from '@vercel/functions'
 import Anthropic from '@anthropic-ai/sdk'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
@@ -37,12 +38,14 @@ export async function POST(
 
   await supabaseServer.from('jobs').update({ execute_status: 'EXTRACTING' }).eq('id', id)
 
-  runExecutePipeline(id, org.orgId, job.contract_pdf_url, job.currency).catch(async (err) => {
-    await supabaseServer.from('jobs').update({
-      execute_status: 'FAILED',
-      error_message: err instanceof Error ? err.message : String(err),
-    }).eq('id', id)
-  })
+  waitUntil(
+    runExecutePipeline(id, org.orgId, job.contract_pdf_url, job.currency).catch(async (err) => {
+      await supabaseServer.from('jobs').update({
+        execute_status: 'FAILED',
+        error_message: err instanceof Error ? err.message : String(err),
+      }).eq('id', id)
+    })
+  )
 
   return NextResponse.json({ jobId: id, status: 'EXTRACTING' })
 }
