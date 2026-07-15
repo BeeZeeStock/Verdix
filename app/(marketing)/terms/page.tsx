@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { VerdixLogo } from '@/components/VerdixLogo'
 
 export const metadata = { title: 'Terms of Service — Verdix' }
 
@@ -8,11 +9,7 @@ export default function TermsPage() {
       <nav className="fixed top-0 left-0 right-0 z-50 bg-cream/95 backdrop-blur border-b border-forest/8">
         <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2.5 text-ink font-medium">
-            <svg width="24" height="24" viewBox="0 0 28 28" fill="none">
-              <rect width="28" height="28" rx="6" fill="#1A3D2B" />
-              <polygon points="8,6 11.5,6 14,20 16.5,6 20,6 17,6 14,17 11,6" fill="#FFFFFF" />
-              <circle cx="14" cy="23" r="2" fill="#D4EAD9" />
-            </svg>
+            <VerdixLogo size={24} />
             Verdix
           </Link>
         </div>
@@ -70,7 +67,7 @@ export default function TermsPage() {
             },
             {
               title: '12. Contact',
-              body: 'For questions about these Terms: support@verdix.io. Lynora AB, Vallentuna, Sweden (Org. nr 559516-1190). Verdix is a trading name of Lynora AB.',
+              body: 'For questions about these Terms: bilal@lynoraai.com. Lynora AB, Vallentuna, Sweden (Org. nr 559516-1190). Verdix is a trading name of Lynora AB.',
             },
           ].map(section => (
             <section key={section.title}>

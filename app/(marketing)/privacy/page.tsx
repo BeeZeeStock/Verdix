@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { VerdixLogo } from '@/components/VerdixLogo'
 
 export const metadata = { title: 'Privacy Policy — Verdix' }
 
@@ -8,11 +9,7 @@ export default function PrivacyPage() {
       <nav className="fixed top-0 left-0 right-0 z-50 bg-cream/95 backdrop-blur border-b border-forest/8">
         <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2.5 text-ink font-medium">
-            <svg width="24" height="24" viewBox="0 0 28 28" fill="none">
-              <rect width="28" height="28" rx="6" fill="#1A3D2B" />
-              <polygon points="8,6 11.5,6 14,20 16.5,6 20,6 17,6 14,17 11,6" fill="#FFFFFF" />
-              <circle cx="14" cy="23" r="2" fill="#D4EAD9" />
-            </svg>
+            <VerdixLogo size={24} />
             Verdix
           </Link>
         </div>
@@ -46,11 +43,11 @@ export default function PrivacyPage() {
             },
             {
               title: '6. Transfers outside the EEA',
-              body: 'AI processing via Amazon Bedrock involves infrastructure operated by AWS, which may include servers outside the EEA. Such transfers are governed by AWS\'s EU Standard Contractual Clauses (SCCs) under Article 46 GDPR. All other data remains within EU-hosted infrastructure.',
+              body: <>AI processing is performed via <a href="https://aws.amazon.com/bedrock/" target="_blank" rel="noopener noreferrer" className="text-forest underline">Amazon Bedrock</a> using EU-hosted AWS regions, meaning your contract data is processed within the European Economic Area and does not leave it for AI analysis. All other platform data is also stored within EU infrastructure.</>,
             },
             {
               title: '7. Your rights',
-              body: 'Under GDPR you have the right to: access your personal data, correct inaccuracies, request erasure ("right to be forgotten"), restrict processing, data portability, and to object to processing. To exercise any of these rights, contact us at privacy@verdix.io. You also have the right to lodge a complaint with the Swedish Authority for Privacy Protection (IMY) or your local supervisory authority.',
+              body: 'Under GDPR you have the right to: access your personal data, correct inaccuracies, request erasure ("right to be forgotten"), restrict processing, data portability, and to object to processing. To exercise any of these rights, contact us at bilal@lynoraai.com. You also have the right to lodge a complaint with the Swedish Authority for Privacy Protection (IMY) or your local supervisory authority.',
             },
             {
               title: '8. Security',
@@ -58,7 +55,7 @@ export default function PrivacyPage() {
             },
             {
               title: '9. Contact',
-              body: 'For privacy enquiries: privacy@verdix.io. Postal: Lynora AB, Vallentuna, Sweden. Verdix is a trading name of Lynora AB (Org. nr 559516-1190).',
+              body: 'For privacy enquiries: bilal@lynoraai.com. Postal: Lynora AB, Vallentuna, Sweden. Verdix is a trading name of Lynora AB (Org. nr 559516-1190).',
             },
           ].map(section => (
             <section key={section.title}>
