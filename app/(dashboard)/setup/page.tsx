@@ -235,7 +235,7 @@ export default function SetupPage() {
         <h1 className="font-display font-light text-ink text-2xl mb-1">Set up your workspace</h1>
         <p className="text-stone text-sm">
           {allDone
-            ? 'Core setup complete. Connect integrations to unlock billing push.'
+            ? 'Automate your billing workflows by connecting Verdix to your existing platforms.'
             : `${doneCount} of ${totalSteps} steps complete.`}
         </p>
         <div className="mt-4 h-1 bg-forest/8 rounded-full overflow-hidden max-w-xs">
