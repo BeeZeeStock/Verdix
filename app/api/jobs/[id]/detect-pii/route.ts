@@ -100,13 +100,23 @@ async function savePIIEntities(jobId: string, orgId: string, entities: PIIEntity
 
     let saved = existing
     if (!existing) {
+      // Generate a globally unique token for this org + entity type.
+      // detectPII() resets its counter per run, so its token numbers can clash
+      // across contracts. Count existing org-level entities of this type instead.
+      const { count } = await supabaseServer
+        .from('pii_entities')
+        .select('*', { count: 'exact', head: true })
+        .eq('org_id', orgId)
+        .eq('entity_type', entity.type)
+      const token = `[${entity.type}_${(count ?? 0) + 1}]`
+
       const { data: inserted } = await supabaseServer
         .from('pii_entities')
         .insert({
           org_id:         orgId,
           entity_type:    entity.type,
           original_value: entity.value,
-          token:          entity.token,
+          token,
           approved:       false,
           source_job_id:  jobId,
         })
