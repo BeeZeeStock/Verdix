@@ -37,6 +37,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
+  // Record consent so the JWT gate passes immediately after email signup
+  await supabaseServer.from('user_consents').upsert(
+    { email, privacy_consent_at: privacyConsentAt },
+    { onConflict: 'email' }
+  )
+
   // Create org for the new user (company name → org name, user is owner)
   try {
     await createOrg(company, email)

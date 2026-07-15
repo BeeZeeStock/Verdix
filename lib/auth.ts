@@ -69,9 +69,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // Store the sign-in provider on first login so the session can expose it
       if (account?.provider) token.provider = account.provider
 
-      // For Google users: check consent on each OAuth sign-in or explicit session update.
-      // Email users capture consent at signup, so only Google needs this gate.
-      if (token.provider === 'google' && (account || trigger === 'update')) {
+      // Check consent for all users on first sign-in or explicit session update.
+      // Result is cached in the token so there's no DB hit on every request.
+      if ((account || trigger === 'update') && token.sub) {
         const { supabaseServer } = await import('./supabase')
         const { data } = await supabaseServer
           .from('user_consents')
