@@ -64,14 +64,16 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
   // Falls back to auto-detection if no reviewed entities exist yet.
   let textToExtract = contractText
   let reverseMap = new Map<string, string>()
+  let tokenMap   = new Map<string, string>()
 
   if (PII_MASKING_ENABLED) {
-    const { tokenMap, reverseMap: rm } = await buildMaskFromDB(jobId, orgId, contractText)
-    reverseMap    = rm
+    const result = await buildMaskFromDB(jobId, orgId, contractText)
+    tokenMap      = result.tokenMap
+    reverseMap    = result.reverseMap
     textToExtract = maskText(contractText, tokenMap)
   }
 
-  const rawTerms = await extractContractTerms(textToExtract)
+  const rawTerms = await extractContractTerms(textToExtract, undefined, PII_MASKING_ENABLED && tokenMap.size > 0)
 
   // Restore PII tokens in string fields so the saved record has real values.
   const terms = PII_MASKING_ENABLED

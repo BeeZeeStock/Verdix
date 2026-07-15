@@ -94,33 +94,40 @@ Output:
 
 export async function extractContractTerms(
   contractText: string,
-  customerName?: string
+  customerName?: string,
+  piiMasked = false,
 ): Promise<ContractTerms> {
   const learningContext = await buildLearningContext(customerName)
 
   const chunks = splitIntoChunks(contractText, 12000)
   if (chunks.length === 1) {
-    return extractFromChunk(chunks[0], learningContext)
+    return extractFromChunk(chunks[0], learningContext, piiMasked)
   }
 
   // Map-reduce for long contracts
   const partialResults = await Promise.all(
-    chunks.map(chunk => extractFromChunk(chunk, learningContext))
+    chunks.map(chunk => extractFromChunk(chunk, learningContext, piiMasked))
   )
   return mergeExtractions(partialResults)
 }
 
-async function extractFromChunk(text: string, learningContext: string): Promise<ContractTerms> {
+const PII_MASK_NOTE = `
+IMPORTANT — PII MASKING ACTIVE: Certain names and identifiers in this contract have been replaced with privacy tokens (e.g. [PERSON_1], [ORG_1], [EMAIL_1]). These tokens are placeholders for real values.
+- Use the role labels in the contract text (words like "Customer", "Vendor", "Provider", "Supplier", "Licensor", "Licensee") to determine which token belongs in which field.
+- For example, if the contract says "between [ORG_2] (the Customer) and [ORG_1] (the Vendor)", then customer_name = "[ORG_2]" and vendor_name = "[ORG_1]".
+- Copy the token exactly as it appears (e.g. "[ORG_2]") into the relevant JSON field — do not guess or substitute a different token.
+- Do NOT leave fields null just because the value is a token — a token is a valid extracted value.`
+
+async function extractFromChunk(text: string, learningContext: string, piiMasked = false): Promise<ContractTerms> {
+  const userContent = piiMasked
+    ? `${PII_MASK_NOTE}\n\nExtract contract terms from this document:\n\n<contract>\n${text}\n</contract>\n\nIMPORTANT: Your entire response must be a single valid JSON object. Do not include any explanation, reasoning, markdown, or text before or after the JSON.`
+    : `Extract contract terms from this document:\n\n<contract>\n${text}\n</contract>\n\nIMPORTANT: Your entire response must be a single valid JSON object. Do not include any explanation, reasoning, markdown, or text before or after the JSON.`
+
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 4096,
     system: SYSTEM_PROMPT + '\n\n' + FEW_SHOT_EXAMPLE + learningContext,
-    messages: [
-      {
-        role: 'user',
-        content: `Extract contract terms from this document:\n\n<contract>\n${text}\n</contract>\n\nIMPORTANT: Your entire response must be a single valid JSON object. Do not include any explanation, reasoning, markdown, or text before or after the JSON.`,
-      },
-    ],
+    messages: [{ role: 'user', content: userContent }],
   })
 
   const content = response.content[0]
