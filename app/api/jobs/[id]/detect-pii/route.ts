@@ -3,9 +3,11 @@ import Anthropic from '@anthropic-ai/sdk'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { resolveStorageUrl } from '@/lib/storage'
-import { detectPII, type PIIEntity } from '@/lib/pii-detector'
+import type { PIIEntity } from '@/lib/pii-detector'
 
 const anthropicDirect = new Anthropic()
+
+export const maxDuration = 120
 
 export async function POST(
   _req: NextRequest,
@@ -37,7 +39,8 @@ export async function POST(
 
     const contractText = await extractPDFText(buffer, resolvedUrl)
 
-    // Run local PII detection
+    // Run local PII detection (dynamic import keeps compromise out of module init)
+    const { detectPII } = await import('@/lib/pii-detector')
     const { entities } = detectPII(contractText)
 
     // Save to DB and collect saved records

@@ -4,9 +4,12 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { extractContractTerms } from '@/lib/contract-extractor'
 import { resolveStorageUrl } from '@/lib/storage'
-import { detectPII, maskText, restoreTokensInObject } from '@/lib/pii-detector'
+import { maskText, restoreTokensInObject } from '@/lib/pii-detector'
 
 const PII_MASKING_ENABLED = process.env.PII_MASKING_ENABLED === 'true'
+
+// Allow up to 5 minutes — PDF extraction + two Anthropic calls can exceed the default 10s limit
+export const maxDuration = 300
 
 // PDF text extraction always uses the Anthropic SDK directly because the document
 // content type (base64 PDF upload) is not yet supported in our Bedrock shim.
@@ -252,6 +255,7 @@ async function buildMaskFromDB(jobId: string, orgId: string, contractText: strin
 
   // If no reviewed entities exist, fall back to auto-detection (new job, PII not yet reviewed)
   if (tokenMap.size === 0) {
+    const { detectPII } = await import('@/lib/pii-detector')
     const { tokenMap: detected, reverseMap: detectedReverse } = detectPII(contractText)
     return { tokenMap: detected, reverseMap: detectedReverse }
   }
