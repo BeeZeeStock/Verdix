@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useSession } from 'next-auth/react'
+import { useSession, signOut } from 'next-auth/react'
 import { useState, useEffect } from 'react'
 import { VerdixLogo } from '@/components/VerdixLogo'
 
@@ -147,9 +147,13 @@ function NavContent({ onNav }: { onNav?: () => void }) {
           <div className="text-xs font-medium text-ink truncate">{userName}</div>
           {userEmail && <div className="text-xs text-stone truncate">{userEmail}</div>}
         </div>
-        <a href="/signout" className="text-stone hover:text-forest transition-colors">
+        <button
+          onClick={() => signOut({ callbackUrl: '/' })}
+          className="text-stone hover:text-forest transition-colors"
+          aria-label="Sign out"
+        >
           <i className="ti ti-logout" style={{ fontSize: 14 }} />
-        </a>
+        </button>
       </div>
     </div>
   )
