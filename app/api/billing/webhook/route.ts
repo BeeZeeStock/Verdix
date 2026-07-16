@@ -1,16 +1,19 @@
 /**
  * Stripe webhook for Verdix SaaS subscription billing.
  * Separate from /api/stripe/webhook which handles customer contract billing.
- *
- * Events handled:
- *  checkout.session.completed  → activate subscription after upgrade checkout
- *  customer.subscription.updated → sync plan changes
- *  customer.subscription.deleted → downgrade to trial
- *  invoice.paid (subscription) → reset sync counter for new period
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { resetPeriodSyncs } from '@/lib/billing'
+
+type StripeInvoice = import('stripe').default.Invoice
+
+function periodFromInvoice(invoice: StripeInvoice) {
+  return {
+    start: new Date(invoice.period_start * 1000).toISOString(),
+    end:   new Date(invoice.period_end   * 1000).toISOString(),
+  }
+}
 
 export async function POST(req: NextRequest) {
   const rawBody = await req.text()
@@ -21,7 +24,11 @@ export async function POST(req: NextRequest) {
 
   let event: import('stripe').default.Event
   try {
-    event = stripe.webhooks.constructEvent(rawBody, sig, process.env.STRIPE_BILLING_WEBHOOK_SECRET ?? process.env.STRIPE_WEBHOOK_SECRET!)
+    event = stripe.webhooks.constructEvent(
+      rawBody,
+      sig,
+      process.env.STRIPE_BILLING_WEBHOOK_SECRET ?? process.env.STRIPE_WEBHOOK_SECRET!,
+    )
   } catch {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 })
   }
@@ -37,9 +44,14 @@ export async function POST(req: NextRequest) {
 
       if (!orgId || !planId || !subId) return NextResponse.json({ received: true })
 
-      const subscription = await stripe.subscriptions.retrieve(subId)
-      const periodStart  = new Date(subscription.current_period_start * 1000).toISOString()
-      const periodEnd    = new Date(subscription.current_period_end   * 1000).toISOString()
+      // Expand the latest invoice to get billing period dates (current_period_start/end
+      // were removed from Subscription in Stripe API 2026-06-24.dahlia)
+      const subscription = await stripe.subscriptions.retrieve(subId, {
+        expand: ['latest_invoice'],
+      })
+      const invoice = subscription.latest_invoice as StripeInvoice | null
+      const periodStart = invoice ? new Date(invoice.period_start * 1000).toISOString() : new Date().toISOString()
+      const periodEnd   = invoice ? new Date(invoice.period_end   * 1000).toISOString() : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
 
       await supabaseServer.from('org_subscriptions').upsert({
         org_id: orgId,
@@ -59,16 +71,24 @@ export async function POST(req: NextRequest) {
       if (!orgId) return NextResponse.json({ received: true })
 
       const planId = sub.metadata?.verdix_plan_id ?? 'core'
-      const periodStart = new Date(sub.current_period_start * 1000).toISOString()
-      const periodEnd   = new Date(sub.current_period_end   * 1000).toISOString()
 
-      await supabaseServer.from('org_subscriptions').update({
+      // Get period from latest invoice since current_period_* removed from Subscription type
+      const subExpanded = await stripe.subscriptions.retrieve(sub.id, {
+        expand: ['latest_invoice'],
+      })
+      const invoice = subExpanded.latest_invoice as StripeInvoice | null
+
+      const updatePayload: Record<string, unknown> = {
         plan_id: planId,
         status:  sub.status === 'active' ? 'active' : sub.status,
-        current_period_start: periodStart,
-        current_period_end:   periodEnd,
         updated_at: new Date().toISOString(),
-      }).eq('org_id', orgId)
+      }
+      if (invoice) {
+        updatePayload.current_period_start = new Date(invoice.period_start * 1000).toISOString()
+        updatePayload.current_period_end   = new Date(invoice.period_end   * 1000).toISOString()
+      }
+
+      await supabaseServer.from('org_subscriptions').update(updatePayload).eq('org_id', orgId)
     }
 
     else if (event.type === 'customer.subscription.deleted') {
@@ -86,11 +106,11 @@ export async function POST(req: NextRequest) {
     }
 
     else if (event.type === 'invoice.paid') {
-      const invoice = event.data.object as import('stripe').default.Invoice
+      const invoice = event.data.object as StripeInvoice
       const subRef  = invoice.parent?.subscription_details?.subscription
       if (!subRef) return NextResponse.json({ received: true })
 
-      const subId = typeof subRef === 'string' ? subRef : subRef.id
+      const subId = typeof subRef === 'string' ? subRef : (subRef as { id: string }).id
       const subscription = await stripe.subscriptions.retrieve(subId)
       const orgId = subscription.metadata?.verdix_org_id
       if (!orgId) return NextResponse.json({ received: true })
@@ -114,7 +134,7 @@ export async function POST(req: NextRequest) {
           : 0
 
         if (overageCount > 0 && plan?.overage_price_eur && invoice.customer) {
-          const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer.id
+          const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as { id: string }).id
           await stripe.invoiceItems.create({
             customer:    customerId,
             amount:      Math.round(plan.overage_price_eur * overageCount * 100),
@@ -124,9 +144,8 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Reset sync counter for new period
-      const periodStart = new Date(subscription.current_period_start * 1000).toISOString()
-      const periodEnd   = new Date(subscription.current_period_end   * 1000).toISOString()
+      // Reset sync counter using period dates from the invoice
+      const { start: periodStart, end: periodEnd } = periodFromInvoice(invoice)
       await resetPeriodSyncs(orgId, periodStart, periodEnd)
     }
   } catch (err) {
