@@ -17,17 +17,10 @@ export async function POST() {
   const { default: Stripe } = await import('stripe')
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
 
-  // Check if a webhook pointing at this URL already exists
+  // Delete any existing webhooks pointing at this URL so we get a fresh secret
   const existing = await stripe.webhookEndpoints.list({ limit: 100 })
-  const alreadyRegistered = existing.data.find(w => w.url === url && w.status === 'enabled')
-  if (alreadyRegistered) {
-    return NextResponse.json({
-      ok: true,
-      url,
-      id: alreadyRegistered.id,
-      note: 'Webhook already registered. To get the signing secret, delete it in Stripe and re-register here.',
-    })
-  }
+  const stale = existing.data.filter(w => w.url === url)
+  await Promise.all(stale.map(w => stripe.webhookEndpoints.del(w.id).catch(() => null)))
 
   const webhook = await stripe.webhookEndpoints.create({
     url,
