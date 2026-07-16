@@ -1,18 +1,14 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { signOut } from 'next-auth/react'
+import { useEffect, useRef } from 'react'
 import { VerdixLogo } from '@/components/VerdixLogo'
+import { doSignOut } from './actions'
 
 export default function SignOutPage() {
-  const [done, setDone] = useState(false)
+  const formRef = useRef<HTMLFormElement>(null)
 
   useEffect(() => {
-    signOut({ redirect: false }).then(() => {
-      setDone(true)
-      // Small delay so the cookie is fully cleared before navigating
-      setTimeout(() => { window.location.replace('/') }, 300)
-    })
+    formRef.current?.requestSubmit()
   }, [])
 
   return (
@@ -21,13 +17,11 @@ export default function SignOutPage() {
         <div className="bg-white border border-forest/10 rounded-2xl p-8 shadow-sm text-center">
           <div className="flex flex-col items-center mb-6">
             <VerdixLogo size={36} />
-            <h1 className="font-display font-light text-ink text-2xl mt-4 mb-1">
-              {done ? 'Signed out' : 'Signing you out'}
-            </h1>
+            <h1 className="font-display font-light text-ink text-2xl mt-4 mb-1">Signing you out</h1>
             <p className="text-stone text-sm">You&apos;ll be redirected in a moment.</p>
           </div>
 
-          {!done && (
+          <form ref={formRef} action={doSignOut}>
             <div className="flex items-center justify-center gap-1.5 mt-2">
               {[0, 1, 2].map(i => (
                 <span
@@ -44,7 +38,7 @@ export default function SignOutPage() {
                 />
               ))}
             </div>
-          )}
+          </form>
 
           <style>{`
             @keyframes pulse {
