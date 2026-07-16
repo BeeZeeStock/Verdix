@@ -11,7 +11,7 @@ const BILLING_WEBHOOK_EVENTS = [
 export async function POST() {
   try { await requireAdmin() } catch { return NextResponse.json({ error: 'Forbidden' }, { status: 403 }) }
 
-  const base = process.env.AUTH_URL ?? process.env.NEXTAUTH_URL ?? 'https://app.lynoraai.com'
+  const base = process.env.AUTH_URL || process.env.NEXTAUTH_URL || 'https://app.lynoraai.com'
   const url = `${base}/api/billing/webhook`
 
   const { default: Stripe } = await import('stripe')
