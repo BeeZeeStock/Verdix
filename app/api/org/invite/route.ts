@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
 
   // Send invite email
   const resend = new Resend(process.env.RESEND_API_KEY)
-  const appUrl = process.env.NEXTAUTH_URL ?? 'https://lynoraai.com'
+  const appUrl = process.env.AUTH_URL ?? process.env.NEXTAUTH_URL ?? 'https://lynoraai.com'
 
   const { error: emailError } = await resend.emails.send({
     from: 'Verdix <noreply@lynoraai.com>',
