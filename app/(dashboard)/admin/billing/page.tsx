@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { isAdmin } from '@/lib/admin'
 
 type Plan = {
   id: string
@@ -28,6 +27,9 @@ export default function AdminBillingPage() {
   const [edits, setEdits]           = useState<Record<string, Partial<Plan>>>({})
   const [trialLimit, setTrialLimit] = useState('')
   const [savingTrial, setSavingTrial] = useState(false)
+  const [webhookSecret, setWebhookSecret] = useState<string | null>(null)
+  const [registeringWebhook, setRegisteringWebhook] = useState(false)
+  const [webhookMsg, setWebhookMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   useEffect(() => {
     fetch('/api/admin/billing')
@@ -62,6 +64,21 @@ export default function AdminBillingPage() {
       setMsg({ id: plan.id, ok: false, text: data.error ?? 'Error' })
     }
     setSaving(null)
+  }
+
+  const registerWebhook = async () => {
+    setRegisteringWebhook(true)
+    setWebhookMsg(null)
+    setWebhookSecret(null)
+    const res = await fetch('/api/admin/billing/register-webhook', { method: 'POST' })
+    const data = await res.json()
+    if (res.ok) {
+      setWebhookSecret(data.secret)
+      setWebhookMsg({ ok: true, text: `Webhook registered at ${data.url}` })
+    } else {
+      setWebhookMsg({ ok: false, text: data.error ?? 'Failed to register webhook' })
+    }
+    setRegisteringWebhook(false)
   }
 
   const saveTrialLimit = async () => {
@@ -108,6 +125,33 @@ export default function AdminBillingPage() {
             <span className={`text-xs font-medium ${msg.ok ? 'text-forest' : 'text-red-600'}`}>{msg.text}</span>
           )}
         </div>
+      </div>
+
+      {/* Stripe webhook registration */}
+      <div className="bg-white border border-forest/10 rounded-2xl p-6 mb-6">
+        <div className="text-sm font-medium text-ink mb-1">Stripe billing webhook</div>
+        <p className="text-xs text-stone mb-4">
+          Registers the <code className="bg-cream px-1 rounded font-mono">/api/billing/webhook</code> endpoint with Stripe automatically.
+          After registering, copy the signing secret into Vercel as <code className="bg-cream px-1 rounded font-mono">STRIPE_BILLING_WEBHOOK_SECRET</code>.
+        </p>
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={registerWebhook}
+            disabled={registeringWebhook}
+            className="bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors disabled:opacity-50"
+          >
+            {registeringWebhook ? 'Registering…' : 'Register with Stripe'}
+          </button>
+          {webhookMsg && (
+            <span className={`text-xs font-medium ${webhookMsg.ok ? 'text-forest' : 'text-red-600'}`}>{webhookMsg.text}</span>
+          )}
+        </div>
+        {webhookSecret && (
+          <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4">
+            <div className="text-xs font-semibold text-amber-800 mb-1">Signing secret — copy to Vercel now (won&apos;t be shown again)</div>
+            <div className="font-mono text-xs text-amber-900 break-all select-all">{webhookSecret}</div>
+          </div>
+        )}
       </div>
 
       {/* Plans */}

@@ -21,7 +21,7 @@ export async function POST() {
 
   const portalSession = await stripe.billingPortal.sessions.create({
     customer: sub.stripe_customer_id,
-    return_url: `${process.env.NEXTAUTH_URL ?? 'https://verdix.io'}/settings/billing`,
+    return_url: `${process.env.NEXTAUTH_URL ?? 'https://app.lynoraai.com'}/settings/billing`,
   })
 
   return NextResponse.json({ url: portalSession.url })
