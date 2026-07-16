@@ -42,9 +42,18 @@ const navSections = [
 const settingsItems = [
   { href: '/setup', icon: 'ti-rocket', label: 'Setup guide', exact: true },
   { href: '/settings', icon: 'ti-settings', label: 'Settings', exact: true },
+  { href: '/settings/billing', icon: 'ti-credit-card', label: 'Billing', exact: false },
   { href: '/settings/integrations', icon: 'ti-plug-connected', label: 'Integrations', exact: false },
   { href: '/settings/team', icon: 'ti-users', label: 'Team', exact: false },
   { href: '/settings/learned-rules', icon: 'ti-brain', label: 'Learned rules', exact: false },
+]
+
+const ADMIN_EMAILS = ['bilal.zahoor@yahoo.com', 'bilal@lynoraai.com']
+
+const adminItems = [
+  { href: '/admin/billing', icon: 'ti-building-store', label: 'Packages & pricing', exact: false },
+  { href: '/admin/customers', icon: 'ti-users-group', label: 'Customers', exact: false },
+  { href: '/admin/design-partners', icon: 'ti-star', label: 'Design partners', exact: false },
 ]
 
 function NavContent({ onNav }: { onNav?: () => void }) {
@@ -110,6 +119,24 @@ function NavContent({ onNav }: { onNav?: () => void }) {
             </Link>
           ))}
         </div>
+
+        {ADMIN_EMAILS.includes(session?.user?.email ?? '') && (
+          <div className="mb-1 mt-2">
+            <div className="px-4 pt-3 pb-1 text-xs font-medium uppercase tracking-widest" style={{ color: '#9CA3AF', letterSpacing: '.07em' }}>Admin</div>
+            {adminItems.map(item => (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={onNav}
+                className="flex items-center gap-2.5 mx-2 px-3 py-2 rounded-lg text-sm transition-colors"
+                style={linkCls(isActive(item.href, item.exact))}
+              >
+                <i className={`ti ${item.icon}`} style={{ fontSize: 16 }} />
+                {item.label}
+              </Link>
+            ))}
+          </div>
+        )}
       </nav>
 
       <div className="border-t border-forest/10 px-4 py-3 flex items-center gap-3">

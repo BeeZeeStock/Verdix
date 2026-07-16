@@ -29,7 +29,7 @@ export async function POST(
   await supabaseServer.from('jobs').update({ status: 'PROCESSING' }).eq('id', id)
 
   // Run pipeline asynchronously — respond immediately
-  runAuditPipeline(id, job.contract_pdf_url, job.billing_csv_url, job.currency).catch(async (err) => {
+  runAuditPipeline(id, job.contract_pdf_url, job.billing_csv_url, job.currency, org.orgId).catch(async (err) => {
     await supabaseServer.from('jobs').update({
       status: 'FAILED',
       error_message: err instanceof Error ? err.message : String(err),
@@ -43,7 +43,8 @@ async function runAuditPipeline(
   jobId: string,
   contractUrl: string | null,
   billingUrl: string | null,
-  currency: string
+  currency: string,
+  orgId: string,
 ) {
   if (!contractUrl || !billingUrl) throw new Error('Missing contract or billing file')
 
@@ -93,6 +94,9 @@ async function runAuditPipeline(
     findings_count: findings.length,
     contract_terms_id: savedTerms?.id,
   }).eq('id', jobId)
+
+  const { recordSync } = await import('@/lib/billing')
+  await recordSync(orgId, jobId, 'billing_audit').catch(err => console.error('[audit] recordSync failed', err))
 }
 
 async function fetchFile(url: string): Promise<Buffer> {

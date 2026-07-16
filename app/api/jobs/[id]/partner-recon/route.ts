@@ -41,7 +41,7 @@ export async function POST(
 
   await supabaseServer.from('jobs').update({ execute_status: 'PROCESSING', error_message: null }).eq('id', id)
 
-  runPartnerReconPipeline(id, job.contract_pdf_url, job.billing_csv_url, job.currency).catch(
+  runPartnerReconPipeline(id, job.contract_pdf_url, job.billing_csv_url, job.currency, org.orgId).catch(
     async (err) => {
       await supabaseServer
         .from('jobs')
@@ -60,7 +60,8 @@ async function runPartnerReconPipeline(
   jobId: string,
   agreementUrl: string | null,
   invoiceUrl: string | null,
-  currency: string
+  currency: string,
+  orgId: string,
 ) {
   if (!agreementUrl || !invoiceUrl) throw new Error('Missing agreement or invoice file')
 
@@ -143,6 +144,9 @@ async function runPartnerReconPipeline(
       findings_count: findings.length,
     })
     .eq('id', jobId)
+
+  const { recordSync } = await import('@/lib/billing')
+  await recordSync(orgId, jobId, 'partner_recon').catch(err => console.error('[partner-recon] recordSync failed', err))
 }
 
 async function fetchBuffer(url: string): Promise<Buffer> {

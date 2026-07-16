@@ -41,6 +41,9 @@ export async function POST(
       billing_customer_id: result.customerId,
     }).eq('id', id)
 
+    const { recordSync } = await import('@/lib/billing')
+    await recordSync(org.orgId, id, 'contract_configure').catch(err => console.error('[approve] recordSync failed', err))
+
     return NextResponse.json({
       success: true,
       platform: result.platform,
