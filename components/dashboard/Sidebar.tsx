@@ -107,7 +107,7 @@ function NavContent({ onNav }: { onNav?: () => void }) {
         <div className="mb-1 mt-2">
           <div className="px-4 pt-3 pb-1 text-xs font-medium uppercase tracking-widest" style={{ color: '#9CA3AF', letterSpacing: '.07em' }}>Account</div>
           {settingsItems
-            .filter(item => !(item.href === '/settings/billing' && ADMIN_EMAILS.includes(session?.user?.email ?? '')))
+            .filter(item => !(item.href === '/settings/billing' && ADMIN_EMAILS.includes(userEmail)))
             .map(item => (
               <Link
                 key={item.href}

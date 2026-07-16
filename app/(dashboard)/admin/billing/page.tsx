@@ -53,7 +53,8 @@ export default function AdminBillingPage() {
   const savePlan = async (plan: Plan, pushToStripe: boolean) => {
     setSaving(plan.id)
     setMsg(null)
-    const patch = { id: plan.id, pushToStripe, ...edits[plan.id] }
+    // Always include current plan values so Stripe push works even without edits
+    const patch = { id: plan.id, pushToStripe, name: plan.name, base_price_eur: plan.base_price_eur, ...edits[plan.id] }
     const res = await fetch('/api/admin/billing', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
     const data = await res.json()
     if (res.ok) {
