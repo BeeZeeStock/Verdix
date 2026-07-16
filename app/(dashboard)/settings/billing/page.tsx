@@ -3,7 +3,11 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
+import { useSession } from 'next-auth/react'
+import { useRouter } from 'next/navigation'
 import { Suspense } from 'react'
+
+const ADMIN_EMAILS = ['bilal@lynoraai.com', 'bilal.zahoor@yahoo.com']
 
 type Plan = {
   id: string
@@ -37,6 +41,8 @@ const PLAN_COLORS: Record<string, string> = { trial: '#9CA3AF', core: '#2563EB',
 
 function BillingPageInner() {
   const params = useSearchParams()
+  const { data: session } = useSession()
+  const router = useRouter()
   const [status, setStatus]               = useState<BillingStatus | null>(null)
   const [loading, setLoading]             = useState(true)
   const [upgrading, setUpgrading]         = useState<string | null>(null)
@@ -51,11 +57,15 @@ function BillingPageInner() {
   const cancelled = params.get('cancelled') === '1'
 
   useEffect(() => {
+    if (session?.user?.email && ADMIN_EMAILS.includes(session.user.email)) {
+      router.replace('/admin/billing')
+      return
+    }
     fetch('/api/billing/status')
       .then(r => r.json())
       .then(d => { setStatus(d); setLoading(false) })
       .catch(() => setLoading(false))
-  }, [])
+  }, [session, router])
 
   const upgrade = async (planId: string, includePiiAddon = false) => {
     setUpgrading(planId)
@@ -257,7 +267,7 @@ function BillingPageInner() {
           <div className="p-6 flex items-center justify-between">
             <div>
               <div className="text-sm font-semibold text-ink mb-0.5">Verdix Enterprise</div>
-              <div className="text-xs text-stone">Bespoke allocation, custom true-up rules, Salesforce + Snowflake connectors</div>
+              <div className="text-xs text-stone">Custom pricing, bespoke allocation and true-up rules. Contact us to discuss.</div>
             </div>
             <button
               onClick={() => setShowEnterprise(true)}
