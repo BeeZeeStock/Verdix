@@ -267,7 +267,7 @@ function BillingPageInner() {
           <div className="p-6 flex items-center justify-between">
             <div>
               <div className="text-sm font-semibold text-ink mb-0.5">Verdix Enterprise</div>
-              <div className="text-xs text-stone">Custom pricing, bespoke allocation and true-up rules. Contact us to discuss.</div>
+              <div className="text-xs text-stone">Contact the Verdix team for a custom offer tailored to your organisation&apos;s specific needs.</div>
             </div>
             <button
               onClick={() => setShowEnterprise(true)}
