@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
           <p style="font-size:14px;color:#6B6660;line-height:1.7;margin:0 0 24px">
             Your Verdix account is ready. Start by uploading a contract and running your first billing verification — most teams find their first discrepancy within minutes.
           </p>
-          <a href="${process.env.AUTH_URL || process.env.NEXTAUTH_URL || 'https://app.lynoraai.com'}/dashboard"
+          <a href="${process.env.AUTH_URL || process.env.NEXTAUTH_URL || 'https://lynoraai.com'}/dashboard"
              style="display:inline-block;background:#1A3D2B;color:#fff;font-size:14px;font-weight:500;padding:13px 24px;border-radius:10px;text-decoration:none">
             Open dashboard →
           </a>

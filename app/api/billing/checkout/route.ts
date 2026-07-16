@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
   const { default: Stripe } = await import('stripe')
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
 
-  const base = returnUrl ?? `${process.env.AUTH_URL || process.env.NEXTAUTH_URL || 'https://app.lynoraai.com'}/settings/billing`
+  const base = returnUrl ?? `${process.env.AUTH_URL || process.env.NEXTAUTH_URL || 'https://lynoraai.com'}/settings/billing`
 
   const lineItems: { price: string; quantity: number }[] = [{ price: plan.stripe_price_id, quantity: 1 }]
   if (piiPriceId) lineItems.push({ price: piiPriceId, quantity: 1 })
