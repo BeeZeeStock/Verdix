@@ -217,28 +217,42 @@ export default function AdminBillingPage() {
               </div>
 
               {isEditable && (
-                <div className="px-6 pb-5 flex items-center gap-3">
-                  <button
-                    onClick={() => savePlan(plan, false)}
-                    disabled={saving === plan.id || !isDraft}
-                    className="bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors disabled:opacity-40"
-                  >
-                    {saving === plan.id ? 'Saving…' : 'Save'}
-                  </button>
-                  <button
-                    onClick={() => savePlan(plan, true)}
-                    disabled={saving === plan.id || !isDraft}
-                    className="border border-forest text-forest text-sm font-medium px-4 py-2 rounded-xl hover:bg-forest/5 transition-colors disabled:opacity-40"
-                  >
-                    Save & Push to Stripe
-                  </button>
+                <div className="px-6 pb-5 flex items-center gap-3 flex-wrap">
                   {isDraft && (
+                    <>
+                      <button
+                        onClick={() => savePlan(plan, false)}
+                        disabled={saving === plan.id}
+                        className="bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors disabled:opacity-40"
+                      >
+                        {saving === plan.id ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        onClick={() => savePlan(plan, true)}
+                        disabled={saving === plan.id}
+                        className="border border-forest text-forest text-sm font-medium px-4 py-2 rounded-xl hover:bg-forest/5 transition-colors disabled:opacity-40"
+                      >
+                        Save & Push to Stripe
+                      </button>
+                      <button
+                        onClick={() => setEdits(prev => { const n = { ...prev }; delete n[plan.id]; return n })}
+                        className="text-xs text-stone hover:text-ink transition-colors"
+                      >
+                        Discard
+                      </button>
+                    </>
+                  )}
+                  {!isDraft && !plan.stripe_price_id && (
                     <button
-                      onClick={() => setEdits(prev => { const n = { ...prev }; delete n[plan.id]; return n })}
-                      className="text-xs text-stone hover:text-ink transition-colors"
+                      onClick={() => savePlan(plan, true)}
+                      disabled={saving === plan.id}
+                      className="border border-forest text-forest text-sm font-medium px-4 py-2 rounded-xl hover:bg-forest/5 transition-colors disabled:opacity-40"
                     >
-                      Discard
+                      {saving === plan.id ? 'Pushing…' : 'Push to Stripe →'}
                     </button>
+                  )}
+                  {plan.stripe_price_id && !isDraft && (
+                    <span className="text-xs text-stone/60">No unsaved changes</span>
                   )}
                 </div>
               )}
