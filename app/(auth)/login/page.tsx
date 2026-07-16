@@ -13,7 +13,7 @@ export default function LoginPage() {
 
   const handleGoogle = async () => {
     setLoading(true)
-    await signIn('google', { callbackUrl: '/dashboard' })
+    await signIn('google', { callbackUrl: '/dashboard' }, { prompt: 'select_account' })
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
