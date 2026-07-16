@@ -16,7 +16,7 @@ type Plan = {
 
 type Setting = { key: string; value: number | string }
 
-const EDITABLE_PLANS = ['core', 'pro']
+const EDITABLE_PLANS = ['core', 'pro', 'pii_addon']
 
 export default function AdminBillingPage() {
   const [plans, setPlans]           = useState<Plan[]>([])
