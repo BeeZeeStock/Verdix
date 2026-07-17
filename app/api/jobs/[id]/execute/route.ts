@@ -7,7 +7,6 @@ import { extractContractTerms } from '@/lib/contract-extractor'
 import { resolveStorageUrl } from '@/lib/storage'
 import { maskText, restoreTokensInObject } from '@/lib/pii-detector'
 
-const PII_MASKING_ENABLED = process.env.PII_MASKING_ENABLED === 'true'
 
 // Allow up to 5 minutes — PDF extraction + two Anthropic calls can exceed the default 10s limit
 export const maxDuration = 300
@@ -52,6 +51,14 @@ export async function POST(
 
 async function runExecutePipeline(jobId: string, orgId: string, contractUrl: string | null, currency: string) {
   if (!contractUrl) throw new Error('Missing contract file')
+
+  // Check if PII masking is enabled for this specific org
+  const { data: subData } = await supabaseServer
+    .from('org_subscriptions')
+    .select('pii_addon_enabled')
+    .eq('org_id', orgId)
+    .maybeSingle()
+  const PII_MASKING_ENABLED = subData?.pii_addon_enabled === true
 
   const resolvedUrl = await resolveStorageUrl(contractUrl)
   const res = await fetch(resolvedUrl)
