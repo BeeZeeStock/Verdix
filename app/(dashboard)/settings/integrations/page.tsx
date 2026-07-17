@@ -367,7 +367,7 @@ function PlatformCard({
               </span>
             )}
           </div>
-          <p className="text-xs text-stone mt-0.5 leading-snug line-clamp-1">{platform.description}</p>
+          <p className="text-xs text-stone mt-0.5 leading-snug">{platform.description}</p>
         </div>
 
         {/* Action button */}
@@ -398,7 +398,7 @@ function PlatformCard({
       {/* Webhook panel — shown when Stripe is connected */}
       {connected && webhookUrl && (
         <div className="border-t px-5 pb-4 pt-4" style={{ borderColor: 'rgba(26,61,43,0.08)', background: '#FAFAF8' }}>
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-1">
             <p className="text-[10px] font-bold uppercase tracking-wider text-stone">Webhook</p>
             {isWebhookActive
               ? <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: '#ECFDF5', color: '#065F46', border: '1px solid rgba(74,124,89,0.3)' }}>✓ Active</span>
@@ -406,17 +406,20 @@ function PlatformCard({
             }
           </div>
           {isWebhookActive ? (
-            <div className="flex items-center gap-2">
-              <code className="flex-1 font-mono text-[11px] bg-white border border-forest/15 rounded-lg px-3 py-2 text-ink break-all">
-                {webhookUrl}
-              </code>
-              <button
-                onClick={copyWebhookUrl}
-                className="flex-shrink-0 text-xs font-medium px-3 py-2 rounded-lg border transition-colors"
-                style={{ borderColor: 'rgba(26,61,43,0.2)', color: '#1A3D2B' }}
-              >
-                {copied ? '✓ Copied' : 'Copy'}
-              </button>
+            <div className="space-y-2">
+              <p className="text-xs text-stone">Auto-configured to receive invoice events from your Stripe account.</p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 font-mono text-[11px] bg-white border border-forest/15 rounded-lg px-3 py-2 text-ink break-all">
+                  {webhookUrl}
+                </code>
+                <button
+                  onClick={copyWebhookUrl}
+                  className="flex-shrink-0 text-xs font-medium px-3 py-2 rounded-lg border transition-colors"
+                  style={{ borderColor: 'rgba(26,61,43,0.2)', color: '#1A3D2B' }}
+                >
+                  {copied ? '✓ Copied' : 'Copy'}
+                </button>
+              </div>
             </div>
           ) : (
             <p className="text-xs text-red-600">
