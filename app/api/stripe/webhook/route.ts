@@ -128,7 +128,7 @@ export async function POST(req: NextRequest) {
       description: string
       amount: number
       currency: string
-      type: 'base' | 'overage' | 'one_time'
+      type: 'base' | 'overage'
       unit_type?: string
       total_quantity?: number
       included_quantity?: number
@@ -177,41 +177,6 @@ export async function POST(req: NextRequest) {
       })
 
       injectedLines.push({ description, amount: annualFee, currency: terms.currency, type: 'base' })
-    }
-
-    // ── 3b. Inject one-time fees due within this billing period ───────────
-    // Fees with a due_date: inject on the invoice whose contract year covers that date.
-    // Fees without a due_date: inject on the first invoice only.
-    //
-    // We use contract year boundaries (contractStart + yearNum offset) rather than
-    // invoice.period_start/period_end. Stripe sets both period fields to the same
-    // timestamp on the initial draft invoice, which would cause d < periodEnd to
-    // fail for any fee due after the subscription start date.
-    const contractYearStart = contractStart ? new Date(contractStart) : periodStart
-    if (contractStart) contractYearStart.setFullYear(contractYearStart.getFullYear() + (yearNum - 1))
-    const contractYearEnd = new Date(contractYearStart)
-    contractYearEnd.setFullYear(contractYearEnd.getFullYear() + 1)
-
-    type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null }
-    for (const fee of (terms.one_time_fees ?? []) as OneTimeFee[]) {
-      if (!fee.amount || fee.amount <= 0) continue
-
-      const shouldInject = fee.due_date
-        ? (() => { const d = new Date(fee.due_date!); return d >= contractYearStart && d < contractYearEnd })()
-        : monthsElapsed === 0
-
-      if (!shouldInject) continue
-
-      await stripe.invoiceItems.create({
-        customer:    customerId,
-        invoice:     invoice.id,
-        amount:      Math.round(fee.amount * 100),
-        currency:    (terms.currency ?? 'EUR').toLowerCase(),
-        description: fee.fee_label,
-        metadata:    { verdix_job: job.id, fee_type: 'one_time' },
-      })
-
-      injectedLines.push({ description: fee.fee_label, amount: fee.amount, currency: terms.currency, type: 'one_time' })
     }
 
     // ── 4. Read meter totals + apply tariff logic per usage type ───────────

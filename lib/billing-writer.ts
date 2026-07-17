@@ -152,7 +152,6 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
   })
 
   // ── 5. Persist billing_metered_items back to Supabase ───────────────────
-  // Map subscription item IDs to their meter/price records
   const stripeMeteredItems = meteredDrafts.map(draft => {
     const subItem = subscription.items.data.find(si => si.price.id === draft.price_id)
     return {
@@ -170,6 +169,52 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
       .eq('job_id', jobId)
   }
 
+  // ── 6. Create standalone invoices for one-time fees ───────────────────────
+  // Each fee gets its own Stripe invoice with the exact due date from the
+  // contract. These are completely separate from the recurring subscription
+  // invoices — the subscription handles base fees + overages only.
+  type OneTimeFeeInput = { fee_label: string; amount: number; due_date?: string | null }
+  const oneTimeFees = (terms.one_time_fees ?? []) as OneTimeFeeInput[]
+
+  await Promise.all(
+    oneTimeFees
+      .filter(fee => fee.amount && fee.amount > 0)
+      .map(async fee => {
+        // days_until_due drives the due_date once the invoice is finalized.
+        // Minimum 1 day so Stripe accepts it; past due dates become due tomorrow.
+        const daysUntilDue = fee.due_date
+          ? Math.max(1, Math.ceil((new Date(fee.due_date).getTime() - Date.now()) / 86_400_000))
+          : (terms.payment_terms_days ?? 30)
+
+        // Create draft invoice — exclude pending items so only this fee is on it.
+        const oneTimeInv = await stripe.invoices.create({
+          customer:                      customer.id,
+          collection_method:             'send_invoice',
+          days_until_due:                daysUntilDue,
+          pending_invoice_items_behavior: 'exclude',
+          metadata: {
+            verdix_job:      jobId ?? '',
+            verdix_contract: contractId,
+            fee_type:        'one_time',
+            fee_label:       fee.fee_label,
+          },
+        })
+
+        // Attach the line item to this specific invoice.
+        await stripe.invoiceItems.create({
+          customer:    customer.id,
+          invoice:     oneTimeInv.id,
+          amount:      Math.round(fee.amount * 100),
+          currency:    cur,
+          description: fee.fee_label,
+          metadata:    { verdix_job: jobId ?? '', fee_type: 'one_time' },
+        })
+
+        // Finalize → status becomes "open", due_date is set, email sent to customer.
+        await stripe.invoices.finalizeInvoice(oneTimeInv.id)
+      })
+  )
+
   const isTest     = !subscription.livemode
   const dashboardUrl = `https://dashboard.stripe.com/${isTest ? 'test/' : ''}subscriptions/${subscription.id}`
 
@@ -177,7 +222,7 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
     platform:      'stripe',
     subscriptionId: subscription.id,
     customerId:    customer.id,
-    lineItemCount: subscriptionItems.length,
+    lineItemCount: subscriptionItems.length + oneTimeFees.filter(f => f.amount > 0).length,
     dashboardUrl,
   }
 }

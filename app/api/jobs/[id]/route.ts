@@ -25,7 +25,7 @@ export async function DELETE(
 
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('org_id, billing_platform, billing_subscription_id')
+    .select('org_id, billing_platform, billing_subscription_id, billing_customer_id')
     .eq('id', id)
     .single()
   if (!job || job.org_id !== org.orgId)
@@ -37,20 +37,39 @@ export async function DELETE(
       const stripeKey = await getStripeKey(org.orgId)
       const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
 
-      // Void open/draft Stripe invoices before cancelling the subscription.
-      const { data: computedInvoices } = await supabaseServer
-        .from('computed_invoices')
-        .select('external_invoice_id')
-        .eq('job_id', id)
-        .not('external_invoice_id', 'is', null)
+      // Void/delete all Stripe invoices for this job:
+      //   • Subscription invoices tracked in computed_invoices
+      //   • Standalone one-time fee invoices identified by verdix_job metadata
+      const customerId = job.billing_customer_id as string | null
+
+      const [{ data: computedInvoices }, customerInvoicesRes] = await Promise.all([
+        supabaseServer
+          .from('computed_invoices')
+          .select('external_invoice_id')
+          .eq('job_id', id)
+          .not('external_invoice_id', 'is', null),
+        customerId
+          ? stripe.invoices.list({ customer: customerId, limit: 100 })
+          : Promise.resolve({ data: [] }),
+      ])
+
+      const subscriptionInvIds = new Set(
+        (computedInvoices ?? []).map(r => r.external_invoice_id).filter(Boolean)
+      )
+      const standaloneInvIds = customerInvoicesRes.data
+        .filter(inv => {
+          const meta = inv.metadata as Record<string, string> | null
+          return !subscriptionInvIds.has(inv.id) && meta?.verdix_job === id
+        })
+        .map(inv => inv.id)
 
       await Promise.all(
-        (computedInvoices ?? []).map(async ({ external_invoice_id }) => {
+        [...subscriptionInvIds, ...standaloneInvIds].map(async (invId) => {
           try {
-            const inv = await stripe.invoices.retrieve(external_invoice_id)
-            if (inv.status === 'open') await stripe.invoices.voidInvoice(external_invoice_id)
-            else if (inv.status === 'draft') await stripe.invoices.del(external_invoice_id)
-          } catch { /* invoice may already be voided/deleted — ignore */ }
+            const inv = await stripe.invoices.retrieve(invId as string)
+            if (inv.status === 'open') await stripe.invoices.voidInvoice(invId as string)
+            else if (inv.status === 'draft') await stripe.invoices.del(invId as string)
+          } catch { /* already voided/deleted — ignore */ }
         })
       )
 

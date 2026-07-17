@@ -22,10 +22,9 @@ type InvoiceInfo = {
   currency: string
   dueDate: string | null
   created: string
-  periodStart: string
-  periodEnd: string
   pdfUrl: string | null
   hostedUrl: string | null
+  feeLabel?: string | null
 }
 
 type YearPayment = {
@@ -46,6 +45,7 @@ type OneTimeFee = {
 type Summary = {
   subscription: SubscriptionInfo
   invoices: InvoiceInfo[]
+  oneTimeInvoices: InvoiceInfo[]
   paymentSchedule: YearPayment[] | null
   oneTimeFees: OneTimeFee[]
   contractStart: string | null
@@ -162,7 +162,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
 
   if (!summary) return null
 
-  const { subscription: sub, invoices, paymentSchedule, oneTimeFees, currency } = summary
+  const { subscription: sub, invoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency } = summary
 
   const now = new Date()
   const currentYearNum = paymentSchedule?.find(y => {
@@ -281,48 +281,61 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         </div>
       )}
 
-      {/* One-time fees */}
-      {oneTimeFees.length > 0 && (
+      {/* One-time fee invoices (standalone, created at push time) */}
+      {(oneTimeInvoices.length > 0 || oneTimeFees.length > 0) && (
         <div className="px-6 py-5" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-          <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-3">One-time fees (injected at due date)</p>
-          <table className="w-full">
-            <thead>
-              <tr>
-                {['Description', 'Amount', 'Due', 'Billed on'].map((h, i) => (
-                  <th key={h} className="text-[10px] font-semibold text-stone/60 tracking-[0.09em] pb-2"
-                    style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: i === 1 ? 'right' : 'left', paddingRight: i < 3 ? 24 : 0 }}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(oneTimeFees as OneTimeFee[]).map((fee, i) => {
-                const dueDate = fee.due_date ? new Date(fee.due_date) : null
-                const billedOn = dueDate
-                  ? paymentSchedule?.find(y => {
-                      const ys = y.periodStart ? new Date(y.periodStart) : null
-                      const ye = y.periodEnd   ? new Date(y.periodEnd)   : null
-                      return ys && ye && dueDate >= ys && dueDate <= ye
-                    })
-                  : paymentSchedule?.[0]
-                return (
-                  <tr key={i} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                    <td className="py-2.5 pr-6 text-[12px] text-ink">{fee.fee_label}</td>
-                    <td className="py-2.5 pr-6 text-[12px] font-semibold text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                      {fmt(fee.amount, currency)}
+          <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-3">
+            One-time fee invoices
+            <span className="ml-2 font-normal normal-case text-stone/60">separate invoices per milestone</span>
+          </p>
+          {oneTimeInvoices.length > 0 ? (
+            <table className="w-full">
+              <thead>
+                <tr>
+                  {['Description', 'Amount', 'Due date', 'Invoice', 'Status', ''].map((h, i) => (
+                    <th key={i} className="text-[10px] font-semibold text-stone/60 tracking-[0.09em] pb-2"
+                      style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: i === 1 ? 'right' : 'left', paddingRight: i < 5 ? 16 : 0 }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {oneTimeInvoices.map(inv => (
+                  <tr key={inv.id} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                    <td className="py-2.5 pr-4 text-[12px] text-ink">{inv.feeLabel ?? inv.number ?? '—'}</td>
+                    <td className="py-2.5 pr-4 text-[13px] font-semibold text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {fmt(inv.amount, inv.currency)}
                     </td>
-                    <td className="py-2.5 pr-6 text-[12px] text-stone">
-                      {fee.due_date ? fmtDate(fee.due_date) : 'First invoice'}
-                    </td>
-                    <td className="py-2.5 text-[11px] text-stone">
-                      {billedOn ? `Year ${billedOn.year} invoice` : '—'}
+                    <td className="py-2.5 pr-4 text-[12px] text-stone">{fmtDate(inv.dueDate)}</td>
+                    <td className="py-2.5 pr-4 text-[11px] font-mono text-stone">{inv.number ?? inv.id.slice(0, 14)}</td>
+                    <td className="py-2.5 pr-4"><StatusPill status={inv.status} /></td>
+                    <td className="py-2.5 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        {inv.hostedUrl && (
+                          <a href={inv.hostedUrl} target="_blank" rel="noreferrer"
+                            className="text-[11px] font-semibold text-forest hover:text-sage transition-colors">
+                            View
+                          </a>
+                        )}
+                        {inv.pdfUrl && (
+                          <a href={inv.pdfUrl} target="_blank" rel="noreferrer"
+                            className="text-stone/50 hover:text-stone transition-colors" title="Download PDF">
+                            <i className="ti ti-file-download" style={{ fontSize: 12 }} />
+                          </a>
+                        )}
+                      </div>
                     </td>
                   </tr>
-                )
-              })}
-            </tbody>
-          </table>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="rounded-xl px-4 py-3 text-[12px] text-amber-800" style={{ background: '#FFFBEB', border: '1px solid #FCD34D' }}>
+              {oneTimeFees.length} one-time fee{oneTimeFees.length > 1 ? 's' : ''} in contract
+              ({oneTimeFees.map(f => f.fee_label).join(', ')}) — invoices will be created in Stripe when you re-push this contract.
+            </div>
+          )}
         </div>
       )}
 

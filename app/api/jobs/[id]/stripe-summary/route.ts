@@ -36,12 +36,18 @@ export async function GET(
   const { default: Stripe } = await import('stripe')
   const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
 
-  const subId = job.billing_subscription_id
+  const subId        = job.billing_subscription_id
+  const customerId   = job.billing_customer_id as string | null
 
   try {
-    const [subscription, invoicesRes, computedRes] = await Promise.all([
+    const [subscription, subscriptionInvRes, allCustomerInvRes, computedRes] = await Promise.all([
       stripe.subscriptions.retrieve(subId, { expand: ['items.data.price'] }),
       stripe.invoices.list({ subscription: subId, limit: 12 }),
+      // Also fetch standalone (one-time fee) invoices for this customer.
+      // These have no subscription attached and are identified by verdix_job metadata.
+      customerId
+        ? stripe.invoices.list({ customer: customerId, limit: 50 })
+        : Promise.resolve({ data: [] }),
       supabaseServer
         .from('computed_invoices')
         .select('*')
@@ -75,11 +81,22 @@ export async function GET(
     const recurringInterval      = baseItem?.price?.recurring?.interval       ?? 'month'
     const recurringIntervalCount = baseItem?.price?.recurring?.interval_count ?? 1
 
+    // Separate standalone one-time fee invoices from subscription invoices.
+    // Subscription invoices are returned by invoices.list({ subscription: subId }).
+    // Standalone invoices are those belonging to the customer with no subscription
+    // and with verdix_job metadata matching this job.
+    const subscriptionInvIds = new Set(subscriptionInvRes.data.map(inv => inv.id))
+    const standaloneInvoices = allCustomerInvRes.data.filter(inv => {
+      if (subscriptionInvIds.has(inv.id)) return false
+      const meta = inv.metadata as Record<string, string> | null
+      return meta?.verdix_job === id
+    })
+
     // current_period_start/end were removed in the dahlia API; derive from the
-    // most-recent (non-void, non-draft) invoice period instead.
-    const latestInvoice = invoicesRes.data.find(
+    // most-recent (non-void, non-draft) subscription invoice period instead.
+    const latestInvoice = subscriptionInvRes.data.find(
       inv => inv.status !== 'void' && inv.status !== 'draft',
-    ) ?? invoicesRes.data[0]
+    ) ?? subscriptionInvRes.data[0]
     const currentPeriodStart = latestInvoice?.period_start
       ? new Date(latestInvoice.period_start * 1000).toISOString()
       : null
@@ -93,6 +110,19 @@ export async function GET(
       ? sub.cancel_at_period_end
       : false
 
+    const mapInvoice = (inv: import('stripe').Stripe.Invoice) => ({
+      id:          inv.id,
+      number:      inv.number,
+      status:      inv.status,
+      amount:      (inv.amount_due ?? 0) / 100,
+      currency:    inv.currency?.toUpperCase() ?? 'EUR',
+      dueDate:     inv.due_date   ? new Date(inv.due_date   * 1000).toISOString() : null,
+      created:     new Date(inv.created * 1000).toISOString(),
+      pdfUrl:      inv.invoice_pdf         ?? null,
+      hostedUrl:   inv.hosted_invoice_url  ?? null,
+      feeLabel:    (inv.metadata as Record<string, string> | null)?.fee_label ?? null,
+    })
+
     return NextResponse.json({
       subscription: {
         id: subscription.id,
@@ -105,19 +135,10 @@ export async function GET(
         isTest: !subscription.livemode,
         dashboardUrl: `https://dashboard.stripe.com/${!subscription.livemode ? 'test/' : ''}subscriptions/${subscription.id}`,
       },
-      invoices: invoicesRes.data.map(inv => ({
-        id:          inv.id,
-        number:      inv.number,
-        status:      inv.status,
-        amount:      (inv.amount_due ?? 0) / 100,
-        currency:    inv.currency?.toUpperCase() ?? 'EUR',
-        dueDate:     inv.due_date   ? new Date(inv.due_date   * 1000).toISOString() : null,
-        created:     new Date(inv.created * 1000).toISOString(),
-        periodStart: new Date((inv.period_start ?? 0) * 1000).toISOString(),
-        periodEnd:   new Date((inv.period_end   ?? 0) * 1000).toISOString(),
-        pdfUrl:      inv.invoice_pdf         ?? null,
-        hostedUrl:   inv.hosted_invoice_url  ?? null,
-      })),
+      // Annual base-fee invoices from the subscription
+      invoices: subscriptionInvRes.data.map(mapInvoice),
+      // Separate one-time fee invoices (one per PS fee, created at push time)
+      oneTimeInvoices: standaloneInvoices.map(mapInvoice),
       paymentSchedule,
       oneTimeFees: terms?.one_time_fees ?? [],
       contractStart: terms?.contract_start_date ?? null,
