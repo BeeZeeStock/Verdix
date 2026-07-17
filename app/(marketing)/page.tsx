@@ -28,6 +28,7 @@ function Nav() {
           <a href="#configure" className="hover:text-forest transition-colors">Auto-configure</a>
           <a href="#partner" className="hover:text-forest transition-colors">Partner reconciliation</a>
           <a href="#security" className="hover:text-forest transition-colors">Security</a>
+          <a href="#pricing" className="hover:text-forest transition-colors">Pricing</a>
           <Link href="/login" className="hover:text-forest transition-colors">Sign in</Link>
         </div>
         <Link href="/signup" className="bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors shadow-sm">
@@ -913,6 +914,130 @@ function DesignPartnerSection() {
   )
 }
 
+/* ─────────────── PRICING ─────────────── */
+function Pricing() {
+  const plans = [
+    {
+      id: 'trial',
+      name: 'Standard',
+      price: '€0',
+      period: '',
+      badge: 'Free',
+      badgeHighlight: false,
+      features: ['3 agreement syncs included', 'Contract PDF upload', 'Basic billing check', 'Leakage dashboard'],
+      cta: 'Get started free',
+      href: '/signup',
+      highlight: false,
+    },
+    {
+      id: 'core',
+      name: 'Core',
+      price: '€95',
+      period: '/mo',
+      badge: null,
+      badgeHighlight: false,
+      features: ['10 synced agreements', 'Automated contract sync', 'Native Stripe integration', 'PII masking add-on (+€45)'],
+      cta: 'Start with Core',
+      href: '/signup?plan=core',
+      highlight: false,
+    },
+    {
+      id: 'pro',
+      name: 'Pro',
+      price: '€445',
+      period: '/mo',
+      badge: 'Most popular',
+      badgeHighlight: true,
+      features: ['100 synced agreements', 'Partner reconciliation', 'CRM connectors (HubSpot)', 'PII masking included'],
+      cta: 'Start with Pro',
+      href: '/signup?plan=pro',
+      highlight: true,
+    },
+    {
+      id: 'enterprise',
+      name: 'Enterprise',
+      price: 'Custom',
+      period: '',
+      badge: null,
+      badgeHighlight: false,
+      features: ['Bespoke sync allocation', 'Salesforce & DocuSign connectors', 'Snowflake sync', 'Dedicated SLA & onboarding'],
+      cta: 'Talk to us',
+      href: 'mailto:bilal@lynoraai.com?subject=Verdix Enterprise',
+      highlight: false,
+    },
+  ]
+
+  return (
+    <section id="pricing" className="px-6 py-24 border-t border-forest/8">
+      <div className="max-w-5xl mx-auto">
+        <div className="text-center mb-12">
+          <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Pricing</div>
+          <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Simple, usage-based pricing</h2>
+          <p className="text-stone max-w-lg mx-auto leading-relaxed">One agreement sync = one contract audit, billing check, or partner reconciliation.</p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          {plans.map(plan => (
+            <div
+              key={plan.id}
+              className="bg-white rounded-2xl flex flex-col overflow-hidden"
+              style={{ border: plan.highlight ? '1.5px solid #1A3D2B' : '1px solid rgba(26,61,43,0.10)' }}
+            >
+              {plan.badge ? (
+                <div
+                  className="text-center text-[11px] font-semibold py-1.5 tracking-wide"
+                  style={{ background: plan.badgeHighlight ? '#1A3D2B' : '#EAF3DE', color: plan.badgeHighlight ? '#fff' : '#27500A' }}
+                >
+                  {plan.badge}
+                </div>
+              ) : <div className="h-[26px]" />}
+
+              <div className="p-5 flex flex-col flex-1">
+                <div className="mb-4">
+                  <div className="text-[11px] font-semibold text-stone uppercase tracking-widest mb-2">{plan.name}</div>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-2xl font-semibold text-ink">{plan.price}</span>
+                    {plan.period && <span className="text-stone text-sm">{plan.period}</span>}
+                  </div>
+                </div>
+
+                <ul className="space-y-2 flex-1 mb-5">
+                  {plan.features.map(f => (
+                    <li key={f} className="flex items-start gap-2 text-xs text-stone leading-relaxed">
+                      <div className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: '#EAF3DE' }}>
+                        <i className="ti ti-check" style={{ fontSize: 9, color: '#27500A' }} />
+                      </div>
+                      {f}
+                    </li>
+                  ))}
+                </ul>
+
+                <Link
+                  href={plan.href}
+                  className="block text-center text-sm font-medium py-2.5 rounded-xl transition-colors"
+                  style={
+                    plan.highlight
+                      ? { background: '#1A3D2B', color: '#fff' }
+                      : { background: 'transparent', color: '#1A3D2B', border: '1px solid rgba(26,61,43,0.25)' }
+                  }
+                >
+                  {plan.cta}
+                </Link>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="text-center">
+          <Link href="/pricing" className="text-sm text-forest hover:underline">
+            View full pricing details, FAQs, and add-ons →
+          </Link>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 /* ─────────────── CTA ─────────────── */
 function CTA() {
   return (
@@ -976,6 +1101,7 @@ export default function MarketingPage() {
       <HowItWorks />
       <CalculationBreakdown />
       <Security />
+      <Pricing />
       <CTA />
       <Footer />
     </>

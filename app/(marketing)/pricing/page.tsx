@@ -32,7 +32,7 @@ const plans = [
     overage: '€5.00 per excess sync',
     highlight: false,
     cta: 'Start with Core',
-    ctaHref: '/signup',
+    ctaHref: '/signup?plan=core',
     features: [
       'Automated contract configuration sync',
       'Native Stripe billing integration',
@@ -51,7 +51,7 @@ const plans = [
     overage: '€2.50 per excess sync',
     highlight: true,
     cta: 'Start with Pro',
-    ctaHref: '/signup',
+    ctaHref: '/signup?plan=pro',
     features: [
       'All Core capabilities',
       'Partner agreement reconciliation',
@@ -71,7 +71,7 @@ const plans = [
     overage: 'Custom true-up rules',
     highlight: false,
     cta: 'Contact sales',
-    ctaHref: '/signup',
+    ctaHref: 'mailto:bilal@lynoraai.com?subject=Verdix Enterprise',
     features: [
       'All Pro capabilities',
       'Advanced PII data masking included',

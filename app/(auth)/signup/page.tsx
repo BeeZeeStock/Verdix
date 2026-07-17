@@ -1,13 +1,22 @@
 'use client'
 
 import Link from 'next/link'
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useState, useEffect, Suspense } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { signIn } from 'next-auth/react'
 import { VerdixLogo } from '@/components/VerdixLogo'
 
-export default function SignupPage() {
+const PLAN_LABELS: Record<string, string> = {
+  core: 'Core — €95/month',
+  pro: 'Pro — €445/month',
+}
+
+function SignupContent() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const plan = searchParams.get('plan') ?? ''
+  const planLabel = PLAN_LABELS[plan] ?? null
+
   const [form, setForm] = useState({ fullName: '', email: '', company: '', password: '', confirm: '' })
   const [gdpr, setGdpr] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -15,6 +24,13 @@ export default function SignupPage() {
 
   const update = (field: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm(f => ({ ...f, [field]: e.target.value }))
+
+  const handleGoogleSignIn = () => {
+    const callbackUrl = plan
+      ? `/api/billing/checkout-redirect?plan=${encodeURIComponent(plan)}`
+      : '/dashboard'
+    signIn('google', { callbackUrl }, { prompt: 'select_account' })
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -48,9 +64,23 @@ export default function SignupPage() {
       if (result?.error) {
         setError('Account created — please sign in.')
         router.push('/login')
-      } else {
-        router.push('/dashboard')
+        return
       }
+
+      // If a paid plan was selected, go straight to Stripe Checkout
+      if (plan && ['core', 'pro'].includes(plan)) {
+        const checkoutRes = await fetch('/api/billing/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ planId: plan }),
+        })
+        if (checkoutRes.ok) {
+          const { url } = await checkoutRes.json()
+          if (url) { window.location.href = url; return }
+        }
+      }
+
+      router.push('/dashboard')
     } catch {
       setError('Something went wrong. Please try again.')
     } finally {
@@ -65,11 +95,21 @@ export default function SignupPage() {
           <div className="flex flex-col items-center mb-8">
             <VerdixLogo size={36} />
             <h1 className="font-display font-light text-ink text-2xl mt-4 mb-1">Start finding leakage</h1>
-            <p className="text-stone text-sm">Free for your first audit. No credit card.</p>
+            {planLabel ? (
+              <div
+                className="mt-2 flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-medium"
+                style={{ color: '#27500A', background: '#EAF3DE', border: '1px solid #C0DD97' }}
+              >
+                <i className="ti ti-check" style={{ fontSize: 11 }} />
+                Signing up for {planLabel}
+              </div>
+            ) : (
+              <p className="text-stone text-sm">Free for your first audit. No credit card.</p>
+            )}
           </div>
 
           <button
-            onClick={() => signIn('google', { callbackUrl: '/dashboard' })}
+            onClick={handleGoogleSignIn}
             className="flex items-center justify-center gap-3 w-full border border-forest/20 rounded-xl px-4 py-3 text-sm font-medium text-ink hover:bg-cream transition-colors mb-6"
           >
             <svg width="18" height="18" viewBox="0 0 24 24">
@@ -146,7 +186,9 @@ export default function SignupPage() {
               disabled={!gdpr || loading}
               className="w-full bg-forest text-white rounded-xl px-4 py-3 text-sm font-medium hover:bg-sage transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {loading ? 'Creating account...' : 'Create account →'}
+              {loading
+                ? (plan ? 'Creating account & redirecting to checkout...' : 'Creating account...')
+                : (planLabel ? `Create account & subscribe to ${PLAN_LABELS[plan]} →` : 'Create account →')}
             </button>
           </form>
 
@@ -157,5 +199,13 @@ export default function SignupPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+export default function SignupPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignupContent />
+    </Suspense>
   )
 }
