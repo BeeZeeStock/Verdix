@@ -2241,16 +2241,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 </div>
               )}
 
-              {isConfigured && dashboardUrl && (
+              {isConfigured && billingPlatform === 'chargebee' && dashboardUrl && (
                 <div className="px-6 py-4 flex items-center justify-between" style={{ background: 'rgba(26,61,43,0.04)', borderTop: '1px solid rgba(26,61,43,0.07)' }}>
                   <div>
-                    <p className="text-[11px] font-semibold text-ink">Active subscription in {billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}</p>
+                    <p className="text-[11px] font-semibold text-ink">Active subscription in Chargebee</p>
                     {subId && <p className="text-[10px] text-stone font-mono mt-0.5">{subId}</p>}
                   </div>
                   <a href={dashboardUrl} target="_blank" rel="noreferrer"
                     className="text-xs font-semibold px-4 py-2 rounded-xl text-white transition-colors"
                     style={{ background: '#1A3D2B' }}>
-                    View in {billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'} →
+                    View in Chargebee →
                   </a>
                 </div>
               )}
