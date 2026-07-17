@@ -171,9 +171,7 @@ const BILLING_PLATFORMS: Platform[] = [
     description: 'Push approved subscriptions directly to Stripe. Handles recurring billing, metered usage, and invoicing.',
     status:      'live',
     fields: [
-      { key: 'secret_key',     label: 'Secret key',             placeholder: 'sk_live_… (or sk_test_… for sandbox)', secret: true },
-      { key: 'webhook_secret', label: 'Webhook signing secret', placeholder: 'whsec_…', secret: true, optional: true,
-        hint: 'After saving, register the webhook URL shown below in your Stripe dashboard to get this value.' },
+      { key: 'secret_key', label: 'Secret key', placeholder: 'sk_live_… (or sk_test_… for sandbox)', secret: true },
     ],
   },
   {
@@ -275,6 +273,7 @@ function PlatformCard({
   configKeys,
   onConnect,
   onDisconnect,
+  onRefresh,
 }: {
   platform:     Platform
   connected:    boolean
@@ -284,13 +283,17 @@ function PlatformCard({
   configKeys:   string[]
   onConnect:    (id: string, config: Record<string, string>) => Promise<void>
   onDisconnect: (id: string) => Promise<void>
+  onRefresh:    () => Promise<void>
 }) {
-  const [open,      setOpen]      = useState(false)
-  const [form,      setForm]      = useState<Record<string, string>>({})
-  const [saving,    setSaving]    = useState(false)
-  const [removing,  setRemoving]  = useState(false)
-  const [msg,       setMsg]       = useState<{ ok: boolean; text: string } | null>(null)
-  const [copied,    setCopied]    = useState(false)
+  const [open,         setOpen]         = useState(false)
+  const [form,         setForm]         = useState<Record<string, string>>({})
+  const [saving,       setSaving]       = useState(false)
+  const [removing,     setRemoving]     = useState(false)
+  const [msg,          setMsg]          = useState<{ ok: boolean; text: string } | null>(null)
+  const [copied,       setCopied]       = useState(false)
+  const [webhookSecret, setWebhookSecret] = useState('')
+  const [savingSecret,  setSavingSecret]  = useState(false)
+  const [secretMsg,     setSecretMsg]     = useState<{ ok: boolean; text: string } | null>(null)
 
   const Logo = LOGOS[platform.id]
   const isLive = platform.status === 'live'
@@ -399,20 +402,28 @@ function PlatformCard({
 
       {/* Webhook setup panel — shown when Stripe is connected */}
       {connected && webhookUrl && (
-        <div className="border-t px-5 pb-5 pt-4 space-y-3" style={{ borderColor: 'rgba(26,61,43,0.08)', background: '#FAFAF8' }}>
+        <div className="border-t px-5 pb-5 pt-4 space-y-4" style={{ borderColor: 'rgba(26,61,43,0.08)', background: '#FAFAF8' }}>
           <div className="flex items-center justify-between">
             <p className="text-[10px] font-bold uppercase tracking-wider text-stone">Webhook setup</p>
             {hasWebhookSecret
-              ? <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: '#ECFDF5', color: '#065F46', border: '1px solid rgba(74,124,89,0.3)' }}>✓ Secret configured</span>
-              : <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: 'rgba(251,191,36,0.1)', color: '#92400E', border: '1px solid rgba(217,119,6,0.3)' }}>⚠ Secret missing</span>
+              ? <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: '#ECFDF5', color: '#065F46', border: '1px solid rgba(74,124,89,0.3)' }}>✓ Active</span>
+              : <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: 'rgba(251,191,36,0.1)', color: '#92400E', border: '1px solid rgba(217,119,6,0.3)' }}>Step 2 of 2 pending</span>
             }
           </div>
-          <p className="text-xs text-stone leading-snug">
-            Register this endpoint in your Stripe dashboard under <strong>Developers → Webhooks</strong>, listening for{' '}
-            <code className="font-mono bg-forest/8 px-1 rounded text-[11px]">invoice.created</code> and{' '}
-            <code className="font-mono bg-forest/8 px-1 rounded text-[11px]">invoice.payment_succeeded</code>.
-            Then copy the signing secret Stripe gives you and save it here (disconnect and reconnect to update).
-          </p>
+
+          {!hasWebhookSecret && (
+            <ol className="space-y-3 text-xs text-stone">
+              <li className="flex gap-2.5">
+                <span className="flex-shrink-0 w-4 h-4 rounded-full bg-forest/10 text-forest text-[10px] font-bold flex items-center justify-center mt-0.5">1</span>
+                <span>Copy this URL and register it in your Stripe dashboard under <strong className="text-ink">Developers → Webhooks → Add destination</strong>. Select events <code className="font-mono bg-forest/8 px-1 rounded">invoice.created</code> and <code className="font-mono bg-forest/8 px-1 rounded">invoice.payment_succeeded</code>.</span>
+              </li>
+              <li className="flex gap-2.5">
+                <span className="flex-shrink-0 w-4 h-4 rounded-full bg-forest/10 text-forest text-[10px] font-bold flex items-center justify-center mt-0.5">2</span>
+                <span>Stripe shows a <strong className="text-ink">signing secret</strong> (<code className="font-mono bg-forest/8 px-1 rounded">whsec_…</code>) after the webhook is created. Paste it below.</span>
+              </li>
+            </ol>
+          )}
+
           <div className="flex items-center gap-2">
             <code className="flex-1 font-mono text-[11px] bg-white border border-forest/15 rounded-lg px-3 py-2 text-ink break-all">
               {webhookUrl}
@@ -425,6 +436,52 @@ function PlatformCard({
               {copied ? '✓ Copied' : 'Copy'}
             </button>
           </div>
+
+          {isAdmin && (
+            <div className="space-y-2">
+              <label className="block text-[10px] font-semibold uppercase tracking-wider text-stone">
+                {hasWebhookSecret ? 'Update signing secret' : 'Signing secret'}
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  placeholder="whsec_…"
+                  value={webhookSecret}
+                  onChange={e => setWebhookSecret(e.target.value)}
+                  className="flex-1 text-sm border border-forest/20 rounded-xl px-4 py-2.5 bg-white text-ink placeholder:text-stone/40 focus:outline-none focus:ring-2 focus:ring-forest/20 font-mono"
+                />
+                <button
+                  onClick={async () => {
+                    if (!webhookSecret.trim()) return
+                    setSavingSecret(true)
+                    setSecretMsg(null)
+                    try {
+                      const res = await fetch(`/api/org/integrations/${platform.id}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ config: { webhook_secret: webhookSecret.trim() } }),
+                      })
+                      if (!res.ok) throw new Error((await res.json()).error ?? 'Save failed')
+                      setWebhookSecret('')
+                      setSecretMsg({ ok: true, text: 'Saved.' })
+                      await onRefresh()
+                    } catch (err) {
+                      setSecretMsg({ ok: false, text: err instanceof Error ? err.message : 'Save failed' })
+                    } finally {
+                      setSavingSecret(false)
+                    }
+                  }}
+                  disabled={savingSecret || !webhookSecret.trim()}
+                  className="flex-shrink-0 bg-forest text-white text-sm font-medium px-4 py-2.5 rounded-xl hover:bg-sage transition-colors disabled:opacity-40"
+                >
+                  {savingSecret ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+              {secretMsg && (
+                <p className={`text-xs ${secretMsg.ok ? 'text-forest' : 'text-red-600'}`}>{secretMsg.text}</p>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -594,6 +651,7 @@ export default function IntegrationsPage() {
               configKeys={integrations.find(i => i.connector_name === p.id)?.config_keys ?? []}
               onConnect={handleConnect}
               onDisconnect={handleDisconnect}
+              onRefresh={load}
             />
           ))}
         </div>
@@ -626,6 +684,7 @@ export default function IntegrationsPage() {
               configKeys={integrations.find(i => i.connector_name === p.id)?.config_keys ?? []}
               onConnect={handleConnect}
               onDisconnect={handleDisconnect}
+              onRefresh={load}
             />
           ))}
         </div>
