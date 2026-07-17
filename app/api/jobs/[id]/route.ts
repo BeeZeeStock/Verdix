@@ -31,48 +31,75 @@ export async function DELETE(
   if (!job || job.org_id !== org.orgId)
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  // Cancel the billing subscription before removing DB records.
-  if (job.billing_subscription_id) {
+  // For Stripe: void any open/draft invoices and cancel the subscription.
+  if (job.billing_platform !== 'chargebee' && job.billing_subscription_id) {
     try {
-      if (job.billing_platform === 'chargebee') {
-        const { data: integration } = await supabaseServer
-          .from('org_integrations')
-          .select('config')
-          .eq('org_id', org.orgId)
-          .eq('connector_name', 'chargebee')
-          .eq('is_active', true)
-          .single()
-        const cfg = integration?.config as Record<string, string> | null
-        const site   = cfg?.site   ?? process.env.CHARGEBEE_SITE!
-        const apiKey = cfg?.api_key ?? process.env.CHARGEBEE_API_KEY!
-        await fetch(
-          `https://${site}.chargebee.com/api/v2/subscriptions/${job.billing_subscription_id}/cancel_for_items`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Basic ${Buffer.from(apiKey + ':').toString('base64')}`,
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          }
-        )
-      } else {
-        const stripeKey = await getStripeKey(org.orgId)
-        const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
-        await stripe.subscriptions.cancel(job.billing_subscription_id)
-      }
+      const stripeKey = await getStripeKey(org.orgId)
+      const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+
+      // Void open/draft Stripe invoices before cancelling the subscription.
+      const { data: computedInvoices } = await supabaseServer
+        .from('computed_invoices')
+        .select('external_invoice_id')
+        .eq('job_id', id)
+        .not('external_invoice_id', 'is', null)
+
+      await Promise.all(
+        (computedInvoices ?? []).map(async ({ external_invoice_id }) => {
+          try {
+            const inv = await stripe.invoices.retrieve(external_invoice_id)
+            if (inv.status === 'open') await stripe.invoices.voidInvoice(external_invoice_id)
+            else if (inv.status === 'draft') await stripe.invoices.del(external_invoice_id)
+          } catch { /* invoice may already be voided/deleted — ignore */ }
+        })
+      )
+
+      await stripe.subscriptions.cancel(job.billing_subscription_id).catch((err: Error) => {
+        if (!err.message.includes('No such subscription')) throw err
+      })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      // If the subscription no longer exists in Stripe, proceed with local deletion.
-      if (!message.includes('No such subscription')) {
-        return NextResponse.json(
-          { error: `Failed to cancel billing subscription: ${message}` },
-          { status: 502 }
-        )
-      }
+      return NextResponse.json(
+        { error: `Failed to clean up Stripe billing: ${message}` },
+        { status: 502 }
+      )
+    }
+  }
+
+  // Cancel Chargebee subscription.
+  if (job.billing_platform === 'chargebee' && job.billing_subscription_id) {
+    try {
+      const { data: integration } = await supabaseServer
+        .from('org_integrations')
+        .select('config')
+        .eq('org_id', org.orgId)
+        .eq('connector_name', 'chargebee')
+        .eq('is_active', true)
+        .single()
+      const cfg = integration?.config as Record<string, string> | null
+      const site   = cfg?.site   ?? process.env.CHARGEBEE_SITE!
+      const apiKey = cfg?.api_key ?? process.env.CHARGEBEE_API_KEY!
+      await fetch(
+        `https://${site}.chargebee.com/api/v2/subscriptions/${job.billing_subscription_id}/cancel_for_items`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Basic ${Buffer.from(apiKey + ':').toString('base64')}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+        }
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return NextResponse.json(
+        { error: `Failed to cancel billing subscription: ${message}` },
+        { status: 502 }
+      )
     }
   }
 
   // Delete child rows first in case DB lacks cascade rules
+  await supabaseServer.from('computed_invoices').delete().eq('job_id', id)
   await supabaseServer.from('partner_findings').delete().eq('job_id', id)
   await supabaseServer.from('partner_invoices').delete().eq('job_id', id)
   await supabaseServer.from('leakage_findings').delete().eq('job_id', id)
