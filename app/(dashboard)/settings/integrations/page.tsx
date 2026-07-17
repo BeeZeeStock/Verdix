@@ -143,13 +143,22 @@ const LOGOS: Record<string, () => React.ReactElement> = {
 
 type ConnectorStatus = 'live' | 'coming_soon'
 
+interface PlatformField {
+  key:         string
+  label:       string
+  placeholder: string
+  secret?:     boolean
+  optional?:   boolean
+  hint?:       string
+}
+
 interface Platform {
   id:          string
   name:        string
   type:        'billing' | 'crm'
   description: string
   status:      ConnectorStatus
-  fields?:     { key: string; label: string; placeholder: string; secret?: boolean }[]
+  fields?:     PlatformField[]
   docsUrl?:    string
   phase?:      string
 }
@@ -162,7 +171,9 @@ const BILLING_PLATFORMS: Platform[] = [
     description: 'Push approved subscriptions directly to Stripe. Handles recurring billing, metered usage, and invoicing.',
     status:      'live',
     fields: [
-      { key: 'secret_key', label: 'Secret key', placeholder: 'sk_live_… (or sk_test_… for sandbox)', secret: true },
+      { key: 'secret_key',     label: 'Secret key',             placeholder: 'sk_live_… (or sk_test_… for sandbox)', secret: true },
+      { key: 'webhook_secret', label: 'Webhook signing secret', placeholder: 'whsec_…', secret: true, optional: true,
+        hint: 'After saving, register the webhook URL shown below in your Stripe dashboard to get this value.' },
     ],
   },
   {
@@ -260,26 +271,43 @@ function PlatformCard({
   connected,
   activeOfType,
   isAdmin,
+  orgId,
+  configKeys,
   onConnect,
   onDisconnect,
 }: {
   platform:     Platform
   connected:    boolean
-  activeOfType: string | null   // name of the currently active connector of this type (if any)
+  activeOfType: string | null
   isAdmin:      boolean
+  orgId:        string | null
+  configKeys:   string[]
   onConnect:    (id: string, config: Record<string, string>) => Promise<void>
   onDisconnect: (id: string) => Promise<void>
 }) {
-  const [open,    setOpen]    = useState(false)
-  const [form,    setForm]    = useState<Record<string, string>>({})
-  const [saving,  setSaving]  = useState(false)
-  const [removing, setRemoving] = useState(false)
-  const [msg,     setMsg]     = useState<{ ok: boolean; text: string } | null>(null)
+  const [open,      setOpen]      = useState(false)
+  const [form,      setForm]      = useState<Record<string, string>>({})
+  const [saving,    setSaving]    = useState(false)
+  const [removing,  setRemoving]  = useState(false)
+  const [msg,       setMsg]       = useState<{ ok: boolean; text: string } | null>(null)
+  const [copied,    setCopied]    = useState(false)
 
   const Logo = LOGOS[platform.id]
   const isLive = platform.status === 'live'
-  // Another platform of the same type is already connected (and it's not this one)
   const willReplace = activeOfType !== null && activeOfType !== platform.id && !connected
+
+  const webhookUrl = platform.id === 'stripe' && orgId
+    ? `${typeof window !== 'undefined' ? window.location.origin : ''}/api/stripe/webhook?orgId=${orgId}`
+    : null
+  const hasWebhookSecret = configKeys.includes('webhook_secret')
+
+  function copyWebhookUrl() {
+    if (!webhookUrl) return
+    navigator.clipboard.writeText(webhookUrl).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
@@ -369,6 +397,37 @@ function PlatformCard({
         )}
       </div>
 
+      {/* Webhook setup panel — shown when Stripe is connected */}
+      {connected && webhookUrl && (
+        <div className="border-t px-5 pb-5 pt-4 space-y-3" style={{ borderColor: 'rgba(26,61,43,0.08)', background: '#FAFAF8' }}>
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-stone">Webhook setup</p>
+            {hasWebhookSecret
+              ? <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: '#ECFDF5', color: '#065F46', border: '1px solid rgba(74,124,89,0.3)' }}>✓ Secret configured</span>
+              : <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: 'rgba(251,191,36,0.1)', color: '#92400E', border: '1px solid rgba(217,119,6,0.3)' }}>⚠ Secret missing</span>
+            }
+          </div>
+          <p className="text-xs text-stone leading-snug">
+            Register this endpoint in your Stripe dashboard under <strong>Developers → Webhooks</strong>, listening for{' '}
+            <code className="font-mono bg-forest/8 px-1 rounded text-[11px]">invoice.created</code> and{' '}
+            <code className="font-mono bg-forest/8 px-1 rounded text-[11px]">invoice.payment_succeeded</code>.
+            Then copy the signing secret Stripe gives you and save it here (disconnect and reconnect to update).
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 font-mono text-[11px] bg-white border border-forest/15 rounded-lg px-3 py-2 text-ink break-all">
+              {webhookUrl}
+            </code>
+            <button
+              onClick={copyWebhookUrl}
+              className="flex-shrink-0 text-xs font-medium px-3 py-2 rounded-lg border transition-colors"
+              style={{ borderColor: 'rgba(26,61,43,0.2)', color: '#1A3D2B' }}
+            >
+              {copied ? '✓ Copied' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Credential form */}
       {open && !connected && isLive && platform.fields && (
         <div className="border-t px-5 pb-5 pt-4" style={{ borderColor: 'rgba(26,61,43,0.08)', background: '#FAFAF8' }}>
@@ -387,16 +446,19 @@ function PlatformCard({
             {platform.fields.map(field => (
               <div key={field.key}>
                 <label className="block text-[10px] font-semibold uppercase tracking-wider text-stone mb-1">
-                  {field.label}
+                  {field.label}{field.optional && <span className="ml-1 normal-case font-normal text-stone/60">(optional)</span>}
                 </label>
                 <input
                   type={field.secret ? 'password' : 'text'}
                   placeholder={field.placeholder}
                   value={form[field.key] ?? ''}
                   onChange={e => setForm(f => ({ ...f, [field.key]: e.target.value }))}
-                  required
+                  required={!field.optional}
                   className="w-full text-sm border border-forest/20 rounded-xl px-4 py-2.5 bg-white text-ink placeholder:text-stone/40 focus:outline-none focus:ring-2 focus:ring-forest/20 font-mono"
                 />
+                {field.hint && (
+                  <p className="text-[11px] text-stone mt-1 leading-snug">{field.hint}</p>
+                )}
               </div>
             ))}
             <div className="flex items-center gap-3 pt-1">
@@ -427,11 +489,12 @@ function PlatformCard({
 interface Integration {
   connector_name: string
   is_active:      boolean
+  config_keys:    string[]
 }
 
 export default function IntegrationsPage() {
   const [integrations, setIntegrations] = useState<Integration[]>([])
-  const [org,          setOrg]          = useState<{ role: string } | null>(null)
+  const [org,          setOrg]          = useState<{ role: string; orgId: string } | null>(null)
   const [loading,      setLoading]      = useState(true)
 
   const load = useCallback(async () => {
@@ -460,6 +523,7 @@ export default function IntegrationsPage() {
   )?.connector_name ?? null
 
   const isAdmin = org?.role === 'owner' || org?.role === 'admin'
+  const orgId   = org?.orgId ?? null
 
   const handleConnect = async (connectorName: string, config: Record<string, string>) => {
     const res = await fetch('/api/org/integrations', {
@@ -526,6 +590,8 @@ export default function IntegrationsPage() {
               connected={isConnected(p.id)}
               activeOfType={activeBilling}
               isAdmin={isAdmin}
+              orgId={orgId}
+              configKeys={integrations.find(i => i.connector_name === p.id)?.config_keys ?? []}
               onConnect={handleConnect}
               onDisconnect={handleDisconnect}
             />
@@ -556,6 +622,8 @@ export default function IntegrationsPage() {
               connected={isConnected(p.id)}
               activeOfType={activeCrm}
               isAdmin={isAdmin}
+              orgId={orgId}
+              configKeys={integrations.find(i => i.connector_name === p.id)?.config_keys ?? []}
               onConnect={handleConnect}
               onDisconnect={handleDisconnect}
             />

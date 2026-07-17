@@ -1,22 +1,17 @@
 /**
- * Stripe webhook handler
+ * Stripe webhook handler — customer contract billing.
+ * Separate from /api/billing/webhook which handles Verdix SaaS subscription charges.
  *
- * Handles two event types:
+ * Per-org routing: orgs register this URL in their own Stripe dashboard as:
+ *   https://<host>/api/stripe/webhook?orgId=<orgId>
+ * Verdix looks up that org's webhook_secret (stored in org_integrations.config)
+ * and uses it to verify the signature, then uses the org's secret_key for all
+ * subsequent Stripe API calls. This keeps each org's contract billing fully
+ * isolated in their own Stripe account.
  *
- * invoice.created
- *   1. Reads aggregated meter usage from Stripe
- *   2. Applies the contract's tiered tariff logic (lib/tariff.ts)
- *   3. Injects correct line-item amounts as invoiceitems (override strategy)
- *   4. For year_pricing contracts, injects the full correct-year base fee
- *   5. Persists the computed invoice to Supabase (status: DRAFT)
- *   6. Runs billing check agent (lib/invoice-validator.ts) automatically
- *      → VALIDATED: no issues, invoice finalised in Stripe
- *      → NEEDS_REVIEW: findings stored, Stripe draft left open for human review
- *
- * invoice.payment_succeeded
- *   Updates computed_invoices.status → PAID and records paid_at timestamp.
- *
- * Stripe requires a 200 response within 30 seconds.
+ * Handles:
+ *   invoice.created           — injects correct year/overage amounts as invoice items
+ *   invoice.payment_succeeded — marks computed_invoice as PAID
  */
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -25,17 +20,49 @@ import { getCustomerMeterTotal } from '@/lib/stripe-meter'
 import { groupTiersByMetric, computeMetricOverage } from '@/lib/tariff'
 import { validateInvoice } from '@/lib/invoice-validator'
 import type { ContractTerms, BillingMeteredItem } from '@/lib/types'
+import type Stripe from 'stripe'
 
 export async function POST(req: NextRequest) {
   const rawBody = await req.text()
   const sig     = req.headers.get('stripe-signature') ?? ''
+  const orgId   = req.nextUrl.searchParams.get('orgId')
 
-  const { default: Stripe } = await import('stripe')
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+  // ── Resolve credentials ──────────────────────────────────────────────────────
+  // Per-org: look up the org's Stripe integration for its webhook_secret + secret_key.
+  // Platform fallback: use env vars (for contracts pushed via the Verdix platform key).
+  let stripeKey     = process.env.STRIPE_SECRET_KEY!
+  let webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!
 
-  let event: import('stripe').default.Event
+  if (orgId) {
+    const { data: integration } = await supabaseServer
+      .from('org_integrations')
+      .select('config')
+      .eq('org_id', orgId)
+      .eq('connector_name', 'stripe')
+      .eq('is_active', true)
+      .maybeSingle()
+
+    const config = (integration?.config ?? {}) as Record<string, string>
+
+    if (!config.webhook_secret) {
+      // Org hasn't completed webhook setup — reject clearly rather than falling
+      // through to a signature failure that would look like a Stripe error.
+      return NextResponse.json(
+        { error: 'Webhook secret not configured for this org. Add it in Settings → Integrations.' },
+        { status: 400 },
+      )
+    }
+
+    if (config.secret_key) stripeKey = config.secret_key
+    webhookSecret = config.webhook_secret
+  }
+
+  const { default: StripeSDK } = await import('stripe')
+  const stripe = new StripeSDK(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+
+  let event: Stripe.Event
   try {
-    event = stripe.webhooks.constructEvent(rawBody, sig, process.env.STRIPE_WEBHOOK_SECRET!)
+    event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret)
   } catch {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 })
   }
@@ -52,7 +79,7 @@ export async function POST(req: NextRequest) {
 
   // ── invoice.created ────────────────────────────────────────────────────────
 
-  const invoice = event.data.object as import('stripe').default.Invoice
+  const invoice = event.data.object as Stripe.Invoice
 
   // In Stripe API 2026-06-24 (dahlia), subscription reference moved to invoice.parent
   const subRef = invoice.parent?.subscription_details?.subscription
@@ -81,9 +108,7 @@ export async function POST(req: NextRequest) {
       .limit(1)
 
     const job = jobs?.[0]
-    if (!job) {
-      return NextResponse.json({ received: true })
-    }
+    if (!job) return NextResponse.json({ received: true })
 
     const termsArr = job.contract_terms as unknown as (ContractTerms & {
       id: string
@@ -210,7 +235,6 @@ export async function POST(req: NextRequest) {
 
     // ── 6. Run billing check agent automatically ───────────────────────────
     if (computedInvoiceId) {
-      // Fetch prior invoices for this job to enable spike detection
       const { data: priorInvoices } = await supabaseServer
         .from('computed_invoices')
         .select('id, period_start, period_end, line_items, total_amount, currency')
@@ -222,7 +246,6 @@ export async function POST(req: NextRequest) {
       const findings = validateInvoice(terms, injectedLines, priorInvoices ?? [])
 
       if (findings.length === 0) {
-        // All checks passed — mark validated and finalise in Stripe
         await supabaseServer
           .from('computed_invoices')
           .update({ status: 'VALIDATED', validation_result: [] })
@@ -232,7 +255,6 @@ export async function POST(req: NextRequest) {
           console.error('[stripe/webhook] finalise failed', err)
         })
       } else {
-        // Issues found — leave draft open, flag for human review
         await supabaseServer
           .from('computed_invoices')
           .update({ status: 'NEEDS_REVIEW', validation_result: findings })
@@ -242,7 +264,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ received: true })
   } catch (err) {
-    // Return 200 so Stripe does not retry — log for ops investigation
     console.error('[stripe/webhook] processing error for invoice', err)
     return NextResponse.json({ received: true, error: err instanceof Error ? err.message : String(err) })
   }
@@ -250,23 +271,14 @@ export async function POST(req: NextRequest) {
 
 // ── Payment succeeded handler ──────────────────────────────────────────────────
 
-async function handlePaymentSucceeded(
-  event: import('stripe').default.Event,
-): Promise<NextResponse> {
-  const invoice = event.data.object as import('stripe').default.Invoice
+async function handlePaymentSucceeded(event: Stripe.Event): Promise<NextResponse> {
+  const invoice = event.data.object as Stripe.Invoice
 
   try {
-    const { error } = await supabaseServer
+    await supabaseServer
       .from('computed_invoices')
-      .update({
-        status:  'PAID',
-        paid_at: new Date().toISOString(),
-      })
+      .update({ status: 'PAID', paid_at: new Date().toISOString() })
       .eq('external_invoice_id', invoice.id)
-
-    if (error) {
-      console.error('[stripe/webhook] failed to mark invoice paid', error)
-    }
   } catch (err) {
     console.error('[stripe/webhook] payment_succeeded handler error', err)
   }

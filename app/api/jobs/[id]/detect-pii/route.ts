@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { resolveStorageUrl } from '@/lib/storage'
+import { getOrgSubscription } from '@/lib/billing'
 import type { PIIEntity } from '@/lib/pii-detector'
 
 const anthropicDirect = new Anthropic()
@@ -28,16 +29,42 @@ export async function POST(
   if (jobError || !job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
   if (!job.contract_pdf_url) return NextResponse.json({ error: 'No contract file uploaded' }, { status: 400 })
 
-  // Verify PII masking is available: active addon OR trial plan (free preview)
-  const { data: subData } = await supabaseServer
-    .from('org_subscriptions')
-    .select('pii_addon_enabled, plan_id')
-    .eq('org_id', org.orgId)
-    .maybeSingle()
+  // Verify PII masking is available: active addon OR trial plan (free preview).
+  // For paid plans where pii_addon_enabled is stale (e.g. webhook missed),
+  // do a live Stripe check and self-heal the Supabase flag.
+  const sub = await getOrgSubscription(org.orgId)
 
-  const piiAllowed = subData?.pii_addon_enabled === true || subData?.plan_id === 'trial'
+  let piiAllowed = sub.pii_addon_enabled === true || sub.plan_id === 'trial'
+
+  if (!piiAllowed && sub.stripe_subscription_id && ['core', 'pro', 'enterprise'].includes(sub.plan_id)) {
+    try {
+      const { data: piiPlan } = await supabaseServer
+        .from('verdix_plans')
+        .select('stripe_price_id')
+        .eq('id', 'pii_addon')
+        .maybeSingle()
+
+      if (piiPlan?.stripe_price_id) {
+        const { default: Stripe } = await import('stripe')
+        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+        const stripeSub = await stripe.subscriptions.retrieve(sub.stripe_subscription_id)
+
+        if (['active', 'trialing'].includes(stripeSub.status)) {
+          const hasPii = stripeSub.items.data.some(i => i.price.id === piiPlan.stripe_price_id)
+          if (hasPii) {
+            await supabaseServer.from('org_subscriptions').update({
+              pii_addon_enabled: true,
+              updated_at: new Date().toISOString(),
+            }).eq('org_id', org.orgId)
+            piiAllowed = true
+          }
+        }
+      }
+    } catch { /* best-effort — fall through to the error below */ }
+  }
+
   if (!piiAllowed) {
-    return NextResponse.json({ error: 'Advanced PII Data Masking add-on is not active on your plan.' }, { status: 403 })
+    return NextResponse.json({ error: 'Advanced PII Data Masking is not active on your plan.' }, { status: 403 })
   }
 
   await supabaseServer.from('jobs').update({ execute_status: 'DETECTING_PII' }).eq('id', id)

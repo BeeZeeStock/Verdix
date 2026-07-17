@@ -20,12 +20,19 @@ export async function GET() {
 
   const { data, error } = await supabaseServer
     .from('org_integrations')
-    .select('id, connector_type, connector_name, is_active, created_at')
+    .select('id, connector_type, connector_name, is_active, created_at, config')
     .eq('org_id', org.orgId)
     .order('created_at', { ascending: true })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ integrations: data ?? [] })
+
+  // Return which config keys are present but never expose values
+  const integrations = (data ?? []).map(({ config, ...rest }) => ({
+    ...rest,
+    config_keys: config ? Object.keys(config as object) : [],
+  }))
+
+  return NextResponse.json({ integrations })
 }
 
 // POST /api/org/integrations — save or update connector credentials (admin only)

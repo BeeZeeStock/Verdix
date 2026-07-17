@@ -9,6 +9,7 @@ export default function NewConfigurePage() {
   const [file, setFile] = useState<File | null>(null)
   const [dragging, setDragging] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<{ text: string; billing?: boolean } | null>(null)
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault(); setDragging(false)
@@ -24,6 +25,7 @@ export default function NewConfigurePage() {
   const handleUpload = async () => {
     if (!file) return
     setLoading(true)
+    setError(null)
     try {
       const res = await fetch('/api/jobs', {
         method: 'POST',
@@ -33,8 +35,18 @@ export default function NewConfigurePage() {
       const { jobId } = await res.json()
       const fd = new FormData(); fd.append('file', file); fd.append('jobId', jobId); fd.append('fileType', 'signed_contract')
       await fetch('/api/upload', { method: 'POST', body: fd })
-      // Detect PII first; user reviews before extraction runs
-      await fetch(`/api/jobs/${jobId}/detect-pii`, { method: 'POST' })
+      // Detect PII before extraction — user reviews findings first
+      const piiRes = await fetch(`/api/jobs/${jobId}/detect-pii`, { method: 'POST' })
+      if (!piiRes.ok) {
+        const body = await piiRes.json().catch(() => ({}))
+        if (piiRes.status === 403) {
+          setError({ text: body.error ?? 'Advanced PII Data Masking is not active on your plan.', billing: true })
+        } else {
+          setError({ text: body.error ?? 'PII detection failed. Please try again.' })
+        }
+        setLoading(false)
+        return
+      }
       router.push(`/configure/${jobId}/pii-review`)
     } catch { setLoading(false) }
   }
@@ -79,6 +91,21 @@ export default function NewConfigurePage() {
           </div>
         </div>
 
+
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+            <p className="font-medium mb-0.5">⚠ {error.text}</p>
+            {error.billing && (
+              <p className="text-xs text-red-600">
+                Enable it in{' '}
+                <Link href="/settings/billing" className="underline underline-offset-2 font-medium">
+                  Settings → Billing
+                </Link>
+                , then try again.
+              </p>
+            )}
+          </div>
+        )}
 
         <button
           onClick={handleUpload}
