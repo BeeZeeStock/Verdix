@@ -72,8 +72,26 @@ export async function GET(
       : null
 
     const baseItem = subscription.items.data[0]
-    const recurringInterval   = baseItem?.price?.recurring?.interval   ?? 'month'
+    const recurringInterval      = baseItem?.price?.recurring?.interval       ?? 'month'
     const recurringIntervalCount = baseItem?.price?.recurring?.interval_count ?? 1
+
+    // current_period_start/end were removed in the dahlia API; derive from the
+    // most-recent (non-void, non-draft) invoice period instead.
+    const latestInvoice = invoicesRes.data.find(
+      inv => inv.status !== 'void' && inv.status !== 'draft',
+    ) ?? invoicesRes.data[0]
+    const currentPeriodStart = latestInvoice?.period_start
+      ? new Date(latestInvoice.period_start * 1000).toISOString()
+      : null
+    const currentPeriodEnd = latestInvoice?.period_end
+      ? new Date(latestInvoice.period_end * 1000).toISOString()
+      : null
+
+    // cancel_at_period_end may also have moved; access defensively.
+    const sub = subscription as unknown as Record<string, unknown>
+    const cancelAtPeriodEnd = typeof sub.cancel_at_period_end === 'boolean'
+      ? sub.cancel_at_period_end
+      : false
 
     return NextResponse.json({
       subscription: {
@@ -81,9 +99,9 @@ export async function GET(
         status: subscription.status,
         interval: recurringInterval,
         intervalCount: recurringIntervalCount,
-        currentPeriodStart: new Date(subscription.current_period_start * 1000).toISOString(),
-        currentPeriodEnd:   new Date(subscription.current_period_end   * 1000).toISOString(),
-        cancelAtPeriodEnd:  subscription.cancel_at_period_end,
+        currentPeriodStart,
+        currentPeriodEnd,
+        cancelAtPeriodEnd,
         isTest: !subscription.livemode,
         dashboardUrl: `https://dashboard.stripe.com/${!subscription.livemode ? 'test/' : ''}subscriptions/${subscription.id}`,
       },
