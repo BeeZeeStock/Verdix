@@ -28,14 +28,15 @@ export async function POST(
   if (jobError || !job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
   if (!job.contract_pdf_url) return NextResponse.json({ error: 'No contract file uploaded' }, { status: 400 })
 
-  // Verify the org has the PII addon active
+  // Verify PII masking is available: active addon OR trial plan (free preview)
   const { data: subData } = await supabaseServer
     .from('org_subscriptions')
-    .select('pii_addon_enabled')
+    .select('pii_addon_enabled, plan_id')
     .eq('org_id', org.orgId)
     .maybeSingle()
 
-  if (!subData?.pii_addon_enabled) {
+  const piiAllowed = subData?.pii_addon_enabled === true || subData?.plan_id === 'trial'
+  if (!piiAllowed) {
     return NextResponse.json({ error: 'Advanced PII Data Masking add-on is not active on your plan.' }, { status: 403 })
   }
 

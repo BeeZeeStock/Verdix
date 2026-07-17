@@ -52,13 +52,13 @@ export async function POST(
 async function runExecutePipeline(jobId: string, orgId: string, contractUrl: string | null, currency: string) {
   if (!contractUrl) throw new Error('Missing contract file')
 
-  // Check if PII masking is enabled for this specific org
+  // Check if PII masking is enabled: active addon OR trial plan (free preview)
   const { data: subData } = await supabaseServer
     .from('org_subscriptions')
-    .select('pii_addon_enabled')
+    .select('pii_addon_enabled, plan_id')
     .eq('org_id', orgId)
     .maybeSingle()
-  const PII_MASKING_ENABLED = subData?.pii_addon_enabled === true
+  const PII_MASKING_ENABLED = subData?.pii_addon_enabled === true || subData?.plan_id === 'trial'
 
   const resolvedUrl = await resolveStorageUrl(contractUrl)
   const res = await fetch(resolvedUrl)
