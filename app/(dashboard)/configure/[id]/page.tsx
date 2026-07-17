@@ -2290,7 +2290,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 <p className="text-[32px] font-medium leading-none font-mono" style={{ fontVariantNumeric: 'tabular-nums' }}>
                   {tcv > 0 ? fmt(tcv, cur) : <span style={{ opacity: 0.45 }}>€0</span>}
                 </p>
-                {tcv === 0 && (terms?.contract_start_date || terms?.contract_end_date) && (
+                {tcv === 0 && terms?.contract_start_date && terms?.contract_end_date &&
+                  parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date) && (
+                  <p className="text-[10px] text-amber-300 mt-1">⚠ End date is before start date — correct it above</p>
+                )}
+                {tcv === 0 && (!terms?.contract_start_date || !terms?.contract_end_date) && (
                   <p className="text-[10px] text-mint/50 mt-1">Add missing dates above to calculate</p>
                 )}
               </div>

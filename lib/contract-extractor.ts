@@ -38,7 +38,8 @@ Rules:
 - contract_id: the contract reference, PO number, order number, or agreement ID printed on the document (e.g. "CLR-2024-0001", "PO-12345"). Use null if no reference number is found.
 - field_sources: object mapping each extracted field to the section heading it was taken from (e.g. {"base_monthly_fee": "1.1 Base Platform Fee", "escalators": "1.2 Annual Price Escalator"})
 - extraction_confidence: "high" if all core commercial terms are clear, "medium" if some ambiguity, "low" if significant gaps
-- extraction_notes: brief note on what could not be determined`
+- extraction_notes: brief note on what could not be determined
+- CRITICAL DATE RULE: contract_end_date must be AFTER contract_start_date. For a multi-year contract, the end year will be start_year + contract_term_years. Example: 36-month contract starting Aug 1 2026 → contract_end_date = "2029-07-31", NOT "2026-07-31". Always verify: if contract_term_months is set, end_date ≈ start_date + contract_term_months. If the document's stated end date contradicts the term length, trust the term length and compute the correct end date.`
 
 const FEW_SHOT_EXAMPLE = `<example>
 RULES REMINDER before you read the example:
@@ -168,13 +169,29 @@ function mergeExtractions(results: ContractTerms[]): ContractTerms {
     return currScore > bestScore ? curr : best
   })
 
-  return {
+  const merged: ContractTerms = {
     ...base,
     escalators: dedupe([...results.flatMap(r => r.escalators)], 'description'),
     discounts: dedupe([...results.flatMap(r => r.discounts)], 'description'),
     overage_tiers: dedupe([...results.flatMap(r => r.overage_tiers)], 'tier_label'),
     one_time_fees: dedupe([...results.flatMap(r => r.one_time_fees ?? [])], 'fee_label'),
   }
+
+  // Guard: end_date must be after start_date. If the model extracted a wrong year
+  // (e.g. "2026-07-31" for a 36-month contract starting 2026-08-01), auto-correct
+  // using contract_term_months when available.
+  if (merged.contract_start_date && merged.contract_end_date && merged.contract_term_months) {
+    const start = new Date(merged.contract_start_date)
+    const end   = new Date(merged.contract_end_date)
+    if (end <= start) {
+      const corrected = new Date(start)
+      corrected.setMonth(corrected.getMonth() + merged.contract_term_months)
+      corrected.setDate(corrected.getDate() - 1) // last day of term
+      merged.contract_end_date = corrected.toISOString().slice(0, 10)
+    }
+  }
+
+  return merged
 }
 
 function scoreCompleteness(t: ContractTerms): number {
