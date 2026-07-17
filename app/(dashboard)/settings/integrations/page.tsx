@@ -290,10 +290,11 @@ function PlatformCard({
   const [saving,       setSaving]       = useState(false)
   const [removing,     setRemoving]     = useState(false)
   const [msg,          setMsg]          = useState<{ ok: boolean; text: string } | null>(null)
-  const [copied,       setCopied]       = useState(false)
+  const [copied,        setCopied]        = useState(false)
   const [webhookSecret, setWebhookSecret] = useState('')
   const [savingSecret,  setSavingSecret]  = useState(false)
   const [secretMsg,     setSecretMsg]     = useState<{ ok: boolean; text: string } | null>(null)
+  const [showSecretForm, setShowSecretForm] = useState(false)
 
   const Logo = LOGOS[platform.id]
   const isLive = platform.status === 'live'
@@ -439,46 +440,59 @@ function PlatformCard({
 
           {isAdmin && (
             <div className="space-y-2">
-              <label className="block text-[10px] font-semibold uppercase tracking-wider text-stone">
-                {hasWebhookSecret ? 'Update signing secret' : 'Signing secret'}
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  placeholder="whsec_…"
-                  value={webhookSecret}
-                  onChange={e => setWebhookSecret(e.target.value)}
-                  className="flex-1 text-sm border border-forest/20 rounded-xl px-4 py-2.5 bg-white text-ink placeholder:text-stone/40 focus:outline-none focus:ring-2 focus:ring-forest/20 font-mono"
-                />
+              {/* When already active, hide the form behind a small link */}
+              {hasWebhookSecret && !showSecretForm ? (
                 <button
-                  onClick={async () => {
-                    if (!webhookSecret.trim()) return
-                    setSavingSecret(true)
-                    setSecretMsg(null)
-                    try {
-                      const res = await fetch(`/api/org/integrations/${platform.id}`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ config: { webhook_secret: webhookSecret.trim() } }),
-                      })
-                      if (!res.ok) throw new Error((await res.json()).error ?? 'Save failed')
-                      setWebhookSecret('')
-                      setSecretMsg({ ok: true, text: 'Saved.' })
-                      await onRefresh()
-                    } catch (err) {
-                      setSecretMsg({ ok: false, text: err instanceof Error ? err.message : 'Save failed' })
-                    } finally {
-                      setSavingSecret(false)
-                    }
-                  }}
-                  disabled={savingSecret || !webhookSecret.trim()}
-                  className="flex-shrink-0 bg-forest text-white text-sm font-medium px-4 py-2.5 rounded-xl hover:bg-sage transition-colors disabled:opacity-40"
+                  onClick={() => setShowSecretForm(true)}
+                  className="text-xs text-stone hover:text-forest transition-colors underline underline-offset-2"
                 >
-                  {savingSecret ? 'Saving…' : 'Save'}
+                  Update signing secret
                 </button>
-              </div>
-              {secretMsg && (
-                <p className={`text-xs ${secretMsg.ok ? 'text-forest' : 'text-red-600'}`}>{secretMsg.text}</p>
+              ) : (
+                <>
+                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-stone">
+                    {hasWebhookSecret ? 'Update signing secret' : 'Signing secret'}
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="password"
+                      placeholder="whsec_…"
+                      value={webhookSecret}
+                      onChange={e => setWebhookSecret(e.target.value)}
+                      className="flex-1 text-sm border border-forest/20 rounded-xl px-4 py-2.5 bg-white text-ink placeholder:text-stone/40 focus:outline-none focus:ring-2 focus:ring-forest/20 font-mono"
+                    />
+                    <button
+                      onClick={async () => {
+                        if (!webhookSecret.trim()) return
+                        setSavingSecret(true)
+                        setSecretMsg(null)
+                        try {
+                          const res = await fetch(`/api/org/integrations/${platform.id}`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ config: { webhook_secret: webhookSecret.trim() } }),
+                          })
+                          if (!res.ok) throw new Error((await res.json()).error ?? 'Save failed')
+                          setWebhookSecret('')
+                          setSecretMsg({ ok: true, text: 'Saved.' })
+                          setShowSecretForm(false)
+                          await onRefresh()
+                        } catch (err) {
+                          setSecretMsg({ ok: false, text: err instanceof Error ? err.message : 'Save failed' })
+                        } finally {
+                          setSavingSecret(false)
+                        }
+                      }}
+                      disabled={savingSecret || !webhookSecret.trim()}
+                      className="flex-shrink-0 bg-forest text-white text-sm font-medium px-4 py-2.5 rounded-xl hover:bg-sage transition-colors disabled:opacity-40"
+                    >
+                      {savingSecret ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                  {secretMsg && (
+                    <p className={`text-xs ${secretMsg.ok ? 'text-forest' : 'text-red-600'}`}>{secretMsg.text}</p>
+                  )}
+                </>
               )}
             </div>
           )}
