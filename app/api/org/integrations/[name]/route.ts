@@ -48,6 +48,26 @@ export async function DELETE(
 
   const { name } = await params
 
+  // Delete the auto-registered webhook from the org's Stripe account on disconnect.
+  if (name === 'stripe') {
+    const { data: integration } = await supabaseServer
+      .from('org_integrations')
+      .select('config')
+      .eq('org_id', org.orgId)
+      .eq('connector_name', 'stripe')
+      .eq('is_active', true)
+      .maybeSingle()
+
+    const cfg = (integration?.config ?? {}) as Record<string, string>
+    if (cfg.webhook_endpoint_id && cfg.secret_key) {
+      try {
+        const { default: Stripe } = await import('stripe')
+        const stripe = new Stripe(cfg.secret_key, { apiVersion: '2026-06-24.dahlia' })
+        await stripe.webhookEndpoints.del(cfg.webhook_endpoint_id).catch(() => null)
+      } catch { /* best-effort */ }
+    }
+  }
+
   const { error } = await supabaseServer
     .from('org_integrations')
     .update({ is_active: false, updated_at: new Date().toISOString() })

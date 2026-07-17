@@ -273,7 +273,6 @@ function PlatformCard({
   configKeys,
   onConnect,
   onDisconnect,
-  onRefresh,
 }: {
   platform:     Platform
   connected:    boolean
@@ -283,18 +282,13 @@ function PlatformCard({
   configKeys:   string[]
   onConnect:    (id: string, config: Record<string, string>) => Promise<void>
   onDisconnect: (id: string) => Promise<void>
-  onRefresh:    () => Promise<void>
 }) {
   const [open,         setOpen]         = useState(false)
   const [form,         setForm]         = useState<Record<string, string>>({})
   const [saving,       setSaving]       = useState(false)
   const [removing,     setRemoving]     = useState(false)
   const [msg,          setMsg]          = useState<{ ok: boolean; text: string } | null>(null)
-  const [copied,        setCopied]        = useState(false)
-  const [webhookSecret, setWebhookSecret] = useState('')
-  const [savingSecret,  setSavingSecret]  = useState(false)
-  const [secretMsg,     setSecretMsg]     = useState<{ ok: boolean; text: string } | null>(null)
-  const [showSecretForm, setShowSecretForm] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   const Logo = LOGOS[platform.id]
   const isLive = platform.status === 'live'
@@ -303,7 +297,7 @@ function PlatformCard({
   const webhookUrl = platform.id === 'stripe' && orgId
     ? `${typeof window !== 'undefined' ? window.location.origin : ''}/api/stripe/webhook?orgId=${orgId}`
     : null
-  const hasWebhookSecret = configKeys.includes('webhook_secret')
+  const isWebhookActive = configKeys.includes('webhook_secret')
 
   function copyWebhookUrl() {
     if (!webhookUrl) return
@@ -401,160 +395,33 @@ function PlatformCard({
         )}
       </div>
 
-      {/* Webhook setup panel — shown when Stripe is connected */}
+      {/* Webhook panel — shown when Stripe is connected */}
       {connected && webhookUrl && (
-        <div className="border-t px-5 pb-5 pt-4 space-y-4" style={{ borderColor: 'rgba(26,61,43,0.08)', background: '#FAFAF8' }}>
-          <div className="flex items-center justify-between">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-stone">Webhook setup</p>
-            {hasWebhookSecret
+        <div className="border-t px-5 pb-4 pt-4" style={{ borderColor: 'rgba(26,61,43,0.08)', background: '#FAFAF8' }}>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-stone">Webhook</p>
+            {isWebhookActive
               ? <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: '#ECFDF5', color: '#065F46', border: '1px solid rgba(74,124,89,0.3)' }}>✓ Active</span>
-              : <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: 'rgba(251,191,36,0.1)', color: '#92400E', border: '1px solid rgba(217,119,6,0.3)' }}>Step 2 of 2 pending</span>
+              : <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: 'rgba(220,38,38,0.08)', color: '#DC2626', border: '1px solid rgba(220,38,38,0.2)' }}>Setup failed</span>
             }
           </div>
-
-          {!hasWebhookSecret && (
-            <ol className="space-y-4 text-xs text-stone">
-              {/* Step 1: URL inline */}
-              <li className="flex gap-2.5">
-                <span className="flex-shrink-0 w-4 h-4 rounded-full bg-forest/10 text-forest text-[10px] font-bold flex items-center justify-center mt-0.5">1</span>
-                <div className="flex-1 space-y-2">
-                  <span>Register this URL in your Stripe dashboard under <strong className="text-ink">Developers → Webhooks → Add destination</strong>. Select events <code className="font-mono bg-forest/8 px-1 rounded">invoice.created</code> and <code className="font-mono bg-forest/8 px-1 rounded">invoice.payment_succeeded</code>.</span>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 font-mono text-[11px] bg-white border border-forest/15 rounded-lg px-3 py-2 text-ink break-all">
-                      {webhookUrl}
-                    </code>
-                    <button
-                      onClick={copyWebhookUrl}
-                      className="flex-shrink-0 text-xs font-medium px-3 py-2 rounded-lg border transition-colors"
-                      style={{ borderColor: 'rgba(26,61,43,0.2)', color: '#1A3D2B' }}
-                    >
-                      {copied ? '✓ Copied' : 'Copy'}
-                    </button>
-                  </div>
-                </div>
-              </li>
-
-              {/* Step 2: signing secret input inline */}
-              {isAdmin && (
-                <li className="flex gap-2.5">
-                  <span className="flex-shrink-0 w-4 h-4 rounded-full bg-forest/10 text-forest text-[10px] font-bold flex items-center justify-center mt-0.5">2</span>
-                  <div className="flex-1 space-y-2">
-                    <span>Stripe shows a <strong className="text-ink">signing secret</strong> (<code className="font-mono bg-forest/8 px-1 rounded">whsec_…</code>) after the webhook is created. Paste it here.</span>
-                    <div className="flex gap-2">
-                      <input
-                        type="password"
-                        placeholder="whsec_…"
-                        value={webhookSecret}
-                        onChange={e => setWebhookSecret(e.target.value)}
-                        className="flex-1 text-sm border border-forest/20 rounded-xl px-4 py-2.5 bg-white text-ink placeholder:text-stone/40 focus:outline-none focus:ring-2 focus:ring-forest/20 font-mono"
-                      />
-                      <button
-                        onClick={async () => {
-                          if (!webhookSecret.trim()) return
-                          setSavingSecret(true)
-                          setSecretMsg(null)
-                          try {
-                            const res = await fetch(`/api/org/integrations/${platform.id}`, {
-                              method: 'PATCH',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ config: { webhook_secret: webhookSecret.trim() } }),
-                            })
-                            if (!res.ok) throw new Error((await res.json()).error ?? 'Save failed')
-                            setWebhookSecret('')
-                            setSecretMsg({ ok: true, text: 'Saved.' })
-                            setShowSecretForm(false)
-                            await onRefresh()
-                          } catch (err) {
-                            setSecretMsg({ ok: false, text: err instanceof Error ? err.message : 'Save failed' })
-                          } finally {
-                            setSavingSecret(false)
-                          }
-                        }}
-                        disabled={savingSecret || !webhookSecret.trim()}
-                        className="flex-shrink-0 bg-forest text-white text-sm font-medium px-4 py-2.5 rounded-xl hover:bg-sage transition-colors disabled:opacity-40"
-                      >
-                        {savingSecret ? 'Saving…' : 'Save'}
-                      </button>
-                    </div>
-                    {secretMsg && (
-                      <p className={`text-xs ${secretMsg.ok ? 'text-forest' : 'text-red-600'}`}>{secretMsg.text}</p>
-                    )}
-                  </div>
-                </li>
-              )}
-            </ol>
-          )}
-
-          {/* When active: just show the URL + optional update link */}
-          {hasWebhookSecret && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <code className="flex-1 font-mono text-[11px] bg-white border border-forest/15 rounded-lg px-3 py-2 text-ink break-all">
-                  {webhookUrl}
-                </code>
-                <button
-                  onClick={copyWebhookUrl}
-                  className="flex-shrink-0 text-xs font-medium px-3 py-2 rounded-lg border transition-colors"
-                  style={{ borderColor: 'rgba(26,61,43,0.2)', color: '#1A3D2B' }}
-                >
-                  {copied ? '✓ Copied' : 'Copy'}
-                </button>
-              </div>
-
-              {isAdmin && (
-                showSecretForm ? (
-                  <div className="space-y-2 pt-1">
-                    <label className="block text-[10px] font-semibold uppercase tracking-wider text-stone">Update signing secret</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="password"
-                        placeholder="whsec_…"
-                        value={webhookSecret}
-                        onChange={e => setWebhookSecret(e.target.value)}
-                        className="flex-1 text-sm border border-forest/20 rounded-xl px-4 py-2.5 bg-white text-ink placeholder:text-stone/40 focus:outline-none focus:ring-2 focus:ring-forest/20 font-mono"
-                      />
-                      <button
-                        onClick={async () => {
-                          if (!webhookSecret.trim()) return
-                          setSavingSecret(true)
-                          setSecretMsg(null)
-                          try {
-                            const res = await fetch(`/api/org/integrations/${platform.id}`, {
-                              method: 'PATCH',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ config: { webhook_secret: webhookSecret.trim() } }),
-                            })
-                            if (!res.ok) throw new Error((await res.json()).error ?? 'Save failed')
-                            setWebhookSecret('')
-                            setSecretMsg({ ok: true, text: 'Saved.' })
-                            setShowSecretForm(false)
-                            await onRefresh()
-                          } catch (err) {
-                            setSecretMsg({ ok: false, text: err instanceof Error ? err.message : 'Save failed' })
-                          } finally {
-                            setSavingSecret(false)
-                          }
-                        }}
-                        disabled={savingSecret || !webhookSecret.trim()}
-                        className="flex-shrink-0 bg-forest text-white text-sm font-medium px-4 py-2.5 rounded-xl hover:bg-sage transition-colors disabled:opacity-40"
-                      >
-                        {savingSecret ? 'Saving…' : 'Save'}
-                      </button>
-                    </div>
-                    {secretMsg && (
-                      <p className={`text-xs ${secretMsg.ok ? 'text-forest' : 'text-red-600'}`}>{secretMsg.text}</p>
-                    )}
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => setShowSecretForm(true)}
-                    className="text-xs text-stone hover:text-forest transition-colors underline underline-offset-2"
-                  >
-                    Update signing secret
-                  </button>
-                )
-              )}
+          {isWebhookActive ? (
+            <div className="flex items-center gap-2">
+              <code className="flex-1 font-mono text-[11px] bg-white border border-forest/15 rounded-lg px-3 py-2 text-ink break-all">
+                {webhookUrl}
+              </code>
+              <button
+                onClick={copyWebhookUrl}
+                className="flex-shrink-0 text-xs font-medium px-3 py-2 rounded-lg border transition-colors"
+                style={{ borderColor: 'rgba(26,61,43,0.2)', color: '#1A3D2B' }}
+              >
+                {copied ? '✓ Copied' : 'Copy'}
+              </button>
             </div>
+          ) : (
+            <p className="text-xs text-red-600">
+              Webhook registration failed. Disconnect and reconnect Stripe to retry.
+            </p>
           )}
         </div>
       )}
@@ -598,7 +465,7 @@ function PlatformCard({
                 disabled={saving}
                 className="bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors disabled:opacity-50"
               >
-                {saving ? 'Saving…' : willReplace ? `Switch to ${platform.name}` : 'Save credentials'}
+                {saving ? 'Connecting…' : willReplace ? `Switch to ${platform.name}` : 'Connect'}
               </button>
               {msg && (
                 <p className={`text-xs ${msg.ok ? 'text-forest' : 'text-red-600'}`}>{msg.text}</p>
@@ -606,8 +473,10 @@ function PlatformCard({
             </div>
           </form>
           <p className="text-[11px] text-stone mt-3 leading-snug">
-            Credentials are stored encrypted and never exposed in the UI after saving.
-            Only admins can view or change integration settings.
+            {platform.id === 'stripe'
+              ? 'Verdix automatically registers a webhook on your Stripe account for invoice events — no manual Stripe configuration needed. Credentials are stored encrypted and never exposed in the UI.'
+              : 'Credentials are stored encrypted and never exposed in the UI after saving. Only admins can view or change integration settings.'
+            }
           </p>
         </div>
       )}
@@ -725,7 +594,6 @@ export default function IntegrationsPage() {
               configKeys={integrations.find(i => i.connector_name === p.id)?.config_keys ?? []}
               onConnect={handleConnect}
               onDisconnect={handleDisconnect}
-              onRefresh={load}
             />
           ))}
         </div>
@@ -758,7 +626,6 @@ export default function IntegrationsPage() {
               configKeys={integrations.find(i => i.connector_name === p.id)?.config_keys ?? []}
               onConnect={handleConnect}
               onDisconnect={handleDisconnect}
-              onRefresh={load}
             />
           ))}
         </div>

@@ -76,5 +76,45 @@ export async function POST(req: NextRequest) {
     }, { onConflict: 'org_id,connector_name' })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  // Auto-register webhook on org's Stripe account when a secret_key is saved.
+  // Non-fatal — integration is saved even if webhook registration fails.
+  if (connector_name === 'stripe' && (config as Record<string, string>).secret_key) {
+    try {
+      const base      = process.env.AUTH_URL || process.env.NEXTAUTH_URL || 'https://lynoraai.com'
+      const webhookUrl = `${base}/api/stripe/webhook?orgId=${org.orgId}`
+      const secretKey  = (config as Record<string, string>).secret_key
+
+      const { default: Stripe } = await import('stripe')
+      const stripe = new Stripe(secretKey, { apiVersion: '2026-06-24.dahlia' })
+
+      // Remove any stale endpoints at this URL (e.g. from a previous connect)
+      const existing = await stripe.webhookEndpoints.list({ limit: 100 })
+      await Promise.all(
+        existing.data
+          .filter(w => w.url === webhookUrl)
+          .map(w => stripe.webhookEndpoints.del(w.id).catch(() => null))
+      )
+
+      const webhook = await stripe.webhookEndpoints.create({
+        url:            webhookUrl,
+        enabled_events: ['invoice.created', 'invoice.payment_succeeded'],
+        description:    'Verdix contract billing webhook (auto-registered)',
+      })
+
+      // Merge webhook credentials into the saved config row
+      await supabaseServer
+        .from('org_integrations')
+        .update({
+          config:     { ...(config as object), webhook_endpoint_id: webhook.id, webhook_secret: webhook.secret },
+          updated_at: new Date().toISOString(),
+        })
+        .eq('org_id', org.orgId)
+        .eq('connector_name', 'stripe')
+    } catch (err) {
+      console.error('[integrations/stripe] webhook auto-registration failed:', err)
+    }
+  }
+
   return NextResponse.json({ ok: true })
 }
