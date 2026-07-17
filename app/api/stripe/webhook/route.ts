@@ -145,12 +145,17 @@ export async function POST(req: NextRequest) {
       ? (periodStart.getFullYear() - contractStart.getFullYear()) * 12 +
         (periodStart.getMonth()    - contractStart.getMonth())
       : 0
-    const yearNum = Math.floor(monthsElapsed / 12) + 1
+    // Clamp to valid year range: subscription may start slightly before or after
+    // the contract start date, so monthsElapsed can be negative or overshoot.
+    const rawYearNum = Math.floor(monthsElapsed / 12) + 1
+    const yearNum    = Math.max(1, rawYearNum)
 
     if (isYearPricing && contractStart && terms.year_pricing) {
       const yp = terms.year_pricing
-      const yearKey   = `year${yearNum}`
-      const lastKey   = `year${Object.keys(yp).length}`
+      const totalYears = Object.keys(yp).length
+      const clampedYear = Math.min(yearNum, totalYears)
+      const yearKey   = `year${clampedYear}`
+      const lastKey   = `year${totalYears}`
       const annualFee = yp[yearKey] ?? yp[lastKey] ?? 0
 
       const periodLabel = formatPeriod(periodStart, periodEnd)
