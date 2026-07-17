@@ -948,7 +948,7 @@ function Pricing() {
       period: '/mo',
       badge: 'Most popular',
       badgeHighlight: true,
-      features: ['100 synced agreements', 'Partner reconciliation', 'CRM connectors (HubSpot)', 'PII masking included'],
+      features: ['100 synced agreements', 'Automated contract sync', 'Native Stripe integration', 'PII masking add-on (+€45)'],
       cta: 'Start with Pro',
       href: '/signup?plan=pro',
       highlight: true,
@@ -960,7 +960,8 @@ function Pricing() {
       period: '',
       badge: null,
       badgeHighlight: false,
-      features: ['Bespoke sync allocation', 'Salesforce & DocuSign connectors', 'Snowflake sync', 'Dedicated SLA & onboarding'],
+      features: [],
+      desc: 'Contact the Verdix team for a custom offer tailored to your organisation\'s specific needs.',
       cta: 'Talk to us',
       href: 'mailto:bilal@lynoraai.com?subject=Verdix Enterprise',
       highlight: false,
@@ -1001,16 +1002,20 @@ function Pricing() {
                   </div>
                 </div>
 
-                <ul className="space-y-2 flex-1 mb-5">
-                  {plan.features.map(f => (
-                    <li key={f} className="flex items-start gap-2 text-xs text-stone leading-relaxed">
-                      <div className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: '#EAF3DE' }}>
-                        <i className="ti ti-check" style={{ fontSize: 9, color: '#27500A' }} />
-                      </div>
-                      {f}
-                    </li>
-                  ))}
-                </ul>
+                {'desc' in plan && plan.desc ? (
+                  <p className="text-xs text-stone leading-relaxed flex-1 mb-5">{plan.desc}</p>
+                ) : (
+                  <ul className="space-y-2 flex-1 mb-5">
+                    {plan.features.map(f => (
+                      <li key={f} className="flex items-start gap-2 text-xs text-stone leading-relaxed">
+                        <div className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: '#EAF3DE' }}>
+                          <i className="ti ti-check" style={{ fontSize: 9, color: '#27500A' }} />
+                        </div>
+                        {f}
+                      </li>
+                    ))}
+                  </ul>
+                )}
 
                 <Link
                   href={plan.href}
