@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
 import { RevenueScheduleTable } from '@/app/_components/RevenueScheduleTable'
 import { InvoicesTab } from '@/app/_components/InvoicesTab'
+import { StripeSummaryCard } from '@/app/_components/StripeSummaryCard'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
@@ -2254,6 +2255,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 </div>
               )}
             </div>
+
+            {/* ── 7. Stripe Billing Setup (live pull) ── */}
+            {isConfigured && billingPlatform === 'stripe' && (
+              <StripeSummaryCard jobId={id} />
+            )}
 
             {/* ── Revenue schedule ── */}
             {terms?.contract_start_date && terms?.contract_end_date &&

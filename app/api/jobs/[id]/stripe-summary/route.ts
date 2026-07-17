@@ -1,0 +1,113 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { supabaseServer } from '@/lib/supabase'
+import { requireOrg } from '@/lib/org'
+import type { ContractTerms } from '@/lib/types'
+
+export async function GET(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  let org
+  try { org = await requireOrg() } catch (res) { return res as Response }
+
+  const { id } = await params
+
+  const { data: job } = await supabaseServer
+    .from('jobs')
+    .select('org_id, billing_subscription_id, billing_customer_id, billing_platform, contract_terms(*)')
+    .eq('id', id)
+    .eq('org_id', org.orgId)
+    .single()
+
+  if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  if (!job.billing_subscription_id) return NextResponse.json({ error: 'No subscription configured' }, { status: 404 })
+  if (job.billing_platform === 'chargebee') return NextResponse.json({ error: 'Chargebee not supported here' }, { status: 400 })
+
+  const { data: integration } = await supabaseServer
+    .from('org_integrations')
+    .select('config')
+    .eq('org_id', org.orgId)
+    .eq('connector_name', 'stripe')
+    .eq('is_active', true)
+    .maybeSingle()
+
+  const stripeKey = (integration?.config as Record<string, string>)?.secret_key ?? process.env.STRIPE_SECRET_KEY!
+
+  const { default: Stripe } = await import('stripe')
+  const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+
+  const subId = job.billing_subscription_id
+
+  try {
+    const [subscription, invoicesRes, computedRes] = await Promise.all([
+      stripe.subscriptions.retrieve(subId, { expand: ['items.data.price'] }),
+      stripe.invoices.list({ subscription: subId, limit: 12 }),
+      supabaseServer
+        .from('computed_invoices')
+        .select('*')
+        .eq('job_id', id)
+        .order('period_start', { ascending: false }),
+    ])
+
+    const terms = (job.contract_terms as unknown as ContractTerms[])?.[0]
+
+    // Build per-year payment schedule from contract terms
+    const paymentSchedule = terms?.year_pricing
+      ? Object.entries(terms.year_pricing).map(([key, amount]) => {
+          const yearNum = parseInt(key.replace('year', ''), 10)
+          const contractStart = terms?.contract_start_date ? new Date(terms.contract_start_date) : null
+          let periodStart: string | null = null
+          let periodEnd: string | null = null
+          if (contractStart) {
+            const ys = new Date(contractStart)
+            ys.setFullYear(ys.getFullYear() + yearNum - 1)
+            const ye = new Date(ys)
+            ye.setFullYear(ye.getFullYear() + 1)
+            ye.setDate(ye.getDate() - 1)
+            periodStart = ys.toISOString().slice(0, 10)
+            periodEnd   = ye.toISOString().slice(0, 10)
+          }
+          return { year: yearNum, amount, currency: terms?.currency ?? 'EUR', periodStart, periodEnd }
+        })
+      : null
+
+    const baseItem = subscription.items.data[0]
+    const recurringInterval   = baseItem?.price?.recurring?.interval   ?? 'month'
+    const recurringIntervalCount = baseItem?.price?.recurring?.interval_count ?? 1
+
+    return NextResponse.json({
+      subscription: {
+        id: subscription.id,
+        status: subscription.status,
+        interval: recurringInterval,
+        intervalCount: recurringIntervalCount,
+        currentPeriodStart: new Date(subscription.current_period_start * 1000).toISOString(),
+        currentPeriodEnd:   new Date(subscription.current_period_end   * 1000).toISOString(),
+        cancelAtPeriodEnd:  subscription.cancel_at_period_end,
+        isTest: !subscription.livemode,
+        dashboardUrl: `https://dashboard.stripe.com/${!subscription.livemode ? 'test/' : ''}subscriptions/${subscription.id}`,
+      },
+      invoices: invoicesRes.data.map(inv => ({
+        id:          inv.id,
+        number:      inv.number,
+        status:      inv.status,
+        amount:      (inv.amount_due ?? 0) / 100,
+        currency:    inv.currency?.toUpperCase() ?? 'EUR',
+        dueDate:     inv.due_date   ? new Date(inv.due_date   * 1000).toISOString() : null,
+        created:     new Date(inv.created * 1000).toISOString(),
+        periodStart: new Date((inv.period_start ?? 0) * 1000).toISOString(),
+        periodEnd:   new Date((inv.period_end   ?? 0) * 1000).toISOString(),
+        pdfUrl:      inv.invoice_pdf         ?? null,
+        hostedUrl:   inv.hosted_invoice_url  ?? null,
+      })),
+      paymentSchedule,
+      oneTimeFees: terms?.one_time_fees ?? [],
+      contractStart: terms?.contract_start_date ?? null,
+      currency: terms?.currency ?? 'EUR',
+      computedInvoices: computedRes.data ?? [],
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return NextResponse.json({ error: msg }, { status: 502 })
+  }
+}

@@ -158,7 +158,14 @@ export async function POST(req: NextRequest) {
       const lastKey   = `year${totalYears}`
       const annualFee = yp[yearKey] ?? yp[lastKey] ?? 0
 
-      const periodLabel = formatPeriod(periodStart, periodEnd)
+      // Use contract year dates rather than invoice.period_start/end — on the first
+      // invoice Stripe sets both to the same day, which would show "Jul 2026 – Jul 2026".
+      const yearStartDate = new Date(contractStart!)
+      yearStartDate.setFullYear(yearStartDate.getFullYear() + (clampedYear - 1))
+      const yearEndDate = new Date(yearStartDate)
+      yearEndDate.setFullYear(yearEndDate.getFullYear() + 1)
+      yearEndDate.setDate(yearEndDate.getDate() - 1)
+      const periodLabel = formatPeriod(yearStartDate, yearEndDate)
       const description = `Base subscription — Year ${yearNum} (${periodLabel})`
 
       await stripe.invoiceItems.create({
