@@ -128,7 +128,7 @@ export async function POST(req: NextRequest) {
       description: string
       amount: number
       currency: string
-      type: 'base' | 'overage'
+      type: 'base' | 'overage' | 'one_time'
       unit_type?: string
       total_quantity?: number
       included_quantity?: number
@@ -138,13 +138,17 @@ export async function POST(req: NextRequest) {
     // ── 3. Inject correct base fee for year_pricing contracts ──────────────
     const isYearPricing = !!(terms.year_pricing && Object.keys(terms.year_pricing).length > 0)
 
-    if (isYearPricing && terms.contract_start_date && terms.year_pricing) {
-      const yp = terms.year_pricing
-      const contractStart = new Date(terms.contract_start_date)
-      const monthsElapsed =
-        (periodStart.getFullYear() - contractStart.getFullYear()) * 12 +
+    // Compute billing position relative to contract start — used for both
+    // year pricing and one-time fee due-date matching.
+    const contractStart  = terms.contract_start_date ? new Date(terms.contract_start_date) : null
+    const monthsElapsed  = contractStart
+      ? (periodStart.getFullYear() - contractStart.getFullYear()) * 12 +
         (periodStart.getMonth()    - contractStart.getMonth())
-      const yearNum   = Math.floor(monthsElapsed / 12) + 1
+      : 0
+    const yearNum = Math.floor(monthsElapsed / 12) + 1
+
+    if (isYearPricing && contractStart && terms.year_pricing) {
+      const yp = terms.year_pricing
       const yearKey   = `year${yearNum}`
       const lastKey   = `year${Object.keys(yp).length}`
       const annualFee = yp[yearKey] ?? yp[lastKey] ?? 0
@@ -161,6 +165,31 @@ export async function POST(req: NextRequest) {
       })
 
       injectedLines.push({ description, amount: annualFee, currency: terms.currency, type: 'base' })
+    }
+
+    // ── 3b. Inject one-time fees due within this billing period ───────────
+    // Fees with a due_date: inject on the invoice whose period covers that date.
+    // Fees without a due_date: inject on the first invoice only.
+    type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null }
+    for (const fee of (terms.one_time_fees ?? []) as OneTimeFee[]) {
+      if (!fee.amount || fee.amount <= 0) continue
+
+      const shouldInject = fee.due_date
+        ? (() => { const d = new Date(fee.due_date!); return d >= periodStart && d < periodEnd })()
+        : monthsElapsed === 0
+
+      if (!shouldInject) continue
+
+      await stripe.invoiceItems.create({
+        customer:    customerId,
+        invoice:     invoice.id,
+        amount:      Math.round(fee.amount * 100),
+        currency:    (terms.currency ?? 'EUR').toLowerCase(),
+        description: fee.fee_label,
+        metadata:    { verdix_job: job.id, fee_type: 'one_time' },
+      })
+
+      injectedLines.push({ description: fee.fee_label, amount: fee.amount, currency: terms.currency, type: 'one_time' })
     }
 
     // ── 4. Read meter totals + apply tariff logic per usage type ───────────
