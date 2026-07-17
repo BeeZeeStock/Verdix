@@ -62,10 +62,13 @@ export async function DELETE(
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      return NextResponse.json(
-        { error: `Failed to cancel billing subscription: ${message}` },
-        { status: 502 }
-      )
+      // If the subscription no longer exists in Stripe, proceed with local deletion.
+      if (!message.includes('No such subscription')) {
+        return NextResponse.json(
+          { error: `Failed to cancel billing subscription: ${message}` },
+          { status: 502 }
+        )
+      }
     }
   }
 
