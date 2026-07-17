@@ -46,6 +46,7 @@ function BillingPageInner() {
   const [entSending, setEntSending]       = useState(false)
   const [entSent, setEntSent]             = useState(false)
   const [portalLoading, setPortalLoading] = useState(false)
+  const [piiMsg, setPiiMsg]               = useState<{ ok: boolean; text: string } | null>(null)
 
   const upgraded  = params.get('upgraded') === '1'
   const cancelled = params.get('cancelled') === '1'
@@ -71,12 +72,24 @@ function BillingPageInner() {
 
   const togglePii = async (enable: boolean) => {
     setPiiToggling(true)
-    await fetch('/api/billing/pii-addon', {
+    setPiiMsg(null)
+    const res = await fetch('/api/billing/pii-addon', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ enable }),
     })
-    setStatus(prev => prev ? { ...prev, subscription: { ...prev.subscription, pii_addon_enabled: enable } } : prev)
+    const data = await res.json()
+    if (!res.ok) {
+      setPiiMsg({ ok: false, text: data.error ?? 'Something went wrong. Please try again.' })
+    } else {
+      setStatus(prev => prev ? { ...prev, subscription: { ...prev.subscription, pii_addon_enabled: enable } } : prev)
+      setPiiMsg({
+        ok: true,
+        text: enable
+          ? 'Advanced PII Data Masking is now active. Your next invoice will include the +€45/month add-on.'
+          : 'Advanced PII Data Masking has been disabled.',
+      })
+    }
     setPiiToggling(false)
   }
 
@@ -199,24 +212,35 @@ function BillingPageInner() {
           <div className="px-6 py-4 border-b border-forest/8">
             <span className="text-sm font-medium text-ink">Advanced PII Data Masking</span>
           </div>
-          <div className="p-6 flex items-start justify-between gap-4">
-            <div>
-              <p className="text-sm text-stone leading-relaxed">
-                Names, emails, and identifiers are detected and masked before being sent to AI.
-                {plan.id === 'enterprise' ? ' Included in your Enterprise plan.' : ' +€45/month, billed for the full month.'}
-              </p>
+          <div className="p-6 space-y-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm text-stone leading-relaxed">
+                  Names, emails, and identifiers are detected and masked before being sent to AI.
+                  {plan.id === 'enterprise' ? ' Included in your Enterprise plan.' : ' +€45/month, billed for the full month.'}
+                </p>
+              </div>
+              <button
+                onClick={() => togglePii(!subscription.pii_addon_enabled)}
+                disabled={piiToggling}
+                className={`flex-shrink-0 text-sm font-medium px-4 py-2 rounded-xl transition-colors disabled:opacity-50 ${
+                  subscription.pii_addon_enabled
+                    ? 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100'
+                    : 'bg-forest text-white hover:bg-sage'
+                }`}
+              >
+                {piiToggling ? '…' : subscription.pii_addon_enabled ? 'Disable' : 'Enable — €45/mo'}
+              </button>
             </div>
-            <button
-              onClick={() => togglePii(!subscription.pii_addon_enabled)}
-              disabled={piiToggling}
-              className={`flex-shrink-0 text-sm font-medium px-4 py-2 rounded-xl transition-colors disabled:opacity-50 ${
-                subscription.pii_addon_enabled
-                  ? 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100'
-                  : 'bg-forest text-white hover:bg-sage'
-              }`}
-            >
-              {piiToggling ? '…' : subscription.pii_addon_enabled ? 'Disable' : 'Enable — €45/mo'}
-            </button>
+            {piiMsg && (
+              <div className={`text-sm rounded-xl px-4 py-3 ${
+                piiMsg.ok
+                  ? 'bg-forest/8 border border-forest/20 text-forest'
+                  : 'bg-red-50 border border-red-200 text-red-700'
+              }`}>
+                {piiMsg.ok ? '✓ ' : '⚠ '}{piiMsg.text}
+              </div>
+            )}
           </div>
         </div>
       )}

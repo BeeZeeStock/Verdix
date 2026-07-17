@@ -6,8 +6,6 @@ import { getOrgSubscription } from '@/lib/billing'
 
 // POST /api/billing/pii-addon
 // Body: { enable: boolean }
-// For paid plans: adds/removes a Stripe subscription item for the PII add-on
-// Billed for the full month regardless of when enabled
 export async function POST(req: NextRequest) {
   const session = await auth()
   if (!session?.user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -30,37 +28,87 @@ export async function POST(req: NextRequest) {
       pii_addon_enabled_at: enable ? new Date().toISOString() : null,
       updated_at: new Date().toISOString(),
     }).eq('org_id', org.orgId)
-    return NextResponse.json({ ok: true, billed: false })
+    return NextResponse.json({ ok: true, stripeUpdated: false })
   }
 
   // Core/Pro: manage via Stripe subscription item
-  if (sub.stripe_subscription_id) {
-    const { data: piiPlan } = await supabaseServer
-      .from('verdix_plans')
-      .select('stripe_price_id')
-      .eq('id', 'pii_addon')
-      .maybeSingle()
+  const { data: piiPlan } = await supabaseServer
+    .from('verdix_plans')
+    .select('stripe_price_id')
+    .eq('id', 'pii_addon')
+    .maybeSingle()
 
-    if (piiPlan?.stripe_price_id && sub.stripe_subscription_id) {
-      const { default: Stripe } = await import('stripe')
-      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+  if (!piiPlan?.stripe_price_id) {
+    return NextResponse.json({ error: 'PII add-on not yet configured in Stripe. Ask admin to push it.' }, { status: 400 })
+  }
 
-      const subscription = await stripe.subscriptions.retrieve(sub.stripe_subscription_id)
-      const existingItem = subscription.items.data.find(i => i.price.id === piiPlan.stripe_price_id)
+  if (!sub.stripe_customer_id) {
+    return NextResponse.json({ error: 'No Stripe customer found. Please contact support.' }, { status: 400 })
+  }
 
-      if (enable && !existingItem) {
-        await stripe.subscriptionItems.create({
-          subscription: sub.stripe_subscription_id,
-          price: piiPlan.stripe_price_id,
-          quantity: 1,
-          // Bill for the full month from the start of current period
-          billing_thresholds: undefined,
-          proration_behavior: 'none',
-        })
-      } else if (!enable && existingItem) {
-        await stripe.subscriptionItems.del(existingItem.id, { proration_behavior: 'none' })
+  const { default: Stripe } = await import('stripe')
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+
+  // Resolve the active subscription ID — the stored one may be stale if the
+  // user upgraded via Checkout (which creates a new subscription) before the
+  // in-place upgrade fix was deployed.
+  let activeSubId = sub.stripe_subscription_id
+
+  if (activeSubId) {
+    try {
+      const stored = await stripe.subscriptions.retrieve(activeSubId)
+      if (!['active', 'trialing'].includes(stored.status)) {
+        activeSubId = null // stored ID is cancelled/inactive, find the real one
       }
+    } catch {
+      activeSubId = null
     }
+  }
+
+  // Fall back: find the customer's active subscription in Stripe
+  if (!activeSubId) {
+    const list = await stripe.subscriptions.list({
+      customer: sub.stripe_customer_id,
+      status: 'active',
+      limit: 10,
+    })
+    const match = list.data.find(s =>
+      s.items.data.some(i =>
+        i.price.metadata?.verdix_plan === sub.plan_id ||
+        i.price.id !== piiPlan.stripe_price_id // any non-PII item = main plan
+      )
+    )
+    if (match) {
+      activeSubId = match.id
+      // Sync the correct ID back to Supabase
+      await supabaseServer
+        .from('org_subscriptions')
+        .update({ stripe_subscription_id: activeSubId, updated_at: new Date().toISOString() })
+        .eq('org_id', org.orgId)
+    }
+  }
+
+  if (!activeSubId) {
+    return NextResponse.json({ error: 'No active subscription found in Stripe. Please contact support.' }, { status: 400 })
+  }
+
+  try {
+    const activeSub = await stripe.subscriptions.retrieve(activeSubId)
+    const existingItem = activeSub.items.data.find(i => i.price.id === piiPlan.stripe_price_id)
+
+    if (enable && !existingItem) {
+      await stripe.subscriptionItems.create({
+        subscription: activeSubId,
+        price: piiPlan.stripe_price_id,
+        quantity: 1,
+        proration_behavior: 'none',
+      })
+    } else if (!enable && existingItem) {
+      await stripe.subscriptionItems.del(existingItem.id, { proration_behavior: 'none' })
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Stripe error'
+    return NextResponse.json({ error: `Failed to update Stripe subscription: ${msg}` }, { status: 500 })
   }
 
   await supabaseServer.from('org_subscriptions').update({
@@ -69,5 +117,5 @@ export async function POST(req: NextRequest) {
     updated_at: new Date().toISOString(),
   }).eq('org_id', org.orgId)
 
-  return NextResponse.json({ ok: true, billed: !!sub.stripe_subscription_id })
+  return NextResponse.json({ ok: true, stripeUpdated: true })
 }
