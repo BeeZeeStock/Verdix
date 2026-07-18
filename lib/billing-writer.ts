@@ -321,6 +321,26 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
 
         // Finalize → status becomes "open", due_date is set, email sent to customer.
         await stripe.invoices.finalizeInvoice(oneTimeInv.id)
+
+        // Record in computed_invoices so it appears in the Processed invoices tab.
+        // Webhook skips standalone invoices (no subscription ref), so we persist inline.
+        if (jobId) {
+          const dueDate = fee.due_date ? new Date(fee.due_date).toISOString() : new Date().toISOString()
+          supabaseServer.from('computed_invoices').insert({
+            job_id:              jobId,
+            external_invoice_id: oneTimeInv.id,
+            connector:           'stripe',
+            period_start:        dueDate,
+            period_end:          dueDate,
+            line_items:          [{ description: fee.fee_label, amount: fee.amount, currency: terms.currency ?? 'EUR', type: 'one_time' }],
+            total_amount:        fee.amount,
+            currency:            terms.currency ?? 'EUR',
+            status:              'VALIDATED',
+            validation_result:   [],
+          }).then(({ error }) => {
+            if (error) console.error('[billing-writer] one-time computed_invoice insert failed', error)
+          })
+        }
       })
   )
 

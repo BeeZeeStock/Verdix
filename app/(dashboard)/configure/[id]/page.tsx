@@ -1691,7 +1691,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     : { color: '#6B6660' }
                   }
                 >
-                  {tab === 'terms' ? 'Contract terms' : tab === 'model' ? 'Revenue model' : 'Invoices'}
+                  {tab === 'terms' ? 'Contract terms' : tab === 'model' ? 'Revenue model' : 'Processed invoices'}
                 </button>
               ))}
             </div>
