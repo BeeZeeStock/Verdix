@@ -57,7 +57,7 @@ export interface ContractTerms {
   currency: string
   base_monthly_fee: number | null
   base_annual_fee: number | null
-  billing_frequency: 'monthly' | 'quarterly' | 'annual' | null
+  billing_frequency: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
   payment_terms_days: number | null
   payment_terms_text: string | null
   included_units: number | null

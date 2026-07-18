@@ -175,7 +175,12 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
     })
   }
 
-  if (terms.year_pricing) {
+  // year_pricing for annual contracts = the actual billing line items per year.
+  // For monthly/quarterly/semi-annual contracts, year_pricing is used for TCV
+  // calculation only — the base_monthly_fee line item above covers the billing.
+  const isAnnualContract = terms.billing_frequency === 'annual' ||
+    (!terms.billing_frequency && !terms.base_monthly_fee && !!terms.year_pricing)
+  if (terms.year_pricing && isAnnualContract) {
     Object.entries(terms.year_pricing).forEach(([year, price]) => {
       items.push({
         product_name: `${year} pricing`,

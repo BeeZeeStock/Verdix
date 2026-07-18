@@ -162,7 +162,14 @@ export async function getCustomerMeterTotal(
 export function billingInterval(
   frequency: string | null | undefined,
 ): { interval: 'month' | 'year'; intervalCount: number } {
-  if (frequency === 'annual')    return { interval: 'year',  intervalCount: 1 }
-  if (frequency === 'quarterly') return { interval: 'month', intervalCount: 3 }
+  if (frequency === 'annual')      return { interval: 'year',  intervalCount: 1 }
+  if (frequency === 'quarterly')   return { interval: 'month', intervalCount: 3 }
+  if (frequency === 'semi-annual') return { interval: 'month', intervalCount: 6 }
   return { interval: 'month', intervalCount: 1 }
+}
+
+/** How many billing periods fall within one contract year for this cadence. */
+export function periodsPerYear(interval: 'month' | 'year', intervalCount: number): number {
+  if (interval === 'year') return 1
+  return Math.round(12 / intervalCount) // month/1→12, month/3→4, month/6→2
 }

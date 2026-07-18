@@ -16,7 +16,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
-import { getCustomerMeterTotal } from '@/lib/stripe-meter'
+import { getCustomerMeterTotal, billingInterval, periodsPerYear } from '@/lib/stripe-meter'
 import { groupTiersByMetric, computeMetricOverage } from '@/lib/tariff'
 import { validateInvoice } from '@/lib/invoice-validator'
 import type { ContractTerms, BillingMeteredItem } from '@/lib/types'
@@ -135,8 +135,11 @@ export async function POST(req: NextRequest) {
       excess_quantity?: number
     }[] = []
 
-    // ── 3. Compute year position relative to contract ──────────────────────
-    const isYearPricing = !!(terms.year_pricing && Object.keys(terms.year_pricing).length > 0)
+    // ── 3. Compute billing cadence + year position relative to contract ───────
+    const hasYearRates   = !!(terms.year_pricing && Object.keys(terms.year_pricing).length > 0)
+    const { interval, intervalCount } = billingInterval(terms.billing_frequency)
+    const isAnnualBilling = interval === 'year'
+    const ppy             = periodsPerYear(interval, intervalCount)
 
     const contractStart  = terms.contract_start_date ? new Date(terms.contract_start_date) : null
     const monthsElapsed  = contractStart
@@ -146,13 +149,14 @@ export async function POST(req: NextRequest) {
     const rawYearNum = Math.floor(monthsElapsed / 12) + 1
     const yearNum    = Math.max(1, rawYearNum)
 
-    // ── 3a. Redirect to pre-created annual draft for Year 2+ ──────────────
-    // billing-writer pre-creates draft invoices for all future years at push
-    // time (auto_advance: false). When Stripe auto-generates the subscription
-    // invoice for Year 2+, we redirect to the pre-created draft instead:
-    // inject items into it, finalize it, and delete the auto-generated one.
+    // ── 3a. Redirect to pre-created annual draft for Year 2+ (annual only) ────
+    // For annual billing: billing-writer pre-creates draft invoices for all future
+    // years. When Stripe auto-generates the anniversary invoice, redirect into the
+    // pre-created draft, inject items, finalize it, and delete the auto-generated one.
+    // For monthly/quarterly/semi-annual: Stripe generates each period invoice
+    // automatically — no pre-created drafts exist, no redirect needed.
     let targetInvoiceId = invoice.id
-    if (yearNum > 1) {
+    if (isAnnualBilling && yearNum > 1) {
       const drafts = await stripe.invoices.list({ customer: customerId, status: 'draft', limit: 50 })
       const preDraft = drafts.data.find(inv => {
         const meta = inv.metadata as Record<string, string> | null
@@ -162,44 +166,57 @@ export async function POST(req: NextRequest) {
       })
       if (preDraft) {
         targetInvoiceId = preDraft.id
-        // Remove the subscription's auto-generated draft so only the
-        // pre-created invoice is sent to the customer.
         await stripe.invoices.del(invoice.id).catch(() => null)
       }
     }
 
     // ── 3b. Inject base fee ────────────────────────────────────────────────
-    if (isYearPricing && contractStart && terms.year_pricing) {
-      const yp = terms.year_pricing
+    // Fires whenever the contract has per-year rate differentials (escalators/ramps).
+    // For annual billing: injects the full year N amount.
+    // For sub-annual billing (monthly/quarterly/semi-annual): injects the period
+    // fee = year N annual amount ÷ periods-per-year, using the actual invoice dates.
+    if (hasYearRates && contractStart && terms.year_pricing) {
+      const yp          = terms.year_pricing
       const totalYears  = Object.keys(yp).length
       const clampedYear = Math.min(yearNum, totalYears)
       const annualFee   = yp[`year${clampedYear}`] ?? yp[`year${totalYears}`] ?? 0
 
-      const yearStartDate = new Date(contractStart)
-      yearStartDate.setFullYear(yearStartDate.getFullYear() + (clampedYear - 1))
-      const yearEndDate = new Date(yearStartDate)
-      yearEndDate.setFullYear(yearEndDate.getFullYear() + 1)
-      yearEndDate.setDate(yearEndDate.getDate() - 1)
-      const description = `Base subscription — Year ${yearNum} (${formatPeriod(yearStartDate, yearEndDate)})`
+      let injectAmount: number
+      let description: string
 
-      // Skip if it's a pre-created draft that already has the base fee item.
+      if (isAnnualBilling) {
+        const yearStartDate = new Date(contractStart)
+        yearStartDate.setFullYear(yearStartDate.getFullYear() + (clampedYear - 1))
+        const yearEndDate = new Date(yearStartDate)
+        yearEndDate.setFullYear(yearEndDate.getFullYear() + 1)
+        yearEndDate.setDate(yearEndDate.getDate() - 1)
+        injectAmount = annualFee
+        description  = `Base subscription — Year ${yearNum} (${formatPeriod(yearStartDate, yearEndDate)})`
+      } else {
+        // Use the invoice's actual period dates for the description
+        injectAmount = annualFee / ppy
+        description  = `Base subscription — ${formatPeriod(periodStart, periodEnd)}`
+      }
+
+      // Skip if the pre-created draft already has the base fee item (annual only)
       const existingItems = targetInvoiceId !== invoice.id
         ? await stripe.invoiceItems.list({ invoice: targetInvoiceId, limit: 10 })
         : { data: [] }
       const hasBaseItem = existingItems.data.some(item =>
         (item.description ?? '').startsWith('Base subscription')
       )
+
       if (!hasBaseItem) {
         await stripe.invoiceItems.create({
           customer:    customerId,
           invoice:     targetInvoiceId,
-          amount:      Math.round(annualFee * 100),
+          amount:      Math.round(injectAmount * 100),
           currency:    (terms.currency ?? 'EUR').toLowerCase(),
           description,
         })
-        injectedLines.push({ description, amount: annualFee, currency: terms.currency, type: 'base' })
+        injectedLines.push({ description, amount: injectAmount, currency: terms.currency, type: 'base' })
       } else {
-        injectedLines.push({ description, amount: annualFee, currency: terms.currency, type: 'base' })
+        injectedLines.push({ description, amount: injectAmount, currency: terms.currency, type: 'base' })
       }
     }
 

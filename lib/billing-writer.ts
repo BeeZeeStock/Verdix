@@ -4,6 +4,7 @@ import {
   createMeteredPrice,
   createBasePrice,
   billingInterval,
+  periodsPerYear,
 } from './stripe-meter'
 import { groupTiersByMetric } from './tariff'
 import { supabaseServer } from './supabase'
@@ -70,10 +71,14 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
   const stripeKey = orgConfig?.secret_key ?? process.env.STRIPE_SECRET_KEY!
   const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
 
-  const cur         = (terms.currency ?? 'EUR').toLowerCase()
-  const contractId  = terms.contract_id ?? jobId ?? 'unknown'
-  const isYearPricing = !!(terms.year_pricing && Object.keys(terms.year_pricing).length > 0)
+  const cur             = (terms.currency ?? 'EUR').toLowerCase()
+  const contractId      = terms.contract_id ?? jobId ?? 'unknown'
+  // hasYearRates: contract has per-year rate differentials (escalator/ramp).
+  // This is INDEPENDENT of billing cadence — a monthly contract can have year pricing.
+  const hasYearRates    = !!(terms.year_pricing && Object.keys(terms.year_pricing).length > 0)
   const { interval, intervalCount } = billingInterval(terms.billing_frequency)
+  const isAnnualBilling = interval === 'year'
+  const ppy             = periodsPerYear(interval, intervalCount) // periods per year
 
   // ── 1. Upsert Stripe customer ────────────────────────────────────────────
   const emailInContact = terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
@@ -118,9 +123,16 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
   )
 
   // ── 3. Base subscription price ───────────────────────────────────────────
+  // When hasYearRates: set price to $0 — billing-writer (first invoice) and
+  // the webhook (subsequent invoices) inject the correct period amount directly.
+  // When flat-rate: use the actual periodic amount so Stripe handles it natively.
   const baseMonthly = terms.base_monthly_fee ?? 0
   const baseAnnual  = terms.base_annual_fee ?? (terms.year_pricing?.['year1'] ?? 0)
-  const baseAmount  = interval === 'year' ? baseAnnual : baseMonthly
+  const baseAmount  = hasYearRates
+    ? 0
+    : isAnnualBilling
+      ? baseAnnual
+      : baseMonthly * intervalCount  // monthly→×1, quarterly→×3, semi-annual→×6
 
   const basePrice = await createBasePrice(stripe, {
     amountCents:   Math.round(baseAmount * 100),
@@ -129,7 +141,7 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
     intervalCount,
     contractId,
     customerName:  terms.customer_name ?? 'Customer',
-    isYearPricing,
+    isYearPricing: hasYearRates,
     jobId,
   })
 
@@ -182,40 +194,53 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
   })
   const firstInvoice = firstDraftInvoices.data[0]
 
-  if (firstInvoice && firstInvoice.status === 'draft' && isYearPricing && terms.year_pricing && jobId) {
-    const yp = terms.year_pricing
-    const totalYears = Object.keys(yp).length
-    const annualFee  = yp['year1'] ?? yp[`year${totalYears}`] ?? 0
+  if (firstInvoice && firstInvoice.status === 'draft' && hasYearRates && terms.year_pricing && jobId) {
+    const yp         = terms.year_pricing
+    const annualFeeY1 = yp['year1'] ?? yp[Object.keys(yp)[0]] ?? 0
 
-    if (annualFee > 0) {
-      const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date) : new Date()
-      const yearEnd = new Date(contractStart)
-      yearEnd.setFullYear(yearEnd.getFullYear() + 1)
-      yearEnd.setDate(yearEnd.getDate() - 1)
-      const fmt = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
-      const description = `Base subscription — Year 1 (${fmt(contractStart)} – ${fmt(yearEnd)})`
+    if (annualFeeY1 > 0) {
+      const contractStart  = terms.contract_start_date ? new Date(terms.contract_start_date) : new Date()
+      const invPeriodStart = new Date((firstInvoice.period_start ?? 0) * 1000)
+      const invPeriodEnd   = new Date((firstInvoice.period_end   ?? 0) * 1000)
+      const fmt            = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
+
+      let injectAmount: number
+      let description: string
+
+      if (isAnnualBilling) {
+        // Annual: one invoice covers a full contract year
+        const yearEnd = new Date(contractStart)
+        yearEnd.setFullYear(yearEnd.getFullYear() + 1)
+        yearEnd.setDate(yearEnd.getDate() - 1)
+        injectAmount = annualFeeY1
+        description  = `Base subscription — Year 1 (${fmt(contractStart)} – ${fmt(yearEnd)})`
+      } else {
+        // Monthly / quarterly / semi-annual: pro-rate the year 1 annual fee
+        injectAmount = annualFeeY1 / ppy
+        description  = `Base subscription — ${fmt(invPeriodStart)} – ${fmt(invPeriodEnd)}`
+      }
 
       await stripe.invoiceItems.create({
         customer:    customer.id,
         invoice:     firstInvoice.id,
-        amount:      Math.round(annualFee * 100),
+        amount:      Math.round(injectAmount * 100),
         currency:    cur,
         description,
       })
 
       // Persist to computed_invoices so the webhook's idempotency guard skips this invoice.
       supabaseServer.from('computed_invoices').insert({
-        job_id:              jobId,
-        external_invoice_id: firstInvoice.id,
+        job_id:                   jobId,
+        external_invoice_id:      firstInvoice.id,
         external_subscription_id: subscription.id,
-        connector:           'stripe',
-        period_start:        contractStart.toISOString(),
-        period_end:          yearEnd.toISOString(),
-        line_items:          [{ description, amount: annualFee, currency: terms.currency ?? 'EUR', type: 'base' }],
-        total_amount:        annualFee,
-        currency:            terms.currency ?? 'EUR',
-        status:              'VALIDATED',
-        validation_result:   [],
+        connector:                'stripe',
+        period_start:             invPeriodStart.toISOString(),
+        period_end:               invPeriodEnd.toISOString(),
+        line_items:               [{ description, amount: injectAmount, currency: terms.currency ?? 'EUR', type: 'base' }],
+        total_amount:             injectAmount,
+        currency:                 terms.currency ?? 'EUR',
+        status:                   'VALIDATED',
+        validation_result:        [],
       }).then(({ error }) => {
         if (error) console.error('[billing-writer] computed_invoice insert failed', error)
       })
@@ -227,12 +252,13 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
     }
   }
 
-  // ── 6b. Pre-create draft invoices for future contract years ──────────────
-  // Years 2, 3, etc. are created immediately as drafts (auto_advance: false)
-  // so the full billing schedule is visible from day one. When each year's
-  // anniversary arrives, the webhook finds this draft, injects overages, and
-  // finalizes it — discarding Stripe's auto-generated subscription invoice.
-  if (isYearPricing && terms.year_pricing && jobId) {
+  // ── 6b. Pre-create draft invoices for future contract years (annual billing only) ──
+  // For annual cadence: pre-create years 2, 3, … as drafts so the full schedule
+  // is visible from day one. The webhook redirects Stripe's auto-generated
+  // anniversary invoice into the pre-created draft and finalizes it.
+  // For monthly/quarterly/semi-annual: Stripe auto-generates each period's
+  // invoice naturally — no pre-creation needed.
+  if (isAnnualBilling && hasYearRates && terms.year_pricing && jobId) {
     const fmtLabel = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
     const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date) : new Date()
     const daysUntilDue  = terms.payment_terms_days ?? 30
