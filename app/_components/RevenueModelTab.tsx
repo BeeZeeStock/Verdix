@@ -1399,12 +1399,12 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
 
       {/* ── Revenue actuals ───────────────────────────────────────────── */}
       {projectedTcv > 0 && (() => {
-        // Waterfall bars: One-time → Base billed → Overage billed → Remaining → TCV projected
+        // Waterfall bars: Base billed → Overage billed → One-time → Remaining → TCV projected
         type ABar = { label: string; sub?: string; amount: number; kind: 'segment' | 'total'; color: string; dashed?: boolean }
         const aBars: ABar[] = [
-          ...(oneTimeFees > 0 ? [{ label: 'One-time', amount: oneTimeFees, kind: 'segment' as const, color: '#D9A35A' }] : []),
           { label: 'Base billed', sub: `${modelMonths.filter(m => m.isPast).length} mo elapsed`, amount: baseBilledToDate, kind: 'segment', color: '#27AE60' },
           ...(actualOvgTotal > 0 ? [{ label: 'Overage billed', amount: actualOvgTotal, kind: 'segment' as const, color: '#0B5C36' }] : []),
+          ...(oneTimeFees > 0 ? [{ label: 'One-time', amount: oneTimeFees, kind: 'segment' as const, color: '#D9A35A' }] : []),
           { label: 'Remaining', sub: 'contracted ARR', amount: remaining, kind: 'segment', color: '#C8E6D4', dashed: true },
           { label: 'TCV projected', amount: projectedTcv, kind: 'total', color: '#1A3D2B' },
         ]
