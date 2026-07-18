@@ -99,7 +99,7 @@ export default function LoginPage() {
           </form>
 
           <div className="flex items-center justify-between mt-5 text-sm text-stone">
-            <a href="#" className="hover:text-forest transition-colors">Forgot password?</a>
+            <Link href="/forgot-password" className="hover:text-forest transition-colors">Forgot password?</Link>
             <Link href="/signup" className="hover:text-forest transition-colors">Don&apos;t have an account? <span className="text-forest font-medium">Sign up →</span></Link>
           </div>
 
