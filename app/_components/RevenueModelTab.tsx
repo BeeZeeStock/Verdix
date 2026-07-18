@@ -22,6 +22,19 @@ type Terms = {
   renewal_notice_days?: number
 }
 type LineItem = { id: string; product_name: string; total_amount: number; billing_period: string }
+type BillingInv = {
+  id: string; number?: string | null; status?: string | null
+  amount: number; currency: string; dueDate?: string | null; created: string
+  hostedUrl?: string | null; feeLabel?: string | null; yearNum?: number | null; scheduledDate?: string | null
+}
+type StripeBillingData = {
+  subscription: { id: string; status: string; dashboardUrl: string } | null
+  invoices: BillingInv[]
+  annualDraftInvoices: BillingInv[]
+  oneTimeInvoices: BillingInv[]
+  paymentSchedule: { year: number; amount: number; currency: string; periodStart: string | null; periodEnd: string | null }[] | null
+  oneTimeFees: { fee_label: string; amount: number; due_date?: string | null }[]
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -149,6 +162,9 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
     line_items: { type: string; amount: number; description: string; currency: string }[]
   }
   const [actualInvoices, setActualInvoices] = useState<ActualInvoice[]>([])
+  const [billingData, setBillingData]         = useState<StripeBillingData | null>(null)
+  const [billingLoading, setBillingLoading]   = useState(false)
+  const [billingFetchDone, setBillingFetchDone] = useState(false)
 
   useEffect(() => {
     if (!jobId) return
@@ -181,6 +197,18 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         setActualOvgByMonth(map)
       })
       .catch(() => {/* non-fatal */})
+  }, [jobId])
+
+  useEffect(() => {
+    if (!jobId) return
+    setBillingLoading(true)
+    fetch(`/api/jobs/${jobId}/stripe-summary`)
+      .then(r => r.ok ? r.json() : null)
+      .then((data: StripeBillingData | null) => {
+        if (data?.subscription) setBillingData(data)
+      })
+      .catch(() => {/* non-fatal */})
+      .finally(() => { setBillingLoading(false); setBillingFetchDone(true) })
   }, [jobId])
 
   const start = terms.contract_start_date ? parseLocalDate(terms.contract_start_date) : null
@@ -1120,6 +1148,215 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
           </div>
         ))}
       </div>
+
+      {/* ── Configured billing schedule ───────────────────────────────── */}
+      {billingLoading && (
+        <div className="bg-white border border-forest/10 rounded-2xl px-6 py-4 flex items-center gap-3">
+          <div className="w-3.5 h-3.5 rounded-full border-2 border-forest/20 border-t-forest/70 animate-spin flex-shrink-0" />
+          <p className="text-[11px] text-stone">Loading billing schedule from Stripe…</p>
+        </div>
+      )}
+      {!billingLoading && billingFetchDone && !billingData?.subscription && jobId && (
+        <div className="bg-white border border-forest/10 rounded-2xl px-6 py-5">
+          <p className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-1">Configured billing schedule</p>
+          <p className="text-[11px] text-stone/50">Not yet pushed to Stripe — approve &amp; push this contract to see the live billing schedule here.</p>
+        </div>
+      )}
+      {!billingLoading && billingData?.subscription && (() => {
+        type BillingEvent = {
+          label: string; date: Date; amount: number; currency: string
+          status: string; hostedUrl?: string | null
+        }
+        const events: BillingEvent[] = []
+
+        // Year 1 — first subscription invoice
+        const firstInv = billingData.invoices[0]
+        if (firstInv) {
+          const d = firstInv.dueDate ?? firstInv.scheduledDate ?? firstInv.created
+          events.push({ label: 'Year 1', date: new Date(d), amount: firstInv.amount, currency: firstInv.currency, status: firstInv.status ?? 'unknown', hostedUrl: firstInv.hostedUrl })
+        }
+
+        // Year 2+ — pre-created annual draft invoices
+        const sortedDrafts = [...billingData.annualDraftInvoices].sort((a, b) => (a.yearNum ?? 0) - (b.yearNum ?? 0))
+        for (const inv of sortedDrafts) {
+          const d = inv.scheduledDate ?? inv.dueDate ?? inv.created
+          events.push({ label: `Year ${inv.yearNum}`, date: new Date(d), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
+        }
+
+        // One-time fees
+        for (const inv of billingData.oneTimeInvoices) {
+          const d = inv.dueDate ?? inv.created
+          events.push({ label: inv.feeLabel ?? 'One-time fee', date: new Date(d), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'unknown', hostedUrl: inv.hostedUrl })
+        }
+
+        if (events.length === 0) return null
+
+        // Axis bounds: contract period ± 30 days padding, extended if events fall outside
+        const evtMs = events.map(e => e.date.getTime())
+        const axisStart = new Date(Math.min(start!.getTime() - 20 * 86400000, Math.min(...evtMs) - 20 * 86400000))
+        const axisEnd   = new Date(Math.max(end!.getTime()   + 20 * 86400000, Math.max(...evtMs) + 20 * 86400000))
+        const axisRange = axisEnd.getTime() - axisStart.getTime()
+
+        const maxAmount = Math.max(...events.map(e => e.amount), 1)
+
+        const svgW = 700, svgH = 230
+        const mL = 56, mR = 16, mT = 22, mB = 58
+        const plotW = svgW - mL - mR
+        const plotH = svgH - mT - mB
+        const barW  = 36
+
+        const xPos = (d: Date) => mL + ((d.getTime() - axisStart.getTime()) / axisRange) * plotW
+        const bH   = (amount: number) => Math.max(2, (amount / maxAmount) * plotH)
+
+        const gridAmounts = [0, maxAmount * 0.5, maxAmount]
+
+        const statusColor = (s: string) =>
+          s === 'paid' ? '#16A34A' : s === 'open' ? '#D97706' : '#3B82F6'
+        const statusLabel = (s: string) =>
+          s === 'paid' ? 'Paid' : s === 'open' ? 'Due' : 'Draft'
+
+        // Year divider lines at contract anniversary dates
+        const numYears = billingData.paymentSchedule?.length ?? 0
+        const yearDividers: { x: number; label: string }[] = []
+        for (let y = 1; y < numYears; y++) {
+          const divDate = new Date(start!)
+          divDate.setFullYear(divDate.getFullYear() + y)
+          yearDividers.push({ x: xPos(divDate), label: `Yr ${y + 1}` })
+        }
+
+        // Totals for footer comparison
+        const configuredTotal = events.reduce((s, e) => s + e.amount, 0)
+        const contractTcv = (billingData.paymentSchedule ?? []).reduce((s, y) => s + y.amount, 0)
+          + (billingData.oneTimeFees ?? []).reduce((s: number, f: { amount: number }) => s + f.amount, 0)
+        const tcvDelta = contractTcv > 0 ? (configuredTotal - contractTcv) / contractTcv : 0
+        const isMatch  = Math.abs(tcvDelta) < 0.005
+
+        return (
+          <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-forest/[0.07] flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Configured billing schedule</h2>
+                <p className="text-[11px] text-stone/60 mt-0.5">Live from Stripe · actual invoice dates & amounts</p>
+              </div>
+              <div className="flex items-center gap-4 flex-shrink-0">
+                <div className="flex items-center gap-2 text-[10px] text-stone/60">
+                  <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: '#16A34A' }} /> Paid
+                  <span className="inline-block w-2.5 h-2.5 rounded-sm ml-1.5" style={{ background: '#D97706' }} /> Due
+                  <span className="inline-block w-2.5 h-2.5 rounded-sm ml-1.5" style={{ background: '#3B82F6' }} /> Draft
+                </div>
+                {billingData.subscription.dashboardUrl && (
+                  <a href={billingData.subscription.dashboardUrl} target="_blank" rel="noopener noreferrer"
+                    className="text-[11px] text-forest/60 hover:text-forest transition-colors flex items-center gap-1">
+                    <i className="ti ti-external-link" style={{ fontSize: 11 }} /> Stripe
+                  </a>
+                )}
+              </div>
+            </div>
+
+            {/* SVG timeline */}
+            <div className="px-6 py-5 overflow-x-auto">
+              <svg viewBox={`0 0 ${svgW} ${svgH}`} width="100%" style={{ minWidth: 360 }}>
+                {/* Year divider lines */}
+                {yearDividers.map((d, i) => (
+                  <g key={i}>
+                    <line x1={d.x} x2={d.x} y1={mT} y2={mT + plotH} stroke="rgba(26,61,43,0.10)" strokeWidth={1} strokeDasharray="4 3" />
+                    <text x={d.x + 3} y={mT + 9} fontSize={8} fill="rgba(26,61,43,0.35)" fontWeight="500">{d.label}</text>
+                  </g>
+                ))}
+
+                {/* Y grid lines + labels */}
+                {gridAmounts.map((a, i) => {
+                  const y = mT + plotH - (a / maxAmount) * plotH
+                  return (
+                    <g key={i}>
+                      <line x1={mL} x2={svgW - mR} y1={y} y2={y}
+                        stroke={i === 0 ? '#CBD5E1' : 'rgba(26,61,43,0.07)'}
+                        strokeWidth={i === 0 ? 1 : 0.75}
+                        strokeDasharray={i === 0 ? undefined : '3 3'} />
+                      {a > 0 && (
+                        <text x={mL - 5} y={y + 4} textAnchor="end" fontSize={8.5} fill="#9CA3AF">
+                          {fmt(a, cur, true)}
+                        </text>
+                      )}
+                    </g>
+                  )
+                })}
+
+                {/* Bars + labels */}
+                {events.map((ev, i) => {
+                  const x  = xPos(ev.date)
+                  const bh = bH(ev.amount)
+                  const by = mT + plotH - bh
+                  const col = statusColor(ev.status)
+                  return (
+                    <g key={i}>
+                      {/* Bar */}
+                      <rect x={x - barW / 2} y={by} width={barW} height={bh} fill={col} opacity={0.82} rx={3} />
+
+                      {/* Amount above bar */}
+                      <text x={x} y={Math.max(mT + 11, by - 5)} textAnchor="middle" fontSize={8.5}
+                        fill="#374151" fontWeight="600" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                        {fmt(ev.amount, ev.currency, true)}
+                      </text>
+
+                      {/* Tick below axis */}
+                      <line x1={x} x2={x} y1={mT + plotH} y2={mT + plotH + 6} stroke="#CBD5E1" strokeWidth={1} />
+
+                      {/* Label: name */}
+                      <text x={x} y={mT + plotH + 17} textAnchor="middle" fontSize={8.5} fill="#374151" fontWeight="500">
+                        {ev.label}
+                      </text>
+                      {/* Label: date */}
+                      <text x={x} y={mT + plotH + 29} textAnchor="middle" fontSize={7.5} fill="#9CA3AF">
+                        {ev.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </text>
+                      {/* Label: status */}
+                      <text x={x} y={mT + plotH + 40} textAnchor="middle" fontSize={7.5} fill={col} fontWeight="500">
+                        {statusLabel(ev.status)}
+                      </text>
+                    </g>
+                  )
+                })}
+              </svg>
+            </div>
+
+            {/* Footer: total comparison */}
+            <div className="px-6 py-3 border-t border-forest/[0.07] flex items-center justify-between gap-6">
+              <div className="flex items-center gap-8">
+                <div>
+                  <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Configured in Stripe</p>
+                  <p className="text-[20px] font-semibold text-ink leading-none" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    {fmt(configuredTotal, cur)}
+                  </p>
+                </div>
+                {contractTcv > 0 && (
+                  <div>
+                    <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Contract TCV</p>
+                    <p className="text-[20px] font-semibold leading-none" style={{ color: '#9CA3AF', fontVariantNumeric: 'tabular-nums' }}>
+                      {fmt(contractTcv, cur)}
+                    </p>
+                  </div>
+                )}
+              </div>
+              {contractTcv > 0 && (
+                isMatch
+                  ? (
+                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-green-700 bg-green-50 px-3 py-1.5 rounded-lg">
+                      <i className="ti ti-circle-check-filled" style={{ fontSize: 13 }} />
+                      Matches contract
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg">
+                      <i className="ti ti-alert-triangle-filled" style={{ fontSize: 13 }} />
+                      {tcvDelta > 0 ? '+' : ''}{(tcvDelta * 100).toFixed(1)}% vs contract
+                    </div>
+                  )
+              )}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* ── Sensitivity impact summary ────────────────────────────────── */}
       {(discountSaving > 0 || escalatorUplift > 0 || totalUserOvg + totalApiOvg > 0 || creditTotal < 0) && (
