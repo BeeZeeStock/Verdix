@@ -3,8 +3,15 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { createClient } from '@supabase/supabase-js'
 import { VerdixLogo } from '@/components/VerdixLogo'
-import { createBrowserClient } from '@/lib/supabase'
+
+function getSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  )
+}
 
 export default function ResetPasswordPage() {
   const router = useRouter()
@@ -15,11 +22,8 @@ export default function ResetPasswordPage() {
   const [error, setError]         = useState('')
   const [ready, setReady]         = useState(false)
 
-  // Supabase appends #access_token=...&type=recovery to the redirect URL.
-  // We need to let the Supabase client pick up those hash params and establish
-  // a session before we can call updateUser.
   useEffect(() => {
-    const supabase = createBrowserClient()
+    const supabase = getSupabase()
 
     // onAuthStateChange fires with event=PASSWORD_RECOVERY when Supabase
     // detects the recovery token in the URL hash.
@@ -49,8 +53,7 @@ export default function ResetPasswordPage() {
     }
 
     setLoading(true)
-    const supabase = createBrowserClient()
-    const { error: updateError } = await supabase.auth.updateUser({ password })
+    const { error: updateError } = await getSupabase().auth.updateUser({ password })
     setLoading(false)
 
     if (updateError) {
