@@ -49,6 +49,11 @@ const COMPANY_SUFFIX_RE = new RegExp(
   'g'
 )
 
+// Words found in document title headers that must never be classified as ORG names.
+// All-caps title words like "MASTER SOFTWARE AS A SERVICE AGREEMENT" can superficially
+// match the company-suffix regex (e.g. "MASTER SOFTWARE ... AB") and must be excluded.
+const TITLE_WORD_BLOCKLIST = /\b(MASTER|SOFTWARE|SERVICE|AGREEMENT)\b/
+
 // ── Context patterns for person names ────────────────────────────────────────
 
 // Name segment: 1 capital word + 1–3 more capital words, all on the same line (no \n)
@@ -153,8 +158,10 @@ export function detectPII(text: string): PIIDetectionResult {
   workingText = applyTokenMap(text, tokenMap)
   COMPANY_SUFFIX_RE.lastIndex = 0
   while ((m = COMPANY_SUFFIX_RE.exec(workingText)) !== null) {
-    // Full match is "Name Suffix" — use it; group 1 = name only, group 2 = suffix
-    addEntity('ORG', m[0].trim(), 95, 'regex')
+    const candidate = m[0].trim()
+    // Skip matches that contain document-title words (e.g. "MASTER SOFTWARE ... AB")
+    if (TITLE_WORD_BLOCKLIST.test(candidate)) continue
+    addEntity('ORG', candidate, 95, 'regex')
   }
 
   // ── Pass 6: Context-pattern person names ──────────────────────────────────
@@ -175,7 +182,7 @@ export function detectPII(text: string): PIIDetectionResult {
     if (name.length > 3 && !name.startsWith('[')) addEntity('PERSON', name, 80, 'nlp')
   }
   // Generic service/admin terms that compromise.js misclassifies as organisations
-  const NLP_ORG_BLOCKLIST = /\b(administration|configuration|implementation|training|support|services|onboarding|setup|migration)\b/i
+  const NLP_ORG_BLOCKLIST = /\b(administration|configuration|implementation|training|support|services|onboarding|setup|migration|master|software|service|agreement)\b/i
 
   for (const org of (doc.organizations().out('array') as string[])) {
     const wordCount = org.trim().split(/\s+/).length

@@ -33,6 +33,12 @@ export interface OneTimeFee {
   description: string | null
 }
 
+export interface AdditionalRecurringFee {
+  fee_label: string
+  amount: number          // amount per billing period (same cadence as base_monthly_fee)
+  description: string | null
+}
+
 export interface RampStep {
   start_date: string
   end_date: string
@@ -68,6 +74,7 @@ export interface ContractTerms {
   discounts: Discount[]
   overage_tiers: OverageTier[]
   billing_metered_items?: BillingMeteredItem[]
+  additional_recurring_fees: AdditionalRecurringFee[] | null
   one_time_fees: OneTimeFee[]
   field_sources: Record<string, string>
   extraction_confidence: 'high' | 'medium' | 'low'

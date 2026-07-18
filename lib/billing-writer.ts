@@ -145,9 +145,28 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
     jobId,
   })
 
+  // ── 3b. Additional recurring fee prices ─────────────────────────────────
+  // Each additional recurring fee (e.g. Dedicated Support) becomes its own
+  // Stripe subscription item at its stated periodic amount.
+  const additionalFees = terms.additional_recurring_fees ?? []
+  const additionalPrices = await Promise.all(
+    additionalFees
+      .filter(f => f.amount > 0)
+      .map(fee =>
+        stripe.prices.create({
+          currency:    cur,
+          unit_amount: Math.round(fee.amount * intervalCount * 100),
+          recurring:   { interval, interval_count: intervalCount },
+          product_data: { name: `${fee.fee_label} — ${contractId}` },
+          metadata: { verdix_contract: contractId, fee_type: 'additional_recurring', ...(jobId ? { verdix_job_id: jobId } : {}) },
+        })
+      )
+  )
+
   // ── 4. Create subscription ───────────────────────────────────────────────
   const subscriptionItems = [
     { price: basePrice.id },
+    ...additionalPrices.map(p => ({ price: p.id })),
     ...meteredDrafts.map(m => ({ price: m.price_id })),
   ]
 
@@ -354,10 +373,10 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
   const dashboardUrl = `https://dashboard.stripe.com/${isTest ? 'test/' : ''}subscriptions/${subscription.id}`
 
   return {
-    platform:      'stripe',
+    platform:       'stripe',
     subscriptionId: subscription.id,
-    customerId:    customer.id,
-    lineItemCount: subscriptionItems.length + oneTimeFees.filter(f => f.amount > 0).length,
+    customerId:     customer.id,
+    lineItemCount:  subscriptionItems.length + oneTimeFees.filter(f => f.amount > 0).length,
     dashboardUrl,
   }
 }

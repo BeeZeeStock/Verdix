@@ -126,10 +126,11 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
       included_unit_type:   terms.included_unit_type,
       year_pricing:         terms.year_pricing,
       // Structured arrays
-      escalators:           terms.escalators   ?? [],
-      discounts:            terms.discounts    ?? [],
-      overage_tiers:        terms.overage_tiers ?? [],
-      one_time_fees:        terms.one_time_fees ?? [],
+      escalators:                terms.escalators             ?? [],
+      discounts:                 terms.discounts              ?? [],
+      overage_tiers:             terms.overage_tiers          ?? [],
+      one_time_fees:             terms.one_time_fees          ?? [],
+      additional_recurring_fees: terms.additional_recurring_fees ?? [],
       // Metadata
       field_sources:        terms.field_sources ?? {},
       extraction_confidence: terms.extraction_confidence,
@@ -172,6 +173,21 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
       currency: cur,
       confidence_score: conf,
       source_section: src.base_monthly_fee ?? null,
+    })
+  }
+
+  // Additional recurring fees (e.g. support tier, add-on modules billed separately)
+  for (const fee of terms.additional_recurring_fees ?? []) {
+    if (!fee.amount) continue
+    items.push({
+      product_name: fee.fee_label,
+      quantity: 1,
+      unit_price: fee.amount,
+      billing_period: terms.billing_frequency ?? 'monthly',
+      total_amount: fee.amount,
+      currency: cur,
+      confidence_score: conf,
+      source_section: src.additional_recurring_fees ?? src.base_monthly_fee ?? null,
     })
   }
 
