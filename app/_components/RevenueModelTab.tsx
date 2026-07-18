@@ -1167,62 +1167,53 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
           label: string; date: Date; amount: number; currency: string
           status: string; hostedUrl?: string | null
         }
-        const events: BillingEvent[] = []
+        const rawEvents: BillingEvent[] = []
 
         // Year 1 — first subscription invoice
         const firstInv = billingData.invoices[0]
         if (firstInv) {
           const d = firstInv.dueDate ?? firstInv.scheduledDate ?? firstInv.created
-          events.push({ label: 'Year 1', date: new Date(d), amount: firstInv.amount, currency: firstInv.currency, status: firstInv.status ?? 'unknown', hostedUrl: firstInv.hostedUrl })
+          rawEvents.push({ label: 'Year 1', date: new Date(d), amount: firstInv.amount, currency: firstInv.currency, status: firstInv.status ?? 'unknown', hostedUrl: firstInv.hostedUrl })
         }
 
         // Year 2+ — pre-created annual draft invoices
         const sortedDrafts = [...billingData.annualDraftInvoices].sort((a, b) => (a.yearNum ?? 0) - (b.yearNum ?? 0))
         for (const inv of sortedDrafts) {
           const d = inv.scheduledDate ?? inv.dueDate ?? inv.created
-          events.push({ label: `Year ${inv.yearNum}`, date: new Date(d), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
+          rawEvents.push({ label: `Year ${inv.yearNum}`, date: new Date(d), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
         }
 
-        // One-time fees
+        // One-time fees — sorted by date, interleaved chronologically
         for (const inv of billingData.oneTimeInvoices) {
           const d = inv.dueDate ?? inv.created
-          events.push({ label: inv.feeLabel ?? 'One-time fee', date: new Date(d), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'unknown', hostedUrl: inv.hostedUrl })
+          rawEvents.push({ label: inv.feeLabel ?? 'One-time fee', date: new Date(d), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'unknown', hostedUrl: inv.hostedUrl })
         }
 
-        if (events.length === 0) return null
+        if (rawEvents.length === 0) return null
 
-        // Axis bounds: contract period ± 30 days padding, extended if events fall outside
-        const evtMs = events.map(e => e.date.getTime())
-        const axisStart = new Date(Math.min(start!.getTime() - 20 * 86400000, Math.min(...evtMs) - 20 * 86400000))
-        const axisEnd   = new Date(Math.max(end!.getTime()   + 20 * 86400000, Math.max(...evtMs) + 20 * 86400000))
-        const axisRange = axisEnd.getTime() - axisStart.getTime()
+        // Sort chronologically — bars are evenly spaced but left-to-right = earlier-to-later
+        const events = [...rawEvents].sort((a, b) => a.date.getTime() - b.date.getTime())
 
         const maxAmount = Math.max(...events.map(e => e.amount), 1)
+        const n = events.length
 
-        const svgW = 700, svgH = 230
-        const mL = 56, mR = 16, mT = 22, mB = 58
-        const plotW = svgW - mL - mR
-        const plotH = svgH - mT - mB
-        const barW  = 36
+        // Match the waterfall chart's SVG layout exactly
+        const bWW = 1100, bWH = 230
+        const bx1 = 70, bx2 = bWW - 12, bww = bx2 - bx1
+        const bTop = 22, bBottom = 158, bPlotH = bBottom - bTop
+        const bGap  = n > 8 ? 10 : 20
+        const bBW   = Math.min(120, (bww - bGap * (n - 1)) / n)
+        const bStartX = bx1 + (bww - (bBW * n + bGap * (n - 1))) / 2
+        const bScale  = maxAmount
+        const byOf    = (v: number) => bBottom - (v / bScale) * bPlotH
+        const bGridSteps = [0, 0.5, 1].map(f => f * bScale)
 
-        const xPos = (d: Date) => mL + ((d.getTime() - axisStart.getTime()) / axisRange) * plotW
-        const bH   = (amount: number) => Math.max(2, (amount / maxAmount) * plotH)
-
-        const gridAmounts = [0, maxAmount * 0.5, maxAmount]
+        const truncate = (s: string, max = 15) => s.length > max ? s.slice(0, max - 1) + '…' : s
 
         const statusColor = (s: string) =>
-          s === 'paid' ? '#16A34A' : s === 'open' ? '#D97706' : '#3B82F6'
+          s === 'paid' ? '#27AE60' : s === 'open' ? '#D97706' : '#6B9FD4'
         const statusLabel = (s: string) =>
           s === 'paid' ? 'Paid' : s === 'open' ? 'Due' : 'Draft'
-
-        // Year divider lines at contract anniversary dates
-        const numYears = billingData.paymentSchedule?.length ?? 0
-        const yearDividers: { x: number; label: string }[] = []
-        for (let y = 1; y < numYears; y++) {
-          const divDate = new Date(start!)
-          divDate.setFullYear(divDate.getFullYear() + y)
-          yearDividers.push({ x: xPos(divDate), label: `Yr ${y + 1}` })
-        }
 
         // Totals for footer comparison
         const configuredTotal = events.reduce((s, e) => s + e.amount, 0)
@@ -1232,97 +1223,84 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         const isMatch  = Math.abs(tcvDelta) < 0.005
 
         return (
-          <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
-            {/* Header */}
-            <div className="px-6 py-4 border-b border-forest/[0.07] flex items-center justify-between gap-4">
-              <div>
-                <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Configured billing schedule</h2>
-                <p className="text-[11px] text-stone/60 mt-0.5">Live from Stripe · actual invoice dates & amounts</p>
-              </div>
+          <div className="bg-white border border-forest/10 rounded-2xl p-6">
+            {/* Header — matches waterfall card style */}
+            <div className="flex items-start justify-between mb-4">
+              <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Configured billing schedule</h3>
               <div className="flex items-center gap-4 flex-shrink-0">
                 <div className="flex items-center gap-2 text-[10px] text-stone/60">
-                  <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: '#16A34A' }} /> Paid
-                  <span className="inline-block w-2.5 h-2.5 rounded-sm ml-1.5" style={{ background: '#D97706' }} /> Due
-                  <span className="inline-block w-2.5 h-2.5 rounded-sm ml-1.5" style={{ background: '#3B82F6' }} /> Draft
+                  <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Paid
+                  <span className="inline-block w-2 h-2 rounded-sm ml-1" style={{ background: '#D97706' }} /> Due
+                  <span className="inline-block w-2 h-2 rounded-sm ml-1" style={{ background: '#6B9FD4' }} /> Draft
                 </div>
                 {billingData.subscription.dashboardUrl && (
                   <a href={billingData.subscription.dashboardUrl} target="_blank" rel="noopener noreferrer"
-                    className="text-[11px] text-forest/60 hover:text-forest transition-colors flex items-center gap-1">
-                    <i className="ti ti-external-link" style={{ fontSize: 11 }} /> Stripe
+                    className="text-[10px] text-stone/50 hover:text-forest transition-colors flex items-center gap-1">
+                    <i className="ti ti-external-link" style={{ fontSize: 10 }} /> Stripe
                   </a>
                 )}
               </div>
             </div>
 
-            {/* SVG timeline */}
-            <div className="px-6 py-5 overflow-x-auto">
-              <svg viewBox={`0 0 ${svgW} ${svgH}`} width="100%" style={{ minWidth: 360 }}>
-                {/* Year divider lines */}
-                {yearDividers.map((d, i) => (
+            {/* SVG — same viewBox + rendering approach as waterfall chart */}
+            <svg viewBox={`0 0 ${bWW} ${bWH}`} className="w-full" style={{ height: 230 }}>
+              {/* Grid lines */}
+              {bGridSteps.map((v, i) => {
+                const yy = byOf(v)
+                return (
                   <g key={i}>
-                    <line x1={d.x} x2={d.x} y1={mT} y2={mT + plotH} stroke="rgba(26,61,43,0.10)" strokeWidth={1} strokeDasharray="4 3" />
-                    <text x={d.x + 3} y={mT + 9} fontSize={8} fill="rgba(26,61,43,0.35)" fontWeight="500">{d.label}</text>
+                    <line x1={bx1} y1={yy} x2={bx2} y2={yy}
+                      stroke={i === 0 ? '#D1D5DB' : '#F0F2EE'} strokeWidth={i === 0 ? 1 : 0.75} />
+                    {v > 0 && (
+                      <text x={bx1 - 6} y={yy + 4} textAnchor="end" fontSize={10} fill="#9CA3AF">
+                        {fmt(v, cur, true)}
+                      </text>
+                    )}
                   </g>
-                ))}
+                )
+              })}
 
-                {/* Y grid lines + labels */}
-                {gridAmounts.map((a, i) => {
-                  const y = mT + plotH - (a / maxAmount) * plotH
-                  return (
-                    <g key={i}>
-                      <line x1={mL} x2={svgW - mR} y1={y} y2={y}
-                        stroke={i === 0 ? '#CBD5E1' : 'rgba(26,61,43,0.07)'}
-                        strokeWidth={i === 0 ? 1 : 0.75}
-                        strokeDasharray={i === 0 ? undefined : '3 3'} />
-                      {a > 0 && (
-                        <text x={mL - 5} y={y + 4} textAnchor="end" fontSize={8.5} fill="#9CA3AF">
-                          {fmt(a, cur, true)}
-                        </text>
-                      )}
-                    </g>
-                  )
-                })}
+              {/* Bars */}
+              {events.map((ev, i) => {
+                const x    = bStartX + i * (bBW + bGap)
+                const yTop = byOf(ev.amount)
+                const yBot = byOf(0)
+                const h    = Math.max(2, yBot - yTop)
+                const col  = statusColor(ev.status)
+                const dateStr = ev.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' })
+                return (
+                  <g key={i}>
+                    <rect x={x} y={yTop} width={bBW} height={h} rx={3} fill={col} />
 
-                {/* Bars + labels */}
-                {events.map((ev, i) => {
-                  const x  = xPos(ev.date)
-                  const bh = bH(ev.amount)
-                  const by = mT + plotH - bh
-                  const col = statusColor(ev.status)
-                  return (
-                    <g key={i}>
-                      {/* Bar */}
-                      <rect x={x - barW / 2} y={by} width={barW} height={bh} fill={col} opacity={0.82} rx={3} />
+                    {/* Amount above bar */}
+                    <text x={x + bBW / 2} y={Math.min(yTop - 6, bTop + 12)} textAnchor="middle"
+                      fontSize={11} fontWeight={600} fill="#3A3A38"
+                      style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {fmt(ev.amount, ev.currency, true)}
+                    </text>
 
-                      {/* Amount above bar */}
-                      <text x={x} y={Math.max(mT + 11, by - 5)} textAnchor="middle" fontSize={8.5}
-                        fill="#374151" fontWeight="600" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                        {fmt(ev.amount, ev.currency, true)}
-                      </text>
+                    {/* Label: name */}
+                    <text x={x + bBW / 2} y={bBottom + 18} textAnchor="middle"
+                      fontSize={11} fill="#6B6660">
+                      {truncate(ev.label)}
+                    </text>
+                    {/* Label: date */}
+                    <text x={x + bBW / 2} y={bBottom + 31} textAnchor="middle"
+                      fontSize={9} fill="#9CA3AF">
+                      {dateStr}
+                    </text>
+                    {/* Label: status */}
+                    <text x={x + bBW / 2} y={bBottom + 43} textAnchor="middle"
+                      fontSize={9} fill={col} fontWeight={500}>
+                      {statusLabel(ev.status)}
+                    </text>
+                  </g>
+                )
+              })}
+            </svg>
 
-                      {/* Tick below axis */}
-                      <line x1={x} x2={x} y1={mT + plotH} y2={mT + plotH + 6} stroke="#CBD5E1" strokeWidth={1} />
-
-                      {/* Label: name */}
-                      <text x={x} y={mT + plotH + 17} textAnchor="middle" fontSize={8.5} fill="#374151" fontWeight="500">
-                        {ev.label}
-                      </text>
-                      {/* Label: date */}
-                      <text x={x} y={mT + plotH + 29} textAnchor="middle" fontSize={7.5} fill="#9CA3AF">
-                        {ev.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                      </text>
-                      {/* Label: status */}
-                      <text x={x} y={mT + plotH + 40} textAnchor="middle" fontSize={7.5} fill={col} fontWeight="500">
-                        {statusLabel(ev.status)}
-                      </text>
-                    </g>
-                  )
-                })}
-              </svg>
-            </div>
-
-            {/* Footer: total comparison */}
-            <div className="px-6 py-3 border-t border-forest/[0.07] flex items-center justify-between gap-6">
+            {/* Footer */}
+            <div className="mt-4 pt-4 border-t border-forest/[0.07] flex items-center justify-between gap-6">
               <div className="flex items-center gap-8">
                 <div>
                   <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Configured in Stripe</p>
