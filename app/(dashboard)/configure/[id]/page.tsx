@@ -2280,44 +2280,61 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             )}
 
             {/* ── TCV + Approve footer ── */}
-            <div className="bg-forest text-white rounded-2xl px-6 py-5 flex items-center justify-between">
-              <div>
-                <p className="text-[10px] font-semibold text-mint/60 uppercase tracking-[0.14em] mb-1">Total contract value</p>
-                <p className="text-[32px] font-medium leading-none font-mono" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {tcv > 0 ? fmt(tcv, cur) : <span style={{ opacity: 0.45 }}>€0</span>}
-                </p>
-                {tcv === 0 && terms?.contract_start_date && terms?.contract_end_date &&
-                  parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date) && (
-                  <p className="text-[10px] text-amber-300 mt-1">⚠ End date is before start date — correct it above</p>
-                )}
-                {tcv === 0 && (!terms?.contract_start_date || !terms?.contract_end_date) && (
-                  <p className="text-[10px] text-mint/50 mt-1">Add missing dates above to calculate</p>
+            <div className="rounded-2xl overflow-hidden" style={{ background: '#152E1F' }}>
+              <div className="px-7 py-5 flex items-center justify-between gap-8">
+                {/* Left: label + number */}
+                <div className="min-w-0">
+                  <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2" style={{ color: 'rgba(180,220,190,0.55)' }}>
+                    Total contract value
+                  </p>
+                  <p className="text-[36px] font-semibold leading-none tracking-tight text-white" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
+                    {tcv > 0 ? fmt(tcv, cur) : <span style={{ opacity: 0.3 }}>—</span>}
+                  </p>
+                  {tcv === 0 && terms?.contract_start_date && terms?.contract_end_date &&
+                    parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date) && (
+                    <p className="text-[10px] mt-2" style={{ color: '#FCD34D' }}>End date is before start date — correct it above</p>
+                  )}
+                  {tcv === 0 && (!terms?.contract_start_date || !terms?.contract_end_date) && (
+                    <p className="text-[10px] mt-2" style={{ color: 'rgba(180,220,190,0.4)' }}>Add contract dates above to calculate</p>
+                  )}
+                </div>
+
+                {/* Right: action */}
+                {isConfigured ? (
+                  <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                    {dashboardUrl && (
+                      <a href={dashboardUrl} target="_blank" rel="noreferrer"
+                        className="inline-flex items-center gap-2 font-semibold text-[13px] px-5 py-2.5 rounded-xl transition-all"
+                        style={{ background: 'rgba(255,255,255,0.1)', color: 'white', border: '1px solid rgba(255,255,255,0.15)' }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.background = 'rgba(255,255,255,0.16)' }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.background = 'rgba(255,255,255,0.1)' }}
+                      >
+                        View in {billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
+                        <i className="ti ti-arrow-up-right" style={{ fontSize: 13 }} />
+                      </a>
+                    )}
+                    {subId && (
+                      <p className="text-[10px] font-mono" style={{ color: 'rgba(180,220,190,0.35)' }}>{subId}</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                    <button onClick={handleApprove} disabled={approving || needsReview > 0}
+                      className="inline-flex items-center gap-2 font-semibold text-[13px] px-6 py-2.5 rounded-xl transition-all disabled:opacity-40"
+                      style={{ background: 'white', color: '#152E1F' }}>
+                      {approving
+                        ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> Pushing to Stripe…</>
+                        : <>Approve &amp; push to Stripe <i className="ti ti-arrow-up-right" style={{ fontSize: 13 }} /></>}
+                    </button>
+                    {needsReview > 0 && (
+                      <p className="text-[10px]" style={{ color: 'rgba(180,220,190,0.5)' }}>
+                        Review {needsReview} flagged item{needsReview > 1 ? 's' : ''} above first
+                      </p>
+                    )}
+                    {approveError && <p className="text-[10px] max-w-xs" style={{ color: '#FCA5A5' }}>{approveError}</p>}
+                  </div>
                 )}
               </div>
-              {isConfigured ? (
-                <div className="text-right">
-                  {dashboardUrl && (
-                    <a href={dashboardUrl} target="_blank" rel="noreferrer"
-                      className="inline-flex items-center gap-2 bg-white text-forest font-semibold text-sm px-8 py-3 rounded-xl hover:bg-mint transition-colors">
-                      View in {billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'} →
-                    </a>
-                  )}
-                  {subId && <p className="text-[11px] text-mint/50 mt-2 font-mono">{subId}</p>}
-                </div>
-              ) : (
-                <div className="text-right">
-                  <button onClick={handleApprove} disabled={approving || needsReview > 0}
-                    className="bg-white text-forest font-semibold text-sm px-8 py-3 rounded-xl hover:bg-mint transition-colors disabled:opacity-50 flex items-center gap-2">
-                    {approving
-                      ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 14 }} /> Pushing to Stripe...</>
-                      : 'Approve & configure billing →'}
-                  </button>
-                  {needsReview > 0 && (
-                    <p className="text-[11px] text-mint/60 mt-2">Review {needsReview} flagged item{needsReview > 1 ? 's' : ''} above before approving</p>
-                  )}
-                  {approveError && <p className="text-[11px] text-red-300 mt-2 max-w-xs">{approveError}</p>}
-                </div>
-              )}
             </div>
 
           </div>{/* end terms column */}
