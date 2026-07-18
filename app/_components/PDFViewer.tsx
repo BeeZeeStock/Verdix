@@ -133,7 +133,7 @@ export default function PDFViewer({ url, section }: Props) {
     // height:auto causes the canvas to scale proportionally with width, preventing distortion
     canvas.style.cssText = 'display:block;width:100%;height:auto;'
     wrapper.appendChild(canvas)
-    await page.render({ canvasContext: canvas.getContext('2d')!, viewport: vp }).promise
+    await page.render({ canvas, canvasContext: canvas.getContext('2d')!, viewport: vp }).promise
 
     const textDiv = document.createElement('div')
     textDiv.className = 'pdf-text-layer'
