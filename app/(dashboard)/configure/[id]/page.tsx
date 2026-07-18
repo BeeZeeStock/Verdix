@@ -1437,6 +1437,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [dateDraftEnd,   setDateDraftEnd]   = useState('')
   const [dateEditing,    setDateEditing]    = useState<'start' | 'end' | null>(null)
   const [dateSaving,     setDateSaving]     = useState(false)
+  const [calcExpanded,   setCalcExpanded]   = useState(false)
 
   const terms: Terms | undefined = job?.contract_terms?.[0]
   const cur = terms?.currency ?? job?.currency ?? 'EUR'
@@ -1868,6 +1869,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   sub={terms?.renewal_notice_days ? `${terms.renewal_notice_days} days notice required` : undefined}
                   onSave={v => saveField('auto_renews', v)}
                 />
+                <Stat label="Total contract value" value={tcv > 0 ? fmt(tcv, cur) : '—'} />
               </div>
             </div>
 
@@ -1877,94 +1879,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
                 <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Commercial terms</h2>
                 <BillingModelBadge model={billingModel} />
-              </div>
-
-              {/* Products & Services table */}
-              <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-3">Products & services</p>
-                <table className="w-full">
-                  <thead>
-                    <tr>
-                      {(['Description', 'Price', 'Type'] as const).map((h, i) => (
-                        <th key={h} className="text-[10px] font-semibold text-stone/60 tracking-[0.1em] pb-2 pr-4 last:pr-0"
-                          style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: i === 0 ? 'left' : 'right' }}>
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {terms?.base_monthly_fee && (
-                      <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                        <td className="py-2.5 pr-4 text-[13px] text-ink">{src.base_monthly_fee ?? 'Platform subscription'}</td>
-                        <td className="py-2.5 pr-4 text-[13px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                          {fmt(terms.base_monthly_fee, cur)}<span className="text-stone text-[11px] font-normal">/mo</span>
-                        </td>
-                        <td className="py-2.5 text-[11px] text-stone text-right">Recurring</td>
-                      </tr>
-                    )}
-                    {terms?.year_pricing && Object.entries(terms.year_pricing).map(([yr, price]) => (
-                      <tr key={yr} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                        <td className="py-2.5 pr-4 text-[13px] text-ink">
-                          Platform subscription · <span className="text-stone">{yr.replace('year', 'Year ')}</span>
-                        </td>
-                        <td className="py-2.5 pr-4 text-[13px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                          {fmt(price, cur)}<span className="text-stone text-[11px] font-normal">/yr</span>
-                        </td>
-                        <td className="py-2.5 text-[11px] text-stone text-right">Recurring</td>
-                      </tr>
-                    ))}
-                    {terms?.ramp_schedule && terms.ramp_schedule.map((step, i) => (
-                      <tr key={i} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                        <td className="py-2.5 pr-4 text-[13px] text-ink">
-                          {step.label ?? `Ramp stage ${i + 1}`}
-                          <span className="text-stone text-[11px] ml-2">{fmtDate(step.start_date)} – {fmtDate(step.end_date)}</span>
-                        </td>
-                        <td className="py-2.5 pr-4 text-[13px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                          {fmt(step.monthly_fee, cur)}<span className="text-stone text-[11px] font-normal">/mo</span>
-                        </td>
-                        <td className="py-2.5 text-[11px] text-stone text-right">Recurring</td>
-                      </tr>
-                    ))}
-                    {serviceFees.map((f, i) => (
-                      <tr key={`svc-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                        <td className="py-2.5 pr-4 text-[13px] text-ink">
-                          {f.fee_label}
-                          {f.description && <span className="text-stone text-[11px] block">{f.description}</span>}
-                        </td>
-                        <td className="py-2.5 pr-4 text-[13px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(f.amount, cur)}</td>
-                        <td className="py-2.5 text-[11px] text-stone text-right">Services</td>
-                      </tr>
-                    ))}
-                    {hardwareFees.map((f, i) => (
-                      <tr key={`hw-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                        <td className="py-2.5 pr-4 text-[13px] text-ink">
-                          {f.fee_label}
-                          {f.description && <span className="text-stone text-[11px] block">{f.description}</span>}
-                        </td>
-                        <td className="py-2.5 pr-4 text-[13px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(f.amount, cur)}</td>
-                        <td className="py-2.5 text-[11px] text-stone text-right">Hardware</td>
-                      </tr>
-                    ))}
-                    {otherPosFees.map((f, i) => (
-                      <tr key={`oth-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                        <td className="py-2.5 pr-4 text-[13px] text-ink">
-                          {f.fee_label}
-                          {f.description && <span className="text-stone text-[11px] block">{f.description}</span>}
-                        </td>
-                        <td className="py-2.5 pr-4 text-[13px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(f.amount, cur)}</td>
-                        <td className="py-2.5 text-[11px] text-stone text-right">One-time</td>
-                      </tr>
-                    ))}
-                    {creditFees.map((f, i) => (
-                      <tr key={`cr-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                        <td className="py-2.5 pr-4 text-[13px]" style={{ color: '#B45309' }}>{f.fee_label}</td>
-                        <td className="py-2.5 pr-4 text-[13px] font-medium text-right" style={{ fontVariantNumeric: 'tabular-nums', color: '#B45309' }}>{fmt(f.amount, cur)}</td>
-                        <td className="py-2.5 text-[11px] text-right" style={{ color: '#B45309' }}>Credit</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               </div>
 
               {/* Discounts */}
@@ -2146,7 +2060,139 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
-            {/* ── 5. Billing Configuration ── */}
+            {/* ── 5. Price calculations (collapsible) ── */}
+            {terms?.extraction_notes && terms?.year_pricing && (() => {
+              const calcRows = Object.keys(terms.year_pricing).map(yr => ({
+                label: yr.replace('year', 'Year '),
+                note: getYearNote(terms.extraction_notes, yr),
+              })).filter(r => r.note)
+              if (calcRows.length === 0) return null
+              return (
+                <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
+                  <button
+                    onClick={() => setCalcExpanded(v => !v)}
+                    className="w-full p-6 flex items-center justify-between text-left"
+                    style={{ borderBottom: calcExpanded ? '1px solid rgba(26,61,43,0.07)' : undefined }}
+                  >
+                    <div>
+                      <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Price calculations</h2>
+                      <p className="text-[11px] text-stone mt-0.5">How the contracted values were computed — formulas as extracted from the agreement</p>
+                    </div>
+                    <i className={`ti ti-chevron-${calcExpanded ? 'up' : 'down'} text-stone/40 flex-shrink-0 ml-4`} style={{ fontSize: 16 }} />
+                  </button>
+                  {calcExpanded && (
+                    <div className="px-6 pb-6">
+                      {calcRows.map(({ label, note }, i) => (
+                        <div key={i} className="flex gap-6 py-4"
+                          style={{ borderBottom: i < calcRows.length - 1 ? '1px solid rgba(26,61,43,0.07)' : undefined }}>
+                          <p className="text-[11px] font-semibold text-stone w-16 flex-shrink-0 pt-0.5">{label}</p>
+                          <p className="text-[11.5px] leading-relaxed whitespace-pre-line"
+                            style={{ fontFamily: 'ui-monospace, monospace', color: '#1A3D2B' }}>{note}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
+            {/* ── 6. Products & Services Breakdown ── */}
+            {(terms?.base_monthly_fee || terms?.year_pricing || (terms?.ramp_schedule?.length ?? 0) > 0 ||
+              serviceFees.length > 0 || hardwareFees.length > 0 || otherPosFees.length > 0 || creditFees.length > 0) && (
+              <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
+                <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Products &amp; services breakdown</h2>
+                  <p className="text-[11px] text-stone mt-0.5">All fee components extracted from the contract</p>
+                </div>
+                <div className="p-6">
+                  <table className="w-full">
+                    <thead>
+                      <tr>
+                        {(['Description', 'Amount', 'Type'] as const).map((h, i) => (
+                          <th key={h} className="text-[10px] font-semibold text-stone/60 tracking-[0.1em] pb-2 pr-4 last:pr-0"
+                            style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: i === 0 ? 'left' : 'right' }}>
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {terms?.base_monthly_fee && (
+                        <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                          <td className="py-2.5 pr-4 text-[12px] text-ink">{src.base_monthly_fee ?? 'Platform subscription'}</td>
+                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            {fmt(terms.base_monthly_fee, cur)}<span className="text-stone text-[10px] font-normal">/mo</span>
+                          </td>
+                          <td className="py-2.5 text-[11px] text-stone text-right">Recurring</td>
+                        </tr>
+                      )}
+                      {terms?.year_pricing && Object.entries(terms.year_pricing).map(([yr, price]) => (
+                        <tr key={yr} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                          <td className="py-2.5 pr-4 text-[12px] text-ink">
+                            Platform subscription · <span className="text-stone">{yr.replace('year', 'Year ')}</span>
+                          </td>
+                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            {fmt(price, cur)}<span className="text-stone text-[10px] font-normal">/yr</span>
+                          </td>
+                          <td className="py-2.5 text-[11px] text-stone text-right">Recurring</td>
+                        </tr>
+                      ))}
+                      {terms?.ramp_schedule && terms.ramp_schedule.map((step, i) => (
+                        <tr key={i} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                          <td className="py-2.5 pr-4 text-[12px] text-ink">
+                            {step.label ?? `Ramp stage ${i + 1}`}
+                            <span className="text-stone text-[10px] ml-2">{fmtDate(step.start_date)} – {fmtDate(step.end_date)}</span>
+                          </td>
+                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            {fmt(step.monthly_fee, cur)}<span className="text-stone text-[10px] font-normal">/mo</span>
+                          </td>
+                          <td className="py-2.5 text-[11px] text-stone text-right">Recurring</td>
+                        </tr>
+                      ))}
+                      {serviceFees.map((f, i) => (
+                        <tr key={`svc-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                          <td className="py-2.5 pr-4 text-[12px] text-ink">
+                            {f.fee_label}
+                            {f.description && <span className="text-stone text-[10px] block">{f.description}</span>}
+                          </td>
+                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(f.amount, cur)}</td>
+                          <td className="py-2.5 text-[11px] text-stone text-right">Services</td>
+                        </tr>
+                      ))}
+                      {hardwareFees.map((f, i) => (
+                        <tr key={`hw-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                          <td className="py-2.5 pr-4 text-[12px] text-ink">
+                            {f.fee_label}
+                            {f.description && <span className="text-stone text-[10px] block">{f.description}</span>}
+                          </td>
+                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(f.amount, cur)}</td>
+                          <td className="py-2.5 text-[11px] text-stone text-right">Hardware</td>
+                        </tr>
+                      ))}
+                      {otherPosFees.map((f, i) => (
+                        <tr key={`oth-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                          <td className="py-2.5 pr-4 text-[12px] text-ink">
+                            {f.fee_label}
+                            {f.description && <span className="text-stone text-[10px] block">{f.description}</span>}
+                          </td>
+                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(f.amount, cur)}</td>
+                          <td className="py-2.5 text-[11px] text-stone text-right">One-time</td>
+                        </tr>
+                      ))}
+                      {creditFees.map((f, i) => (
+                        <tr key={`cr-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                          <td className="py-2.5 pr-4 text-[12px]" style={{ color: '#B45309' }}>{f.fee_label}</td>
+                          <td className="py-2.5 pr-4 text-[12px] font-medium text-right" style={{ fontVariantNumeric: 'tabular-nums', color: '#B45309' }}>{fmt(f.amount, cur)}</td>
+                          <td className="py-2.5 text-[11px] text-right" style={{ color: '#B45309' }}>Credit</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* ── 7. Billing Configuration ── */}
             <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
               <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
                 <div>
@@ -2229,35 +2275,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               )}
             </div>
 
-            {/* ── 6. Stripe Billing Setup (live pull) ── */}
+            {/* ── 8. Billing Setup (live Stripe pull) ── */}
             {isConfigured && billingPlatform === 'stripe' && (
               <StripeSummaryCard jobId={id} />
             )}
-
-            {/* ── 7. Pricing Calculations ── */}
-            {terms?.extraction_notes && terms?.year_pricing && (() => {
-              const calcRows = Object.keys(terms.year_pricing).map(yr => ({
-                label: yr.replace('year', 'Year '),
-                note: getYearNote(terms.extraction_notes, yr),
-              })).filter(r => r.note)
-              if (calcRows.length === 0) return null
-              return (
-                <div className="bg-white rounded-2xl border border-forest/10 p-6">
-                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-1">Pricing calculations</h2>
-                  <p className="text-[11px] text-stone mb-5">How the contracted values were computed — formulas as extracted from the agreement</p>
-                  <div>
-                    {calcRows.map(({ label, note }, i) => (
-                      <div key={i} className="flex gap-6 py-4"
-                        style={{ borderBottom: i < calcRows.length - 1 ? '1px solid rgba(26,61,43,0.07)' : undefined }}>
-                        <p className="text-[11px] font-semibold text-stone w-16 flex-shrink-0 pt-0.5">{label}</p>
-                        <p className="text-[11.5px] leading-relaxed whitespace-pre-line"
-                          style={{ fontFamily: 'ui-monospace, monospace', color: '#1A3D2B' }}>{note}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )
-            })()}
 
             {/* ── Warning: missing dates ── */}
             {(!terms?.contract_start_date || !terms?.contract_end_date) && (
