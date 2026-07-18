@@ -171,6 +171,13 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
     return s && e && now >= s && now <= e
   })?.year ?? null
 
+  // Match subscription invoices to years by arrival order (1st invoice = Year 1).
+  // Matching by creation date fails when the subscription is created weeks before
+  // the contract start date (invoice created Jul 18 but Year 1 starts Aug 1).
+  const sortedSubscriptionInvoices = [...invoices].sort(
+    (a, b) => new Date(a.created).getTime() - new Date(b.created).getTime()
+  )
+
   return (
     <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
       {/* Header */}
@@ -236,13 +243,10 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
             <tbody>
               {paymentSchedule.map(y => {
                 const isCurrent = y.year === currentYearNum
-                const matchedInvoice = invoices.find(inv => {
-                  if (!y.periodStart) return false
-                  const invCreated = new Date(inv.created)
-                  const ys = new Date(y.periodStart)
-                  const ye = y.periodEnd ? new Date(y.periodEnd) : null
-                  return invCreated >= ys && (!ye || invCreated <= ye)
-                })
+                // Match by position: the n-th subscription invoice = Year n.
+                // Date-range matching fails when the subscription starts before
+                // the contract year (e.g. created Jul 18 but Year 1 starts Aug 1).
+                const matchedInvoice = sortedSubscriptionInvoices[y.year - 1]
                 return (
                   <tr key={y.year} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
                     <td className="py-2.5 pr-6 text-[12px] font-medium" style={{ color: isCurrent ? '#1A3D2B' : '#3D3935' }}>

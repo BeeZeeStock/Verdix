@@ -169,7 +169,65 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
       .eq('job_id', jobId)
   }
 
-  // ── 6. Create standalone invoices for one-time fees ───────────────────────
+  // ── 6. Process the first subscription invoice inline ─────────────────────
+  // Stripe fires invoice.created immediately when the subscription is created,
+  // BEFORE the approve route can save billing_subscription_id to the DB.
+  // The webhook handler therefore can't find the job and injects nothing.
+  // To eliminate this race, we inject the Year 1 base fee here directly and
+  // finalize the invoice. The webhook idempotency guard (computed_invoices)
+  // will skip it if the event arrives later.
+  const firstDraftInvoices = await stripe.invoices.list({
+    subscription: subscription.id,
+    limit: 1,
+  })
+  const firstInvoice = firstDraftInvoices.data[0]
+
+  if (firstInvoice && firstInvoice.status === 'draft' && isYearPricing && terms.year_pricing && jobId) {
+    const yp = terms.year_pricing
+    const totalYears = Object.keys(yp).length
+    const annualFee  = yp['year1'] ?? yp[`year${totalYears}`] ?? 0
+
+    if (annualFee > 0) {
+      const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date) : new Date()
+      const yearEnd = new Date(contractStart)
+      yearEnd.setFullYear(yearEnd.getFullYear() + 1)
+      yearEnd.setDate(yearEnd.getDate() - 1)
+      const fmt = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
+      const description = `Base subscription — Year 1 (${fmt(contractStart)} – ${fmt(yearEnd)})`
+
+      await stripe.invoiceItems.create({
+        customer:    customer.id,
+        invoice:     firstInvoice.id,
+        amount:      Math.round(annualFee * 100),
+        currency:    cur,
+        description,
+      })
+
+      // Persist to computed_invoices so the webhook's idempotency guard skips this invoice.
+      supabaseServer.from('computed_invoices').insert({
+        job_id:              jobId,
+        external_invoice_id: firstInvoice.id,
+        external_subscription_id: subscription.id,
+        connector:           'stripe',
+        period_start:        contractStart.toISOString(),
+        period_end:          yearEnd.toISOString(),
+        line_items:          [{ description, amount: annualFee, currency: terms.currency ?? 'EUR', type: 'base' }],
+        total_amount:        annualFee,
+        currency:            terms.currency ?? 'EUR',
+        status:              'VALIDATED',
+        validation_result:   [],
+      }).then(({ error }) => {
+        if (error) console.error('[billing-writer] computed_invoice insert failed', error)
+      })
+
+      // Finalize the invoice — makes it open and sends it to the customer.
+      await stripe.invoices.finalizeInvoice(firstInvoice.id).catch(err =>
+        console.error('[billing-writer] finalise failed', err)
+      )
+    }
+  }
+
+  // ── 7. Create standalone invoices for one-time fees ───────────────────────
   // Each fee gets its own Stripe invoice with the exact due date from the
   // contract. These are completely separate from the recurring subscription
   // invoices — the subscription handles base fees + overages only.
