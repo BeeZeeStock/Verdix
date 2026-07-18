@@ -1191,32 +1191,45 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
 
         if (rawEvents.length === 0) return null
 
-        // Sort chronologically — bars are evenly spaced but left-to-right = earlier-to-later
+        // Sort chronologically
         const events = [...rawEvents].sort((a, b) => a.date.getTime() - b.date.getTime())
 
-        const maxAmount = Math.max(...events.map(e => e.amount), 1)
-        const n = events.length
-
-        // Match the waterfall chart's SVG layout exactly
-        const bWW = 1100, bWH = 230
-        const bx1 = 70, bx2 = bWW - 12, bww = bx2 - bx1
-        const bTop = 22, bBottom = 158, bPlotH = bBottom - bTop
-        const bGap  = n > 8 ? 10 : 20
-        const bBW   = Math.min(120, (bww - bGap * (n - 1)) / n)
-        const bStartX = bx1 + (bww - (bBW * n + bGap * (n - 1))) / 2
-        const bScale  = maxAmount
-        const byOf    = (v: number) => bBottom - (v / bScale) * bPlotH
-        const bGridSteps = [0, 0.5, 1].map(f => f * bScale)
-
-        const truncate = (s: string, max = 15) => s.length > max ? s.slice(0, max - 1) + '…' : s
-
+        const truncate = (s: string, max = 14) => s.length > max ? s.slice(0, max - 1) + '…' : s
         const statusColor = (s: string) =>
           s === 'paid' ? '#27AE60' : s === 'open' ? '#D97706' : '#6B9FD4'
         const statusLabel = (s: string) =>
           s === 'paid' ? 'Paid' : s === 'open' ? 'Due' : 'Draft'
 
-        // Totals for footer comparison
-        const configuredTotal = events.reduce((s, e) => s + e.amount, 0)
+        // Build cumulative waterfall bars (each starts where previous ended)
+        type WBar = { label: string; sub: string; from: number; to: number; amount: number; status: string; kind: 'segment' | 'total' }
+        let cum = 0
+        const wBars: WBar[] = events.map(ev => {
+          const from = cum
+          const to   = cum + ev.amount
+          cum = to
+          return {
+            label:  truncate(ev.label),
+            sub:    ev.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' }),
+            from, to, amount: ev.amount, status: ev.status, kind: 'segment',
+          }
+        })
+        const configuredTotal = cum
+        // TCV total bar — spans full height from 0
+        wBars.push({ label: 'TCV', sub: '', from: 0, to: configuredTotal, amount: configuredTotal, status: 'total', kind: 'total' })
+
+        const n = wBars.length
+        const bScale = configuredTotal > 0 ? configuredTotal : 1
+
+        // Same SVG dimensions as the waterfall chart above
+        const bWW = 1100, bWH = 230
+        const bx1 = 70, bx2 = bWW - 12, bww = bx2 - bx1
+        const bTop = 22, bBottom = 158, bPlotH = bBottom - bTop
+        const bGap    = n > 8 ? 10 : 20
+        const bBW     = Math.min(120, (bww - bGap * (n - 1)) / n)
+        const bStartX = bx1 + (bww - (bBW * n + bGap * (n - 1))) / 2
+        const byOf    = (v: number) => bBottom - (v / bScale) * bPlotH
+        const bGrid   = [0, 0.5, 1].map(f => f * bScale)
+
         const contractTcv = (billingData.paymentSchedule ?? []).reduce((s, y) => s + y.amount, 0)
           + (billingData.oneTimeFees ?? []).reduce((s: number, f: { amount: number }) => s + f.amount, 0)
         const tcvDelta = contractTcv > 0 ? (configuredTotal - contractTcv) / contractTcv : 0
@@ -1224,7 +1237,6 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
 
         return (
           <div className="bg-white border border-forest/10 rounded-2xl p-6">
-            {/* Header — matches waterfall card style */}
             <div className="flex items-start justify-between mb-4">
               <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Configured billing schedule</h3>
               <div className="flex items-center gap-4 flex-shrink-0">
@@ -1242,10 +1254,9 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
               </div>
             </div>
 
-            {/* SVG — same viewBox + rendering approach as waterfall chart */}
             <svg viewBox={`0 0 ${bWW} ${bWH}`} className="w-full" style={{ height: 230 }}>
-              {/* Grid lines */}
-              {bGridSteps.map((v, i) => {
+              {/* Grid */}
+              {bGrid.map((v, i) => {
                 const yy = byOf(v)
                 return (
                   <g key={i}>
@@ -1260,46 +1271,56 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
                 )
               })}
 
+              {/* Dashed connectors between segment bars (at the "to" level) */}
+              {wBars.slice(0, -2).map((b, i) => {
+                const xR = bStartX + i * (bBW + bGap) + bBW
+                const xL = bStartX + (i + 1) * (bBW + bGap)
+                const y  = byOf(b.to)
+                return <line key={i} x1={xR} y1={y} x2={xL} y2={y} stroke="#C9CCC6" strokeWidth={1} strokeDasharray="3 2" />
+              })}
+
               {/* Bars */}
-              {events.map((ev, i) => {
+              {wBars.map((b, i) => {
                 const x    = bStartX + i * (bBW + bGap)
-                const yTop = byOf(ev.amount)
-                const yBot = byOf(0)
+                const yTop = byOf(b.to)
+                const yBot = byOf(b.kind === 'total' ? 0 : b.from)
                 const h    = Math.max(2, yBot - yTop)
-                const col  = statusColor(ev.status)
-                const dateStr = ev.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' })
+                const col  = b.kind === 'total' ? '#1A3D2B' : statusColor(b.status)
                 return (
                   <g key={i}>
                     <rect x={x} y={yTop} width={bBW} height={h} rx={3} fill={col} />
 
-                    {/* Amount above bar */}
+                    {/* Amount above */}
                     <text x={x + bBW / 2} y={Math.min(yTop - 6, bTop + 12)} textAnchor="middle"
-                      fontSize={11} fontWeight={600} fill="#3A3A38"
+                      fontSize={11} fontWeight={b.kind === 'total' ? 700 : 600} fill="#3A3A38"
                       style={{ fontVariantNumeric: 'tabular-nums' }}>
-                      {fmt(ev.amount, ev.currency, true)}
+                      {fmt(b.amount, cur, true)}
                     </text>
 
-                    {/* Label: name */}
+                    {/* Bar name */}
                     <text x={x + bBW / 2} y={bBottom + 18} textAnchor="middle"
-                      fontSize={11} fill="#6B6660">
-                      {truncate(ev.label)}
+                      fontSize={11} fill={b.kind === 'total' ? '#1A3D2B' : '#6B6660'}
+                      fontWeight={b.kind === 'total' ? 700 : 400}>
+                      {b.label}
                     </text>
-                    {/* Label: date */}
-                    <text x={x + bBW / 2} y={bBottom + 31} textAnchor="middle"
-                      fontSize={9} fill="#9CA3AF">
-                      {dateStr}
-                    </text>
-                    {/* Label: status */}
-                    <text x={x + bBW / 2} y={bBottom + 43} textAnchor="middle"
-                      fontSize={9} fill={col} fontWeight={500}>
-                      {statusLabel(ev.status)}
-                    </text>
+                    {/* Date */}
+                    {b.sub && (
+                      <text x={x + bBW / 2} y={bBottom + 31} textAnchor="middle" fontSize={9} fill="#9CA3AF">
+                        {b.sub}
+                      </text>
+                    )}
+                    {/* Status */}
+                    {b.kind === 'segment' && (
+                      <text x={x + bBW / 2} y={bBottom + (b.sub ? 43 : 31)} textAnchor="middle"
+                        fontSize={9} fill={statusColor(b.status)} fontWeight={500}>
+                        {statusLabel(b.status)}
+                      </text>
+                    )}
                   </g>
                 )
               })}
             </svg>
 
-            {/* Footer */}
             <div className="mt-4 pt-4 border-t border-forest/[0.07] flex items-center justify-between gap-6">
               <div className="flex items-center gap-8">
                 <div>
@@ -1319,17 +1340,13 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
               </div>
               {contractTcv > 0 && (
                 isMatch
-                  ? (
-                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-green-700 bg-green-50 px-3 py-1.5 rounded-lg">
-                      <i className="ti ti-circle-check-filled" style={{ fontSize: 13 }} />
-                      Matches contract
+                  ? <div className="flex items-center gap-1.5 text-[11px] font-medium text-green-700 bg-green-50 px-3 py-1.5 rounded-lg">
+                      <i className="ti ti-circle-check-filled" style={{ fontSize: 13 }} /> Matches contract
                     </div>
-                  ) : (
-                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg">
+                  : <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg">
                       <i className="ti ti-alert-triangle-filled" style={{ fontSize: 13 }} />
                       {tcvDelta > 0 ? '+' : ''}{(tcvDelta * 100).toFixed(1)}% vs contract
                     </div>
-                  )
               )}
             </div>
           </div>
