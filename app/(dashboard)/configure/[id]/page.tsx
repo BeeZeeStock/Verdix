@@ -1723,7 +1723,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           {/* ── Invoices tab ─────────────────────────────────────────────── */}
           {activeTab === 'invoices' && (
             <div className="flex-1 overflow-y-auto">
-              <InvoicesTab jobId={id} />
+              <InvoicesTab jobId={id} billingPlatform={billingPlatform} onNavigate={setActiveTab} />
             </div>
           )}
 

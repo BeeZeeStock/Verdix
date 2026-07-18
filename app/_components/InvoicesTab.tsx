@@ -341,7 +341,11 @@ function InvoiceCard({ inv }: { inv: ComputedInvoice }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function InvoicesTab({ jobId }: { jobId: string }) {
+export function InvoicesTab({ jobId, billingPlatform, onNavigate }: {
+  jobId: string
+  billingPlatform?: string
+  onNavigate?: (tab: 'terms' | 'model' | 'invoices') => void
+}) {
   const [invoices, setInvoices] = useState<ComputedInvoice[]>([])
   const [loading, setLoading]   = useState(true)
   const [error, setError]       = useState<string | null>(null)
@@ -397,12 +401,34 @@ export function InvoicesTab({ jobId }: { jobId: string }) {
     <div className="px-8 py-8 space-y-6">
 
       {/* ── Description ── */}
-      <div className="bg-forest/[0.04] border border-forest/10 rounded-xl px-4 py-3">
-        <p className="text-[11px] text-stone leading-relaxed">
-          <span className="font-semibold text-ink">Consumption-adjusted invoices only.</span>{' '}
-          Each entry is a billing period invoice that Verdix computed and finalised in Stripe — reflecting the contracted base fee plus any usage overages for that period. One-time fees and future scheduled invoices are shown separately in the <span className="font-medium text-ink">Configured billing schedule</span> on the Revenue model tab.
-        </p>
-      </div>
+      {(() => {
+        const platformName = CONNECTOR_LABEL[billingPlatform ?? ''] ?? CONNECTOR_LABEL[invoices[0]?.connector ?? ''] ?? 'the billing platform'
+        return (
+          <div className="bg-forest/[0.04] border border-forest/10 rounded-xl px-4 py-3">
+            <p className="text-[11px] text-stone leading-relaxed">
+              <span className="font-semibold text-ink">Consumption-adjusted invoices only.</span>{' '}
+              Each entry is a billing period invoice that Verdix computed and finalised in {platformName} — reflecting the contracted base fee plus any usage overages for that period. All invoices including these are shown in the{' '}
+              {onNavigate ? (
+                <button onClick={() => onNavigate('terms')}
+                  className="font-medium text-forest underline underline-offset-2 hover:text-forest/70 transition-colors">
+                  Contract terms tab under Billing setup
+                </button>
+              ) : (
+                <span className="font-medium text-ink">Contract terms tab under Billing setup</span>
+              )}.
+              {' '}The full billing schedule including future invoices is on the{' '}
+              {onNavigate ? (
+                <button onClick={() => onNavigate('model')}
+                  className="font-medium text-forest underline underline-offset-2 hover:text-forest/70 transition-colors">
+                  Revenue model tab
+                </button>
+              ) : (
+                <span className="font-medium text-ink">Revenue model tab</span>
+              )}.
+            </p>
+          </div>
+        )
+      })()}
 
       {/* ── Summary KPIs ── */}
       <div className="grid grid-cols-3 gap-4">
