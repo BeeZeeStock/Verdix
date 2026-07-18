@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored minified file — third-party code, not ours to fix
+    "public/pdf.worker.min.mjs",
   ]),
 ]);
 

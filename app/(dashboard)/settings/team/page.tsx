@@ -49,6 +49,7 @@ export default function TeamSettingsPage() {
     setLoading(false)
   }
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load() }, [])
 
   async function handleInvite(e: React.FormEvent) {

@@ -201,6 +201,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
 
   useEffect(() => {
     if (!jobId) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setBillingLoading(true)
     fetch(`/api/jobs/${jobId}/stripe-summary`)
       .then(r => r.ok ? r.json() : null)

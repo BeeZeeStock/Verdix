@@ -55,6 +55,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (session?.user) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setFullName(session.user.name ?? '')
     }
     fetch('/api/org').then(r => r.json()).then(data => {

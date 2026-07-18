@@ -352,6 +352,7 @@ export function InvoicesTab({ jobId, billingPlatform, onNavigate }: {
 
   useEffect(() => {
     if (!jobId) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true)
     fetch(`/api/jobs/${jobId}/invoices`)
       .then(r => r.json())

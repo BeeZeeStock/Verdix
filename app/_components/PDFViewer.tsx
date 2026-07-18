@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
+import type { PDFDocumentProxy } from 'pdfjs-dist'
 
 function norm(s: string) {
   return s.replace(/[€$£¥,\s\-–—]/g, '').toLowerCase()
@@ -15,7 +16,7 @@ interface Props {
 export default function PDFViewer({ url, section }: Props) {
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [numPages, setNumPages] = useState(0)
-  const pdfRef = useRef<any>(null)
+  const pdfRef = useRef<PDFDocumentProxy | null>(null)
   const wrapperMap = useRef<Map<number, HTMLDivElement>>(new Map())
   const sectionRef = useRef<string | undefined>(undefined)
 
@@ -23,7 +24,7 @@ export default function PDFViewer({ url, section }: Props) {
     let dead = false
     ;(async () => {
       try {
-        const pdfjs = (await import('pdfjs-dist')) as any
+        const pdfjs = await import('pdfjs-dist')
         pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
         const pdf = await pdfjs.getDocument(url).promise
         if (dead) return
@@ -139,7 +140,7 @@ export default function PDFViewer({ url, section }: Props) {
     textDiv.style.cssText = `position:absolute;top:0;left:0;width:${vp.width}px;height:${vp.height}px;overflow:hidden;line-height:1;`
     wrapper.appendChild(textDiv)
 
-    const { TextLayer } = (await import('pdfjs-dist')) as any
+    const { TextLayer } = await import('pdfjs-dist')
     const tl = new TextLayer({ textContentSource: await page.getTextContent(), container: textDiv, viewport: vp })
     await tl.render()
     textDiv.querySelectorAll('span').forEach((s: HTMLElement) => { s.style.color = 'transparent' })

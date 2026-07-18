@@ -84,7 +84,7 @@ export default function LearnedRulesPage() {
           <div className="px-6 py-16 text-center">
             <i className="ti ti-bolt text-stone/30 block mb-3" style={{ fontSize: 32 }} />
             <p className="text-sm text-stone mb-2">No learned rules yet.</p>
-            <p className="text-xs text-stone/60">When you correct an extraction and check "Remember this", it appears here.</p>
+            <p className="text-xs text-stone/60">When you correct an extraction and check &quot;Remember this&quot;, it appears here.</p>
           </div>
         ) : (
           <table className="w-full">

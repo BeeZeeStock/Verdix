@@ -22,7 +22,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   const org = await getActiveOrg()
 
-  let billing = org ? await getBillingContext(org.orgId).catch(() => null) : null
+  const billing = org ? await getBillingContext(org.orgId).catch(() => null) : null
 
   return (
     <div className="flex flex-col md:flex-row md:h-screen bg-cream">

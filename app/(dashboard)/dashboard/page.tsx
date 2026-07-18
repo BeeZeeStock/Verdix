@@ -241,7 +241,7 @@ export default async function DashboardPage() {
                 </div>
                 <h3 className="text-sm font-semibold text-ink mb-1.5">Audit a customer invoice</h3>
                 <p className="text-xs text-stone leading-relaxed mb-5 flex-1">
-                  Compare what you've invoiced against what the contract actually says. Verdix flags
+                  Compare what you&apos;ve invoiced against what the contract actually says. Verdix flags
                   billing discrepancies and quantifies the gap.
                 </p>
                 <Link

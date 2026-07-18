@@ -66,7 +66,7 @@ function BillingPageInner() {
       body: JSON.stringify({ planId, includePiiAddon }),
     })
     const data = await res.json()
-    if (data.url) window.location.href = data.url
+    if (data.url) window.location.assign(data.url)
     else setUpgrading(null)
   }
 
@@ -97,7 +97,7 @@ function BillingPageInner() {
     setPortalLoading(true)
     const res = await fetch('/api/billing/portal', { method: 'POST' })
     const data = await res.json()
-    if (data.url) window.location.href = data.url
+    if (data.url) window.location.assign(data.url)
     else setPortalLoading(false)
   }
 
@@ -294,7 +294,7 @@ function BillingPageInner() {
           {showEnterprise && (
             <div className="px-6 pb-6 border-t border-forest/8 pt-5 space-y-3">
               {entSent ? (
-                <p className="text-sm text-forest font-medium">Thanks! We'll be in touch within one business day.</p>
+                <p className="text-sm text-forest font-medium">Thanks! We&apos;ll be in touch within one business day.</p>
               ) : (
                 <>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

@@ -16,6 +16,7 @@ type Discount   = { discount_pct?: number; discount_amount?: number; discount_ty
 type Tier       = { tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string }
 
 type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null; description?: string | null }
+type AdditionalRecurringFee = { fee_label: string; amount: number; description?: string | null }
 
 type Terms = {
   id?: string
@@ -33,6 +34,7 @@ type Terms = {
   ramp_schedule?: { start_date: string; end_date: string; monthly_fee: number; label?: string }[]
   escalators?: Escalator[]; discounts?: Discount[]; overage_tiers?: Tier[]
   one_time_fees?: OneTimeFee[]
+  additional_recurring_fees?: AdditionalRecurringFee[]
   field_sources?: Record<string, string>
   extraction_confidence?: string; extraction_notes?: string
 }
@@ -94,7 +96,8 @@ function computeContractTCV(terms: Terms | undefined, lineItems: LineItem[]): nu
   const escalators   = terms.escalators  ?? []
   const yearPricing  = terms.year_pricing
   const rampSchedule = terms.ramp_schedule && terms.ramp_schedule.length > 0 ? terms.ramp_schedule : null
-  const baseMonthly  = terms.base_monthly_fee ?? (terms.base_annual_fee ? terms.base_annual_fee / 12 : 0)
+  const baseMonthly       = terms.base_monthly_fee ?? (terms.base_annual_fee ? terms.base_annual_fee / 12 : 0)
+  const additionalMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => s + Number(f.amount ?? 0), 0)
 
   function monthlyBaseFor(monthIdx: number, date: Date): number {
     if (rampSchedule) {
@@ -121,7 +124,7 @@ function computeContractTCV(terms: Terms | undefined, lineItems: LineItem[]): nu
 
   while (cursor <= endMonth) {
     const md = new Date(cursor)
-    let amount = monthlyBaseFor(loopIdx, md)
+    let amount = monthlyBaseFor(loopIdx, md) + additionalMonthly
 
     // Skip escalators when ramp_schedule is present (rates already baked in)
     if (!yearPricing && !rampSchedule) {
@@ -175,7 +178,11 @@ function buildContractSummary(
       ? `${fmt(vals[0], cur)}/year subscription`
       : `multi-year pricing (${vals.map(v => fmt(v, cur)).join(' → ')}/yr)`
   } else if (terms.base_monthly_fee) {
-    pricing = `flat ${fmt(terms.base_monthly_fee, cur)}/month subscription`
+    const addlMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => s + Number(f.amount ?? 0), 0)
+    const totalMonthly = terms.base_monthly_fee + addlMonthly
+    pricing = addlMonthly > 0
+      ? `combined ${fmt(totalMonthly, cur)}/month subscription`
+      : `flat ${fmt(terms.base_monthly_fee, cur)}/month subscription`
   } else if (terms.base_annual_fee) {
     pricing = `${fmt(terms.base_annual_fee, cur)}/year subscription`
   } else {
@@ -1418,6 +1425,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // Fetch a fresh signed URL whenever the PDF drawer opens (stored URL may be expired)
   useEffect(() => {
     if (!drawer.open || pdfUrl) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPdfUrlError(false)
     fetch(`/api/jobs/${id}/pdf-url`)
       .then(async r => {
@@ -2013,7 +2021,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-5">Pricing</h2>
                 <div className="grid grid-cols-3 gap-8">
                   {terms?.base_monthly_fee && (
-                    <BigValue label="Monthly fee" value={fmt(terms.base_monthly_fee, cur)} unit="/ month"
+                    <BigValue label="Monthly fee"
+                      value={fmt(terms.base_monthly_fee + (terms.additional_recurring_fees ?? []).reduce((s, f) => s + Number(f.amount ?? 0), 0), cur)}
+                      unit="/ month"
                       warn={baseItem ? baseItem.confidence_score < 0.95 && !correction(baseItem.id) : false}>
                       {baseItem && baseItem.confidence_score < 0.95 && (
                         <CorrectionInput value={correction(baseItem.id)} onChange={v => setCorr(baseItem.id, v)} />

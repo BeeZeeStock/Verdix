@@ -59,6 +59,7 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
     setLoading(false)
   }
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchEntities() }, [id])
 
   const approve = async (entityId: string) => {

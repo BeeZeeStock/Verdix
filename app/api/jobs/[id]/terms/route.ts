@@ -16,7 +16,7 @@ export async function PATCH(
     'base_monthly_fee', 'base_annual_fee', 'billing_frequency',
     'auto_renews', 'renewal_notice_days',
   ]
-  const JSON_FIELDS = ['escalators', 'discounts', 'ramp_schedule', 'year_pricing']
+  const JSON_FIELDS = ['escalators', 'discounts', 'ramp_schedule', 'year_pricing', 'overage_tiers', 'additional_recurring_fees']
 
   const updates: Record<string, unknown> = {}
   for (const f of JSON_FIELDS)   if (body[f] !== undefined) updates[f] = body[f]

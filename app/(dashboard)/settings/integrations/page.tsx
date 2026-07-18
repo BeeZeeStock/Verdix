@@ -512,6 +512,7 @@ export default function IntegrationsPage() {
     setLoading(false)
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load() }, [load])
 
   const isConnected = (id: string) =>

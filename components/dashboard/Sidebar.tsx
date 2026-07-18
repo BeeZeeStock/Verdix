@@ -168,6 +168,7 @@ export function Sidebar() {
   const userName = session?.user?.name ?? session?.user?.email?.split('@')[0] ?? 'Account'
   const initials = userName.slice(0, 1).toUpperCase()
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setOpen(false) }, [pathname])
 
   return (
