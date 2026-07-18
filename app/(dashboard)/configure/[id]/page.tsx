@@ -2146,32 +2146,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
-            {/* ── 5. Pricing Calculations ── */}
-            {terms?.extraction_notes && terms?.year_pricing && (() => {
-              const calcRows = Object.keys(terms.year_pricing).map(yr => ({
-                label: yr.replace('year', 'Year '),
-                note: getYearNote(terms.extraction_notes, yr),
-              })).filter(r => r.note)
-              if (calcRows.length === 0) return null
-              return (
-                <div className="bg-white rounded-2xl border border-forest/10 p-6">
-                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-1">Pricing calculations</h2>
-                  <p className="text-[11px] text-stone mb-5">How the contracted values were computed — formulas as extracted from the agreement</p>
-                  <div>
-                    {calcRows.map(({ label, note }, i) => (
-                      <div key={i} className="flex gap-6 py-4"
-                        style={{ borderBottom: i < calcRows.length - 1 ? '1px solid rgba(26,61,43,0.07)' : undefined }}>
-                        <p className="text-[11px] font-semibold text-stone w-16 flex-shrink-0 pt-0.5">{label}</p>
-                        <p className="text-[11.5px] leading-relaxed whitespace-pre-line"
-                          style={{ fontFamily: 'ui-monospace, monospace', color: '#1A3D2B' }}>{note}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )
-            })()}
-
-            {/* ── 6. Billing Configuration ── */}
+            {/* ── 5. Billing Configuration ── */}
             <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
               <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
                 <div>
@@ -2235,7 +2210,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   </div>
                   <p className="text-[10px] text-stone/50 mt-4">
                     Platform: <span className="font-medium text-stone/70">Stripe</span>
-                    <span className="mx-1.5">·</span>CRM integrations (Salesforce, HubSpot) coming soon
                   </p>
                 </div>
               )}
@@ -2255,11 +2229,35 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               )}
             </div>
 
-            {/* ── 7. Stripe Billing Setup (live pull) ── */}
+            {/* ── 6. Stripe Billing Setup (live pull) ── */}
             {isConfigured && billingPlatform === 'stripe' && (
               <StripeSummaryCard jobId={id} />
             )}
 
+            {/* ── 7. Pricing Calculations ── */}
+            {terms?.extraction_notes && terms?.year_pricing && (() => {
+              const calcRows = Object.keys(terms.year_pricing).map(yr => ({
+                label: yr.replace('year', 'Year '),
+                note: getYearNote(terms.extraction_notes, yr),
+              })).filter(r => r.note)
+              if (calcRows.length === 0) return null
+              return (
+                <div className="bg-white rounded-2xl border border-forest/10 p-6">
+                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-1">Pricing calculations</h2>
+                  <p className="text-[11px] text-stone mb-5">How the contracted values were computed — formulas as extracted from the agreement</p>
+                  <div>
+                    {calcRows.map(({ label, note }, i) => (
+                      <div key={i} className="flex gap-6 py-4"
+                        style={{ borderBottom: i < calcRows.length - 1 ? '1px solid rgba(26,61,43,0.07)' : undefined }}>
+                        <p className="text-[11px] font-semibold text-stone w-16 flex-shrink-0 pt-0.5">{label}</p>
+                        <p className="text-[11.5px] leading-relaxed whitespace-pre-line"
+                          style={{ fontFamily: 'ui-monospace, monospace', color: '#1A3D2B' }}>{note}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
 
             {/* ── Warning: missing dates ── */}
             {(!terms?.contract_start_date || !terms?.contract_end_date) && (
