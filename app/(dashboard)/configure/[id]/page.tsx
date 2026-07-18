@@ -4,7 +4,6 @@ import { useState, useEffect, useRef, use } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
-import { RevenueScheduleTable } from '@/app/_components/RevenueScheduleTable'
 import { InvoicesTab } from '@/app/_components/InvoicesTab'
 import { StripeSummaryCard } from '@/app/_components/StripeSummaryCard'
 
@@ -2261,15 +2260,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               <StripeSummaryCard jobId={id} />
             )}
 
-            {/* ── Revenue schedule ── */}
-            {terms?.contract_start_date && terms?.contract_end_date &&
-              (terms?.base_monthly_fee || terms?.base_annual_fee || terms?.year_pricing ||
-               (terms?.ramp_schedule && terms.ramp_schedule.length > 0)) && (
-              <div className="bg-white rounded-2xl border border-forest/10 p-6">
-                <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-5">Revenue schedule</h2>
-                <RevenueScheduleTable terms={terms} items={items} cur={cur} />
-              </div>
-            )}
 
             {/* ── Warning: missing dates ── */}
             {(!terms?.contract_start_date || !terms?.contract_end_date) && (
