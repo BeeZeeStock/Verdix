@@ -25,6 +25,8 @@ type InvoiceInfo = {
   pdfUrl: string | null
   hostedUrl: string | null
   feeLabel?: string | null
+  yearNum?: number | null
+  scheduledDate?: string | null
 }
 
 type YearPayment = {
@@ -45,6 +47,7 @@ type OneTimeFee = {
 type Summary = {
   subscription: SubscriptionInfo
   invoices: InvoiceInfo[]
+  annualDraftInvoices: InvoiceInfo[]
   oneTimeInvoices: InvoiceInfo[]
   paymentSchedule: YearPayment[] | null
   oneTimeFees: OneTimeFee[]
@@ -162,7 +165,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
 
   if (!summary) return null
 
-  const { subscription: sub, invoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency } = summary
+  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency } = summary
 
   const now = new Date()
   const currentYearNum = paymentSchedule?.find(y => {
@@ -176,6 +179,13 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
   // the contract start date (invoice created Jul 18 but Year 1 starts Aug 1).
   const sortedSubscriptionInvoices = [...invoices].sort(
     (a, b) => new Date(a.created).getTime() - new Date(b.created).getTime()
+  )
+
+  // Index pre-created annual drafts by year number for O(1) lookup in the table.
+  const annualDraftByYear = new Map<number, InvoiceInfo>(
+    (annualDraftInvoices ?? [])
+      .filter(inv => inv.yearNum != null)
+      .map(inv => [inv.yearNum!, inv])
   )
 
   return (
@@ -243,10 +253,11 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
             <tbody>
               {paymentSchedule.map(y => {
                 const isCurrent = y.year === currentYearNum
-                // Match by position: the n-th subscription invoice = Year n.
-                // Date-range matching fails when the subscription starts before
-                // the contract year (e.g. created Jul 18 but Year 1 starts Aug 1).
-                const matchedInvoice = sortedSubscriptionInvoices[y.year - 1]
+                // Primary: subscription invoice matched by position (1st = Year 1, etc.)
+                const subscriptionInvoice = sortedSubscriptionInvoices[y.year - 1]
+                // Fallback: pre-created annual_base draft for this year
+                const draftInvoice = !subscriptionInvoice ? annualDraftByYear.get(y.year) : undefined
+                const displayInvoice = subscriptionInvoice ?? draftInvoice
                 return (
                   <tr key={y.year} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
                     <td className="py-2.5 pr-6 text-[12px] font-medium" style={{ color: isCurrent ? '#1A3D2B' : '#3D3935' }}>
@@ -264,17 +275,20 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
                       {fmt(y.amount, y.currency)}
                     </td>
                     <td className="py-2.5 text-[11px]">
-                      {matchedInvoice
+                      {displayInvoice
                         ? <div className="flex items-center gap-2">
-                            <StatusPill status={matchedInvoice.status} />
-                            {matchedInvoice.number && <span className="text-stone font-mono">{matchedInvoice.number}</span>}
-                            {matchedInvoice.hostedUrl && (
-                              <a href={matchedInvoice.hostedUrl} target="_blank" rel="noreferrer" className="text-forest hover:text-sage" title="View invoice">
+                            <StatusPill status={displayInvoice.status} />
+                            {draftInvoice && !subscriptionInvoice && (
+                              <span className="text-[9px] text-stone/60 italic">pre-created</span>
+                            )}
+                            {displayInvoice.number && <span className="text-stone font-mono">{displayInvoice.number}</span>}
+                            {displayInvoice.hostedUrl && (
+                              <a href={displayInvoice.hostedUrl} target="_blank" rel="noreferrer" className="text-forest hover:text-sage" title="View invoice">
                                 <i className="ti ti-external-link" style={{ fontSize: 11 }} />
                               </a>
                             )}
                           </div>
-                        : <span className="text-stone/50">{y.year > (currentYearNum ?? 0) ? 'Not yet generated' : 'No invoice found'}</span>
+                        : <span className="text-stone/50">No invoice found</span>
                       }
                     </td>
                   </tr>

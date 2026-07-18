@@ -227,6 +227,57 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
     }
   }
 
+  // ── 6b. Pre-create draft invoices for future contract years ──────────────
+  // Years 2, 3, etc. are created immediately as drafts (auto_advance: false)
+  // so the full billing schedule is visible from day one. When each year's
+  // anniversary arrives, the webhook finds this draft, injects overages, and
+  // finalizes it — discarding Stripe's auto-generated subscription invoice.
+  if (isYearPricing && terms.year_pricing && jobId) {
+    const fmtLabel = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
+    const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date) : new Date()
+    const daysUntilDue  = terms.payment_terms_days ?? 30
+
+    await Promise.all(
+      Object.entries(terms.year_pricing)
+        .filter(([key]) => parseInt(key.replace('year', ''), 10) > 1)
+        .map(async ([key, amount]) => {
+          const yearNum = parseInt(key.replace('year', ''), 10)
+
+          const yearStart = new Date(contractStart)
+          yearStart.setFullYear(yearStart.getFullYear() + yearNum - 1)
+          const yearEnd = new Date(yearStart)
+          yearEnd.setFullYear(yearEnd.getFullYear() + 1)
+          yearEnd.setDate(yearEnd.getDate() - 1)
+
+          const description = `Base subscription — Year ${yearNum} (${fmtLabel(yearStart)} – ${fmtLabel(yearEnd)})`
+
+          const draftInv = await stripe.invoices.create({
+            customer:                       customer.id,
+            collection_method:              'send_invoice',
+            days_until_due:                 daysUntilDue,
+            auto_advance:                   false,   // stay as draft until we finalize
+            pending_invoice_items_behavior: 'exclude',
+            metadata: {
+              verdix_job:      jobId,
+              verdix_contract: contractId,
+              invoice_type:    'annual_base',
+              year:            String(yearNum),
+              scheduled_date:  yearStart.toISOString().slice(0, 10),
+            },
+          })
+
+          await stripe.invoiceItems.create({
+            customer:    customer.id,
+            invoice:     draftInv.id,
+            amount:      Math.round(amount * 100),
+            currency:    cur,
+            description,
+            metadata:    { verdix_job: jobId, invoice_type: 'annual_base', year: String(yearNum) },
+          })
+        })
+    )
+  }
+
   // ── 7. Create standalone invoices for one-time fees ───────────────────────
   // Each fee gets its own Stripe invoice with the exact due date from the
   // contract. These are completely separate from the recurring subscription

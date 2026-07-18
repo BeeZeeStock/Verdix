@@ -81,15 +81,25 @@ export async function GET(
     const recurringInterval      = baseItem?.price?.recurring?.interval       ?? 'month'
     const recurringIntervalCount = baseItem?.price?.recurring?.interval_count ?? 1
 
-    // Separate standalone one-time fee invoices from subscription invoices.
+    // Separate standalone invoices from subscription invoices.
     // Subscription invoices are returned by invoices.list({ subscription: subId }).
-    // Standalone invoices are those belonging to the customer with no subscription
-    // and with verdix_job metadata matching this job.
+    // Standalone invoices have no subscription and carry verdix_job metadata.
+    // They fall into two categories:
+    //   annual_base — pre-created year 2/3 drafts (invoice_type: 'annual_base')
+    //   one_time    — PS / implementation fees (fee_type: 'one_time')
     const subscriptionInvIds = new Set(subscriptionInvRes.data.map(inv => inv.id))
     const standaloneInvoices = allCustomerInvRes.data.filter(inv => {
       if (subscriptionInvIds.has(inv.id)) return false
       const meta = inv.metadata as Record<string, string> | null
       return meta?.verdix_job === id
+    })
+    const annualDraftInvoices = standaloneInvoices.filter(inv => {
+      const meta = inv.metadata as Record<string, string> | null
+      return meta?.invoice_type === 'annual_base'
+    })
+    const oneTimeStandaloneInvoices = standaloneInvoices.filter(inv => {
+      const meta = inv.metadata as Record<string, string> | null
+      return meta?.invoice_type !== 'annual_base'
     })
 
     // current_period_start/end were removed in the dahlia API; derive from the
@@ -110,18 +120,24 @@ export async function GET(
       ? sub.cancel_at_period_end
       : false
 
-    const mapInvoice = (inv: import('stripe').Stripe.Invoice) => ({
-      id:          inv.id,
-      number:      inv.number,
-      status:      inv.status,
-      amount:      (inv.amount_due ?? 0) / 100,
-      currency:    inv.currency?.toUpperCase() ?? 'EUR',
-      dueDate:     inv.due_date   ? new Date(inv.due_date   * 1000).toISOString() : null,
-      created:     new Date(inv.created * 1000).toISOString(),
-      pdfUrl:      inv.invoice_pdf         ?? null,
-      hostedUrl:   inv.hosted_invoice_url  ?? null,
-      feeLabel:    (inv.metadata as Record<string, string> | null)?.fee_label ?? null,
-    })
+    const mapInvoice = (inv: import('stripe').Stripe.Invoice) => {
+      const meta = inv.metadata as Record<string, string> | null
+      return {
+        id:          inv.id,
+        number:      inv.number,
+        status:      inv.status,
+        amount:      (inv.amount_due ?? 0) / 100,
+        currency:    inv.currency?.toUpperCase() ?? 'EUR',
+        dueDate:     inv.due_date   ? new Date(inv.due_date   * 1000).toISOString() : null,
+        created:     new Date(inv.created * 1000).toISOString(),
+        pdfUrl:      inv.invoice_pdf         ?? null,
+        hostedUrl:   inv.hosted_invoice_url  ?? null,
+        feeLabel:    meta?.fee_label    ?? null,
+        // For annual_base drafts: which contract year this covers
+        yearNum:     meta?.year ? parseInt(meta.year, 10) : null,
+        scheduledDate: meta?.scheduled_date ?? null,
+      }
+    }
 
     return NextResponse.json({
       subscription: {
@@ -135,10 +151,12 @@ export async function GET(
         isTest: !subscription.livemode,
         dashboardUrl: `https://dashboard.stripe.com/${!subscription.livemode ? 'test/' : ''}subscriptions/${subscription.id}`,
       },
-      // Annual base-fee invoices from the subscription
+      // Annual base-fee invoices from the subscription (Year 1 + finalized later years)
       invoices: subscriptionInvRes.data.map(mapInvoice),
+      // Pre-created annual base draft invoices for future years (Year 2+, status: draft)
+      annualDraftInvoices: annualDraftInvoices.map(mapInvoice),
       // Separate one-time fee invoices (one per PS fee, created at push time)
-      oneTimeInvoices: standaloneInvoices.map(mapInvoice),
+      oneTimeInvoices: oneTimeStandaloneInvoices.map(mapInvoice),
       paymentSchedule,
       oneTimeFees: terms?.one_time_fees ?? [],
       contractStart: terms?.contract_start_date ?? null,

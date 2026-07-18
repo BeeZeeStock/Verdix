@@ -135,48 +135,72 @@ export async function POST(req: NextRequest) {
       excess_quantity?: number
     }[] = []
 
-    // ── 3. Inject correct base fee for year_pricing contracts ──────────────
+    // ── 3. Compute year position relative to contract ──────────────────────
     const isYearPricing = !!(terms.year_pricing && Object.keys(terms.year_pricing).length > 0)
 
-    // Compute billing position relative to contract start — used for both
-    // year pricing and one-time fee due-date matching.
     const contractStart  = terms.contract_start_date ? new Date(terms.contract_start_date) : null
     const monthsElapsed  = contractStart
       ? (periodStart.getFullYear() - contractStart.getFullYear()) * 12 +
         (periodStart.getMonth()    - contractStart.getMonth())
       : 0
-    // Clamp to valid year range: subscription may start slightly before or after
-    // the contract start date, so monthsElapsed can be negative or overshoot.
     const rawYearNum = Math.floor(monthsElapsed / 12) + 1
     const yearNum    = Math.max(1, rawYearNum)
 
+    // ── 3a. Redirect to pre-created annual draft for Year 2+ ──────────────
+    // billing-writer pre-creates draft invoices for all future years at push
+    // time (auto_advance: false). When Stripe auto-generates the subscription
+    // invoice for Year 2+, we redirect to the pre-created draft instead:
+    // inject items into it, finalize it, and delete the auto-generated one.
+    let targetInvoiceId = invoice.id
+    if (yearNum > 1) {
+      const drafts = await stripe.invoices.list({ customer: customerId, status: 'draft', limit: 50 })
+      const preDraft = drafts.data.find(inv => {
+        const meta = inv.metadata as Record<string, string> | null
+        return meta?.verdix_job === job.id &&
+               meta?.invoice_type === 'annual_base' &&
+               meta?.year === String(yearNum)
+      })
+      if (preDraft) {
+        targetInvoiceId = preDraft.id
+        // Remove the subscription's auto-generated draft so only the
+        // pre-created invoice is sent to the customer.
+        await stripe.invoices.del(invoice.id).catch(() => null)
+      }
+    }
+
+    // ── 3b. Inject base fee ────────────────────────────────────────────────
     if (isYearPricing && contractStart && terms.year_pricing) {
       const yp = terms.year_pricing
-      const totalYears = Object.keys(yp).length
+      const totalYears  = Object.keys(yp).length
       const clampedYear = Math.min(yearNum, totalYears)
-      const yearKey   = `year${clampedYear}`
-      const lastKey   = `year${totalYears}`
-      const annualFee = yp[yearKey] ?? yp[lastKey] ?? 0
+      const annualFee   = yp[`year${clampedYear}`] ?? yp[`year${totalYears}`] ?? 0
 
-      // Use contract year dates rather than invoice.period_start/end — on the first
-      // invoice Stripe sets both to the same day, which would show "Jul 2026 – Jul 2026".
-      const yearStartDate = new Date(contractStart!)
+      const yearStartDate = new Date(contractStart)
       yearStartDate.setFullYear(yearStartDate.getFullYear() + (clampedYear - 1))
       const yearEndDate = new Date(yearStartDate)
       yearEndDate.setFullYear(yearEndDate.getFullYear() + 1)
       yearEndDate.setDate(yearEndDate.getDate() - 1)
-      const periodLabel = formatPeriod(yearStartDate, yearEndDate)
-      const description = `Base subscription — Year ${yearNum} (${periodLabel})`
+      const description = `Base subscription — Year ${yearNum} (${formatPeriod(yearStartDate, yearEndDate)})`
 
-      await stripe.invoiceItems.create({
-        customer:    customerId,
-        invoice:     invoice.id,
-        amount:      Math.round(annualFee * 100),
-        currency:    (terms.currency ?? 'EUR').toLowerCase(),
-        description,
-      })
-
-      injectedLines.push({ description, amount: annualFee, currency: terms.currency, type: 'base' })
+      // Skip if it's a pre-created draft that already has the base fee item.
+      const existingItems = targetInvoiceId !== invoice.id
+        ? await stripe.invoiceItems.list({ invoice: targetInvoiceId, limit: 10 })
+        : { data: [] }
+      const hasBaseItem = existingItems.data.some(item =>
+        (item.description ?? '').startsWith('Base subscription')
+      )
+      if (!hasBaseItem) {
+        await stripe.invoiceItems.create({
+          customer:    customerId,
+          invoice:     targetInvoiceId,
+          amount:      Math.round(annualFee * 100),
+          currency:    (terms.currency ?? 'EUR').toLowerCase(),
+          description,
+        })
+        injectedLines.push({ description, amount: annualFee, currency: terms.currency, type: 'base' })
+      } else {
+        injectedLines.push({ description, amount: annualFee, currency: terms.currency, type: 'base' })
+      }
     }
 
     // ── 4. Read meter totals + apply tariff logic per usage type ───────────
@@ -203,7 +227,7 @@ export async function POST(req: NextRequest) {
 
         await stripe.invoiceItems.create({
           customer:    customerId,
-          invoice:     invoice.id,
+          invoice:     targetInvoiceId,
           amount:      Math.round(amount * 100),
           currency:    (terms.currency ?? 'EUR').toLowerCase(),
           description,
@@ -235,7 +259,7 @@ export async function POST(req: NextRequest) {
       .from('computed_invoices')
       .insert({
         job_id:                   job.id,
-        external_invoice_id:      invoice.id,
+        external_invoice_id:      targetInvoiceId,
         external_subscription_id: subscriptionId,
         connector:                'stripe',
         period_start:             periodStart.toISOString(),
@@ -267,7 +291,7 @@ export async function POST(req: NextRequest) {
           .update({ status: 'VALIDATED', validation_result: [] })
           .eq('id', computedInvoiceId)
 
-        await stripe.invoices.finalizeInvoice(invoice.id).catch(err => {
+        await stripe.invoices.finalizeInvoice(targetInvoiceId).catch(err => {
           console.error('[stripe/webhook] finalise failed', err)
         })
       } else {
