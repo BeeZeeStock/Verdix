@@ -387,14 +387,22 @@ export function InvoicesTab({ jobId }: { jobId: string }) {
     return (
       <div className="flex flex-col items-center justify-center h-48 gap-2">
         <i className="ti ti-file-invoice text-stone/30" style={{ fontSize: 40 }} />
-        <p className="text-sm text-stone">No invoices yet</p>
-        <p className="text-xs text-stone/60">Invoices appear here once the billing cycle runs and overages are computed.</p>
+        <p className="text-sm text-stone">No consumption invoices yet</p>
+        <p className="text-xs text-stone/60 text-center max-w-xs">These appear automatically after each billing cycle runs — Verdix computes overages and finalises the invoice in Stripe.</p>
       </div>
     )
   }
 
   return (
     <div className="px-8 py-8 space-y-6">
+
+      {/* ── Description ── */}
+      <div className="bg-forest/[0.04] border border-forest/10 rounded-xl px-4 py-3">
+        <p className="text-[11px] text-stone leading-relaxed">
+          <span className="font-semibold text-ink">Consumption-adjusted invoices only.</span>{' '}
+          Each entry is a billing period invoice that Verdix computed and finalised in Stripe — reflecting the contracted base fee plus any usage overages for that period. One-time fees and future scheduled invoices are shown separately in the <span className="font-medium text-ink">Configured billing schedule</span> on the Revenue model tab.
+        </p>
+      </div>
 
       {/* ── Summary KPIs ── */}
       <div className="grid grid-cols-3 gap-4">

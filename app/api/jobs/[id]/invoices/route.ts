@@ -15,6 +15,7 @@ export async function GET(
       'status, paid_at, validation_result, external_invoice_pdf_url, created_at',
     )
     .eq('job_id', id)
+    .not('external_subscription_id', 'is', null)   // subscription-period invoices only
     .order('period_start', { ascending: false })
 
   if (error) {
