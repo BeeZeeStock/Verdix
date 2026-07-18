@@ -1441,6 +1441,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [escEditing,   setEscEditing]   = useState<number | null>(null)
   const [escEditValue, setEscEditValue] = useState('')
   const [escSaving,    setEscSaving]    = useState(false)
+  const [tierEditing,   setTierEditing]   = useState<number | null>(null)
+  const [tierEditValue, setTierEditValue] = useState('')
+  const [tierSaving,    setTierSaving]    = useState(false)
   const [dateDraftStart, setDateDraftStart] = useState('')
   const [dateDraftEnd,   setDateDraftEnd]   = useState('')
   const [dateEditing,    setDateEditing]    = useState<'start' | 'end' | null>(null)
@@ -1485,6 +1488,24 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     }).then(() => fetchJob()).catch(() => {})
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [needsReview, job?.execute_status, id, items.length])
+
+  const saveTierRate = async (idx: number) => {
+    const rate = parseFloat(tierEditValue.replace(/[^0-9.]/g, ''))
+    if (isNaN(rate) || !terms?.overage_tiers) return
+    setTierSaving(true)
+    try {
+      const newTiers = terms.overage_tiers.map((t, i) => i === idx ? { ...t, rate_per_unit: rate } : t)
+      await fetch(`/api/jobs/${id}/terms`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ overage_tiers: newTiers }),
+      })
+      setTierEditing(null)
+      await fetchJob()
+    } finally {
+      setTierSaving(false)
+    }
+  }
 
   const saveEscalatorPct = async (idx: number) => {
     const pct = parseFloat(escEditValue.replace(/[^0-9.]/g, ''))
@@ -1642,12 +1663,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
   const tiers = terms?.overage_tiers ?? []
 
-  // Group overage tiers by unit_type for dynamic display
-  const chargingGroups = new Map<string, typeof tiers>()
-  for (const t of tiers) {
-    const key = t.unit_type ?? 'Other'
+  // Group overage tiers by unit_type for dynamic display; preserve original index for edits
+  const chargingGroups = new Map<string, Array<{ tier: Tier; origIdx: number }>>()
+  for (let i = 0; i < tiers.length; i++) {
+    const key = tiers[i].unit_type ?? 'Other'
     if (!chargingGroups.has(key)) chargingGroups.set(key, [])
-    chargingGroups.get(key)!.push(t)
+    chargingGroups.get(key)!.push({ tier: tiers[i], origIdx: i })
   }
 
   // Keep backward-compat refs used by buildContractSummary
@@ -1930,20 +1951,59 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       <div key={unitType}>
                         <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-3 capitalize">{unitType}</p>
                         <div className="grid grid-cols-3 gap-8">
-                          {tierList.map((t, i) => (
-                            <BigValue key={i}
-                              label={t.tier_label ?? `Tier ${i + 1}`}
-                              value={t.rate_per_unit != null
-                                ? (t.rate_per_unit < 0.01
-                                    ? `${cur === 'EUR' ? '€' : '$'}${t.rate_per_unit.toFixed(4).replace(/\.?0+$/, '')}`
-                                    : fmt(t.rate_per_unit, cur))
-                                : '—'}
-                              unit={`/ ${t.unit_type ?? 'unit'}`}
-                              note={t.from_unit != null
-                                ? `From unit ${t.from_unit.toLocaleString()}${t.to_unit != null ? ` to ${t.to_unit.toLocaleString()}` : '+'}`
-                                : undefined}
-                            />
-                          ))}
+                          {tierList.map(({ tier: t, origIdx }) => {
+                            const isEditingTier = tierEditing === origIdx
+                            const fmtRate = (r: number) => r < 0.01
+                              ? `${cur === 'EUR' ? '€' : '$'}${r.toFixed(4).replace(/\.?0+$/, '')}`
+                              : fmt(r, cur)
+                            const note = t.from_unit != null
+                              ? `From unit ${t.from_unit.toLocaleString()}${t.to_unit != null ? ` to ${t.to_unit.toLocaleString()}` : '+'}`
+                              : undefined
+                            return (
+                              <div key={origIdx} className="rounded-xl p-4 transition-all"
+                                style={isEditingTier ? { background: '#FFFBEB', border: '1px solid #F59E0B' } : { background: 'transparent' }}>
+                                <div className="flex items-center justify-between mb-2">
+                                  <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em]">{t.tier_label ?? `Tier ${origIdx + 1}`}</p>
+                                  {!isEditingTier && (
+                                    <button onClick={() => { setTierEditValue(t.rate_per_unit != null ? `${t.rate_per_unit}` : ''); setTierEditing(origIdx) }}
+                                      title="Edit this rate" className="text-stone/35 hover:text-forest transition-colors">
+                                      <i className="ti ti-pencil-minus" style={{ fontSize: 12 }} />
+                                    </button>
+                                  )}
+                                </div>
+                                {isEditingTier ? (
+                                  <div className="flex items-center gap-2 mt-1">
+                                    <input autoFocus type="text" value={tierEditValue}
+                                      onChange={e => setTierEditValue(e.target.value)}
+                                      onKeyDown={ev => { if (ev.key === 'Enter') saveTierRate(origIdx); if (ev.key === 'Escape') setTierEditing(null) }}
+                                      placeholder="e.g. 0.035"
+                                      className="flex-1 text-[28px] font-medium bg-transparent outline-none leading-none"
+                                      style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }} />
+                                    <button onClick={() => setTierEditing(null)} className="text-stone/50 hover:text-ink transition-colors p-1 flex-shrink-0" title="Cancel">
+                                      <i className="ti ti-x" style={{ fontSize: 13 }} />
+                                    </button>
+                                    {tierEditValue && (
+                                      <button onClick={() => saveTierRate(origIdx)} disabled={tierSaving} title="Save"
+                                        className="flex items-center justify-center w-8 h-8 rounded-lg text-white transition-colors flex-shrink-0 disabled:opacity-50"
+                                        style={{ background: '#1A3D2B' }}>
+                                        {tierSaving ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : <i className="ti ti-check" style={{ fontSize: 13 }} />}
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div className="flex items-baseline gap-1.5">
+                                      <span className="text-[30px] font-medium leading-none" style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }}>
+                                        {t.rate_per_unit != null ? fmtRate(t.rate_per_unit) : '—'}
+                                      </span>
+                                      <span className="text-[12px] text-stone">/ {t.unit_type ?? 'unit'}</span>
+                                    </div>
+                                    {note && <p className="text-[11px] text-stone mt-1">{note}</p>}
+                                  </>
+                                )}
+                              </div>
+                            )
+                          })}
                         </div>
                       </div>
                     ))}
