@@ -1013,6 +1013,7 @@ function ReviewPanel({
   onClose,
   onRefresh,
   jobId,
+  overageTiers,
 }: {
   items: LineItem[]
   corrections: Record<string, { value: string; remember: boolean }>
@@ -1020,6 +1021,7 @@ function ReviewPanel({
   onClose: () => void
   onRefresh: () => void
   jobId: string
+  overageTiers?: Tier[]
 }) {
   const [saving,    setSaving]    = useState<string | null>(null)
   const [resolved,  setResolved]  = useState<Record<string, 'confirmed' | 'corrected'>>({})
@@ -1088,6 +1090,27 @@ function ReviewPanel({
               fields: { unit_price: price, total_amount: price * (item.quantity || 1), confidence_score: 1 },
             }),
           })
+          // If this is an overage tier, also update contract_terms.overage_tiers so
+          // the Charging parameters display reflects the corrected rate immediately
+          if (overageTiers && overageTiers.length > 0) {
+            const baseName = item.product_name.replace(/\s*—\s*overage\s*$/i, '').trim()
+            const matchIdx = overageTiers.findIndex(t =>
+              t.tier_label && (
+                t.tier_label.toLowerCase() === baseName.toLowerCase() ||
+                item.product_name.toLowerCase().includes(t.tier_label.toLowerCase())
+              )
+            )
+            if (matchIdx >= 0) {
+              const updatedTiers = overageTiers.map((t, i) =>
+                i === matchIdx ? { ...t, rate_per_unit: price } : t
+              )
+              await fetch(`/api/jobs/${jobId}/terms`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ overage_tiers: updatedTiers }),
+              })
+            }
+          }
           // Log the correction for future learning
           await fetch('/api/corrections', {
             method: 'POST',
@@ -2420,6 +2443,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           onClose={() => setReviewPanelOpen(false)}
           onRefresh={fetchJob}
           jobId={id}
+          overageTiers={terms?.overage_tiers}
         />
       )}
 
