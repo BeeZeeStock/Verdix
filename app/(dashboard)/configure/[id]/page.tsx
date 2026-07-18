@@ -2315,7 +2315,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     {approveError && <p className="text-[10px] text-red-500 max-w-xs">{approveError}</p>}
                   </div>
                 )}
-              </div>
             </div>
 
           </div>{/* end terms column */}
