@@ -411,10 +411,10 @@ export function InvoicesTab({ jobId, billingPlatform, onNavigate }: {
               {onNavigate ? (
                 <button onClick={() => onNavigate('terms')}
                   className="font-medium text-forest underline underline-offset-2 hover:text-forest/70 transition-colors">
-                  Contract terms tab under Billing setup
+                  Contract · Commercials tab under Billing setup
                 </button>
               ) : (
-                <span className="font-medium text-ink">Contract terms tab under Billing setup</span>
+                <span className="font-medium text-ink">Contract · Commercials tab under Billing setup</span>
               )}.
               {' '}The full billing schedule including future invoices is on the{' '}
               {onNavigate ? (
