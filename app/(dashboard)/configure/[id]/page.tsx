@@ -1484,6 +1484,45 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     const data = await res.json()
     setJob(data)
     if (data.line_items?.length) setItems(data.line_items)
+
+    // Auto-sync: if line_items have corrected overage rates that are still zero
+    // in contract_terms.overage_tiers, patch terms immediately.
+    // This reconciles corrections saved before the review-panel propagation fix.
+    const tiers: Tier[] = data.contract_terms?.[0]?.overage_tiers ?? []
+    const lineItems: LineItem[] = data.line_items ?? []
+    if (tiers.length > 0 && lineItems.length > 0) {
+      let synced = false
+      const newTiers = tiers.map(t => {
+        if ((t.rate_per_unit ?? 0) > 0) return t  // already has a rate — skip
+        const match = lineItems.find(item => {
+          if (item.unit_price <= 0) return false
+          const baseName = item.product_name.replace(/\s*—\s*overage\s*$/i, '').trim()
+          return t.tier_label && (
+            baseName.toLowerCase() === t.tier_label.toLowerCase() ||
+            item.product_name.toLowerCase().includes(t.tier_label.toLowerCase())
+          )
+        })
+        if (!match) return t
+        synced = true
+        return { ...t, rate_per_unit: match.unit_price }
+      })
+      if (synced) {
+        await fetch(`/api/jobs/${id}/terms`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ overage_tiers: newTiers }),
+        })
+        // Re-fetch once so the UI reflects the synced rates
+        const res2 = await fetch(`/api/jobs/${id}`)
+        if (res2.ok) {
+          const data2 = await res2.json()
+          setJob(data2)
+          if (data2.line_items?.length) setItems(data2.line_items)
+          return data2
+        }
+      }
+    }
+
     return data
   }
 
