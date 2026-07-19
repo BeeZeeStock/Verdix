@@ -106,7 +106,6 @@ function detectEscalatorMisses(
     if (!escalator.escalator_pct || !escalator.effective_date) continue
 
     const effectiveDate = new Date(escalator.effective_date)
-    const expectedRate = baseMonthly * (1 + escalator.escalator_pct / 100)
 
     const postEscalationRecords = records.filter(r => {
       const d = new Date(r.invoiceDate)
@@ -114,19 +113,28 @@ function detectEscalatorMisses(
     })
 
     for (const record of postEscalationRecords) {
+      const invoiceDate   = new Date(record.invoiceDate)
+      // Compound escalation: each year after effective_date adds another escalator_pct layer
+      const monthsElapsed = (invoiceDate.getFullYear() - effectiveDate.getFullYear()) * 12
+        + (invoiceDate.getMonth() - effectiveDate.getMonth())
+      const yearsElapsed  = Math.max(0, Math.floor(monthsElapsed / 12))
+      const compoundMult  = Math.pow(1 + escalator.escalator_pct / 100, yearsElapsed + 1)
+      const expectedRate  = baseMonthly * compoundMult
+
       const billedMonthly = toUSD(record.amountBilled, record.currency) / toUSD(1, currency)
-      const tolerance = expectedRate * 0.01
+      const tolerance     = expectedRate * 0.01
 
       if (billedMonthly < expectedRate - tolerance) {
         const leakageAmount = expectedRate - billedMonthly
+        const yearLabel = yearsElapsed > 0 ? ` (Year ${yearsElapsed + 1} compound)` : ''
         findings.push({
           finding_id: randomUUID(),
           leakage_type: 'ESCALATOR_MISS',
           customer_name: customerName,
           contract_id: contractId,
           invoice_id: record.invoiceId,
-          billing_month: isoMonth(new Date(record.invoiceDate)),
-          description: `Price escalator of ${escalator.escalator_pct}% effective ${escalator.effective_date} not applied. Expected ${currency} ${expectedRate.toFixed(2)}/mo, billed ${record.currency} ${record.amountBilled.toFixed(2)}.`,
+          billing_month: isoMonth(invoiceDate),
+          description: `Price escalator of ${escalator.escalator_pct}% effective ${escalator.effective_date} not fully applied${yearLabel}. Expected ${currency} ${expectedRate.toFixed(2)}/mo, billed ${record.currency} ${record.amountBilled.toFixed(2)}.`,
           contracted_amount: expectedRate,
           billed_amount: billedMonthly,
           leakage_amount: leakageAmount,

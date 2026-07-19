@@ -13,7 +13,8 @@
  */
 
 import { reconcile } from './reconciler'
-import type { ContractTerms, BillingRecord } from './types'
+import { computeMetricOverage, slugifyMetricCode } from './tariff'
+import type { ContractTerms, BillingRecord, OverageTier } from './types'
 
 export type ValidationFinding = {
   check: 'OVERAGE_SPIKE' | 'RATE_INTEGRITY' | 'ESCALATOR_MISS' | 'DISCOUNT_OVERHANG' | 'OVERAGE_UNBILLED'
@@ -70,28 +71,42 @@ export function validateInvoice(
   }
 
   // ── Check 2: Rate integrity ───────────────────────────────────────────────
-  // Extract quantity from the description written by buildOverageDescription()
-  // Format: "<UnitType> overage — <N> excess units @ €<rate>/unit (<total> total, <included> included)"
+  // Re-derive the overage amount from the quantities and contract tiers and compare
+  // against what was actually injected into the invoice.
+  // Description format (from buildOverageDescription in the webhook):
+  //   "<unitType> overage — <billable> excess units @ €<rate>/unit (<total> total, <included> included)"
   for (const line of ovgLines) {
-    const m = line.description.match(/(\d[\d,]*)\s+excess units @ [€$£]?([\d.]+)\/unit/)
-    if (!m) continue
-    const excessUnits = parseInt(m[1].replace(/,/g, ''), 10)
-    const rateFromDesc = parseFloat(m[2])
+    // Parse total quantity + included units from the parenthetical at the end
+    const qtyMatch = line.description.match(/\((\d[\d,]*)\s+total,\s*(\d[\d,]*)\s+included\)/)
+    if (!qtyMatch) continue
+    const totalQty    = parseInt(qtyMatch[1].replace(/,/g, ''), 10)
+    const includedQty = parseInt(qtyMatch[2].replace(/,/g, ''), 10)
 
-    // Find the matching tier rate from the contract
-    const tier = terms.overage_tiers?.[0]
-    if (!tier) continue
-    const expectedAmount = excessUnits * tier.rate_per_unit
+    // Identify which metric this line belongs to (prefix before " overage —")
+    const metricHint = (line.description.split(' overage —')[0] ?? '').trim()
+    const metricSlug = slugifyMetricCode(metricHint)
+
+    // Find the tiers for this metric; fall back to all tiers if no match
+    const matchingTiers = (terms.overage_tiers ?? []).filter(t => {
+      const slug = slugifyMetricCode(t.unit_type ?? '')
+      return slug === metricSlug || slug.includes(metricSlug) || metricSlug.includes(slug)
+    }) as OverageTier[]
+    const tiers = matchingTiers.length > 0 ? matchingTiers : (terms.overage_tiers ?? []) as OverageTier[]
+    if (tiers.length === 0 || tiers.every(t => !t.rate_per_unit)) continue
+
+    // Re-derive using the same graduated-tier function the webhook used
+    const expectedAmount = computeMetricOverage(totalQty, tiers, includedQty)
+    if (expectedAmount <= 0) continue
 
     const diff = Math.abs(line.amount - expectedAmount)
-    const pct  = expectedAmount > 0 ? diff / expectedAmount : 0
+    const pct  = diff / expectedAmount
 
     if (pct > 0.01) {
       findings.push({
         check:       'RATE_INTEGRITY',
         priority:    pct > 0.05 ? 'CRITICAL' : 'HIGH',
-        description: `Injected overage amount (${fmt(line.amount, terms.currency)}) differs from contract rate re-derivation (${fmt(expectedAmount, terms.currency)}) by ${(pct * 100).toFixed(1)}%.`,
-        evidence:    `${excessUnits.toLocaleString()} excess units × ${terms.currency} ${tier.rate_per_unit}/unit = ${fmt(expectedAmount, terms.currency)} (contract); injected: ${fmt(line.amount, terms.currency)}`,
+        description: `Injected overage (${fmt(line.amount, terms.currency)}) differs from contract re-derivation (${fmt(expectedAmount, terms.currency)}) by ${(pct * 100).toFixed(1)}% for ${metricHint}.`,
+        evidence:    `${totalQty.toLocaleString()} total units, ${includedQty.toLocaleString()} included → ${(totalQty - includedQty).toLocaleString()} billable. Re-derived: ${fmt(expectedAmount, terms.currency)}; injected: ${fmt(line.amount, terms.currency)}`,
       })
     }
   }
