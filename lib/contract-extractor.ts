@@ -1,5 +1,5 @@
 import { writeFileSync } from 'fs'
-import { ContractTerms } from './types'
+import { ContractTerms, OverageTier } from './types'
 import { buildLearningContext } from './learning-context'
 import { getAIClient, AI_PROVIDER } from './ai-client'
 
@@ -184,7 +184,7 @@ async function extractFromChunk(text: string, learningContext: string, piiMasked
 
 async function recoverZeroRates(
   contractText: string,
-  zeroTiers: import('./types').OverageTier[],
+  zeroTiers: OverageTier[],
   numberFormat: 'dot' | 'comma',
 ): Promise<Array<{ tier_label: string; rate_per_unit: number }>> {
   const tierList = zeroTiers.map(t => `- "${t.tier_label}" (unit: ${t.unit_type})`).join('\n')

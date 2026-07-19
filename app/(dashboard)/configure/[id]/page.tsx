@@ -37,6 +37,7 @@ type Terms = {
   additional_recurring_fees?: AdditionalRecurringFee[]
   field_sources?: Record<string, string>
   extraction_confidence?: string; extraction_notes?: string
+  number_format?: 'dot' | 'comma'
 }
 
 type LineItem = {
