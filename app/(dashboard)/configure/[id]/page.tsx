@@ -1028,6 +1028,7 @@ function ReviewPanel({
   const [editing,   setEditing]   = useState<string | null>(null)
   const [draftPrice, setDraftPrice] = useState<Record<string, string>>({})
   const [draftName,  setDraftName]  = useState<Record<string, string>>({})
+  const [saveError,  setSaveError]  = useState<Record<string, string>>({})
 
   const resolvedCount = items.filter(i => resolved[i.id] || i.id in corrections).length
   const allDone = resolvedCount === items.length
@@ -1074,61 +1075,82 @@ function ReviewPanel({
   }
 
   const saveCorrection = async (item: LineItem, ctx: ReviewContext) => {
+    setSaveError(e => { const n = { ...e }; delete n[item.id]; return n })
     setSaving(item.id)
     try {
       if (ctx.primaryField === 'unit_price') {
-        const raw   = draftPrice[item.id]?.trim()
-        const price = raw ? parseFloat(raw.replace(/[^0-9.]/g, '')) : null
+        const raw = draftPrice[item.id]?.trim()
+        // Normalize comma decimals (Finnish/German locale) before parsing
+        const normalized = raw ? raw.replace(/[^0-9.,]/g, '').replace(',', '.') : ''
+        const price = normalized ? parseFloat(normalized) : null
 
-        if (price !== null && !isNaN(price)) {
-          // Update the line item record directly (confidence_score: 1 prevents banner from reappearing)
-          await fetch(`/api/jobs/${jobId}/line-items`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              itemId: item.id,
-              fields: { unit_price: price, total_amount: price * (item.quantity || 1), confidence_score: 1 },
-            }),
-          })
-          // If this is an overage tier, also update contract_terms.overage_tiers so
-          // the Charging parameters display reflects the corrected rate immediately
-          if (overageTiers && overageTiers.length > 0) {
-            const baseName = item.product_name.replace(/\s*—\s*overage\s*$/i, '').trim()
-            const matchIdx = overageTiers.findIndex(t =>
-              t.tier_label && (
-                t.tier_label.toLowerCase() === baseName.toLowerCase() ||
-                item.product_name.toLowerCase().includes(t.tier_label.toLowerCase())
-              )
+        if (price === null || isNaN(price)) {
+          setSaveError(e => ({ ...e, [item.id]: 'Please enter a valid number (e.g. 0.035)' }))
+          return
+        }
+
+        // Update the line item record directly (confidence_score: 1 prevents banner from reappearing)
+        const lineRes = await fetch(`/api/jobs/${jobId}/line-items`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            itemId: item.id,
+            fields: { unit_price: price, total_amount: price * (item.quantity || 1), confidence_score: 1 },
+          }),
+        })
+        if (!lineRes.ok) {
+          const err = await lineRes.text().catch(() => lineRes.statusText)
+          setSaveError(e => ({ ...e, [item.id]: `Save failed: ${err}` }))
+          return
+        }
+
+        // If this is an overage tier, also update contract_terms.overage_tiers so
+        // the Charging parameters display reflects the corrected rate immediately
+        if (overageTiers && overageTiers.length > 0) {
+          const baseName = item.product_name.replace(/\s*[—–-]\s*overage\s*$/i, '').trim()
+          const matchIdx = overageTiers.findIndex(t =>
+            t.tier_label && (
+              t.tier_label.toLowerCase() === baseName.toLowerCase() ||
+              item.product_name.toLowerCase().includes(t.tier_label.toLowerCase())
             )
-            if (matchIdx >= 0) {
-              const updatedTiers = overageTiers.map((t, i) =>
-                i === matchIdx ? { ...t, rate_per_unit: price } : t
-              )
-              await fetch(`/api/jobs/${jobId}/terms`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ overage_tiers: updatedTiers }),
-              })
+          )
+          if (matchIdx >= 0) {
+            const updatedTiers = overageTiers.map((t, i) =>
+              i === matchIdx ? { ...t, rate_per_unit: price } : t
+            )
+            const termsRes = await fetch(`/api/jobs/${jobId}/terms`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ overage_tiers: updatedTiers }),
+            })
+            if (!termsRes.ok) {
+              const err = await termsRes.text().catch(() => termsRes.statusText)
+              setSaveError(e => ({ ...e, [item.id]: `Rate saved but charging parameters update failed: ${err}` }))
+              return
             }
           }
-          // Log the correction for future learning
-          await fetch('/api/corrections', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              jobId,
-              fieldName:        'unit_price',
-              extractedValue:   String(item.unit_price),
-              correctedValue:   String(price),
-              correctionReason: `Corrected rate for: ${item.product_name}`,
-              applyToFuture:    true,
-            }),
-          })
-          onCorrect(item.id, String(price))
         }
+
+        // Log the correction for future learning
+        await fetch('/api/corrections', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobId,
+            fieldName:        'unit_price',
+            extractedValue:   String(item.unit_price),
+            correctedValue:   String(price),
+            correctionReason: `Corrected rate for: ${item.product_name}`,
+            applyToFuture:    true,
+          }),
+        })
+        onCorrect(item.id, String(price))
       } else {
         const name = draftName[item.id]?.trim()
-        if (!name) return
+        if (!name) {
+          setSaveError(e => ({ ...e, [item.id]: 'Please enter a name' }))
+          return
+        }
         await Promise.all([
           fetch('/api/corrections', {
             method: 'POST',
@@ -1150,6 +1172,7 @@ function ReviewPanel({
         onCorrect(item.id, name)
       }
 
+      // Only mark resolved if we reached here (all saves succeeded)
       setResolved(r => ({ ...r, [item.id]: 'corrected' }))
       setEditing(null)
       onRefresh()
@@ -1307,27 +1330,44 @@ function ReviewPanel({
                               {ctx.primaryLabel}
                             </label>
                             {ctx.primaryField === 'unit_price' ? (
-                              <input
-                                type="number"
-                                placeholder={ctx.primaryPlaceholder}
-                                value={draftPrice[item.id] ?? ''}
-                                onChange={e => setDraftPrice(d => ({ ...d, [item.id]: e.target.value }))}
-                                onKeyDown={e => { if (e.key === 'Enter') saveCorrection(item, ctx) }}
-                                className="w-full text-sm border rounded-xl px-3 py-2 outline-none"
-                                style={{ borderColor: '#FAC775', background: '#FFFDF5' }}
-                                autoFocus
-                              />
+                              <>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  placeholder={ctx.primaryPlaceholder}
+                                  value={draftPrice[item.id] ?? ''}
+                                  onChange={e => {
+                                    setDraftPrice(d => ({ ...d, [item.id]: e.target.value }))
+                                    setSaveError(err => { const n = { ...err }; delete n[item.id]; return n })
+                                  }}
+                                  onKeyDown={e => { if (e.key === 'Enter') saveCorrection(item, ctx) }}
+                                  className="w-full text-sm border rounded-xl px-3 py-2 outline-none"
+                                  style={{ borderColor: saveError[item.id] ? '#DC2626' : '#FAC775', background: '#FFFDF5' }}
+                                  autoFocus
+                                />
+                                {saveError[item.id] && (
+                                  <p className="text-xs mt-1" style={{ color: '#DC2626' }}>{saveError[item.id]}</p>
+                                )}
+                              </>
                             ) : (
-                              <input
-                                type="text"
-                                placeholder={ctx.primaryPlaceholder}
-                                value={draftName[item.id] ?? item.product_name}
-                                onChange={e => setDraftName(d => ({ ...d, [item.id]: e.target.value }))}
-                                onKeyDown={e => { if (e.key === 'Enter') saveCorrection(item, ctx) }}
-                                className="w-full text-sm border rounded-xl px-3 py-2 outline-none"
-                                style={{ borderColor: '#FAC775', background: '#FFFDF5' }}
-                                autoFocus
-                              />
+                              <>
+                                <input
+                                  type="text"
+                                  placeholder={ctx.primaryPlaceholder}
+                                  value={draftName[item.id] ?? item.product_name}
+                                  onChange={e => {
+                                    setDraftName(d => ({ ...d, [item.id]: e.target.value }))
+                                    setSaveError(err => { const n = { ...err }; delete n[item.id]; return n })
+                                  }}
+                                  onKeyDown={e => { if (e.key === 'Enter') saveCorrection(item, ctx) }}
+                                  className="w-full text-sm border rounded-xl px-3 py-2 outline-none"
+                                  style={{ borderColor: saveError[item.id] ? '#DC2626' : '#FAC775', background: '#FFFDF5' }}
+                                  autoFocus
+                                />
+                                {saveError[item.id] && (
+                                  <p className="text-xs mt-1" style={{ color: '#DC2626' }}>{saveError[item.id]}</p>
+                                )}
+                              </>
                             )}
                             <div className="flex gap-2">
                               <button
