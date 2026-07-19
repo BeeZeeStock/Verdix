@@ -61,6 +61,18 @@ function fmt(n: number | null | undefined, cur = 'EUR') {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, maximumFractionDigits: 0 }).format(n)
 }
 
+// For per-unit rates which are often fractional (e.g. €0.05, €0.035).
+// fmt() uses maximumFractionDigits:0 which rounds 0.05 → €0, so we need
+// a rate-aware formatter that keeps up to 4 decimal places for values < 1.
+function fmtUnit(n: number | null | undefined, cur = 'EUR') {
+  if (n == null) return '—'
+  if (n > 0 && n < 1) {
+    const sym = cur === 'EUR' ? '€' : cur === 'GBP' ? '£' : cur === 'USD' ? '$' : cur + ' '
+    return `${sym}${n.toFixed(4).replace(/\.?0+$/, '')}`
+  }
+  return fmt(n, cur)
+}
+
 function fmtDate(s: string | null | undefined) {
   if (!s) return '—'
   return new Date(s).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
@@ -952,7 +964,7 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         primaryField:       'unit_price',
         primaryLabel:       'Rate per unit',
         primaryPlaceholder: item.unit_price > 0 ? `e.g. ${fmtExample(item.unit_price)}` : numberFormat === 'comma' ? 'e.g. 0,035' : 'e.g. 0.035',
-        whatToCheck:        `Verify the per-unit rate (${fmt(item.unit_price, item.currency)}/unit) matches the contract. This rate is used to automatically calculate overage charges each billing cycle.`,
+        whatToCheck:        `Verify the per-unit rate (${fmtUnit(item.unit_price, item.currency)}/unit) matches the contract. This rate is used to automatically calculate overage charges each billing cycle.`,
         whyFlagged:         lowBecause,
       }
     case 'escalator':
@@ -972,7 +984,7 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         primaryField:       'unit_price',
         primaryLabel:       'Price per seat',
         primaryPlaceholder: `e.g. ${fmtExample(item.unit_price || 0)}`,
-        whatToCheck:        `Verify the per-seat rate (${fmt(item.unit_price, item.currency)}/seat). This is used to calculate charges when the customer exceeds their included seat count.`,
+        whatToCheck:        `Verify the per-seat rate (${fmtUnit(item.unit_price, item.currency)}/seat). This is used to calculate charges when the customer exceeds their included seat count.`,
         whyFlagged:         lowBecause,
       }
     case 'one_time':
@@ -1279,7 +1291,7 @@ function ReviewPanel({
                           <div className="text-xs">
                             <span className="text-stone">Rate · </span>
                             <span className="font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                              {fmt(item.unit_price, item.currency)}/unit
+                              {fmtUnit(item.unit_price, item.currency)}/unit
                             </span>
                           </div>
                           {item.quantity > 0 && (
@@ -2079,7 +2091,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         <div className="grid grid-cols-3 gap-8">
                           {tierList.map(({ tier: t, origIdx }) => {
                             const isEditingTier = tierEditing === origIdx
-                            const fmtRate = (r: number) => r < 0.01
+                            const fmtRate = (r: number) => r > 0 && r < 1
                               ? `${cur === 'EUR' ? '€' : '$'}${r.toFixed(4).replace(/\.?0+$/, '')}`
                               : fmt(r, cur)
                             const note = t.from_unit != null
@@ -2442,7 +2454,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                               )}
                             </td>
                             <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{item.quantity}</td>
-                            <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(item.unit_price, cur)}</td>
+                            <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtUnit(item.unit_price, cur)}</td>
                             <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(item.total_amount, cur)}</td>
                             <td className="py-2.5 text-[11px] text-stone text-right capitalize">{item.billing_period}</td>
                           </tr>
