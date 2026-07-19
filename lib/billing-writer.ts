@@ -9,6 +9,77 @@ import {
 import { groupTiersByMetric } from './tariff'
 import { supabaseServer } from './supabase'
 
+// Compute the total subscription amount for each contract year (base + additional,
+// discounts and escalators applied month-by-month). Used to pre-create annual
+// commitment draft invoices that make the full TCV visible in Stripe on day 1.
+function computeYearlyAmounts(terms: ContractTerms): number[] {
+  const termMonths = terms.contract_term_months ?? 0
+  if (!termMonths) return []
+
+  const numYears          = Math.ceil(termMonths / 12)
+  const yearPricing       = terms.year_pricing
+  const rampSchedule      = terms.ramp_schedule && terms.ramp_schedule.length > 0
+    ? terms.ramp_schedule : null
+  const baseMonthly       = terms.base_monthly_fee ?? 0
+  const additionalMonthly = (terms.additional_recurring_fees ?? [])
+    .reduce((s, f) => s + (f.amount ?? 0), 0)
+  const escalators        = terms.escalators ?? []
+  const discounts         = terms.discounts  ?? []
+  const cs = terms.contract_start_date ? new Date(terms.contract_start_date) : new Date()
+
+  function monthlyBase(idx: number, d: Date): number {
+    if (rampSchedule) {
+      for (const step of rampSchedule) {
+        const s = new Date(step.start_date), e = new Date(step.end_date)
+        if (d >= s && d <= e) return step.monthly_fee
+      }
+      return rampSchedule[rampSchedule.length - 1].monthly_fee
+    }
+    if (yearPricing) {
+      const yr  = Math.floor(idx / 12) + 1
+      const key = `year${yr}`
+      const keys = Object.keys(yearPricing)
+      return (yearPricing[key] ?? yearPricing[keys[keys.length - 1]] ?? 0) / 12
+    }
+    return baseMonthly
+  }
+
+  return Array.from({ length: numYears }, (_, yi) => {
+    const monthsInYear = Math.min(12, termMonths - yi * 12)
+    let total = 0
+    for (let mi = 0; mi < monthsInYear; mi++) {
+      const idx = yi * 12 + mi
+      const d   = new Date(cs.getFullYear(), cs.getMonth() + idx, 1)
+      const base = monthlyBase(idx, d)
+
+      // Compound escalation (suppressed when year_pricing or ramp_schedule encodes rates)
+      let mult = 1
+      if (!yearPricing && !rampSchedule) {
+        for (const esc of escalators) {
+          const ed = esc.effective_date ? new Date(esc.effective_date) : null
+          if (ed && d >= ed) {
+            const ms = (d.getFullYear() - ed.getFullYear()) * 12 + (d.getMonth() - ed.getMonth())
+            mult = Math.pow(1 + (esc.escalator_pct ?? 0) / 100, Math.floor(ms / 12) + 1)
+            break
+          }
+        }
+      }
+
+      let amount = (base + additionalMonthly) * mult
+      for (const disc of discounts) {
+        const ds = disc.start_date ? new Date(disc.start_date) : null
+        const de = disc.end_date   ? new Date(disc.end_date)   : null
+        if (ds && de && d >= ds && d <= de && disc.discount_pct) {
+          amount *= 1 - disc.discount_pct / 100
+          break
+        }
+      }
+      total += amount
+    }
+    return total
+  })
+}
+
 export type BillingPlatform = 'stripe' | 'chargebee'
 
 async function getOrgConfig(orgId: string, connector: string): Promise<Record<string, string> | null> {
@@ -79,6 +150,10 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
   const { interval, intervalCount } = billingInterval(terms.billing_frequency)
   const isAnnualBilling = interval === 'year'
   const ppy             = periodsPerYear(interval, intervalCount) // periods per year
+  // isFiniteContract: contract has a defined term that ends — as opposed to an open-ended
+  // auto-renewing contract. Finite contracts get cancel_at on the subscription and
+  // pre-created annual commitment draft invoices so TCV is visible from day one.
+  const isFiniteContract = !!(terms.contract_term_months && terms.contract_term_months > 0)
 
   // ── 1. Upsert Stripe customer ────────────────────────────────────────────
   const emailInContact = terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
@@ -175,6 +250,11 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
     items:              subscriptionItems,
     collection_method:  'send_invoice',
     days_until_due:     terms.payment_terms_days ?? 30,
+    // For finite contracts: cancel the subscription at contract end so it doesn't
+    // auto-renew indefinitely. Auto-renewing contracts get a new subscription per term.
+    ...(isFiniteContract && terms.contract_end_date
+      ? { cancel_at: Math.floor(new Date(terms.contract_end_date).getTime() / 1000) }
+      : {}),
     metadata: {
       contract_id:  contractId,
       created_by:   'verdix',
@@ -271,17 +351,21 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
     }
   }
 
-  // ── 6b. Pre-create draft invoices for future contract years (annual billing only) ──
-  // For annual cadence: pre-create years 2, 3, … as drafts so the full schedule
-  // is visible from day one. The webhook redirects Stripe's auto-generated
-  // anniversary invoice into the pre-created draft and finalizes it.
-  // For monthly/quarterly/semi-annual: Stripe auto-generates each period's
-  // invoice naturally — no pre-creation needed.
-  if (isAnnualBilling && hasYearRates && terms.year_pricing && jobId) {
-    const fmtLabel = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
-    const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date) : new Date()
-    const daysUntilDue  = terms.payment_terms_days ?? 30
+  // ── 6b. Pre-create annual commitment draft invoices ─────────────────────────
+  // Annual billing (year_pricing): pre-create Year 2, 3, … as drafts. The webhook
+  // redirects Stripe's auto-generated anniversary invoice into the pre-created draft.
+  //
+  // Monthly/sub-annual finite contracts: pre-create ALL years (including Year 1) as
+  // commitment drafts (auto_advance:false — internal visibility only, not sent to the
+  // customer). This makes the full contracted TCV visible in Stripe from day one.
+  // The subscription still handles actual monthly billing; these drafts represent
+  // the annual commitment for each year of the contract.
+  const fmtLabel      = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
+  const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date) : new Date()
+  const daysUntilDue  = terms.payment_terms_days ?? 30
 
+  if (isAnnualBilling && hasYearRates && terms.year_pricing && jobId) {
+    // Annual billing path — Year 2+ drafts (Year 1 was handled inline in step 6)
     await Promise.all(
       Object.entries(terms.year_pricing)
         .filter(([key]) => parseInt(key.replace('year', ''), 10) > 1)
@@ -300,7 +384,7 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
             customer:                       customer.id,
             collection_method:              'send_invoice',
             days_until_due:                 daysUntilDue,
-            auto_advance:                   false,   // stay as draft until we finalize
+            auto_advance:                   false,
             pending_invoice_items_behavior: 'exclude',
             metadata: {
               verdix_job:      jobId,
@@ -320,6 +404,44 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
             metadata:    { verdix_job: jobId, invoice_type: 'annual_base', year: String(yearNum) },
           })
         })
+    )
+  } else if (!isAnnualBilling && isFiniteContract && jobId) {
+    // Monthly/sub-annual finite contract path — commitment drafts for ALL years
+    const yearlyAmounts = computeYearlyAmounts(terms)
+    await Promise.all(
+      yearlyAmounts.map(async (amount, yi) => {
+        const yearNum   = yi + 1
+        const yearStart = new Date(contractStart)
+        yearStart.setFullYear(yearStart.getFullYear() + yi)
+        const yearEnd   = new Date(yearStart)
+        yearEnd.setFullYear(yearEnd.getFullYear() + 1)
+        yearEnd.setDate(yearEnd.getDate() - 1)
+        const description = `Base subscription — Year ${yearNum} (${fmtLabel(yearStart)} – ${fmtLabel(yearEnd)})`
+
+        const draftInv = await stripe.invoices.create({
+          customer:                       customer.id,
+          collection_method:              'send_invoice',
+          days_until_due:                 daysUntilDue,
+          auto_advance:                   false,
+          pending_invoice_items_behavior: 'exclude',
+          metadata: {
+            verdix_job:      jobId,
+            verdix_contract: contractId,
+            invoice_type:    'annual_base',
+            year:            String(yearNum),
+            scheduled_date:  yearStart.toISOString().slice(0, 10),
+          },
+        })
+
+        await stripe.invoiceItems.create({
+          customer:    customer.id,
+          invoice:     draftInv.id,
+          amount:      Math.round(amount * 100),
+          currency:    cur,
+          description,
+          metadata:    { verdix_job: jobId, invoice_type: 'annual_base', year: String(yearNum) },
+        })
+      })
     )
   }
 

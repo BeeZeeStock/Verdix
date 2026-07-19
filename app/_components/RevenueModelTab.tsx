@@ -1174,18 +1174,26 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         }
         const rawEvents: BillingEvent[] = []
 
-        // Year 1 — first subscription invoice
-        const firstInv = billingData.invoices[0]
-        if (firstInv) {
-          const d = firstInv.dueDate ?? firstInv.scheduledDate ?? firstInv.created
-          rawEvents.push({ label: 'Year 1', date: new Date(d), amount: firstInv.amount, currency: firstInv.currency, status: firstInv.status ?? 'unknown', hostedUrl: firstInv.hostedUrl })
-        }
-
-        // Year 2+ — pre-created annual draft invoices
         const sortedDrafts = [...billingData.annualDraftInvoices].sort((a, b) => (a.yearNum ?? 0) - (b.yearNum ?? 0))
-        for (const inv of sortedDrafts) {
-          const d = inv.scheduledDate ?? inv.dueDate ?? inv.created
-          rawEvents.push({ label: `Year ${inv.yearNum}`, date: new Date(d), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
+        const hasYear1Draft = sortedDrafts.some(inv => inv.yearNum === 1)
+
+        if (hasYear1Draft) {
+          // Finite monthly contracts: all years from annual commitment drafts
+          for (const inv of sortedDrafts) {
+            const d = inv.scheduledDate ?? inv.dueDate ?? inv.created
+            rawEvents.push({ label: `Year ${inv.yearNum}`, date: new Date(d), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
+          }
+        } else {
+          // Legacy (annual billing): Year 1 from first subscription invoice, Year 2+ from drafts
+          const firstInv = billingData.invoices[0]
+          if (firstInv) {
+            const d = firstInv.dueDate ?? firstInv.scheduledDate ?? firstInv.created
+            rawEvents.push({ label: 'Year 1', date: new Date(d), amount: firstInv.amount, currency: firstInv.currency, status: firstInv.status ?? 'unknown', hostedUrl: firstInv.hostedUrl })
+          }
+          for (const inv of sortedDrafts) {
+            const d = inv.scheduledDate ?? inv.dueDate ?? inv.created
+            rawEvents.push({ label: `Year ${inv.yearNum}`, date: new Date(d), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
+          }
         }
 
         // One-time fees — sorted by date, interleaved chronologically
