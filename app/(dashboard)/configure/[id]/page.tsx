@@ -1556,12 +1556,29 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     if (isNaN(rate) || !terms?.overage_tiers) return
     setTierSaving(true)
     try {
+      const tier = terms.overage_tiers[idx]
       const newTiers = terms.overage_tiers.map((t, i) => i === idx ? { ...t, rate_per_unit: rate } : t)
+      // Update contract_terms.overage_tiers
       await fetch(`/api/jobs/${id}/terms`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ overage_tiers: newTiers }),
       })
+      // Also sync the corresponding line_item unit_price so billing config stays consistent
+      if (tier.tier_label) {
+        const matchingItem = items.find(item => {
+          const baseName = item.product_name.replace(/\s*—\s*overage\s*$/i, '').trim()
+          return baseName.toLowerCase() === tier.tier_label!.toLowerCase() ||
+            item.product_name.toLowerCase().includes(tier.tier_label!.toLowerCase())
+        })
+        if (matchingItem) {
+          await fetch(`/api/jobs/${id}/line-items`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ itemId: matchingItem.id, fields: { unit_price: rate, confidence_score: 1 } }),
+          })
+        }
+      }
       setTierEditing(null)
       await fetchJob()
     } finally {
