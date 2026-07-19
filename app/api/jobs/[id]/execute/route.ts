@@ -135,6 +135,7 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
       field_sources:        terms.field_sources ?? {},
       extraction_confidence: terms.extraction_confidence,
       extraction_notes:     terms.extraction_notes,
+      number_format:        terms.number_format ?? 'dot',
       // Full LLM output preserved for future fields
       raw_extraction:       terms,
     })

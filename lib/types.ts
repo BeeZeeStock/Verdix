@@ -79,6 +79,7 @@ export interface ContractTerms {
   field_sources: Record<string, string>
   extraction_confidence: 'high' | 'medium' | 'low'
   extraction_notes: string | null
+  number_format?: 'dot' | 'comma'
 }
 
 export interface BillingRecord {

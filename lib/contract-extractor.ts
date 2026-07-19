@@ -39,6 +39,11 @@ Rules:
 - one_time_fees: non-recurring charges paid once (e.g. onboarding, implementation, setup, migration, professional services fees). Each entry: fee_label (short name), amount (number), due_date (ISO date or null), description (brief note or null). Do NOT include recurring fees here.
 - contract_id: the contract reference, PO number, order number, or agreement ID printed on the document (e.g. "CLR-2024-0001", "PO-12345"). Use null if no reference number is found.
 - field_sources: object mapping each extracted field to the section heading it was taken from (e.g. {"base_monthly_fee": "1.1 Base Platform Fee", "escalators": "1.2 Annual Price Escalator"})
+- number_format: detect the decimal separator convention used in this contract.
+  "dot"   = dot is the decimal separator (US/UK/Nordic digital format): "€0.0500", "€1,200.00", "1 234.50"
+  "comma" = comma is the decimal separator (Continental European print format): "€0,0500", "€1.200,00", "1 234,50"
+  Look at how amounts ≥ 1,000 are formatted to distinguish. "€4.500,00" → comma. "€4,500.00" → dot.
+  CRITICAL: when number_format is "comma", "0,0500" means 0.05 (fifty thousandths) NOT 500. Always output rates as dot-decimal floats in JSON regardless of source notation.
 - extraction_confidence: "high" if all core commercial terms are clear, "medium" if some ambiguity, "low" if significant gaps
 - extraction_notes: brief note on what could not be determined
 - CRITICAL DATE RULE: contract_end_date must be AFTER contract_start_date. For a multi-year contract, the end year will be start_year + contract_term_years. Example: 36-month contract starting Aug 1 2026 → contract_end_date = "2029-07-31", NOT "2026-07-31". Always verify: if contract_term_months is set, end_date ≈ start_date + contract_term_months. If the document's stated end date contradicts the term length, trust the term length and compute the correct end date.`
@@ -143,6 +148,20 @@ async function extractFromChunk(text: string, learningContext: string, piiMasked
   try {
     const parsed = JSON.parse(jsonMatch[0]) as ContractTerms
 
+    // Zero-rate recovery: if any overage tiers extracted as 0, do a targeted
+    // second pass asking the model specifically about those tiers.
+    const zeroTiers = (parsed.overage_tiers ?? []).filter(t => (t.rate_per_unit ?? 0) === 0)
+    if (zeroTiers.length > 0) {
+      const numberFormat = (parsed.number_format ?? 'dot') as 'dot' | 'comma'
+      const recovered = await recoverZeroRates(text, zeroTiers, numberFormat)
+      if (recovered.length > 0) {
+        const recoveryMap = new Map(recovered.map(r => [r.tier_label, r.rate_per_unit]))
+        parsed.overage_tiers = (parsed.overage_tiers ?? []).map(t =>
+          recoveryMap.has(t.tier_label) ? { ...t, rate_per_unit: recoveryMap.get(t.tier_label)! } : t
+        )
+      }
+    }
+
     if (DEBUG_EXTRACTION) {
       const ts        = new Date().toISOString().replace(/[:.]/g, '-')
       const provider  = AI_PROVIDER.replace(/[^a-z0-9]/gi, '_')
@@ -163,6 +182,54 @@ async function extractFromChunk(text: string, learningContext: string, piiMasked
   }
 }
 
+async function recoverZeroRates(
+  contractText: string,
+  zeroTiers: import('./types').OverageTier[],
+  numberFormat: 'dot' | 'comma',
+): Promise<Array<{ tier_label: string; rate_per_unit: number }>> {
+  const tierList = zeroTiers.map(t => `- "${t.tier_label}" (unit: ${t.unit_type})`).join('\n')
+  const notationNote = numberFormat === 'comma'
+    ? 'This contract uses COMMA as the decimal separator (Continental European format). "0,0500" means 0.05 (fifty thousandths). Always output rates as dot-decimal floats.'
+    : 'This contract uses DOT as the decimal separator. "0.0500" means 0.05.'
+
+  const prompt = `The following overage pricing tiers were extracted from this contract but their rates appear as 0, which is likely an extraction error. Find the actual per-unit rate for each tier.
+
+${notationNote}
+
+Tiers needing their rate recovered:
+${tierList}
+
+Return ONLY a JSON array — no other text:
+[{"tier_label": "<exact label>", "rate_per_unit": <dot-decimal float>}]
+
+Rules:
+- Only include entries where you found a clear non-zero rate in the contract
+- If the contract says "€0.0500 per unit" → rate_per_unit: 0.05
+- If the contract says "€0,0500 per unit" (comma notation) → rate_per_unit: 0.05
+- Return 0 ONLY if the contract explicitly says the service is free or €0
+
+Contract text:
+<contract>
+${contractText.slice(0, 10000)}
+</contract>`
+
+  try {
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 512,
+      messages: [{ role: 'user', content: prompt }],
+    })
+    const content = response.content[0]
+    if (content.type !== 'text') return []
+    const jsonMatch = content.text.match(/\[[\s\S]*\]/)
+    if (!jsonMatch) return []
+    const recovered = JSON.parse(jsonMatch[0]) as Array<{ tier_label: string; rate_per_unit: number }>
+    return recovered.filter(r => typeof r.rate_per_unit === 'number' && r.rate_per_unit > 0)
+  } catch {
+    return []
+  }
+}
+
 function mergeExtractions(results: ContractTerms[]): ContractTerms {
   // Take the most complete result as base, then merge arrays from all chunks
   const base = results.reduce((best, curr) => {
@@ -177,6 +244,8 @@ function mergeExtractions(results: ContractTerms[]): ContractTerms {
     discounts: dedupe([...results.flatMap(r => r.discounts)], 'description'),
     overage_tiers: dedupe([...results.flatMap(r => r.overage_tiers)], 'tier_label'),
     one_time_fees: dedupe([...results.flatMap(r => r.one_time_fees ?? [])], 'fee_label'),
+    // Use 'comma' if ANY chunk detected comma notation (more specific detection wins)
+    number_format: results.some(r => r.number_format === 'comma') ? 'comma' : 'dot',
   }
 
   // Guard: end_date must be after start_date. If the model extracted a wrong year

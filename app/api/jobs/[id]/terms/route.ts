@@ -15,6 +15,7 @@ export async function PATCH(
     'payment_terms_text', 'payment_terms_days',
     'base_monthly_fee', 'base_annual_fee', 'billing_frequency',
     'auto_renews', 'renewal_notice_days',
+    'number_format',
   ]
   const JSON_FIELDS = ['escalators', 'discounts', 'ramp_schedule', 'year_pricing', 'overage_tiers', 'additional_recurring_fees']
 

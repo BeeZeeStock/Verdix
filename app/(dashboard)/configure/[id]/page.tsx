@@ -932,13 +932,16 @@ type ReviewContext = {
   whyFlagged: string
 }
 
-function getReviewContext(item: LineItem, kind: ItemKind): ReviewContext {
+function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 'comma' = 'dot'): ReviewContext {
   const score = item.confidence_score
   const lowBecause = score < 0.7
     ? 'The AI had low confidence extracting this — the contract wording may be ambiguous or in an unusual format.'
     : score < 0.85
     ? 'The AI found this value but wasn\'t fully certain. A similar clause nearby may have caused confusion.'
     : 'The AI found this but flagged it for human confirmation due to its billing impact.'
+
+  // Format a number example in the contract's own notation so it matches what the user sees in the PDF
+  const fmtExample = (n: number) => numberFormat === 'comma' ? String(n).replace('.', ',') : String(n)
 
   switch (kind) {
     case 'overage_tier':
@@ -947,7 +950,7 @@ function getReviewContext(item: LineItem, kind: ItemKind): ReviewContext {
         typeIcon:           'ti-chart-bar',
         primaryField:       'unit_price',
         primaryLabel:       'Rate per unit',
-        primaryPlaceholder: `e.g. ${item.unit_price || 0}`,
+        primaryPlaceholder: item.unit_price > 0 ? `e.g. ${fmtExample(item.unit_price)}` : numberFormat === 'comma' ? 'e.g. 0,035' : 'e.g. 0.035',
         whatToCheck:        `Verify the per-unit rate (${fmt(item.unit_price, item.currency)}/unit) matches the contract. This rate is used to automatically calculate overage charges each billing cycle.`,
         whyFlagged:         lowBecause,
       }
@@ -967,7 +970,7 @@ function getReviewContext(item: LineItem, kind: ItemKind): ReviewContext {
         typeIcon:           'ti-users',
         primaryField:       'unit_price',
         primaryLabel:       'Price per seat',
-        primaryPlaceholder: `e.g. ${item.unit_price || 0}`,
+        primaryPlaceholder: `e.g. ${fmtExample(item.unit_price || 0)}`,
         whatToCheck:        `Verify the per-seat rate (${fmt(item.unit_price, item.currency)}/seat). This is used to calculate charges when the customer exceeds their included seat count.`,
         whyFlagged:         lowBecause,
       }
@@ -977,7 +980,7 @@ function getReviewContext(item: LineItem, kind: ItemKind): ReviewContext {
         typeIcon:           'ti-receipt',
         primaryField:       'unit_price',
         primaryLabel:       'Fee amount',
-        primaryPlaceholder: `e.g. ${item.unit_price || 0}`,
+        primaryPlaceholder: `e.g. ${fmtExample(item.unit_price || 0)}`,
         whatToCheck:        `Verify the one-time fee amount (${fmt(item.unit_price, item.currency)}). This will be invoiced once at the start of the contract.`,
         whyFlagged:         lowBecause,
       }
@@ -987,7 +990,7 @@ function getReviewContext(item: LineItem, kind: ItemKind): ReviewContext {
         typeIcon:           'ti-file-invoice',
         primaryField:       'unit_price',
         primaryLabel:       'Fee amount',
-        primaryPlaceholder: `e.g. ${item.unit_price || 0}`,
+        primaryPlaceholder: `e.g. ${fmtExample(item.unit_price || 0)}`,
         whatToCheck:        `Verify the base fee amount (${fmt(item.unit_price, item.currency)}). This is the recurring charge billed each ${item.billing_period ?? 'period'}.`,
         whyFlagged:         lowBecause,
       }
@@ -1014,6 +1017,7 @@ function ReviewPanel({
   onRefresh,
   jobId,
   overageTiers,
+  numberFormat = 'dot',
 }: {
   items: LineItem[]
   corrections: Record<string, { value: string; remember: boolean }>
@@ -1022,6 +1026,7 @@ function ReviewPanel({
   onRefresh: () => void
   jobId: string
   overageTiers?: Tier[]
+  numberFormat?: 'dot' | 'comma'
 }) {
   const [saving,    setSaving]    = useState<string | null>(null)
   const [resolved,  setResolved]  = useState<Record<string, 'confirmed' | 'corrected'>>({})
@@ -1085,7 +1090,8 @@ function ReviewPanel({
         const price = normalized ? parseFloat(normalized) : null
 
         if (price === null || isNaN(price)) {
-          setSaveError(e => ({ ...e, [item.id]: 'Please enter a valid number (e.g. 0.035)' }))
+          const ex = numberFormat === 'comma' ? '0,035' : '0.035'
+          setSaveError(e => ({ ...e, [item.id]: `Please enter a valid number (e.g. ${ex})` }))
           return
         }
 
@@ -1229,7 +1235,7 @@ function ReviewPanel({
               <div className="space-y-3">
                 {groupItems.map(item => {
                   const kind        = classifyItem(item)
-                  const ctx         = getReviewContext(item, kind)
+                  const ctx         = getReviewContext(item, kind, numberFormat)
                   const isResolved  = !!(resolved[item.id] || item.id in corrections)
                   const isEditing   = editing === item.id
                   const isSaving    = saving === item.id
@@ -1592,7 +1598,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   }, [needsReview, job?.execute_status, id, items.length])
 
   const saveTierRate = async (idx: number) => {
-    const rate = parseFloat(tierEditValue.replace(/[^0-9.]/g, ''))
+    const rate = parseFloat(tierEditValue.replace(/[^0-9.,]/g, '').replace(',', '.'))
     if (isNaN(rate) || !terms?.overage_tiers) return
     setTierSaving(true)
     try {
@@ -2095,7 +2101,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                                     <input autoFocus type="text" value={tierEditValue}
                                       onChange={e => setTierEditValue(e.target.value)}
                                       onKeyDown={ev => { if (ev.key === 'Enter') saveTierRate(origIdx); if (ev.key === 'Escape') setTierEditing(null) }}
-                                      placeholder="e.g. 0.035"
+                                      placeholder={terms?.number_format === 'comma' ? 'e.g. 0,035' : 'e.g. 0.035'}
                                       className="flex-1 text-[28px] font-medium bg-transparent outline-none leading-none"
                                       style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }} />
                                     <button onClick={() => setTierEditing(null)} className="text-stone/50 hover:text-ink transition-colors p-1 flex-shrink-0" title="Cancel">
@@ -2540,6 +2546,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           onRefresh={fetchJob}
           jobId={id}
           overageTiers={terms?.overage_tiers}
+          numberFormat={terms?.number_format ?? 'dot'}
         />
       )}
 
