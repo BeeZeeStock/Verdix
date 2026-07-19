@@ -19,6 +19,7 @@ type Terms = {
   ramp_schedule?: RampStep[]
   escalators?: Escalator[]; discounts?: Discount[]; overage_tiers?: Tier[]
   one_time_fees?: OneTimeFee[]
+  additional_recurring_fees?: { fee_label?: string; amount?: number }[]
   renewal_notice_days?: number
 }
 type LineItem = { id: string; product_name: string; total_amount: number; billing_period: string }
@@ -104,6 +105,8 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
   const baseAnnual     = terms.base_annual_fee ?? 0
   // Flat monthly base: used when there is no per-year pricing or ramp schedule
   const base           = terms.base_monthly_fee ?? (yearPricing || rampSchedule ? 0 : baseAnnual / 12)
+  // Secondary recurring fees (e.g. dedicated support) billed every month alongside base
+  const additionalMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => s + (f.amount ?? 0), 0)
 
   // Returns the effective monthly fee for the given date/month index.
   // Priority: ramp_schedule (by calendar date) → year_pricing (by year index) → flat base.
@@ -305,8 +308,8 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
       }
     }
 
-    let sub = effectiveBase
-    if (!yearPricing && !rampSchedule && applyEscalator && escalationMult > 1) sub = effectiveBase * escalationMult
+    let sub = effectiveBase + additionalMonthly
+    if (!yearPricing && !rampSchedule && applyEscalator && escalationMult > 1) sub = (effectiveBase + additionalMonthly) * escalationMult
     if (inDiscount && applyDiscount) sub *= (1 - discountPct / 100)
 
     const userOvg = computeUserOverage(scenarioUsers, includedUsers, userTiers)
@@ -353,14 +356,15 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
   const ovgInvoices = actualInvoices.filter(inv =>
     (inv.line_items ?? []).some(l => l.type === 'overage'))
 
+  const combinedBase = base + additionalMonthly
   const discountSaving = modelMonths.reduce((s, m) => {
     if (!m.inDiscount) return s
-    const undiscountedRate = m.escalationMult > 1 ? base * m.escalationMult : base
+    const undiscountedRate = m.escalationMult > 1 ? combinedBase * m.escalationMult : combinedBase
     return s + (undiscountedRate - m.sub)
   }, 0)
   const escalatorUplift = modelMonths.reduce((s, m) => {
     if (!m.escalated || m.escalationMult <= 1) return s
-    const flatBase = m.inDiscount ? base * (1 - m.discountPct / 100) : base
+    const flatBase = m.inDiscount ? combinedBase * (1 - m.discountPct / 100) : combinedBase
     return s + (m.sub - flatBase)
   }, 0)
   const creditLabels = negOneTime.map(c => c.label).join(' · ')
@@ -1231,8 +1235,10 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         const byOf    = (v: number) => bBottom - (v / bScale) * bPlotH
         const bGrid   = [0, 0.5, 1].map(f => f * bScale)
 
-        const contractTcv = (billingData.paymentSchedule ?? []).reduce((s, y) => s + y.amount, 0)
-          + (billingData.oneTimeFees ?? []).reduce((s: number, f: { amount: number }) => s + f.amount, 0)
+        // contractTcv must come from contract terms, not from Stripe — the
+        // Stripe paymentSchedule only reflects what was queued at push time
+        // (often a single year's amount) and is not a reliable TCV figure.
+        const contractTcv = totalTcv
         const tcvDelta = contractTcv > 0 ? (configuredTotal - contractTcv) / contractTcv : 0
         const isMatch  = Math.abs(tcvDelta) < 0.005
 
