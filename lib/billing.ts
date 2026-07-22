@@ -22,6 +22,7 @@ export interface OrgSubscription {
   current_period_start: string | null
   current_period_end: string | null
   syncs_used: number
+  usage_counters: Record<string, number>
   trial_sync_limit_override: number | null
   pii_addon_enabled: boolean
   pii_addon_enabled_at: string | null
@@ -81,6 +82,7 @@ export async function getOrgSubscription(orgId: string): Promise<OrgSubscription
     org_id: orgId,
     plan_id: 'trial',
     syncs_used: 0,
+    usage_counters: {},
     pii_addon_enabled: false,
     status: 'active',
   }
@@ -114,7 +116,7 @@ export async function getBillingContext(orgId: string): Promise<BillingContext> 
   }
 
   const warn = warnPct ?? 80
-  const syncsUsed = subscription.syncs_used
+  const syncsUsed = Number(subscription.usage_counters?.['sync'] ?? subscription.syncs_used ?? 0)
   const isOverLimit = syncLimit != null && syncsUsed >= syncLimit
   const isNearLimit = syncLimit != null && !isOverLimit && (syncsUsed / syncLimit) * 100 >= warn
   const syncsRemaining = syncLimit != null ? Math.max(0, syncLimit - syncsUsed) : null
@@ -145,12 +147,16 @@ export async function recordSync(orgId: string, jobId: string, eventType: SyncEv
     billing_period_start: periodStart,
   })
 
-  // Increment counter
-  const newCount = (sub.syncs_used ?? 0) + 1
-  await supabaseServer
-    .from('org_subscriptions')
-    .update({ syncs_used: newCount, updated_at: new Date().toISOString() })
-    .eq('org_id', orgId)
+  // Write to counter cache + timestamped ledger in one call
+  const currentCount = Number(sub.usage_counters?.['sync'] ?? sub.syncs_used ?? 0)
+  const newCount = currentCount + 1
+  await supabaseServer.rpc('record_usage', {
+    org_id_param:      orgId,
+    meter_key_param:   'sync',
+    amount_param:      1,
+    job_id_param:      jobId,
+    occurred_at_param: new Date().toISOString(),
+  })
 
   // Resolve limit
   let syncLimit: number | null = null

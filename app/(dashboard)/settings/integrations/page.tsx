@@ -496,19 +496,30 @@ interface Integration {
 }
 
 export default function IntegrationsPage() {
-  const [integrations, setIntegrations] = useState<Integration[]>([])
-  const [org,          setOrg]          = useState<{ role: string; orgId: string } | null>(null)
-  const [loading,      setLoading]      = useState(true)
+  const [integrations,  setIntegrations]  = useState<Integration[]>([])
+  const [org,           setOrg]           = useState<{ role: string; orgId: string } | null>(null)
+  const [loading,       setLoading]       = useState(true)
+
+  // On-Demand Billing Integration state
+  const [pullConfig,    setPullConfig]    = useState<{ configured: boolean; config_keys: string[] } | null>(null)
+  const [pullFormOpen,  setPullFormOpen]  = useState(false)
+  const [pullForm,      setPullForm]      = useState({ client_usage_url: '', client_read_api_key: '' })
+  const [pullSaving,    setPullSaving]    = useState(false)
+  const [pullRemoving,  setPullRemoving]  = useState(false)
+  const [pullMsg,       setPullMsg]       = useState<{ ok: boolean; text: string } | null>(null)
 
   const load = useCallback(async () => {
-    const [intRes, orgRes] = await Promise.all([
+    const [intRes, orgRes, pullRes] = await Promise.all([
       fetch('/api/org/integrations'),
       fetch('/api/org'),
+      fetch('/api/org/pull-config'),
     ])
-    const intData = await intRes.json()
-    const orgData = await orgRes.json()
+    const intData  = await intRes.json()
+    const orgData  = await orgRes.json()
+    const pullData = pullRes.ok ? await pullRes.json() : null
     setIntegrations(intData.integrations ?? [])
     setOrg(orgData)
+    setPullConfig(pullData)
     setLoading(false)
   }, [])
 
@@ -547,6 +558,41 @@ export default function IntegrationsPage() {
     await load()
   }
 
+  const handlePullSave = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setPullSaving(true)
+    setPullMsg(null)
+    try {
+      const res = await fetch('/api/org/pull-config', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(pullForm),
+      })
+      if (!res.ok) {
+        const d = await res.json()
+        throw new Error(d.error ?? 'Save failed')
+      }
+      setPullMsg({ ok: true, text: 'Configuration saved.' })
+      setPullForm({ client_usage_url: '', client_read_api_key: '' })
+      setPullFormOpen(false)
+      await load()
+    } catch (err) {
+      setPullMsg({ ok: false, text: err instanceof Error ? err.message : 'Unknown error' })
+    } finally {
+      setPullSaving(false)
+    }
+  }
+
+  const handlePullDisconnect = async () => {
+    setPullRemoving(true)
+    try {
+      await fetch('/api/org/pull-config', { method: 'DELETE' })
+      await load()
+    } finally {
+      setPullRemoving(false)
+    }
+  }
+
   const connectedBilling = activeBilling !== null
   const connectedCrm     = activeCrm !== null
 
@@ -569,6 +615,155 @@ export default function IntegrationsPage() {
           Connect Verdix to your billing platform and CRM. Once connected, approved contracts are
           pushed directly — no manual data entry.
         </p>
+      </div>
+
+      {/* Section — On-Demand Billing Integration */}
+      <div className="mb-8">
+        <div className="mb-3">
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-stone">
+            On-Demand Billing Integration
+          </p>
+          <p className="text-xs text-stone/70 mt-0.5">
+            Verdix pulls usage totals from your infrastructure at invoice time. No event streaming
+            required — your endpoint returns the total billable units for a given customer and period.
+          </p>
+        </div>
+
+        <div
+          className="bg-white rounded-2xl border overflow-hidden"
+          style={{ borderColor: pullConfig?.configured ? 'rgba(74,124,89,0.3)' : 'rgba(26,61,43,0.1)' }}
+        >
+          <div className="flex items-center gap-4 px-5 py-4">
+            {/* Icon tile */}
+            <div className="w-10 h-10 rounded-xl flex-shrink-0 shadow-sm flex items-center justify-center"
+              style={{ background: pullConfig?.configured ? '#ECFDF5' : '#F3F4F6' }}>
+              <i className="ti ti-plug-connected" style={{ fontSize: 20, color: pullConfig?.configured ? '#065F46' : '#6B7280' }} />
+            </div>
+
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-sm font-semibold text-ink">Usage Retrieval Endpoint</p>
+                {pullConfig?.configured ? (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full"
+                    style={{ background: '#ECFDF5', color: '#065F46', border: '1px solid rgba(74,124,89,0.3)' }}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-current inline-block" />
+                    Configured
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full"
+                    style={{ background: '#F3F4F6', color: '#6B7280', border: '1px solid #E5E7EB' }}>
+                    Not configured
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-stone mt-0.5 leading-snug">
+                Verdix calls this endpoint with <code className="font-mono text-[10px]">customer_id</code>,{' '}
+                <code className="font-mono text-[10px]">period_start</code>, and{' '}
+                <code className="font-mono text-[10px]">period_end</code> at invoice creation time
+                and expects <code className="font-mono text-[10px]">{'{ total_billable_units: number }'}</code> in response.
+              </p>
+            </div>
+
+            {isAdmin && (
+              pullConfig?.configured ? (
+                <button
+                  onClick={handlePullDisconnect}
+                  disabled={pullRemoving}
+                  className="flex-shrink-0 text-xs font-medium px-4 py-2 rounded-xl border transition-colors disabled:opacity-50"
+                  style={{ borderColor: 'rgba(220,38,38,0.2)', color: '#DC2626' }}
+                >
+                  {pullRemoving ? 'Removing…' : 'Disconnect'}
+                </button>
+              ) : (
+                <button
+                  onClick={() => { setPullFormOpen(o => !o); setPullMsg(null) }}
+                  className="flex-shrink-0 text-xs font-semibold px-4 py-2 rounded-xl border transition-colors"
+                  style={{ borderColor: 'rgba(26,61,43,0.2)', color: '#1A3D2B' }}
+                >
+                  {pullFormOpen ? 'Cancel' : 'Configure'}
+                </button>
+              )
+            )}
+          </div>
+
+          {/* Config keys readout when connected */}
+          {pullConfig?.configured && pullConfig.config_keys.length > 0 && (
+            <div className="border-t px-5 pb-4 pt-3" style={{ borderColor: 'rgba(26,61,43,0.08)', background: '#FAFAF8' }}>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-stone mb-1.5">Stored fields</p>
+              <div className="flex flex-wrap gap-1.5">
+                {pullConfig.config_keys.map(k => (
+                  <span key={k}
+                    className="font-mono text-[11px] px-2 py-0.5 rounded-lg border"
+                    style={{ background: '#ECFDF5', color: '#065F46', borderColor: 'rgba(74,124,89,0.25)' }}>
+                    {k}
+                  </span>
+                ))}
+              </div>
+              {isAdmin && (
+                <button
+                  onClick={() => { setPullFormOpen(o => !o); setPullMsg(null) }}
+                  className="mt-2 text-xs font-medium underline underline-offset-2"
+                  style={{ color: '#1A3D2B' }}
+                >
+                  {pullFormOpen ? 'Cancel update' : 'Update configuration'}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Configuration form */}
+          {pullFormOpen && isAdmin && (
+            <div className="border-t px-5 pb-5 pt-4" style={{ borderColor: 'rgba(26,61,43,0.08)', background: '#FAFAF8' }}>
+              <form onSubmit={handlePullSave} className="flex flex-col gap-3">
+                <div>
+                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-stone mb-1">
+                    Usage Retrieval API Endpoint
+                  </label>
+                  <input
+                    type="url"
+                    placeholder="https://api.yourplatform.com/verdix/usage"
+                    value={pullForm.client_usage_url}
+                    onChange={e => setPullForm(f => ({ ...f, client_usage_url: e.target.value }))}
+                    required
+                    className="w-full text-sm border border-forest/20 rounded-xl px-4 py-2.5 bg-white text-ink placeholder:text-stone/40 focus:outline-none focus:ring-2 focus:ring-forest/20 font-mono"
+                  />
+                  <p className="text-[11px] text-stone mt-1 leading-snug">
+                    Verdix appends <code className="font-mono text-[10px]">?customer_id=&period_start=&period_end=</code> as query parameters.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-stone mb-1">
+                    Read-Only API Access Token{' '}
+                    <span className="normal-case font-normal text-stone/60">(optional)</span>
+                  </label>
+                  <input
+                    type="password"
+                    placeholder={pullConfig?.config_keys.includes('client_read_api_key') ? '••••••  (leave blank to keep existing)' : 'Bearer token sent in Authorization header'}
+                    value={pullForm.client_read_api_key}
+                    onChange={e => setPullForm(f => ({ ...f, client_read_api_key: e.target.value }))}
+                    className="w-full text-sm border border-forest/20 rounded-xl px-4 py-2.5 bg-white text-ink placeholder:text-stone/40 focus:outline-none focus:ring-2 focus:ring-forest/20 font-mono"
+                  />
+                </div>
+                <div className="flex items-center gap-3 pt-1">
+                  <button
+                    type="submit"
+                    disabled={pullSaving}
+                    className="bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors disabled:opacity-50"
+                  >
+                    {pullSaving ? 'Saving…' : 'Save configuration'}
+                  </button>
+                  {pullMsg && (
+                    <p className={`text-xs ${pullMsg.ok ? 'text-forest' : 'text-red-600'}`}>{pullMsg.text}</p>
+                  )}
+                </div>
+              </form>
+              <p className="text-[11px] text-stone mt-3 leading-snug">
+                The access token is stored encrypted and never returned to the browser after saving.
+                Leave it blank when updating the URL to keep the existing token.
+              </p>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Section — Billing */}

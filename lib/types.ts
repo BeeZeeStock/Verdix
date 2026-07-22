@@ -121,10 +121,12 @@ export interface ApprovedLineItem {
 }
 
 export interface BillingMeteredItem {
-  unit_type: string
-  meter_id: string
-  price_id: string
+  unit_type:            string
+  meter_id:             string
+  price_id:             string
   subscription_item_id: string
+  /** @deprecated Lago was removed in favour of the on-demand pull model. Field is preserved for backward compatibility with existing JSONB rows but is no longer read by any runtime path. */
+  lago_metric_code?: string
 }
 
 export interface PartnerInvoiceLine {

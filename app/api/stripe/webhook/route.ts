@@ -103,7 +103,7 @@ export async function POST(req: NextRequest) {
     // ── 1. Look up the Verdix contract by subscription ID ──────────────────
     const { data: jobs } = await supabaseServer
       .from('jobs')
-      .select('id, contract_terms ( * )')
+      .select('id, org_id, contract_terms ( * )')
       .eq('billing_subscription_id', subscriptionId)
       .limit(1)
 
@@ -116,6 +116,21 @@ export async function POST(req: NextRequest) {
     })[]
     const terms = termsArr?.[0]
     if (!terms) return NextResponse.json({ received: true })
+
+    // ── 1a. Resolve org on-demand pull config ──────────────────────────────
+    // If the org has a client_usage_url configured, usage data is pulled from
+    // their endpoint at invoice time rather than from Stripe Billing Meters.
+    type PullCfg = { client_usage_url: string; client_read_api_key?: string }
+    let pullConfig: PullCfg | null = null
+    if (job.org_id) {
+      const { data: orgData } = await supabaseServer
+        .from('organizations')
+        .select('pull_config')
+        .eq('id', job.org_id)
+        .maybeSingle()
+      const pc = (orgData?.pull_config ?? {}) as Partial<PullCfg>
+      if (pc.client_usage_url) pullConfig = pc as PullCfg
+    }
 
     // ── 2. Resolve billing period from invoice ─────────────────────────────
     const periodStart = new Date((invoice.period_start ?? 0) * 1000)
@@ -220,54 +235,183 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── 4. Read meter totals + apply tariff logic per usage type ───────────
-    const meteredItems  = terms.billing_metered_items ?? []
-    const tiersByMetric = groupTiersByMetric(terms.overage_tiers ?? [])
-    const includedUnits = terms.included_units ?? 0
+    // ── 4. Compute overage amounts ──────────────────────────────────────────
+    // Primary path: per-meter pull from registered billing_meters endpoints.
+    // Each confirmed org_billing_config meter has its own pull endpoint registered
+    // in billing_meters. Verdix calls that endpoint per meter — same flow for
+    // platform meters (sync → /api/internal/usage) and 3PP org meters.
+    //
+    // Fallback A: single org-level pull endpoint (legacy, backward compat).
+    // Fallback B: Stripe Billing Meters (original path for metered subscriptions).
 
-    await Promise.all(
-      meteredItems.map(async item => {
-        const tiers = tiersByMetric.get(item.unit_type.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''))
-        if (!tiers || tiers.length === 0) return
+    type MeterCfg = {
+      meter_key:      string
+      included_units: number
+      overage_tiers:  Array<{ from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number }>
+    }
+    type MeterDef = {
+      pull_endpoint_url: string | null
+      pull_auth_token:   string | null
+      pull_param_name:   string | null
+    }
 
-        const quantity = await getCustomerMeterTotal(stripe, {
-          meterId:    item.meter_id,
-          customerId,
-          startTime:  periodStart,
-          endTime:    periodEnd,
-        })
+    const { data: meterConfigs } = await supabaseServer
+      .from('org_billing_config')
+      .select('meter_key, included_units, overage_tiers')
+      .eq('org_id', job.org_id)
+      .eq('active', true)
 
-        const amount = Math.round(computeMetricOverage(quantity, tiers, includedUnits) * 100) / 100
-        if (amount <= 0) return
+    if (meterConfigs && meterConfigs.length > 0) {
+      // ── Primary: per-meter pull ─────────────────────────────────────────────
+      for (const cfg of (meterConfigs as MeterCfg[])) {
+        const { data: meterDef } = await supabaseServer
+          .from('billing_meters')
+          .select('pull_endpoint_url, pull_auth_token, pull_param_name')
+          .or(`org_id.is.null,org_id.eq.${job.org_id}`)
+          .eq('meter_key', cfg.meter_key)
+          .maybeSingle()
 
-        const description = buildOverageDescription(item.unit_type, quantity, tiers, includedUnits)
+        const def = meterDef as MeterDef | null
+
+        if (!def?.pull_endpoint_url) {
+          console.warn(`[stripe/webhook] no pull endpoint for meter '${cfg.meter_key}' org ${job.org_id} — skipping`)
+          continue
+        }
+
+        const pullUrl = new URL(def.pull_endpoint_url)
+        pullUrl.searchParams.set('customer_id',  customerId)
+        pullUrl.searchParams.set('period_start', String(invoice.period_start))
+        pullUrl.searchParams.set('period_end',   String(invoice.period_end))
+        pullUrl.searchParams.set(def.pull_param_name ?? 'billing_parameter', cfg.meter_key)
+
+        const pullHeaders: Record<string, string> = {}
+        if (def.pull_auth_token) pullHeaders['Authorization'] = `Bearer ${def.pull_auth_token}`
+
+        const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
+        if (!pullRes.ok) {
+          console.error(`[stripe/webhook] pull failed for meter '${cfg.meter_key}' (${pullRes.status}) — skipping`)
+          continue
+        }
+
+        const usageData  = await pullRes.json() as { total_billable_units?: number | string }
+        const totalUnits = Number(usageData.total_billable_units ?? 0)
+        if (totalUnits <= 0) continue
+
+        const tiers         = (cfg.overage_tiers ?? []).map((t, i) => ({
+          tier_label:    `Tier ${i + 1}`,
+          from_unit:     t.from_unit ?? null,
+          to_unit:       t.to_unit   ?? null,
+          rate_per_unit: t.rate_per_unit ?? 0,
+          unit_type:     cfg.meter_key,
+        }))
+        const includedUnits = cfg.included_units ?? 0
+        const overageEur    = tiers.length > 0
+          ? computeMetricOverage(totalUnits, tiers, includedUnits)
+          : 0
+
+        if (overageEur <= 0) continue
+
+        const description = buildOverageDescription(cfg.meter_key, totalUnits, tiers, includedUnits)
 
         await stripe.invoiceItems.create({
           customer:    customerId,
           invoice:     targetInvoiceId,
-          amount:      Math.round(amount * 100),
+          amount:      Math.round(overageEur * 100),
           currency:    (terms.currency ?? 'EUR').toLowerCase(),
           description,
           metadata: {
-            metric_code: item.meter_id,
-            unit_type:   item.unit_type,
-            quantity:    String(quantity),
-            verdix_job:  job.id,
+            metric_source:     'meter_pull',
+            meter_key:         cfg.meter_key,
+            total_units:       String(totalUnits),
+            billing_parameter: cfg.meter_key,
+            verdix_job:        job.id,
           },
         })
 
         injectedLines.push({
           description,
-          amount,
+          amount:            overageEur,
           currency:          terms.currency,
           type:              'overage',
-          unit_type:         item.unit_type,
-          total_quantity:    quantity,
+          unit_type:         cfg.meter_key,
+          total_quantity:    totalUnits,
           included_quantity: includedUnits,
-          excess_quantity:   Math.max(0, quantity - includedUnits),
+          excess_quantity:   Math.max(0, totalUnits - includedUnits),
         })
-      })
-    )
+      }
+    } else if (pullConfig) {
+      // ── Fallback A: legacy single org-level pull endpoint ───────────────────
+      const pullUrl = new URL(pullConfig.client_usage_url)
+      pullUrl.searchParams.set('customer_id',  customerId)
+      pullUrl.searchParams.set('period_start', String(invoice.period_start))
+      pullUrl.searchParams.set('period_end',   String(invoice.period_end))
+
+      const pullHeaders: Record<string, string> = {}
+      if (pullConfig.client_read_api_key) pullHeaders['Authorization'] = `Bearer ${pullConfig.client_read_api_key}`
+
+      const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
+      if (!pullRes.ok) {
+        console.error(`[stripe/webhook] legacy pull failed (${pullRes.status}) for job ${job.id}`)
+      } else {
+        const usageData      = await pullRes.json() as { total_billable_units?: number | string }
+        const aggregateUnits = Number(usageData.total_billable_units || 0)
+        const includedUnits  = terms.included_units ?? 0
+
+        if (aggregateUnits > 0) {
+          const overageAmount = Math.round(computeMetricOverage(aggregateUnits, terms.overage_tiers ?? [], includedUnits) * 100) / 100
+          if (overageAmount > 0) {
+            const description = buildOverageDescription('Usage', aggregateUnits, terms.overage_tiers ?? [], includedUnits)
+            await stripe.invoiceItems.create({
+              customer:    customerId,
+              invoice:     targetInvoiceId,
+              amount:      Math.round(overageAmount * 100),
+              currency:    (terms.currency ?? 'EUR').toLowerCase(),
+              description,
+              metadata: { metric_source: 'client_pull', total_units: String(aggregateUnits), verdix_job: job.id },
+            })
+            injectedLines.push({
+              description, amount: overageAmount, currency: terms.currency, type: 'overage',
+              total_quantity: aggregateUnits, included_quantity: includedUnits,
+              excess_quantity: Math.max(0, aggregateUnits - includedUnits),
+            })
+          }
+        }
+      }
+    } else {
+      // ── Fallback B: Stripe Billing Meters (original metered subscription path) ─
+      const meteredItems  = terms.billing_metered_items ?? []
+      const tiersByMetric = groupTiersByMetric(terms.overage_tiers ?? [])
+      const includedUnits = terms.included_units ?? 0
+
+      await Promise.all(
+        meteredItems.map(async item => {
+          const tiers = tiersByMetric.get(item.unit_type.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''))
+          if (!tiers || tiers.length === 0) return
+
+          const quantity = await getCustomerMeterTotal(stripe, {
+            meterId: item.meter_id, customerId, startTime: periodStart, endTime: periodEnd,
+          })
+
+          const amount = Math.round(computeMetricOverage(quantity, tiers, includedUnits) * 100) / 100
+          if (amount <= 0) return
+
+          const description = buildOverageDescription(item.unit_type, quantity, tiers, includedUnits)
+          await stripe.invoiceItems.create({
+            customer:    customerId,
+            invoice:     targetInvoiceId,
+            amount:      Math.round(amount * 100),
+            currency:    (terms.currency ?? 'EUR').toLowerCase(),
+            description,
+            metadata: { metric_code: item.meter_id, unit_type: item.unit_type, quantity: String(quantity), verdix_job: job.id },
+          })
+          injectedLines.push({
+            description, amount, currency: terms.currency, type: 'overage',
+            unit_type: item.unit_type, total_quantity: quantity,
+            included_quantity: includedUnits, excess_quantity: Math.max(0, quantity - includedUnits),
+          })
+        })
+      )
+    }
 
     // ── 5. Persist computed invoice (DRAFT) ────────────────────────────────
     const totalAmount = injectedLines.reduce((s, l) => s + l.amount, 0)

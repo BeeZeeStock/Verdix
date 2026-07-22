@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
 import { InvoicesTab } from '@/app/_components/InvoicesTab'
 import { StripeSummaryCard } from '@/app/_components/StripeSummaryCard'
+import { MeterMappingPanel } from '@/app/_components/MeterMappingPanel'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
@@ -1479,6 +1480,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [approving, setApproving]     = useState(false)
   const [approveError, setApproveError] = useState<string | null>(null)
   const [approved, setApproved]       = useState<{ stripeSubscriptionId: string; dashboardUrl?: string } | null>(null)
+  const [meterMappingsConfirmed, setMeterMappingsConfirmed] = useState(false)
   const [drawer, setDrawer]   = useState<{ open: boolean; section?: string }>({ open: false })
   const [pdfUrl, setPdfUrl]   = useState<string | null>(null)
   const [pdfUrlError, setPdfUrlError] = useState(false)
@@ -2506,6 +2508,15 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
+            {/* ── Meter mapping (enterprise contracts with overage tiers) ── */}
+            {!isConfigured && tiers.length > 0 && (
+              <MeterMappingPanel
+                jobId={id}
+                currency={cur}
+                onConfirmedChange={setMeterMappingsConfirmed}
+              />
+            )}
+
             {/* ── TCV + Approve footer ── */}
             <div className="bg-white rounded-2xl border border-forest/10 px-7 py-5 flex items-center justify-between gap-8">
                 {/* Left: label + number */}
@@ -2528,7 +2539,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 {/* Right: approve action (only shown before billing is configured) */}
                 {!isConfigured && (
                   <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                    <button onClick={handleApprove} disabled={approving || needsReview > 0}
+                    <button
+                      onClick={handleApprove}
+                      disabled={approving || needsReview > 0 || (tiers.length > 0 && !meterMappingsConfirmed)}
                       className="inline-flex items-center gap-2 font-semibold text-[13px] px-6 py-2.5 rounded-xl transition-all disabled:opacity-40 bg-forest text-white hover:bg-sage">
                       {approving
                         ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> Pushing to Stripe…</>
@@ -2537,6 +2550,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     {needsReview > 0 && (
                       <p className="text-[10px] text-stone/50">
                         Review {needsReview} flagged item{needsReview > 1 ? 's' : ''} above first
+                      </p>
+                    )}
+                    {tiers.length > 0 && !meterMappingsConfirmed && needsReview === 0 && (
+                      <p className="text-[10px] text-amber-600">
+                        Confirm billing meter mappings above first
                       </p>
                     )}
                     {approveError && <p className="text-[10px] text-red-500 max-w-xs">{approveError}</p>}

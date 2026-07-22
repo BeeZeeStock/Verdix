@@ -34,16 +34,23 @@ export default function NewConfigurePage() {
       })
       const { jobId } = await res.json()
       const fd = new FormData(); fd.append('file', file); fd.append('jobId', jobId); fd.append('fileType', 'signed_contract')
-      await fetch('/api/upload', { method: 'POST', body: fd })
+      const uploadRes = await fetch('/api/upload', { method: 'POST', body: fd })
+      if (!uploadRes.ok) {
+        const body = await uploadRes.json().catch(() => ({}))
+        setError({ text: body.error ?? 'File upload failed. Please try again.' })
+        setLoading(false)
+        return
+      }
       // Detect PII before extraction — user reviews findings first
       const piiRes = await fetch(`/api/jobs/${jobId}/detect-pii`, { method: 'POST' })
       if (!piiRes.ok) {
-        const body = await piiRes.json().catch(() => ({}))
         if (piiRes.status === 403) {
-          setError({ text: body.error ?? 'Advanced PII Data Masking is not active on your plan.', billing: true })
-        } else {
-          setError({ text: body.error ?? 'PII detection failed. Please try again.' })
+          // PII masking not on plan — skip PII review, go straight to extraction
+          router.push(`/configure/${jobId}`)
+          return
         }
+        const body = await piiRes.json().catch(() => ({}))
+        setError({ text: body.error ?? 'PII detection failed. Please try again.' })
         setLoading(false)
         return
       }

@@ -44,6 +44,7 @@ const settingsItems = [
   { href: '/settings', icon: 'ti-settings', label: 'Settings', exact: true },
   { href: '/settings/billing', icon: 'ti-credit-card', label: 'Billing', exact: false },
   { href: '/settings/integrations', icon: 'ti-plug-connected', label: 'Integrations', exact: false },
+  { href: '/settings/meters',       icon: 'ti-antenna',         label: 'Billing meters', exact: false },
   { href: '/settings/team', icon: 'ti-users', label: 'Team', exact: false },
   { href: '/settings/learned-rules', icon: 'ti-brain', label: 'Learned rules', exact: false },
 ]
@@ -54,6 +55,8 @@ const adminItems = [
   { href: '/admin/billing', icon: 'ti-building-store', label: 'Packages & pricing', exact: false },
   { href: '/admin/customers', icon: 'ti-users-group', label: 'Customers', exact: false },
   { href: '/admin/design-partners', icon: 'ti-star', label: 'Design partners', exact: false },
+  { href: '/admin/meters',       icon: 'ti-antenna',  label: 'Meters',       exact: false },
+  { href: '/admin/billing-test', icon: 'ti-flask',    label: 'Billing test', exact: false },
 ]
 
 function NavContent({ onNav }: { onNav?: () => void }) {
@@ -107,7 +110,10 @@ function NavContent({ onNav }: { onNav?: () => void }) {
         <div className="mb-1 mt-2">
           <div className="px-4 pt-3 pb-1 text-xs font-medium uppercase tracking-widest" style={{ color: '#9CA3AF', letterSpacing: '.07em' }}>Account</div>
           {settingsItems
-            .filter(item => !(item.href === '/settings/billing' && ADMIN_EMAILS.includes(userEmail)))
+            .filter(item => !(
+              ADMIN_EMAILS.includes(userEmail) &&
+              (item.href === '/settings/billing' || item.href === '/settings/meters')
+            ))
             .map(item => (
               <Link
                 key={item.href}
