@@ -207,7 +207,7 @@ export function MeterMappingPanel({ jobId, currency, onConfirmedChange }: Props)
 
               {/* Meter selector */}
               <div className="flex-1 min-w-0">
-                <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Verdix meter</div>
+                <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Billing meter</div>
                 <select
                   value={meterKey}
                   onChange={e => {
