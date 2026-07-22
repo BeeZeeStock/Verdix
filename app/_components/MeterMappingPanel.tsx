@@ -190,16 +190,14 @@ export function MeterMappingPanel({ jobId, currency, onConfirmedChange }: Props)
       {/* Mapping rows */}
       <div className="divide-y divide-amber-50">
         {suggestions.map(s => {
-          const meterKey    = get(s.contract_unit_type, 'meter_key', s.meter_key)
-          const confirmed   = get(s.contract_unit_type, 'confirmed', s.confirmed)
-          const cycle       = get(s.contract_unit_type, 'billing_cycle', s.billing_cycle)
-          const included    = get(s.contract_unit_type, 'included_units', s.included_units)
-          const badge       = CONFIDENCE_BADGE(s.confidence)
+          const meterKey     = get(s.contract_unit_type, 'meter_key', s.meter_key)
+          const confirmed    = get(s.contract_unit_type, 'confirmed', s.confirmed)
+          const badge        = CONFIDENCE_BADGE(s.confidence)
           const matchedMeter = meters.find(m => m.meter_key === meterKey)
 
           return (
             <div key={s.contract_unit_type}
-              className="px-7 py-4 flex items-start gap-6"
+              className="px-7 py-4 flex items-center gap-6"
               style={{ background: confirmed ? '#F6FAF4' : undefined }}>
 
               {/* Contract unit type */}
@@ -208,7 +206,7 @@ export function MeterMappingPanel({ jobId, currency, onConfirmedChange }: Props)
                 <div className="text-sm font-medium text-ink font-mono bg-cream px-2 py-1 rounded-lg inline-block">
                   {s.contract_unit_type}
                 </div>
-                <div className="mt-1.5 flex items-center gap-1">
+                <div className="mt-1.5">
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
                     style={{ background: badge.bg, color: badge.color }}>
                     {badge.label}
@@ -217,7 +215,7 @@ export function MeterMappingPanel({ jobId, currency, onConfirmedChange }: Props)
               </div>
 
               {/* Arrow */}
-              <div className="flex-shrink-0 mt-6">
+              <div className="flex-shrink-0">
                 <i className="ti ti-arrow-right text-stone/40" style={{ fontSize: 16 }} />
               </div>
 
@@ -245,49 +243,8 @@ export function MeterMappingPanel({ jobId, currency, onConfirmedChange }: Props)
                 )}
               </div>
 
-              {/* Billing cycle */}
-              <div className="w-36 flex-shrink-0">
-                <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Billing cycle</div>
-                <select
-                  value={cycle}
-                  onChange={e => setEdit(s.contract_unit_type, 'billing_cycle', e.target.value)}
-                  className="w-full bg-white border border-forest/20 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest"
-                >
-                  {['monthly', 'quarterly', 'yearly'].map(c => (
-                    <option key={c} value={c}>{CYCLE_LABELS[c]}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Included units */}
-              <div className="w-28 flex-shrink-0">
-                <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Included / {CYCLE_LABELS[cycle]?.toLowerCase()}</div>
-                <input
-                  type="number"
-                  min={0}
-                  value={included}
-                  onChange={e => setEdit(s.contract_unit_type, 'included_units', Number(e.target.value))}
-                  className="w-full bg-white border border-forest/20 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest"
-                />
-              </div>
-
-              {/* Overage tiers summary */}
-              <div className="w-48 flex-shrink-0">
-                <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Overage tiers</div>
-                <div className="space-y-0.5">
-                  {s.overage_tiers.map((t, i) => (
-                    <div key={i} className="text-[10px] text-stone font-mono">
-                      {t.from_unit != null ? `${t.from_unit.toLocaleString()}` : '0'}
-                      {t.to_unit != null ? `–${t.to_unit.toLocaleString()}` : '+'}
-                      {' '}&rarr;{' '}
-                      {new Intl.NumberFormat('en', { style: 'currency', currency }).format(t.rate_per_unit)}/unit
-                    </div>
-                  ))}
-                </div>
-              </div>
-
               {/* Confirm toggle */}
-              <div className="flex-shrink-0 flex flex-col items-center gap-1 mt-1">
+              <div className="flex-shrink-0 flex flex-col items-center gap-1">
                 <button
                   onClick={() => setEdit(s.contract_unit_type, 'confirmed', !confirmed)}
                   className="w-8 h-8 rounded-lg border-2 flex items-center justify-center transition-all"
