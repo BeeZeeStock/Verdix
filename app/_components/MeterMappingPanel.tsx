@@ -144,7 +144,7 @@ export function MeterMappingPanel({ jobId, currency, onConfirmedChange }: Props)
             )}
           </div>
           <p className="text-xs text-stone">
-            Map each usage metric in this contract to a Verdix billing meter. Auto-suggestions are based on the extracted unit types — review and confirm each one.
+            Map each usage metric in this contract to your billing meter. Auto-suggestions are based on the extracted unit types — review and confirm each one.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -170,6 +170,22 @@ export function MeterMappingPanel({ jobId, currency, onConfirmedChange }: Props)
           )}
         </div>
       </div>
+
+      {/* No meters registered */}
+      {meters.length === 0 && (
+        <div className="px-7 py-6 flex items-start gap-3 bg-amber-50/60 border-t border-amber-100">
+          <i className="ti ti-alert-triangle text-amber-600 flex-shrink-0 mt-0.5" style={{ fontSize: 15 }} />
+          <div>
+            <div className="text-sm font-medium text-amber-900 mb-0.5">No billing meters registered</div>
+            <p className="text-xs text-amber-800">
+              You need to register at least one billing meter before mapping contract terms.{' '}
+              <a href="/settings/meters" className="underline underline-offset-2 font-medium hover:text-amber-900">
+                Register a meter →
+              </a>
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Mapping rows */}
       <div className="divide-y divide-amber-50">
