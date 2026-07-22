@@ -33,6 +33,7 @@ export interface BillingContext {
   plan: VerdixPlan
   subscription: OrgSubscription
   syncLimit: number | null       // resolved limit (null = unlimited)
+  syncsUsed: number              // computed from usage_counters (canonical)
   syncsRemaining: number | null  // null = unlimited
   isOverLimit: boolean
   isNearLimit: boolean           // >80% used
@@ -121,7 +122,7 @@ export async function getBillingContext(orgId: string): Promise<BillingContext> 
   const isNearLimit = syncLimit != null && !isOverLimit && (syncsUsed / syncLimit) * 100 >= warn
   const syncsRemaining = syncLimit != null ? Math.max(0, syncLimit - syncsUsed) : null
 
-  return { plan, subscription, syncLimit, syncsRemaining, isOverLimit, isNearLimit, warnPct: warn }
+  return { plan, subscription, syncLimit, syncsUsed, syncsRemaining, isOverLimit, isNearLimit, warnPct: warn }
 }
 
 // ── Sync recording ────────────────────────────────────────────────────────────

@@ -31,7 +31,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         {billing?.isOverLimit && (
           <div className="px-4 py-2.5 text-sm flex items-center justify-between gap-3" style={{ background: '#FEF2F2', borderBottom: '1px solid #FECACA' }}>
             <span className="text-red-700">
-              <strong>Sync limit reached</strong> — you&apos;ve used {billing.subscription.syncs_used} of {billing.syncLimit} agreement syncs this month.
+              <strong>Sync limit reached</strong> — you&apos;ve used {billing.syncsUsed} of {billing.syncLimit} agreement syncs this month.
               {billing.plan.overage_price_eur ? ` Additional syncs are billed at €${billing.plan.overage_price_eur}/sync at month end.` : ''}
             </span>
             <Link href="/settings/billing" className="flex-shrink-0 text-xs font-semibold text-red-700 underline hover:text-red-900">
@@ -42,7 +42,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         {billing?.isNearLimit && !billing.isOverLimit && (
           <div className="px-4 py-2.5 text-sm flex items-center justify-between gap-3" style={{ background: '#FFFBEB', borderBottom: '1px solid #FDE68A' }}>
             <span className="text-amber-700">
-              <strong>Approaching sync limit</strong> — {billing.subscription.syncs_used} of {billing.syncLimit} agreement syncs used this month.
+              <strong>Approaching sync limit</strong> — {billing.syncsUsed} of {billing.syncLimit} agreement syncs used this month.
             </span>
             <Link href="/settings/billing" className="flex-shrink-0 text-xs font-semibold text-amber-700 underline hover:text-amber-900">
               View plan →

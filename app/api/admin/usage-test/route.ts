@@ -113,17 +113,19 @@ export async function POST(req: NextRequest) {
   const { action, org_id } = body
   if (!org_id) return NextResponse.json({ error: 'org_id required' }, { status: 400 })
 
-  // ── Seed counter (writes to both counter cache and ledger) ───────────────────
+  // ── Seed test events (ledger only, marked simulated — never inflates real counter) ──
   if (action === 'seed') {
     const meterKey = (body.metric_type ?? body.meter_key ?? 'sync').trim()
     const amount   = Math.max(1, Number(body.amount ?? 1))
-    const { error } = await supabaseServer.rpc('record_usage', {
-      org_id_param:      org_id,
-      meter_key_param:   meterKey,
-      amount_param:      amount,
-      job_id_param:      null,
-      occurred_at_param: new Date().toISOString(),
-    })
+    const rows = Array.from({ length: amount }, () => ({
+      org_id:       org_id,
+      meter_key:    meterKey,
+      amount:       1,
+      occurred_at:  new Date().toISOString(),
+      is_simulated: true,
+      simulated_at: new Date().toISOString(),
+    }))
+    const { error } = await supabaseServer.from('usage_ledger').insert(rows)
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
     return NextResponse.json({ ok: true })
   }
