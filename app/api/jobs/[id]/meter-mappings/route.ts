@@ -10,6 +10,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
+import { auth } from '@/lib/auth'
+
+const ADMIN_EMAILS = ['bilal.zahoor@yahoo.com', 'bilal@lynoraai.com']
 
 // ── Auto-mapping heuristic ────────────────────────────────────────────────────
 const METER_RULES: Array<{ patterns: string[]; key: string; confidence: number }> = [
@@ -88,12 +91,18 @@ export async function GET(
 
   const existingMap = new Map((existing ?? []).map((r: Record<string, unknown>) => [r.contract_unit_type as string, r]))
 
-  // Fetch available meters: platform (org_id IS NULL) + this org's registered meters
-  const { data: meters } = await supabaseServer
+  // Fetch available meters: only this org's registered meters.
+  // Verdix admins also see platform meters (org_id IS NULL) for their own contract processing.
+  const session = await auth()
+  const isAdmin = ADMIN_EMAILS.includes(session?.user?.email ?? '')
+  const meterQuery = supabaseServer
     .from('billing_meters')
     .select('meter_key, display_name, unit_label, org_id')
-    .or(`org_id.is.null,org_id.eq.${job.org_id}`)
     .order('meter_key')
+
+  const { data: meters } = await (isAdmin
+    ? meterQuery.or(`org_id.is.null,org_id.eq.${job.org_id}`)
+    : meterQuery.eq('org_id', job.org_id))
 
   // Build suggestions
   const suggestions = Array.from(unitGroups.entries()).map(([unitType, tiers]) => {
