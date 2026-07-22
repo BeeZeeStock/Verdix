@@ -45,7 +45,8 @@ export default function NewConfigurePage() {
       const piiRes = await fetch(`/api/jobs/${jobId}/detect-pii`, { method: 'POST' })
       if (!piiRes.ok) {
         if (piiRes.status === 403) {
-          // PII masking not on plan — skip PII review, go straight to extraction
+          // PII masking not on plan — skip PII review, trigger extraction directly
+          await fetch(`/api/jobs/${jobId}/execute`, { method: 'POST' })
           router.push(`/configure/${jobId}`)
           return
         }
