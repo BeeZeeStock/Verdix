@@ -200,7 +200,7 @@ export async function POST(req: NextRequest) {
     else if (event.type === 'invoice.created') {
       const invoice = event.data.object as StripeInvoice
       const billingReason = (invoice as unknown as Record<string, string>).billing_reason
-      if (billingReason !== 'subscription_cycle') return NextResponse.json({ received: true })
+      if (!['subscription_cycle', 'subscription_update'].includes(billingReason)) return NextResponse.json({ received: true })
 
       const subRef = invoice.parent?.subscription_details?.subscription
       if (!subRef) return NextResponse.json({ received: true })

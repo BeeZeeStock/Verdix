@@ -120,7 +120,7 @@ export async function POST(req: NextRequest) {
     const rows = Array.from({ length: amount }, () => ({
       org_id:       org_id,
       meter_key:    meterKey,
-      amount:       1,
+      quantity:     1,
       occurred_at:  new Date().toISOString(),
       is_simulated: true,
       simulated_at: new Date().toISOString(),
