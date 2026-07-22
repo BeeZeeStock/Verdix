@@ -104,9 +104,12 @@ export async function POST(req: NextRequest) {
       const periodEnd    = invoice ? new Date(invoice.period_end   * 1000).toISOString()
         : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
 
+      const customerId = typeof cs.customer === 'string' ? cs.customer : (cs.customer as { id: string } | null)?.id ?? null
+
       await supabaseServer.from('org_subscriptions').upsert({
         org_id:                 orgId,
         plan_id:                planId,
+        stripe_customer_id:     customerId,
         stripe_subscription_id: subId,
         billing_cycle:          cycle,
         current_period_start:   periodStart,
@@ -190,25 +193,32 @@ export async function POST(req: NextRequest) {
         .eq('org_id', orgId)
     }
 
-    // ── invoice.paid ─────────────────────────────────────────────────────────
-    else if (event.type === 'invoice.paid') {
+    // ── invoice.created ──────────────────────────────────────────────────────
+    // Fires when Stripe drafts the invoice before charging. We add overage
+    // items here so they appear on the SAME invoice as the base subscription fee.
+    // Only handle subscription_cycle (renewals) — skip setup and manual invoices.
+    else if (event.type === 'invoice.created') {
       const invoice = event.data.object as StripeInvoice
-      const subRef  = invoice.parent?.subscription_details?.subscription
+      const billingReason = (invoice as unknown as Record<string, string>).billing_reason
+      if (billingReason !== 'subscription_cycle') return NextResponse.json({ received: true })
+
+      const subRef = invoice.parent?.subscription_details?.subscription
       if (!subRef) return NextResponse.json({ received: true })
 
-      const subId      = typeof subRef === 'string' ? subRef : (subRef as { id: string }).id
+      const subId        = typeof subRef === 'string' ? subRef : (subRef as { id: string }).id
       const subscription = await stripe.subscriptions.retrieve(subId)
-      const orgId      = subscription.metadata?.verdix_org_id
+      const orgId        = subscription.metadata?.verdix_org_id
       if (!orgId) return NextResponse.json({ received: true })
 
       const customerId = invoice.customer
         ? (typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as { id: string }).id)
         : null
+      if (!customerId) return NextResponse.json({ received: true })
 
+      const invoiceId = (invoice as unknown as Record<string, string>).id
       const { start: periodStart, end: periodEnd } = periodFromInvoice(invoice)
       const testMode = process.env.VERDIX_BILLING_TEST_MODE === 'true'
 
-      // ── Fetch active billing config (set from plan or confirmed agreement) ──
       const { data: configs } = await supabaseServer
         .from('org_billing_config')
         .select('*')
@@ -223,10 +233,9 @@ export async function POST(req: NextRequest) {
         source:         string
       }
 
-      if (configs && configs.length > 0 && customerId) {
+      if (configs && configs.length > 0) {
         // ── Path A: Ledger-based billing (agreement or plan with config) ──────
         for (const cfg of (configs as OrgBillingConfig[])) {
-          // Sum usage_ledger for this meter across the invoice period
           const { data: usageSum } = await supabaseServer.rpc('sum_usage_for_period', {
             org_id_param:      orgId,
             meter_key_param:   cfg.meter_key,
@@ -238,11 +247,11 @@ export async function POST(req: NextRequest) {
           const count = Number(usageSum ?? 0)
           if (count <= 0) continue
 
-          const tiers        = toOverageTiers(cfg.overage_tiers ?? [], cfg.meter_key)
-          const included     = cfg.included_units ?? 0
+          const tiers         = toOverageTiers(cfg.overage_tiers ?? [], cfg.meter_key)
+          const included      = cfg.included_units ?? 0
           const overageAmount = tiers.length > 0
             ? computeMetricOverage(count, tiers, included)
-            : Math.max(0, count - included) * 0   // no tiers = no charge
+            : 0
 
           if (overageAmount <= 0) continue
 
@@ -250,36 +259,29 @@ export async function POST(req: NextRequest) {
           const label   = cfg.meter_key.replace(/_/g, ' ')
           const desc    = `Verdix ${label} overage — ${overage.toLocaleString()} excess ${overage === 1 ? label : label + 's'} (${cfg.billing_cycle})`
 
-          await stripe.invoiceItems.create({
-            customer:    customerId,
-            amount:      Math.round(overageAmount * 100),
-            currency:    'eur',
-            description: desc,
-            metadata: {
-              meter_key:     cfg.meter_key,
-              count:         String(count),
-              overage:       String(overage),
-              billing_cycle: cfg.billing_cycle,
-              source:        cfg.source,
-              period_start:  periodStart,
-              period_end:    periodEnd,
-            },
-          }).catch(err => console.error(`[billing/webhook] invoiceItem failed for ${cfg.meter_key}:`, err))
-
           if (testMode) {
-            console.log(`[billing/webhook] TEST MODE — ${cfg.meter_key} deduction skipped`, {
+            console.log(`[billing/webhook] TEST MODE — would add invoice item`, {
               org_id: orgId, meter_key: cfg.meter_key,
               count, overage, overage_amount_eur: Math.round(overageAmount * 100) / 100,
-              period_start: periodStart, period_end: periodEnd, source: cfg.source,
+              invoice_id: invoiceId, period_start: periodStart, period_end: periodEnd,
             })
           } else {
-            // Deduct counter cache (ledger entries are never deleted — they are the audit trail)
-            const { error: deductErr } = await supabaseServer.rpc('deduct_usage_counter', {
-              org_id_param: orgId,
-              metric_type:  cfg.meter_key,
-              amount:       count,
-            })
-            if (deductErr) console.error(`[billing/webhook] deduct_usage_counter failed for ${cfg.meter_key}:`, deductErr)
+            await stripe.invoiceItems.create({
+              customer:    customerId,
+              invoice:     invoiceId,
+              amount:      Math.round(overageAmount * 100),
+              currency:    'eur',
+              description: desc,
+              metadata: {
+                meter_key:     cfg.meter_key,
+                count:         String(count),
+                overage:       String(overage),
+                billing_cycle: cfg.billing_cycle,
+                source:        cfg.source,
+                period_start:  periodStart,
+                period_end:    periodEnd,
+              },
+            }).catch(err => console.error(`[billing/webhook] invoiceItem failed for ${cfg.meter_key}:`, err))
           }
         }
       } else {
@@ -290,7 +292,7 @@ export async function POST(req: NextRequest) {
           .eq('org_id', orgId)
           .maybeSingle()
 
-        if (sub && customerId) {
+        if (sub) {
           const counters = (sub.usage_counters ?? {}) as Record<string, number>
 
           for (const [metricType, rawCount] of Object.entries(counters)) {
@@ -306,33 +308,93 @@ export async function POST(req: NextRequest) {
             const label = metricType === 'sync' ? 'agreement sync' : metricType.replace(/_/g, ' ')
             const desc  = `Verdix ${label} overage — ${overage.toLocaleString()} excess ${overage === 1 ? label : label + 's'} @ €${pricePerUnit}/${label}`
 
-            await stripe.invoiceItems.create({
-              customer:    customerId,
-              amount:      Math.round(pricePerUnit * overage * 100),
-              currency:    'eur',
-              description: desc,
-              metadata: { metric_type: metricType, count: String(count), overage: String(overage) },
-            }).catch(err => console.error(`[billing/webhook] invoiceItem failed for ${metricType}:`, err))
-
             if (testMode) {
-              console.log(`[billing/webhook] TEST MODE — ${metricType} deduction skipped`, {
+              console.log(`[billing/webhook] TEST MODE — would add invoice item`, {
                 org_id: orgId, metric_type: metricType, count, overage,
                 price_per_unit_eur: pricePerUnit,
                 invoice_item_total_eur: Math.round(pricePerUnit * overage * 100) / 100,
+                invoice_id: invoiceId,
               })
             } else {
-              const { error: deductErr } = await supabaseServer.rpc('deduct_usage_counter', {
+              await stripe.invoiceItems.create({
+                customer:    customerId,
+                invoice:     invoiceId,
+                amount:      Math.round(pricePerUnit * overage * 100),
+                currency:    'eur',
+                description: desc,
+                metadata: { metric_type: metricType, count: String(count), overage: String(overage) },
+              }).catch(err => console.error(`[billing/webhook] invoiceItem failed for ${metricType}:`, err))
+            }
+          }
+        }
+      }
+    }
+
+    // ── invoice.paid ─────────────────────────────────────────────────────────
+    // Fires after successful payment. Reset usage counters for the new period.
+    else if (event.type === 'invoice.paid') {
+      const invoice = event.data.object as StripeInvoice
+      const subRef  = invoice.parent?.subscription_details?.subscription
+      if (!subRef) return NextResponse.json({ received: true })
+
+      const subId        = typeof subRef === 'string' ? subRef : (subRef as { id: string }).id
+      const subscription = await stripe.subscriptions.retrieve(subId)
+      const orgId        = subscription.metadata?.verdix_org_id
+      if (!orgId) return NextResponse.json({ received: true })
+
+      const { start: periodStart, end: periodEnd } = periodFromInvoice(invoice)
+      const testMode = process.env.VERDIX_BILLING_TEST_MODE === 'true'
+
+      if (!testMode) {
+        // Deduct usage counters now that the invoice is paid
+        const { data: configs } = await supabaseServer
+          .from('org_billing_config')
+          .select('meter_key')
+          .eq('org_id', orgId)
+          .eq('active', true)
+
+        if (configs && configs.length > 0) {
+          for (const cfg of configs as { meter_key: string }[]) {
+            const { data: usageSum } = await supabaseServer.rpc('sum_usage_for_period', {
+              org_id_param:      orgId,
+              meter_key_param:   cfg.meter_key,
+              period_start:      periodStart,
+              period_end:        periodEnd,
+              include_simulated: false,
+            })
+            const count = Number(usageSum ?? 0)
+            if (count > 0) {
+              await supabaseServer.rpc('deduct_usage_counter', {
+                org_id_param: orgId,
+                metric_type:  cfg.meter_key,
+                amount:       count,
+              }).then(({ error }) => {
+                if (error) console.error(`[billing/webhook] deduct failed for ${cfg.meter_key}:`, error)
+              })
+            }
+          }
+        } else {
+          const { data: sub } = await supabaseServer
+            .from('org_subscriptions')
+            .select('usage_counters')
+            .eq('org_id', orgId)
+            .maybeSingle()
+          const counters = (sub?.usage_counters ?? {}) as Record<string, number>
+          for (const [metricType, rawCount] of Object.entries(counters)) {
+            const count = Number(rawCount ?? 0)
+            if (count > 0) {
+              await supabaseServer.rpc('deduct_usage_counter', {
                 org_id_param: orgId,
                 metric_type:  metricType,
                 amount:       count,
+              }).then(({ error }) => {
+                if (error) console.error(`[billing/webhook] deduct failed for ${metricType}:`, error)
               })
-              if (deductErr) console.error(`[billing/webhook] deduct failed for ${metricType}:`, deductErr)
             }
           }
         }
       }
 
-      // Always reset subscription period dates
       await resetPeriodSyncs(orgId, periodStart, periodEnd)
     }
   } catch (err) {
