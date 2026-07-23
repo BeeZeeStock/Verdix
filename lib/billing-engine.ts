@@ -256,10 +256,18 @@ export async function runBillingForOrg(
     },
   })
 
-  // Finalize immediately for self-service — this populates hosted_invoice_url
-  const finalInvoice = autoAdvance
-    ? await stripe.invoices.finalizeInvoice(draftInvoice.id)
-    : draftInvoice
+  // Finalize + pay immediately for self-service.
+  // Manually calling finalizeInvoice() moves status draft→open but does NOT
+  // trigger Stripe's automatic payment collection — we must call pay() ourselves.
+  let finalInvoice = draftInvoice
+  if (autoAdvance) {
+    finalInvoice = await stripe.invoices.finalizeInvoice(draftInvoice.id)
+    await stripe.invoices.pay(draftInvoice.id).catch(err =>
+      console.error('[billing-engine] invoice.pay failed:', err)
+    )
+    // Re-fetch so hosted_invoice_url reflects the paid state
+    finalInvoice = await stripe.invoices.retrieve(draftInvoice.id)
+  }
 
   const invoiceUrl = (finalInvoice as unknown as Record<string, unknown>).hosted_invoice_url as string | null ?? null
 
