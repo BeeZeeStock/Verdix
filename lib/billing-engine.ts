@@ -132,8 +132,9 @@ export async function runBillingForOrg(
 
       if (overageAmt > 0) {
         const label = cfg.meter_key.replace(/_/g, ' ')
+        const unit  = overage === 1 ? label : `${label}s`
         lineItems.push({
-          description: `${label} overage — ${overage.toLocaleString()} excess units`,
+          description: `${label.charAt(0).toUpperCase() + label.slice(1)} overage — ${overage.toLocaleString()} excess ${unit}`,
           amount_eur:  Math.round(overageAmt * 100) / 100,
           metadata:    {
             type: 'overage', meter_key: cfg.meter_key,
@@ -148,7 +149,7 @@ export async function runBillingForOrg(
     const plan = await getPlan(sub.plan_id)
     if (plan && plan.base_price_eur > 0) {
       lineItems.unshift({
-        description: `Verdix ${plan.name} — ${billingCycle}`,
+        description: `${plan.name} — ${billingCycle}`,
         amount_eur:  plan.base_price_eur,
         metadata:    { type: 'base_fee', plan_id: sub.plan_id },
       })
@@ -160,7 +161,7 @@ export async function runBillingForOrg(
 
     if (plan.base_price_eur > 0) {
       lineItems.push({
-        description: `Verdix ${plan.name}`,
+        description: `${plan.name}`,
         amount_eur:  plan.base_price_eur,
         metadata:    { type: 'base_fee', plan_id: sub.plan_id },
       })
