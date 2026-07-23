@@ -216,8 +216,19 @@ export async function POST(req: NextRequest) {
       if (!customerId) return NextResponse.json({ received: true })
 
       const invoiceId = (invoice as unknown as Record<string, string>).id
-      const { start: periodStart, end: periodEnd } = periodFromInvoice(invoice)
       const testMode = process.env.VERDIX_BILLING_TEST_MODE === 'true'
+
+      // Use the stored billing period from our DB — more reliable than invoice.period_start
+      // which is zero-length on proration invoices (billing anchor changes).
+      const { data: subRecord } = await supabaseServer
+        .from('org_subscriptions')
+        .select('current_period_start, current_period_end')
+        .eq('org_id', orgId)
+        .maybeSingle()
+
+      const invoicePeriod = periodFromInvoice(invoice)
+      const periodStart = subRecord?.current_period_start ?? invoicePeriod.start
+      const periodEnd   = new Date().toISOString() // bill all usage up to now
 
       const { data: configs } = await supabaseServer
         .from('org_billing_config')
