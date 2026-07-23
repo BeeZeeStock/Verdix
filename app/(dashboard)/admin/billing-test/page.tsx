@@ -9,6 +9,20 @@ type OrgRow = {
   usage_counters:         Record<string, number>
   stripe_customer_id:     string | null
   stripe_subscription_id: string | null
+  current_period_start:   string | null
+  current_period_end:     string | null
+}
+
+type BillingRunResult = {
+  org_id:        string
+  period_start:  string
+  period_end:    string
+  line_items:    { description: string; amount_eur: number }[]
+  total_eur:     number
+  invoice_id:    string | null
+  invoice_url:   string | null
+  dry_run:       boolean
+  is_enterprise: boolean
 }
 
 type JobRow = {
@@ -124,6 +138,14 @@ export default function BillingTestPage() {
   const [previewPlanId,  setPreviewPlanId]  = useState<string>('')
   const [previewTotal,   setPreviewTotal]   = useState<number>(0)
   const [previewing,     setPreviewing]     = useState(false)
+
+  // Panel 6: Bill now
+  const [billDryRun,     setBillDryRun]     = useState(true)
+  const [billStart,      setBillStart]      = useState(() => defaultPeriod().start)
+  const [billEnd,        setBillEnd]        = useState(() => defaultPeriod().end)
+  const [billing,        setBilling]        = useState(false)
+  const [billResult,     setBillResult]     = useState<BillingRunResult | null>(null)
+  const [billError,      setBillError]      = useState<string | null>(null)
 
   // Panel 5: Period simulation
   const [simStart,       setSimStart]       = useState(() => defaultPeriod().start)
@@ -277,6 +299,30 @@ export default function BillingTestPage() {
     setSimClearing(false)
   }
 
+  // ── Panel 6: Bill now ────────────────────────────────────────────────────────
+  const handleBillNow = async () => {
+    if (!selectedOrg) return
+    setBilling(true); setBillResult(null); setBillError(null)
+    const res  = await fetch('/api/admin/billing/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        org_id:       selectedOrg.org_id,
+        dry_run:      billDryRun,
+        period_start: billStart ? new Date(billStart).toISOString() : undefined,
+        period_end:   billEnd   ? new Date(billEnd  ).toISOString() : undefined,
+      }),
+    })
+    const data = await res.json()
+    if (res.ok) {
+      setBillResult(data as BillingRunResult)
+      if (!billDryRun) await loadData()
+    } else {
+      setBillError(data.error ?? 'Unknown error')
+    }
+    setBilling(false)
+  }
+
   const handleSimulateBilling = async () => {
     if (!selectedOrg) return
     setSimRunning(true); setSimResult(null)
@@ -332,6 +378,11 @@ export default function BillingTestPage() {
                   setSelectedOrg(isActive ? null : org)
                   setPreview(null); setRecordJobId('')
                   setSimResult(null); setSimByDay(null)
+                  setBillResult(null); setBillError(null)
+                  if (!isActive) {
+                    setBillStart(org.current_period_start?.split('T')[0] ?? defaultPeriod().start)
+                    setBillEnd(org.current_period_end?.split('T')[0]   ?? defaultPeriod().end)
+                  }
                 }}
                 className="w-full text-left px-6 py-3.5 flex items-center gap-4 transition-colors hover:bg-forest/3"
                 style={{ background: isActive ? '#EAF3DE' : undefined }}
@@ -703,6 +754,156 @@ export default function BillingTestPage() {
                 )
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Panel 6: Bill now ─────────────────────────────────────────────────── */}
+      {selectedOrg && (
+        <div className="bg-white border border-amber-200 rounded-2xl overflow-hidden" style={{ background: '#FFFDF5' }}>
+          <div className="px-6 py-4 border-b border-amber-100">
+            <div className="text-sm font-medium text-ink flex items-center gap-2 mb-0.5">
+              <i className="ti ti-bolt text-amber-500" style={{ fontSize: 15 }} />
+              Bill now — Verdix billing engine
+              {billDryRun && (
+                <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                  DRY RUN
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-stone">
+              Runs <code className="bg-cream px-1 rounded font-mono text-[10px]">runBillingForOrg()</code> — computes real invoice from ledger + plan pricing.
+              Dry run previews without writing. Live run creates a Stripe invoice and advances the billing period.
+            </p>
+          </div>
+
+          <div className="p-6 space-y-5">
+            {/* Mode toggle */}
+            <div className="flex items-center gap-3">
+              <label className="text-[10px] font-semibold text-stone uppercase tracking-widest">Mode</label>
+              <div className="flex gap-1.5">
+                {([true, false] as const).map(isDry => (
+                  <button
+                    key={String(isDry)}
+                    onClick={() => { setBillDryRun(isDry); setBillResult(null); setBillError(null) }}
+                    className="text-xs px-3 py-1.5 rounded-lg border transition-colors"
+                    style={billDryRun === isDry
+                      ? { background: isDry ? '#92400E' : '#1A3D2B', color: 'white', borderColor: isDry ? '#92400E' : '#1A3D2B' }
+                      : { background: 'white', color: '#6B7280', borderColor: '#E5E7EB' }
+                    }>
+                    {isDry ? 'Dry run' : 'Live — creates Stripe invoice'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Period pickers */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Period start</label>
+                <input type="date" value={billStart} onChange={e => setBillStart(e.target.value)}
+                  className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-amber-400" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Period end</label>
+                <input type="date" value={billEnd} onChange={e => setBillEnd(e.target.value)}
+                  className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-amber-400" />
+              </div>
+            </div>
+
+            {/* Action */}
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleBillNow}
+                disabled={billing}
+                className="text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors disabled:opacity-40 flex items-center gap-2"
+                style={{ background: billDryRun ? '#92400E' : '#1A3D2B', color: 'white' }}
+              >
+                <i className={`ti ${billDryRun ? 'ti-eye' : 'ti-bolt'}`} style={{ fontSize: 14 }} />
+                {billing ? 'Running…' : billDryRun ? 'Preview billing' : 'Issue invoice now'}
+              </button>
+              {!billDryRun && (
+                <span className="text-xs text-amber-700 font-medium">
+                  This creates a real Stripe invoice and advances the billing period.
+                </span>
+              )}
+            </div>
+
+            {/* Error */}
+            {billError && (
+              <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+                {billError}
+              </div>
+            )}
+
+            {/* Result */}
+            {billResult && (
+              <div className="bg-white border border-forest/10 rounded-xl overflow-hidden">
+                <div className="px-5 py-3 border-b border-forest/8 flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-ink">
+                      {billResult.dry_run ? 'Dry run result' : 'Invoice created'}
+                    </span>
+                    {billResult.is_enterprise && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-forest/10 text-forest">enterprise</span>
+                    )}
+                    <span className="text-[10px] text-stone font-mono">
+                      {new Date(billResult.period_start).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                      {' → '}
+                      {new Date(billResult.period_end).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </span>
+                  </div>
+                  {billResult.invoice_id && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-mono text-stone">{billResult.invoice_id}</span>
+                      {billResult.invoice_url && (
+                        <a href={billResult.invoice_url} target="_blank" rel="noreferrer"
+                          className="text-[10px] font-medium text-forest underline hover:text-sage">
+                          View in Stripe →
+                        </a>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {billResult.line_items.length === 0 ? (
+                  <div className="px-5 py-4 text-sm text-stone">Nothing to bill for this period.</div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left border-b border-forest/8">
+                          <th className="text-[10px] font-semibold text-stone uppercase tracking-widest px-5 py-3">Description</th>
+                          <th className="text-[10px] font-semibold text-stone uppercase tracking-widest px-5 py-3">Amount (€)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-forest/5">
+                        {billResult.line_items.map((item, i) => (
+                          <tr key={i}>
+                            <td className="px-5 py-3 text-ink text-xs">{item.description}</td>
+                            <td className="px-5 py-3 font-mono font-semibold tabular-nums text-ink">
+                              €{item.amount_eur.toFixed(2)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t-2 border-forest/15">
+                          <td className="px-5 pt-3 pb-3 text-xs font-semibold text-ink">Total</td>
+                          <td className="px-5 pt-3 pb-3 font-mono font-bold text-ink tabular-nums text-base">
+                            €{billResult.total_eur.toFixed(2)}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                )}
+                {!billResult.dry_run && billResult.invoice_id && (
+                  <div className="px-5 py-3 bg-forest/5 border-t border-forest/8 text-xs text-forest font-medium">
+                    Period advanced. Next billing period starts {new Date(billResult.period_end).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

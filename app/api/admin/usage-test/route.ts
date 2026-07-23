@@ -71,7 +71,7 @@ export async function GET() {
 
   const [orgsRes, subsRes, jobsRes] = await Promise.all([
     supabaseServer.from('organizations').select('id, name').order('name'),
-    supabaseServer.from('org_subscriptions').select('org_id, plan_id, usage_counters, stripe_customer_id, stripe_subscription_id'),
+    supabaseServer.from('org_subscriptions').select('org_id, plan_id, usage_counters, stripe_customer_id, stripe_subscription_id, current_period_start, current_period_end'),
     supabaseServer.from('jobs').select('id, org_id, created_at').order('created_at', { ascending: false }).limit(50),
   ])
 
