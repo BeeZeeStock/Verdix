@@ -243,7 +243,7 @@ export async function runBillingForOrg(
   const autoAdvance = !isEnterprise
   const periodLabel = new Date(periodStart).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
 
-  const invoice = await stripe.invoices.create({
+  const draftInvoice = await stripe.invoices.create({
     customer:     sub.stripe_customer_id,
     auto_advance: autoAdvance,
     currency:     'eur',
@@ -256,15 +256,18 @@ export async function runBillingForOrg(
     },
   })
 
-  if (autoAdvance) {
-    await stripe.invoices.finalizeInvoice(invoice.id)
-  }
+  // Finalize immediately for self-service — this populates hosted_invoice_url
+  const finalInvoice = autoAdvance
+    ? await stripe.invoices.finalizeInvoice(draftInvoice.id)
+    : draftInvoice
+
+  const invoiceUrl = (finalInvoice as unknown as Record<string, unknown>).hosted_invoice_url as string | null ?? null
 
   return {
     org_id: orgId, period_start: periodStart, period_end: periodEnd,
     line_items: lineItems, total_eur: totalEur,
-    invoice_id:  invoice.id,
-    invoice_url: (invoice as unknown as Record<string, unknown>).hosted_invoice_url as string | null ?? null,
+    invoice_id:  finalInvoice.id,
+    invoice_url: invoiceUrl,
     dry_run: false, is_enterprise: isEnterprise,
   }
 }

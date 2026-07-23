@@ -856,12 +856,12 @@ export default function BillingTestPage() {
                   {billResult.invoice_id && (
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] font-mono text-stone">{billResult.invoice_id}</span>
-                      {billResult.invoice_url && (
-                        <a href={billResult.invoice_url} target="_blank" rel="noreferrer"
-                          className="text-[10px] font-medium text-forest underline hover:text-sage">
-                          View in Stripe →
-                        </a>
-                      )}
+                      <a
+                        href={billResult.invoice_url ?? `https://dashboard.stripe.com/test/invoices/${billResult.invoice_id}`}
+                        target="_blank" rel="noreferrer"
+                        className="text-[10px] font-medium text-forest underline hover:text-sage">
+                        View in Stripe →
+                      </a>
                     </div>
                   )}
                 </div>
