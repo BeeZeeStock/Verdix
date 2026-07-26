@@ -314,6 +314,26 @@ Authorization: Bearer <your-auth-token>`}</pre>
               {/* Pull endpoint (collapsible within form) */}
               <div className="border-t border-forest/8 pt-4 space-y-4">
                 <div className="text-[10px] font-semibold text-stone uppercase tracking-widest">Pull endpoint (optional — can be added later)</div>
+
+                {/* Params reference table */}
+                <div className="border border-forest/10 rounded-xl overflow-hidden">
+                  <div className="px-3 py-2 bg-forest/4 text-[10px] font-semibold text-stone uppercase tracking-widest border-b border-forest/8">
+                    Parameters Verdix will send to your endpoint
+                  </div>
+                  {[
+                    { name: 'period_start', desc: 'Start of the billing period (ISO 8601 UTC, inclusive)', example: '2026-01-01T00:00:00Z' },
+                    { name: 'period_end',   desc: 'End of the billing period (ISO 8601 UTC, exclusive)',  example: '2026-02-01T00:00:00Z' },
+                    { name: 'crm_id',       desc: "Customer ID from the contract — identifies the customer in your system", example: 'ABC-123' },
+                    { name: '<meter_param>', desc: 'The meter key being queried (param name you set below)', example: 'api_calls' },
+                  ].map((p, i, arr) => (
+                    <div key={p.name} className={`flex items-start gap-3 px-3 py-2 text-xs ${i < arr.length - 1 ? 'border-b border-forest/6' : ''}`}>
+                      <code className="font-mono text-[10px] text-forest bg-forest/6 px-1.5 py-0.5 rounded w-28 flex-shrink-0">{p.name}</code>
+                      <span className="text-stone flex-1 leading-relaxed">{p.desc}</span>
+                      <code className="font-mono text-[10px] text-stone/50 flex-shrink-0 hidden sm:block">{p.example}</code>
+                    </div>
+                  ))}
+                </div>
+
                 <div className="grid grid-cols-2 gap-4">
                   <div className="col-span-2">
                     <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Endpoint URL</label>
@@ -363,7 +383,7 @@ Authorization: Bearer <your-auth-token>`}</pre>
               </div>
               <div className="text-sm font-medium text-ink mb-1">No meters registered yet</div>
               <p className="text-xs text-stone max-w-xs mx-auto">
-                Add each billing dimension you track. Verdix will call your endpoint once per meter at the end of each cycle.
+                Add each billing dimension you track. Verdix will call your endpoint once per meter at the end of each billing cycle.
               </p>
             </div>
           ) : (
