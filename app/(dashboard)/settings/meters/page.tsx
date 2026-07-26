@@ -195,7 +195,7 @@ export default function MetersSettingsPage() {
             What Verdix sends to your endpoint
           </div>
           <p className="text-xs text-stone mt-0.5">
-            Configure one endpoint URL per meter. Verdix calls it with these parameters and expects the total back.
+            Configure one endpoint URL per meter. Verdix calls it with these parameters and expects the total usage back.
           </p>
         </div>
         <div className="px-6 py-5 space-y-4">
