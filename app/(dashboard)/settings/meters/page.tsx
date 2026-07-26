@@ -138,7 +138,7 @@ export default function MetersSettingsPage() {
 
   const codeSnippet = apiKey
     ? `curl -X POST ${BASE_URL}/api/v1/usage \\
-  -H "Authorization: Bearer ${apiKey}" \\
+  -H "Authorization: Bearer <your-api-key>" \\
   -H "Content-Type: application/json" \\
   -d '{"meter_key":"sync","quantity":1}'`
     : ''
@@ -194,8 +194,7 @@ export default function MetersSettingsPage() {
                 {codeSnippet}
               </pre>
               <p className="text-[10px] text-stone mt-1.5">
-                <code className="bg-cream px-1 rounded">occurred_at</code> is optional — defaults to now.
-                One event per call, or batch with multiple requests.
+                Call this from your backend each time a billable event occurs. Replace <code className="bg-cream px-1 rounded">sync</code> with your meter key and copy your API key from above.
               </p>
             </div>
           )}
