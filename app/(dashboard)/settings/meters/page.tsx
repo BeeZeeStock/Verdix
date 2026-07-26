@@ -148,8 +148,9 @@ export default function MetersSettingsPage() {
       <div>
         <h1 className="font-display font-light text-ink text-2xl mb-1">Billing Meters</h1>
         <p className="text-stone text-sm">
-          Register the usage dimensions your platform tracks. Push events to Verdix as they happen
-          using your ingest API key — Verdix sums the ledger at billing time and invoices accordingly.
+          Register the usage parameters you use to bill your customers, like number of API calls,
+          active seats, etc. Push those usage events to Verdix as they happen using your ingest
+          API key — Verdix sums the usage at billing time and generates invoices.
         </p>
       </div>
 
