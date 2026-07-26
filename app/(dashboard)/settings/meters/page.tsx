@@ -276,6 +276,44 @@ Authorization: Bearer <your-auth-token>`}</pre>
               New meter
             </div>
             <div className="px-6 py-5 space-y-5">
+
+              {/* Field reference table */}
+              <div className="border border-forest/10 rounded-xl overflow-hidden">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-forest/4 border-b border-forest/8">
+                      <th className="text-left px-3 py-2.5 text-[10px] font-semibold text-stone uppercase tracking-widest">Field</th>
+                      <th className="text-left px-3 py-2.5 text-[10px] font-semibold text-stone uppercase tracking-widest">What it is</th>
+                      <th className="text-left px-3 py-2.5 text-[10px] font-semibold text-stone uppercase tracking-widest hidden sm:table-cell">Example</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {([
+                      { field: 'Meter key',           req: true,  what: 'Unique snake_case identifier. Used as the value of the meter query param Verdix sends to your endpoint.',         example: 'api_calls' },
+                      { field: 'Display name',         req: true,  what: 'Human-readable name shown on invoices and in the Verdix UI.',                                                    example: 'API Calls' },
+                      { field: 'Unit label',           req: true,  what: 'Singular unit name used in billing line items (e.g. "1 call overage").',                                         example: 'call' },
+                      { field: 'Description',          req: false, what: 'Internal note describing what this meter tracks. Not shown on invoices.',                                        example: 'Total API requests per cycle' },
+                      { field: 'Endpoint URL',         req: true,  what: 'URL Verdix GETs at billing time. Verdix appends period_start, period_end, crm_id, and the meter param.',         example: 'https://api.you.com/billing/usage' },
+                      { field: 'Bearer token',         req: true,  what: 'Auth token sent in the Authorization header so your endpoint can verify the request is from Verdix.',            example: '••••••' },
+                      { field: 'Meter key param name', req: false, what: 'Query param name Verdix uses to pass the meter key. Defaults to billing_parameter if left blank.',               example: 'billing_parameter' },
+                    ] as { field: string; req: boolean; what: string; example: string }[]).map((r, i, arr) => (
+                      <tr key={r.field} className={i < arr.length - 1 ? 'border-b border-forest/6' : ''}>
+                        <td className="px-3 py-2.5 align-top whitespace-nowrap">
+                          <span className="font-medium text-ink">{r.field}</span>
+                          {r.req
+                            ? <span className="ml-1.5 text-[9px] font-semibold text-red-400 uppercase tracking-wide">required</span>
+                            : <span className="ml-1.5 text-[9px] text-stone/50 uppercase tracking-wide">optional</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-stone leading-relaxed align-top">{r.what}</td>
+                        <td className="px-3 py-2.5 align-top hidden sm:table-cell">
+                          <code className="font-mono text-[10px] text-stone/50">{r.example}</code>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
               {/* Meter details */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -284,8 +322,8 @@ Authorization: Bearer <your-auth-token>`}</pre>
                   </label>
                   <input value={form.meter_key} onChange={e => set('meter_key')(e.target.value)}
                     placeholder="e.g. api_calls"
+                    autoComplete="off"
                     className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
-                  <p className="text-[10px] text-stone/60 mt-1">snake_case — this is what you pass in <code className="font-mono">billing_parameter=…</code></p>
                 </div>
                 <div>
                   <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">
@@ -293,6 +331,7 @@ Authorization: Bearer <your-auth-token>`}</pre>
                   </label>
                   <input value={form.display_name} onChange={e => set('display_name')(e.target.value)}
                     placeholder="e.g. API Calls"
+                    autoComplete="off"
                     className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest" />
                 </div>
                 <div>
@@ -301,12 +340,14 @@ Authorization: Bearer <your-auth-token>`}</pre>
                   </label>
                   <input value={form.unit_label} onChange={e => set('unit_label')(e.target.value)}
                     placeholder="e.g. call"
+                    autoComplete="off"
                     className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest" />
                 </div>
                 <div>
                   <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Description</label>
                   <input value={form.description} onChange={e => set('description')(e.target.value)}
                     placeholder="What this meter tracks (optional)"
+                    autoComplete="off"
                     className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest" />
                 </div>
               </div>
@@ -317,38 +358,6 @@ Authorization: Bearer <your-auth-token>`}</pre>
                   <div className="text-[10px] font-semibold text-stone uppercase tracking-widest">Pull endpoint</div>
                   <p className="text-[10px] text-amber-700 mt-0.5">Required for billing to work — configure before the first billing cycle runs.</p>
                 </div>
-
-                {/* Params reference table */}
-                <div className="border border-forest/10 rounded-xl overflow-hidden">
-                  <table className="w-full text-xs border-collapse">
-                    <thead>
-                      <tr className="bg-forest/4 border-b border-forest/8">
-                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-stone uppercase tracking-widest">Parameter</th>
-                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-stone uppercase tracking-widest">Description</th>
-                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-stone uppercase tracking-widest hidden sm:table-cell">Example</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[
-                        { name: 'period_start',  desc: 'Start of the billing period (ISO 8601 UTC, inclusive)', example: '2026-01-01T00:00:00Z' },
-                        { name: 'period_end',    desc: 'End of the billing period (ISO 8601 UTC, exclusive)',   example: '2026-02-01T00:00:00Z' },
-                        { name: 'crm_id',        desc: 'Customer ID from the contract — identifies the customer in your system', example: 'ABC-123' },
-                        { name: '<meter_param>', desc: 'The meter key (e.g. api_calls). Param name is what you set in "Meter key param name" below.', example: 'api_calls' },
-                      ].map((p, i, arr) => (
-                        <tr key={p.name} className={i < arr.length - 1 ? 'border-b border-forest/6' : ''}>
-                          <td className="px-3 py-2 align-top">
-                            <code className="font-mono text-[10px] text-forest bg-forest/6 px-1.5 py-0.5 rounded whitespace-nowrap">{p.name}</code>
-                          </td>
-                          <td className="px-3 py-2 text-stone leading-relaxed align-top">{p.desc}</td>
-                          <td className="px-3 py-2 align-top hidden sm:table-cell">
-                            <code className="font-mono text-[10px] text-stone/50">{p.example}</code>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
                 <div className="grid grid-cols-2 gap-4">
                   <div className="col-span-2">
                     <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Endpoint URL</label>
