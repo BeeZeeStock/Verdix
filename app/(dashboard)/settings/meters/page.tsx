@@ -140,7 +140,7 @@ export default function MetersSettingsPage() {
     ? `curl -X POST ${BASE_URL}/api/v1/usage \\
   -H "Authorization: Bearer <your-api-key>" \\
   -H "Content-Type: application/json" \\
-  -d '{"meter_key":"sync","quantity":1}'`
+  -d '{"meter_key":"api_calls","quantity":15420}'`
     : ''
 
   return (
@@ -149,8 +149,9 @@ export default function MetersSettingsPage() {
         <h1 className="font-display font-light text-ink text-2xl mb-1">Billing Meters</h1>
         <p className="text-stone text-sm">
           Register the usage parameters you use to bill your customers, like number of API calls,
-          active seats, etc. Push those usage events to Verdix as they happen using your ingest
-          API key — Verdix sums the usage at billing time and generates invoices.
+          active seats, etc. At the end of each billing cycle, send Verdix the total count per
+          meter using your ingest API key — Verdix applies your contract pricing and generates
+          the invoice.
         </p>
       </div>
 
@@ -194,7 +195,7 @@ export default function MetersSettingsPage() {
                 {codeSnippet}
               </pre>
               <p className="text-[10px] text-stone mt-1.5">
-                Call this from your backend each time a billable event occurs. Replace <code className="bg-cream px-1 rounded">sync</code> with your meter key and copy your API key from above.
+                Send this once at the end of your billing cycle with the total count for each meter. Replace <code className="bg-cream px-1 rounded">api_calls</code> with your meter key.
               </p>
             </div>
           )}
@@ -315,7 +316,7 @@ export default function MetersSettingsPage() {
         <ol className="space-y-3">
           {[
             { n: '1', title: 'Register your meters', body: 'Add each billing dimension with a snake_case key. The key is what you send in the API call body.' },
-            { n: '2', title: 'Push events as they happen', body: 'From your backend, POST to /api/v1/usage with your API key. Each call records one event in the Verdix ledger.' },
+            { n: '2', title: 'Send totals at cycle end', body: 'At the end of each billing cycle, POST the total count per meter to /api/v1/usage using your API key.' },
             { n: '3', title: 'Upload a contract', body: 'When an agreement is uploaded, Verdix auto-maps the contract\'s unit types to your registered meters. A human confirms before approval.' },
             { n: '4', title: 'Verdix invoices at cycle end', body: 'At each billing cycle end, Verdix sums the ledger per meter, applies your contract\'s overage tiers, and pushes the invoice line items to Stripe.' },
           ].map(step => (
