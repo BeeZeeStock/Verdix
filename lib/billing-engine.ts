@@ -69,6 +69,7 @@ export async function runBillingForOrg(
     overage_tiers:  ConfigTier[]
     billing_cycle:  string
     source:         string
+    job_id:         string | null
   }
 
   const { data: configs } = await supabaseServer
@@ -87,8 +88,21 @@ export async function runBillingForOrg(
     // Enterprise / contract path
     billingCycle = (configs as OrgBillingConfig[])[0].billing_cycle ?? 'monthly'
 
+    // Fetch crm_id from the contract so we can identify this customer on their system
+    let crmId: string | null = null
+    const jobId = (configs as OrgBillingConfig[]).find(c => c.job_id)?.job_id
+    if (jobId) {
+      const { data: terms } = await supabaseServer
+        .from('contract_terms')
+        .select('crm_id')
+        .eq('job_id', jobId)
+        .maybeSingle()
+      crmId = terms?.crm_id ?? null
+    }
+
     for (const cfg of (configs as OrgBillingConfig[])) {
       let count = 0
+      let pulledFromEndpoint = false
 
       // Try registered pull endpoint first
       const { data: meterDef } = await supabaseServer
@@ -104,17 +118,33 @@ export async function runBillingForOrg(
           url.searchParams.set('period_start', periodStart)
           url.searchParams.set('period_end',   periodEnd)
           if (meterDef.pull_param_name) url.searchParams.set(meterDef.pull_param_name, cfg.meter_key)
+          if (crmId) url.searchParams.set('crm_id', crmId)
           const res  = await fetch(url.toString(), {
             headers: meterDef.pull_auth_token ? { Authorization: `Bearer ${meterDef.pull_auth_token}` } : {},
           })
           const data = await res.json() as { total_billable_units?: number }
           count = Number(data.total_billable_units ?? 0)
+          pulledFromEndpoint = true
+
+          // Write pulled total to usage_ledger for audit trail
+          if (!opts?.dryRun && count > 0) {
+            await supabaseServer.from('usage_ledger').insert({
+              org_id:       orgId,
+              meter_key:    cfg.meter_key,
+              quantity:     count,
+              occurred_at:  periodEnd,
+              is_simulated: false,
+            }).then(({ error }) => {
+              if (error) console.error(`[billing-engine] usage_ledger insert failed for ${cfg.meter_key}:`, error)
+            })
+          }
         } catch (err) {
           console.error(`[billing-engine] pull endpoint failed for ${cfg.meter_key}:`, err)
         }
       }
 
-      if (count === 0) {
+      if (!pulledFromEndpoint) {
+        // Fall back to summing usage_ledger entries (ingest API or internal tracking)
         const { data: usageSum } = await supabaseServer.rpc('sum_usage_for_period', {
           org_id_param:      orgId,
           meter_key_param:   cfg.meter_key,

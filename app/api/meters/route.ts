@@ -46,6 +46,47 @@ export async function GET() {
   })
 }
 
+export async function PATCH(req: NextRequest) {
+  let org
+  try { org = await requireOrg('member') } catch (res) { return res as Response }
+
+  const body = await req.json() as {
+    id:                  string
+    pull_endpoint_url?:  string | null
+    pull_auth_token?:    string
+    clear_auth_token?:   boolean
+    pull_param_name?:    string
+  }
+
+  if (!body.id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+
+  // Confirm the meter belongs to this org
+  const { data: existing } = await supabaseServer
+    .from('billing_meters')
+    .select('id, org_id')
+    .eq('id', body.id)
+    .eq('org_id', org.orgId)
+    .maybeSingle()
+
+  if (!existing) return NextResponse.json({ error: 'Meter not found' }, { status: 404 })
+
+  const patch: Record<string, unknown> = {}
+  if (body.pull_endpoint_url !== undefined) patch.pull_endpoint_url = body.pull_endpoint_url?.trim() || null
+  if (body.pull_param_name?.trim())         patch.pull_param_name   = body.pull_param_name.trim()
+  if (body.clear_auth_token)                patch.pull_auth_token   = null
+  else if (body.pull_auth_token?.trim())    patch.pull_auth_token   = body.pull_auth_token.trim()
+
+  const { data, error } = await supabaseServer
+    .from('billing_meters')
+    .update(patch)
+    .eq('id', body.id)
+    .select('id, org_id, meter_key, display_name, unit_label, description, pull_endpoint_url, pull_param_name, pull_auth_token, created_at')
+    .single()
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ meter: maskMeter(data as RawMeter) })
+}
+
 export async function POST(req: NextRequest) {
   let org
   try { org = await requireOrg('member') } catch (res) { return res as Response }

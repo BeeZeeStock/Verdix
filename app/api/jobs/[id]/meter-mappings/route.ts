@@ -181,7 +181,7 @@ export async function POST(
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  // If all confirmed, write to org_billing_config
+  // If all confirmed, write to org_billing_config and initialise billing period
   const allConfirmed = mappings.every(m => m.confirmed)
   if (allConfirmed) {
     const { data: job } = await supabaseServer
@@ -206,6 +206,36 @@ export async function POST(
       await supabaseServer
         .from('org_billing_config')
         .upsert(configRows, { onConflict: 'org_id,meter_key' })
+
+      // Initialise org_subscriptions billing period from the contract start date.
+      // This makes the cron pick up enterprise customers the same way as self-service.
+      const { data: terms } = await supabaseServer
+        .from('contract_terms')
+        .select('contract_start_date, billing_frequency, crm_id')
+        .eq('job_id', jobId)
+        .maybeSingle()
+
+      if (terms?.contract_start_date) {
+        const periodStart = new Date(terms.contract_start_date)
+        const periodEnd   = new Date(periodStart)
+        const freq        = terms.billing_frequency ?? 'monthly'
+        if      (freq === 'annual')      periodEnd.setFullYear(periodEnd.getFullYear() + 1)
+        else if (freq === 'semi-annual') periodEnd.setMonth(periodEnd.getMonth() + 6)
+        else if (freq === 'quarterly')   periodEnd.setMonth(periodEnd.getMonth() + 3)
+        else                             periodEnd.setMonth(periodEnd.getMonth() + 1)
+
+        await supabaseServer.from('org_subscriptions').upsert({
+          org_id:               job.org_id,
+          plan_id:              'enterprise',
+          status:               'active',
+          billing_cycle:        freq,
+          current_period_start: periodStart.toISOString(),
+          current_period_end:   periodEnd.toISOString(),
+          syncs_used:           0,
+          usage_counters:       {},
+          updated_at:           new Date().toISOString(),
+        }, { onConflict: 'org_id' })
+      }
     }
   }
 
