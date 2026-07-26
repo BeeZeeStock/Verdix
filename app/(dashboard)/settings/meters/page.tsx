@@ -181,7 +181,7 @@ export default function MetersSettingsPage() {
       <div>
         <h1 className="font-display font-light text-ink text-2xl mb-1">Billing Meters</h1>
         <p className="text-stone text-sm leading-relaxed">
-          Register each usage dimension you want Verdix to bill. At the end of each billing cycle,
+          Register each usage parameter you want Verdix to bill your customers. At the end of each billing cycle,
           Verdix calls your endpoint — passing the billing period and customer ID — and generates
           invoices based on the totals you return.
         </p>
