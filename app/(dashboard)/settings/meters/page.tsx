@@ -319,6 +319,7 @@ Authorization: Bearer <your-auth-token>`}</pre>
                     <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Endpoint URL</label>
                     <input value={form.pull_endpoint_url} onChange={e => set('pull_endpoint_url')(e.target.value)}
                       placeholder="https://your-api.example.com/billing/usage"
+                      autoComplete="off"
                       className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
                   </div>
                   <div>
@@ -411,6 +412,7 @@ Authorization: Bearer <your-auth-token>`}</pre>
                               value={draft.url}
                               onChange={e => updateDraft(m.id, 'url', e.target.value)}
                               placeholder="https://your-api.example.com/billing/usage"
+                              autoComplete="off"
                               className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono"
                             />
                           </div>

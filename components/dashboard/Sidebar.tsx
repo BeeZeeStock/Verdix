@@ -153,6 +153,7 @@ function NavContent({ onNav }: { onNav?: () => void }) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-xs font-medium text-ink truncate">{userName}</div>
+          {userEmail && <div className="text-xs text-stone truncate">{userEmail}</div>}
         </div>
         <button
           onClick={() => signOut({ callbackUrl: '/' })}
