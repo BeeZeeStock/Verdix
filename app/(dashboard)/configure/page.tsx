@@ -14,18 +14,50 @@ async function getJobs(orgId: string) {
   return data ?? []
 }
 
-// Fetch customer names for jobs that have contract_terms
-async function getCustomerNames(jobIds: string[]): Promise<Record<string, string>> {
+type ContractSummary = { customer_name: string | null; tcv: number; currency: string }
+
+async function getContractSummaries(jobIds: string[]): Promise<Record<string, ContractSummary>> {
   if (jobIds.length === 0) return {}
   const { data } = await supabaseServer
     .from('contract_terms')
-    .select('job_id, customer_name')
+    .select('job_id, customer_name, currency, base_monthly_fee, base_annual_fee, contract_term_months, year_pricing, one_time_fees, additional_recurring_fees')
     .in('job_id', jobIds)
-  const map: Record<string, string> = {}
+
+  const map: Record<string, ContractSummary> = {}
   for (const row of data ?? []) {
-    if (row.customer_name) map[row.job_id] = row.customer_name
+    const months = (row.contract_term_months as number | null) ?? 0
+    const yp     = (row.year_pricing ?? {}) as Record<string, number>
+    const otf    = ((row.one_time_fees ?? []) as Array<{ amount?: number }>)
+      .reduce((s, f) => s + (f.amount ?? 0), 0)
+    const addl   = ((row.additional_recurring_fees ?? []) as Array<{ amount?: number }>)
+      .reduce((s, f) => s + (f.amount ?? 0), 0)
+
+    let tcv = 0
+    const yearKeys = Object.keys(yp)
+    if (yearKeys.length > 0) {
+      tcv = yearKeys.reduce((s, k) => s + (yp[k] ?? 0), 0) + otf + addl * months
+    } else {
+      const baseMonthly = (row.base_monthly_fee as number | null)
+        ?? ((row.base_annual_fee as number | null) ? (row.base_annual_fee as number) / 12 : 0)
+      tcv = baseMonthly * months + otf + addl * months
+    }
+
+    map[row.job_id] = {
+      customer_name: (row.customer_name as string | null) ?? null,
+      tcv,
+      currency: (row.currency as string | null) ?? 'EUR',
+    }
   }
   return map
+}
+
+function fmtTcv(n: number, cur: string) {
+  if (n <= 0) return '—'
+  return new Intl.NumberFormat('en-US', {
+    style:                 'currency',
+    currency:              cur,
+    maximumFractionDigits: 0,
+  }).format(n)
 }
 
 function timeAgo(iso: string) {
@@ -52,7 +84,7 @@ export default async function ConfigureListPage() {
   const org = await getActiveOrg()
   if (!org) redirect('/login')
   const jobs = await getJobs(org.orgId)
-  const customerNames = await getCustomerNames(jobs.map(j => j.id))
+  const contractSummaries = await getContractSummaries(jobs.map(j => j.id))
 
   return (
     <div className="p-4 md:p-8">
@@ -75,7 +107,7 @@ export default async function ConfigureListPage() {
         <table className="w-full">
           <thead>
             <tr className="border-b border-forest/8">
-              {['Contract name', 'Customer', 'Status', 'Date', '', ''].map(h => (
+              {['Contract name', 'Customer', 'TCV', 'Status', 'Date', '', ''].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-[10px] font-semibold text-stone uppercase tracking-wider">{h}</th>
               ))}
             </tr>
@@ -83,7 +115,7 @@ export default async function ConfigureListPage() {
           <tbody>
             {jobs.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-6 py-12 text-center">
+                <td colSpan={6} className="px-6 py-12 text-center">
                   <div className="max-w-sm mx-auto">
                     <div className="w-12 h-12 rounded-2xl bg-blue-50 flex items-center justify-center mx-auto mb-4">
                       <i className="ti ti-bolt" style={{ fontSize: 22, color: '#2563EB' }} />
@@ -103,7 +135,8 @@ export default async function ConfigureListPage() {
                 </td>
               </tr>
             ) : jobs.map(job => {
-              const s = STATUS_STYLE[job.execute_status] ?? STATUS_STYLE.PENDING
+              const s       = STATUS_STYLE[job.execute_status] ?? STATUS_STYLE.PENDING
+              const summary = contractSummaries[job.id]
               return (
                 <tr key={job.id} className="border-b border-forest/6 last:border-0 hover:bg-cream/40 transition-colors">
                   <td className="px-4 py-3">
@@ -112,7 +145,10 @@ export default async function ConfigureListPage() {
                     </Link>
                   </td>
                   <td className="px-4 py-3 text-sm text-stone">
-                    {customerNames[job.id] ?? '—'}
+                    {summary?.customer_name ?? '—'}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-sm font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    {summary ? fmtTcv(summary.tcv, summary.currency) : '—'}
                   </td>
                   <td className="px-4 py-3">
                     <span className="text-xs font-medium" style={{ color: s.color }}>{s.label}</span>
