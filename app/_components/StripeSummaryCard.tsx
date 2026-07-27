@@ -337,7 +337,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
             const periodEnd = new Date(inv.periodEnd)
             // If the current period ends today or is already past, the subscription
             // is renewing now — advance by one interval to show the next event.
-            date = periodEnd <= today ? addInterval(periodEnd) : periodEnd
+            date = periodEnd <= new Date() ? addInterval(periodEnd) : periodEnd
           } else {
             date = new Date(inv.created)
           }
