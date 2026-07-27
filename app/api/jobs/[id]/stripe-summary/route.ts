@@ -102,6 +102,27 @@ export async function GET(
       return meta?.invoice_type !== 'annual_base'
     })
 
+    // Auto-repair one-time invoices whose due_date was clamped to 1 day at push
+    // time (happens when the contract-extracted fee.due_date was already past).
+    // Best-effort: silently skip on error so the GET never fails due to a repair.
+    if (terms?.payment_terms_days) {
+      const netSec = terms.payment_terms_days * 86_400
+      await Promise.all(
+        oneTimeStandaloneInvoices
+          .filter(inv => inv.status === 'open' && inv.due_date != null)
+          .filter(inv => {
+            const expectedDueSec = inv.created + netSec
+            // Only repair if Stripe's stored due_date is more than 2 days short
+            return inv.due_date! < expectedDueSec - 2 * 86_400
+          })
+          .map(inv => {
+            const expectedDueSec = inv.created + netSec
+            const daysUntilDue = Math.max(1, Math.ceil((expectedDueSec - Date.now() / 1000) / 86_400))
+            return stripe.invoices.update(inv.id, { days_until_due: daysUntilDue }).catch(() => {})
+          })
+      )
+    }
+
     // current_period_start/end were removed in the dahlia API; derive from the
     // most-recent (non-void, non-draft) subscription invoice period instead.
     const latestInvoice = subscriptionInvRes.data.find(

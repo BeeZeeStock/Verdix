@@ -457,10 +457,15 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
       .filter(fee => fee.amount && fee.amount > 0)
       .map(async fee => {
         // days_until_due drives the due_date once the invoice is finalized.
-        // Minimum 1 day so Stripe accepts it; past due dates become due tomorrow.
-        const daysUntilDue = fee.due_date
-          ? Math.max(1, Math.ceil((new Date(fee.due_date).getTime() - Date.now()) / 86_400_000))
-          : (terms.payment_terms_days ?? 30)
+        // If the contract specifies a future due_date, use that; otherwise (including
+        // when the extracted date is already past) fall back to payment_terms_days so
+        // we never clamp an agreement's net-30 to next-day just because the push
+        // happened after the extracted date.
+        const netDays = terms.payment_terms_days ?? 30
+        const feeDueDaysFromNow = fee.due_date
+          ? Math.ceil((new Date(fee.due_date).getTime() - Date.now()) / 86_400_000)
+          : 0
+        const daysUntilDue = feeDueDaysFromNow > 1 ? feeDueDaysFromNow : netDays
 
         // Create draft invoice — exclude pending items so only this fee is on it.
         const oneTimeInv = await stripe.invoices.create({

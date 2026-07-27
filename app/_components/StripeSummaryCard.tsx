@@ -310,18 +310,13 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         const entries: TLEntry[] = []
         const netDays = paymentTermsDays ?? 30
 
-        // One-time fee invoices that exist in Stripe.
-        // Due date = invoice creation date + contract payment terms (net N days).
-        // We recompute this rather than trusting Stripe's due_date, which can be
-        // clamped to 1 day when the contract-extracted due_date was already past
-        // at push time.
+        // One-time fee invoices that exist in Stripe — date is when the invoice
+        // was issued (created). Already-issued invoices appear in the past section.
         for (const inv of oneTimeInvoices) {
-          const issued = new Date(inv.created)
-          const due = new Date(issued.getTime() + netDays * 86_400_000)
           entries.push({
             id: inv.id, label: inv.feeLabel ?? 'One-time fee',
-            dateLabel: 'Due',
-            date: due, amount: inv.amount, currency: inv.currency,
+            dateLabel: 'Issued',
+            date: new Date(inv.created), amount: inv.amount, currency: inv.currency,
             status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'one-time',
           })
         }
@@ -336,16 +331,16 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
           })
         }
 
-        // One-time fees not yet in Stripe (pending setup)
+        // One-time fees not yet pushed to Stripe — date is approximate issue date
         if (oneTimeInvoices.length === 0 && oneTimeFees.length > 0) {
           for (const fee of oneTimeFees) {
-            const due = fee.due_date
+            const issueDate = fee.due_date && new Date(fee.due_date) > new Date()
               ? new Date(fee.due_date)
-              : new Date(Date.now() + netDays * 86_400_000)
+              : new Date()
             entries.push({
               id: `pending-${fee.fee_label}`, label: fee.fee_label,
-              dateLabel: 'Due',
-              date: due, amount: fee.amount, currency: currency,
+              dateLabel: 'Will be issued',
+              date: issueDate, amount: fee.amount, currency: currency,
               status: 'pending', kind: 'pending-setup',
             })
           }
