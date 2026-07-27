@@ -229,7 +229,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         </div>
         <div>
           <p className="text-[10px] font-semibold text-stone/60 uppercase tracking-[0.1em] mb-1.5">Current period</p>
-          <p className="text-[12px] text-ink">{fmtShortDate(sub.currentPeriodStart)} – {fmtShortDate(sub.currentPeriodEnd)}</p>
+          <p className="text-[12px] text-ink">{fmtDate(sub.currentPeriodStart)} – {fmtDate(sub.currentPeriodEnd)}</p>
         </div>
         <div>
           <p className="text-[10px] font-semibold text-stone/60 uppercase tracking-[0.1em] mb-1.5">Next invoice</p>
@@ -322,13 +322,29 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
           })
         }
 
-        // Subscription invoices — issued invoices use creation date; drafts
-        // (not yet sent to the customer) use period_end as the expected issue date
+        // Subscription invoices — issued invoices use creation date; drafts use
+        // period_end as the expected issue date. If period_end is today or past
+        // (the current period is renewing right now), add one billing interval to
+        // show the *next* upcoming subscription event instead of "today".
+        const addInterval = (d: Date) => {
+          const next = new Date(d)
+          if (sub.interval === 'month') next.setMonth(next.getMonth() + sub.intervalCount)
+          else if (sub.interval === 'year') next.setFullYear(next.getFullYear() + sub.intervalCount)
+          else if (sub.interval === 'week') next.setDate(next.getDate() + sub.intervalCount * 7)
+          else next.setDate(next.getDate() + sub.intervalCount)
+          return next
+        }
         for (const inv of invoices) {
           const isDraft = inv.status === 'draft'
-          const date = isDraft && inv.periodEnd
-            ? new Date(inv.periodEnd)
-            : new Date(inv.created)
+          let date: Date
+          if (isDraft && inv.periodEnd) {
+            const periodEnd = new Date(inv.periodEnd)
+            // If the current period ends today or is already past, the subscription
+            // is renewing now — advance by one interval to show the next event.
+            date = periodEnd <= today ? addInterval(periodEnd) : periodEnd
+          } else {
+            date = new Date(inv.created)
+          }
           entries.push({
             id: inv.id, label: 'Subscription',
             dateLabel: isDraft ? 'Will be issued' : 'Issued',
