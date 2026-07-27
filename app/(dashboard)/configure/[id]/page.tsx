@@ -2024,7 +2024,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
                 <EditableStat
                   label="Billing cycle"
-                  value={terms?.billing_frequency ?? null}
+                  value={terms?.billing_frequency
+                    ? terms.billing_frequency.charAt(0).toUpperCase() + terms.billing_frequency.slice(1)
+                    : null}
                   placeholder="e.g. monthly, annual"
                   onSave={v => saveField('billing_frequency', v)}
                 />

@@ -79,21 +79,23 @@ function intervalLabel(interval: string, count: number) {
   return `Every ${count} ${interval}${count > 1 ? 's' : ''}`
 }
 
-function StatusPill({ status }: { status: string | null }) {
-  const map: Record<string, { bg: string; color: string; label: string }> = {
-    active:   { bg: '#D4EAD9', color: '#1A3D2B', label: 'Active' },
-    open:     { bg: '#FEF3C7', color: '#92400E', label: 'Awaiting payment' },
-    paid:     { bg: '#D4EAD9', color: '#1A3D2B', label: 'Paid' },
-    void:     { bg: '#F3F4F6', color: '#6B7280', label: 'Void' },
-    draft:    { bg: '#F3F4F6', color: '#6B7280', label: 'Draft' },
-    uncollectible: { bg: '#FEE2E2', color: '#991B1B', label: 'Uncollectible' },
-    past_due: { bg: '#FEE2E2', color: '#991B1B', label: 'Past due' },
-    canceled: { bg: '#F3F4F6', color: '#6B7280', label: 'Canceled' },
+function StatusBadge({ status }: { status: string | null }) {
+  const map: Record<string, { icon: string; color: string; label: string }> = {
+    active:        { icon: 'ti-circle-check',  color: '#27AE60', label: 'Active' },
+    paid:          { icon: 'ti-circle-check',  color: '#27AE60', label: 'Paid' },
+    open:          { icon: 'ti-clock',         color: '#D97706', label: 'Awaiting payment' },
+    draft:         { icon: 'ti-circle-dashed', color: '#9CA3AF', label: 'Draft' },
+    past_due:      { icon: 'ti-alert-circle',  color: '#DC2626', label: 'Past due' },
+    uncollectible: { icon: 'ti-alert-circle',  color: '#DC2626', label: 'Uncollectible' },
+    void:          { icon: 'ti-circle-x',      color: '#9CA3AF', label: 'Void' },
+    canceled:      { icon: 'ti-circle-x',      color: '#9CA3AF', label: 'Canceled' },
+    pending:       { icon: 'ti-circle-dashed', color: '#9CA3AF', label: 'Pending' },
   }
   const s = status ?? 'unknown'
-  const style = map[s] ?? { bg: '#F3F4F6', color: '#6B7280', label: s }
+  const style = map[s] ?? { icon: 'ti-circle-dashed', color: '#9CA3AF', label: s }
   return (
-    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ background: style.bg, color: style.color }}>
+    <span className="inline-flex items-center gap-1 text-[11px] font-medium" style={{ color: style.color }}>
+      <i className={`ti ${style.icon}`} style={{ fontSize: 13 }} />
       {style.label}
     </span>
   )
@@ -178,11 +180,11 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
           <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Billing setup</h2>
           <p className="text-[11px] text-stone mt-1">Live configuration pulled from your Stripe account</p>
         </div>
-        <div className="flex items-center gap-3">
-          <StatusPill status={sub.status} />
+        <div className="flex items-center gap-4">
+          <StatusBadge status={sub.status} />
           {sub.isTest && (
-            <span className="text-[10px] font-semibold px-2 py-1 rounded-full" style={{ background: '#EFF6FF', color: '#1E40AF', border: '1px solid #BFDBFE' }}>
-              Test mode
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium" style={{ color: '#6366F1' }}>
+              <i className="ti ti-test-pipe" style={{ fontSize: 13 }} /> Test mode
             </span>
           )}
           <button
@@ -278,12 +280,12 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         const pastEntries   = entries.filter(e => e.date <= today)
         const futureEntries = entries.filter(e => e.date >  today)
 
-        const dotColor = (status: string | null) => {
-          if (status === 'paid')    return '#27AE60'
-          if (status === 'open')    return '#D97706'
-          if (status === 'draft')   return '#9CA3AF'
-          if (status === 'pending') return '#9CA3AF'
-          return '#9CA3AF'
+        const timelineIcon = (status: string | null): { icon: string; color: string } => {
+          if (status === 'paid')    return { icon: 'ti-circle-check',  color: '#27AE60' }
+          if (status === 'open')    return { icon: 'ti-clock',         color: '#D97706' }
+          if (status === 'draft')   return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
+          if (status === 'pending') return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
+          return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
         }
 
         const renderEntry = (e: TLEntry, isPast: boolean) => {
@@ -293,10 +295,10 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
           const effectiveStatus = isPast ? e.status : 'draft'
           return (
           <div key={e.id} className="flex gap-4 group">
-            {/* Dot */}
+            {/* Icon */}
             <div className="flex flex-col items-center flex-shrink-0" style={{ width: 20 }}>
-              <div className="w-3 h-3 rounded-full border-2 border-white flex-shrink-0 mt-0.5"
-                style={{ background: dotColor(effectiveStatus), boxShadow: `0 0 0 2px ${dotColor(effectiveStatus)}40` }} />
+              <i className={`ti ${timelineIcon(effectiveStatus).icon} flex-shrink-0`}
+                style={{ fontSize: 15, color: timelineIcon(effectiveStatus).color, marginTop: 1 }} />
               <div className="flex-1 w-px mt-1" style={{ background: isPast ? 'rgba(26,61,43,0.12)' : 'rgba(26,61,43,0.06)', minHeight: 12 }} />
             </div>
 
@@ -315,7 +317,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
                     <span className="text-[13px] font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
                       {fmt(e.amount, e.currency)}
                     </span>
-                    <StatusPill status={effectiveStatus} />
+                    <StatusBadge status={effectiveStatus} />
                     {e.pdfUrl && (
                       <a href={e.pdfUrl} target="_blank" rel="noreferrer"
                         className="text-stone/40 hover:text-stone transition-colors" title="Download PDF">
