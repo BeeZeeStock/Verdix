@@ -151,6 +151,7 @@ export async function GET(
         currency:    inv.currency?.toUpperCase() ?? 'EUR',
         dueDate:     inv.due_date   ? new Date(inv.due_date   * 1000).toISOString() : null,
         created:     new Date(inv.created * 1000).toISOString(),
+        periodEnd:   inv.period_end ? new Date(inv.period_end * 1000).toISOString() : null,
         pdfUrl:      inv.invoice_pdf         ?? null,
         hostedUrl:   inv.hosted_invoice_url  ?? null,
         feeLabel:    meta?.fee_label    ?? null,

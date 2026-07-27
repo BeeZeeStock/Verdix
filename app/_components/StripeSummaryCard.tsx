@@ -22,6 +22,7 @@ type InvoiceInfo = {
   currency: string
   dueDate: string | null
   created: string
+  periodEnd: string | null
   pdfUrl: string | null
   hostedUrl: string | null
   feeLabel?: string | null
@@ -321,12 +322,17 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
           })
         }
 
-        // Subscription invoices — date is when the invoice was issued
+        // Subscription invoices — issued invoices use creation date; drafts
+        // (not yet sent to the customer) use period_end as the expected issue date
         for (const inv of invoices) {
+          const isDraft = inv.status === 'draft'
+          const date = isDraft && inv.periodEnd
+            ? new Date(inv.periodEnd)
+            : new Date(inv.created)
           entries.push({
             id: inv.id, label: 'Subscription',
-            dateLabel: 'Issued',
-            date: new Date(inv.created), amount: inv.amount, currency: inv.currency,
+            dateLabel: isDraft ? 'Will be issued' : 'Issued',
+            date, amount: inv.amount, currency: inv.currency,
             status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'subscription',
           })
         }
