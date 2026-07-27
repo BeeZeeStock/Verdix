@@ -215,7 +215,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
       </div>
 
       {/* Subscription status row */}
-      <div className="px-6 py-4 grid grid-cols-4 gap-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)', background: 'rgba(26,61,43,0.02)' }}>
+      <div className="px-6 py-4 grid grid-cols-3 gap-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)', background: 'rgba(26,61,43,0.02)' }}>
         <div>
           <p className="text-[10px] font-semibold text-stone/60 uppercase tracking-[0.1em] mb-1.5">Status</p>
           <StatusPill status={sub.status} />
@@ -226,10 +226,6 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         <div>
           <p className="text-[10px] font-semibold text-stone/60 uppercase tracking-[0.1em] mb-1.5">Billing cadence</p>
           <p className="text-[13px] font-medium text-ink">{intervalLabel(sub.interval, sub.intervalCount)}</p>
-        </div>
-        <div>
-          <p className="text-[10px] font-semibold text-stone/60 uppercase tracking-[0.1em] mb-1.5">Current period</p>
-          <p className="text-[12px] text-ink">{fmtDate(sub.currentPeriodStart)} – {fmtDate(sub.currentPeriodEnd)}</p>
         </div>
         <div>
           <p className="text-[10px] font-semibold text-stone/60 uppercase tracking-[0.1em] mb-1.5">Next invoice</p>
