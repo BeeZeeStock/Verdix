@@ -358,10 +358,12 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         entries.sort((a, b) => a.date.getTime() - b.date.getTime())
 
         const today = new Date()
-        const todayTs = today.getTime()
 
-        const pastEntries   = entries.filter(e => e.date.getTime() < todayTs)
-        const futureEntries = entries.filter(e => e.date.getTime() >= todayTs)
+        // Draft/pending invoices haven't been sent yet — always in the future section.
+        // Sent invoices (open/paid) split on whether their date is before today.
+        const isUnsent = (e: TLEntry) => e.status === 'draft' || e.status === 'pending'
+        const pastEntries   = entries.filter(e => !isUnsent(e) && e.date <= today)
+        const futureEntries = entries.filter(e =>  isUnsent(e) || e.date > today)
 
         const dotColor = (status: string | null) => {
           if (status === 'paid')    return '#27AE60'
