@@ -193,7 +193,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
       {/* Header */}
       <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
         <div>
-          <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Stripe billing setup</h2>
+          <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Billing setup</h2>
           <p className="text-[11px] text-stone mt-1">Live configuration pulled from your Stripe account</p>
         </div>
         <div className="flex items-center gap-3">
@@ -382,12 +382,6 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
                     {fmt(e.amount, e.currency)}
                   </span>
                   <StatusPill status={e.status} />
-                  {e.hostedUrl && (
-                    <a href={e.hostedUrl} target="_blank" rel="noreferrer"
-                      className="text-[11px] font-semibold text-forest hover:text-sage transition-colors">
-                      View
-                    </a>
-                  )}
                   {e.pdfUrl && (
                     <a href={e.pdfUrl} target="_blank" rel="noreferrer"
                       className="text-stone/40 hover:text-stone transition-colors" title="Download PDF">
