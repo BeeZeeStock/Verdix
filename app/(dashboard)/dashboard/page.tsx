@@ -229,7 +229,7 @@ export default async function DashboardPage() {
                 </p>
                 <Link
                   href="/configure/new"
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-white bg-forest px-3 py-2 rounded-lg hover:bg-sage transition-colors self-start"
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-forest hover:opacity-70 transition-opacity self-start"
                 >
                   Upload contract <i className="ti ti-arrow-right" style={{ fontSize: 11 }} />
                 </Link>
@@ -246,7 +246,7 @@ export default async function DashboardPage() {
                 </p>
                 <Link
                   href="/verify/new"
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-white bg-forest px-3 py-2 rounded-lg hover:bg-sage transition-colors self-start"
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-forest hover:opacity-70 transition-opacity self-start"
                 >
                   Start audit <i className="ti ti-arrow-right" style={{ fontSize: 11 }} />
                 </Link>
@@ -263,7 +263,7 @@ export default async function DashboardPage() {
                 </p>
                 <Link
                   href="/partner/new"
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-white bg-forest px-3 py-2 rounded-lg hover:bg-sage transition-colors self-start"
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-forest hover:opacity-70 transition-opacity self-start"
                 >
                   Run check <i className="ti ti-arrow-right" style={{ fontSize: 11 }} />
                 </Link>

@@ -47,7 +47,7 @@ export default async function PartnerListPage() {
           <h1 className="font-display font-light text-ink text-2xl mb-1">Partner checks</h1>
           <p className="text-stone text-sm">Validate partner invoices against signed agreements</p>
         </div>
-        <Link href="/partner/new" className="flex items-center gap-2 bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors shadow-sm self-start sm:self-auto">
+        <Link href="/partner/new" className="flex items-center gap-2 text-forest text-sm font-medium hover:opacity-70 transition-opacity self-start sm:self-auto">
           <i className="ti ti-plus" style={{ fontSize: 14 }} /> New reconciliation
         </Link>
       </div>

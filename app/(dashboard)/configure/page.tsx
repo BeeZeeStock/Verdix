@@ -61,7 +61,7 @@ export default async function ConfigureListPage() {
           <h1 className="font-display font-light text-ink text-2xl mb-1">New contracts</h1>
           <p className="text-stone text-sm">Auto-configure billing from signed contracts</p>
         </div>
-        <Link href="/configure/new" className="flex items-center gap-2 bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors shadow-sm self-start sm:self-auto">
+        <Link href="/configure/new" className="flex items-center gap-2 text-forest text-sm font-medium hover:opacity-70 transition-opacity self-start sm:self-auto">
           <i className="ti ti-plus" style={{ fontSize: 14 }} /> Upload contract
         </Link>
       </div>
