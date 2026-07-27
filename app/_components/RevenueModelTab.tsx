@@ -1255,7 +1255,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
       {!billingLoading && billingData?.subscription && (() => {
         type BillingEvent = {
           label: string; date: Date; amount: number; currency: string
-          status: string; hostedUrl?: string | null
+          status: string; hostedUrl?: string | null; isOneTime?: boolean
         }
         const rawEvents: BillingEvent[] = []
 
@@ -1295,7 +1295,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
             : billingData.contractStart
               ? parseLocalDate(billingData.contractStart)
               : new Date(inv.created)
-          rawEvents.push({ label: inv.feeLabel ?? 'One-time fee', date: d, amount: inv.amount, currency: inv.currency, status: inv.status ?? 'unknown', hostedUrl: inv.hostedUrl })
+          rawEvents.push({ label: inv.feeLabel ?? 'One-time fee', date: d, amount: inv.amount, currency: inv.currency, status: inv.status ?? 'unknown', hostedUrl: inv.hostedUrl, isOneTime: true })
         }
 
         if (rawEvents.length === 0) return null
@@ -1304,13 +1304,9 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         const events = [...rawEvents].sort((a, b) => a.date.getTime() - b.date.getTime())
 
         const truncate = (s: string, max = 14) => s.length > max ? s.slice(0, max - 1) + '…' : s
-        const statusColor = (s: string) =>
-          s === 'paid' ? '#27AE60' : s === 'open' ? '#D97706' : '#9CA3AF'
-        const statusLabel = (s: string) =>
-          s === 'paid' ? 'Paid' : s === 'open' ? 'Issued' : 'Draft'
 
         // Build cumulative waterfall bars (each starts where previous ended)
-        type WBar = { label: string; sub: string; from: number; to: number; amount: number; status: string; kind: 'segment' | 'total' }
+        type WBar = { label: string; sub: string; from: number; to: number; amount: number; status: string; kind: 'segment' | 'total'; isOneTime?: boolean }
         let cum = 0
         const wBars: WBar[] = events.map(ev => {
           const from = cum
@@ -1319,7 +1315,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
           return {
             label:  truncate(ev.label),
             sub:    ev.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' }),
-            from, to, amount: ev.amount, status: ev.status, kind: 'segment',
+            from, to, amount: ev.amount, status: ev.status, kind: 'segment', isOneTime: ev.isOneTime,
           }
         })
         const configuredTotal = cum
@@ -1351,11 +1347,6 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
             <div className="flex items-start justify-between mb-4">
               <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Configured billing schedule</h3>
               <div className="flex items-center gap-4 flex-shrink-0">
-                <div className="flex items-center gap-2 text-[10px] text-stone/60">
-                  <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Paid
-                  <span className="inline-block w-2 h-2 rounded-sm ml-1" style={{ background: '#D97706' }} /> Issued
-                  <span className="inline-block w-2 h-2 rounded-sm ml-1" style={{ background: '#9CA3AF' }} /> Draft
-                </div>
                 {billingData.subscription.dashboardUrl && (
                   <a href={billingData.subscription.dashboardUrl} target="_blank" rel="noopener noreferrer"
                     className="text-[10px] text-stone/50 hover:text-forest transition-colors flex items-center gap-1">
@@ -1396,7 +1387,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
                 const yTop = byOf(b.to)
                 const yBot = byOf(b.kind === 'total' ? 0 : b.from)
                 const h    = Math.max(2, yBot - yTop)
-                const col  = b.kind === 'total' ? '#1A3D2B' : statusColor(b.status)
+                const col  = b.kind === 'total' ? '#1A3D2B' : b.isOneTime ? '#D9A35A' : '#4A7C59'
                 return (
                   <g key={i}>
                     <rect x={x} y={yTop} width={bBW} height={h} rx={3} fill={col} />
@@ -1418,13 +1409,6 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
                     {b.sub && (
                       <text x={x + bBW / 2} y={bBottom + 31} textAnchor="middle" fontSize={9} fill="#9CA3AF">
                         {b.sub}
-                      </text>
-                    )}
-                    {/* Status */}
-                    {b.kind === 'segment' && (
-                      <text x={x + bBW / 2} y={bBottom + (b.sub ? 43 : 31)} textAnchor="middle"
-                        fontSize={9} fill={statusColor(b.status)} fontWeight={500}>
-                        {statusLabel(b.status)}
                       </text>
                     )}
                   </g>
@@ -1542,7 +1526,13 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
           <div className="bg-white border border-forest/10 rounded-2xl p-6">
             <div className="flex items-center justify-between mb-1">
               <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Revenue actuals — billed to date</h3>
-              <span className="text-[10px] text-stone">Remaining stays at contracted ARR · no overage projection</span>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 text-[10px] text-stone/60">
+                  <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Paid
+                  <span className="inline-block w-2 h-2 rounded-sm ml-1" style={{ background: '#D97706' }} /> Issued
+                </div>
+                <span className="text-[10px] text-stone/50">Remaining stays at contracted ARR · no overage projection</span>
+              </div>
             </div>
 
             {/* Waterfall */}
