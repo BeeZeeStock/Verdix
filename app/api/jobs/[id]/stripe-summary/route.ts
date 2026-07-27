@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
+import { billingInterval } from '@/lib/stripe-meter'
 import type { ContractTerms } from '@/lib/types'
 
 export async function GET(
@@ -20,8 +21,14 @@ export async function GET(
     .single()
 
   if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  if (!job.billing_subscription_id) return NextResponse.json({ error: 'No subscription configured' }, { status: 404 })
-  if (job.billing_platform === 'chargebee') return NextResponse.json({ error: 'Chargebee not supported here' }, { status: 400 })
+
+  if (!job.billing_subscription_id && !job.billing_customer_id) {
+    return NextResponse.json({ error: 'No billing configured' }, { status: 404 })
+  }
+
+  if (job.billing_platform === 'chargebee') {
+    return NextResponse.json({ error: 'Chargebee not supported here' }, { status: 400 })
+  }
 
   const { data: integration } = await supabaseServer
     .from('org_integrations')
@@ -36,15 +43,73 @@ export async function GET(
   const { default: Stripe } = await import('stripe')
   const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
 
-  const subId        = job.billing_subscription_id
-  const customerId   = job.billing_customer_id as string | null
+  const subId      = job.billing_subscription_id as string | null
+  const customerId = job.billing_customer_id     as string | null
+
+  const terms = (job.contract_terms as unknown as ContractTerms[])?.[0]
+
+  // Build per-year payment schedule from contract terms (shared by both paths)
+  const paymentSchedule = terms?.year_pricing
+    ? Object.entries(terms.year_pricing).map(([key, amount]) => {
+        const yearNum = parseInt(key.replace('year', ''), 10)
+        const contractStart = terms?.contract_start_date ? new Date(terms.contract_start_date) : null
+        let periodStart: string | null = null
+        let periodEnd:   string | null = null
+        if (contractStart) {
+          const ys = new Date(contractStart)
+          ys.setFullYear(ys.getFullYear() + yearNum - 1)
+          const ye = new Date(ys)
+          ye.setFullYear(ye.getFullYear() + 1)
+          ye.setDate(ye.getDate() - 1)
+          periodStart = ys.toISOString().slice(0, 10)
+          periodEnd   = ye.toISOString().slice(0, 10)
+        }
+        return { year: yearNum, amount, currency: terms?.currency ?? 'EUR', periodStart, periodEnd }
+      })
+    : null
+
+  const mapStripeInvoice = (inv: import('stripe').Stripe.Invoice) => {
+    const meta = inv.metadata as Record<string, string> | null
+    return {
+      id:            inv.id,
+      number:        inv.number,
+      status:        inv.status,
+      amount:        (inv.amount_due ?? 0) / 100,
+      currency:      inv.currency?.toUpperCase() ?? 'EUR',
+      dueDate:       inv.due_date   ? new Date(inv.due_date   * 1000).toISOString() : null,
+      created:       new Date(inv.created * 1000).toISOString(),
+      periodEnd:     inv.period_end ? new Date(inv.period_end * 1000).toISOString() : null,
+      pdfUrl:        inv.invoice_pdf         ?? null,
+      hostedUrl:     inv.hosted_invoice_url  ?? null,
+      feeLabel:      meta?.fee_label    ?? null,
+      yearNum:       meta?.year ? parseInt(meta.year, 10) : null,
+      scheduledDate: meta?.scheduled_date ?? null,
+    }
+  }
 
   try {
+    // ── Check for planned_invoices (new subscription-free contracts) ──────────
+    const { data: planned } = await supabaseServer
+      .from('planned_invoices')
+      .select('*')
+      .eq('job_id', id)
+      .order('period_start', { ascending: true })
+
+    if (planned && planned.length > 0) {
+      return handlePlannedInvoicesPath({
+        stripe, customerId, id, terms, planned, paymentSchedule,
+        stripeKey,
+      })
+    }
+
+    // ── Legacy path: subscription-based ──────────────────────────────────────
+    if (!subId) {
+      return NextResponse.json({ error: 'No billing configured' }, { status: 404 })
+    }
+
     const [subscription, subscriptionInvRes, allCustomerInvRes, computedRes] = await Promise.all([
       stripe.subscriptions.retrieve(subId, { expand: ['items.data.price'] }),
       stripe.invoices.list({ subscription: subId, limit: 100 }),
-      // Also fetch standalone (one-time fee) invoices for this customer.
-      // These have no subscription attached and are identified by verdix_job metadata.
       customerId
         ? stripe.invoices.list({ customer: customerId, limit: 50 })
         : Promise.resolve({ data: [] }),
@@ -55,111 +120,44 @@ export async function GET(
         .order('period_start', { ascending: false }),
     ])
 
-    const terms = (job.contract_terms as unknown as ContractTerms[])?.[0]
+    const baseItem                = subscription.items.data[0]
+    const recurringInterval       = baseItem?.price?.recurring?.interval       ?? 'month'
+    const recurringIntervalCount  = baseItem?.price?.recurring?.interval_count ?? 1
 
-    // Build per-year payment schedule from contract terms
-    const paymentSchedule = terms?.year_pricing
-      ? Object.entries(terms.year_pricing).map(([key, amount]) => {
-          const yearNum = parseInt(key.replace('year', ''), 10)
-          const contractStart = terms?.contract_start_date ? new Date(terms.contract_start_date) : null
-          let periodStart: string | null = null
-          let periodEnd: string | null = null
-          if (contractStart) {
-            const ys = new Date(contractStart)
-            ys.setFullYear(ys.getFullYear() + yearNum - 1)
-            const ye = new Date(ys)
-            ye.setFullYear(ye.getFullYear() + 1)
-            ye.setDate(ye.getDate() - 1)
-            periodStart = ys.toISOString().slice(0, 10)
-            periodEnd   = ye.toISOString().slice(0, 10)
-          }
-          return { year: yearNum, amount, currency: terms?.currency ?? 'EUR', periodStart, periodEnd }
-        })
-      : null
-
-    const baseItem = subscription.items.data[0]
-    const recurringInterval      = baseItem?.price?.recurring?.interval       ?? 'month'
-    const recurringIntervalCount = baseItem?.price?.recurring?.interval_count ?? 1
-
-    // Separate standalone invoices from subscription invoices.
-    // Subscription invoices are returned by invoices.list({ subscription: subId }).
-    // Standalone invoices have no subscription and carry verdix_job metadata.
-    // They fall into two categories:
-    //   annual_base — pre-created year 2/3 drafts (invoice_type: 'annual_base')
-    //   one_time    — PS / implementation fees (fee_type: 'one_time')
     const subscriptionInvIds = new Set(subscriptionInvRes.data.map(inv => inv.id))
     const standaloneInvoices = allCustomerInvRes.data.filter(inv => {
       if (subscriptionInvIds.has(inv.id)) return false
       const meta = inv.metadata as Record<string, string> | null
       return meta?.verdix_job === id
     })
-    const annualDraftInvoices = standaloneInvoices.filter(inv => {
-      const meta = inv.metadata as Record<string, string> | null
-      return meta?.invoice_type === 'annual_base'
-    })
-    const oneTimeStandaloneInvoices = standaloneInvoices.filter(inv => {
-      const meta = inv.metadata as Record<string, string> | null
-      return meta?.invoice_type !== 'annual_base'
-    })
+    const annualDraftInvoices       = standaloneInvoices.filter(inv => (inv.metadata as Record<string, string> | null)?.invoice_type === 'annual_base')
+    const oneTimeStandaloneInvoices = standaloneInvoices.filter(inv => (inv.metadata as Record<string, string> | null)?.invoice_type !== 'annual_base')
 
-    // Auto-repair one-time invoices whose due_date was clamped to 1 day at push
-    // time (happens when the contract-extracted fee.due_date was already past).
-    // Best-effort: silently skip on error so the GET never fails due to a repair.
+    // Auto-repair one-time invoices whose due_date was clamped at push time
     if (terms?.payment_terms_days) {
       const netSec = terms.payment_terms_days * 86_400
       await Promise.all(
         oneTimeStandaloneInvoices
           .filter(inv => inv.status === 'open' && inv.due_date != null)
-          .filter(inv => {
-            const expectedDueSec = inv.created + netSec
-            // Only repair if Stripe's stored due_date is more than 2 days short
-            return inv.due_date! < expectedDueSec - 2 * 86_400
-          })
+          .filter(inv => inv.due_date! < inv.created + netSec - 2 * 86_400)
           .map(inv => {
-            const expectedDueSec = inv.created + netSec
-            const daysUntilDue = Math.max(1, Math.ceil((expectedDueSec - Date.now() / 1000) / 86_400))
+            const daysUntilDue = Math.max(1, Math.ceil((inv.created + netSec - Date.now() / 1000) / 86_400))
             return stripe.invoices.update(inv.id, { days_until_due: daysUntilDue }).catch(() => {})
           })
       )
     }
 
-    // current_period_start/end were removed in the dahlia API; derive from the
-    // most-recent (non-void, non-draft) subscription invoice period instead.
     const latestInvoice = subscriptionInvRes.data.find(
       inv => inv.status !== 'void' && inv.status !== 'draft',
     ) ?? subscriptionInvRes.data[0]
     const currentPeriodStart = latestInvoice?.period_start
       ? new Date(latestInvoice.period_start * 1000).toISOString()
-      : null
+      : ''
     const currentPeriodEnd = latestInvoice?.period_end
       ? new Date(latestInvoice.period_end * 1000).toISOString()
-      : null
+      : ''
 
-    // cancel_at_period_end may also have moved; access defensively.
     const sub = subscription as unknown as Record<string, unknown>
-    const cancelAtPeriodEnd = typeof sub.cancel_at_period_end === 'boolean'
-      ? sub.cancel_at_period_end
-      : false
-
-    const mapInvoice = (inv: import('stripe').Stripe.Invoice) => {
-      const meta = inv.metadata as Record<string, string> | null
-      return {
-        id:          inv.id,
-        number:      inv.number,
-        status:      inv.status,
-        amount:      (inv.amount_due ?? 0) / 100,
-        currency:    inv.currency?.toUpperCase() ?? 'EUR',
-        dueDate:     inv.due_date   ? new Date(inv.due_date   * 1000).toISOString() : null,
-        created:     new Date(inv.created * 1000).toISOString(),
-        periodEnd:   inv.period_end ? new Date(inv.period_end * 1000).toISOString() : null,
-        pdfUrl:      inv.invoice_pdf         ?? null,
-        hostedUrl:   inv.hosted_invoice_url  ?? null,
-        feeLabel:    meta?.fee_label    ?? null,
-        // For annual_base drafts: which contract year this covers
-        yearNum:     meta?.year ? parseInt(meta.year, 10) : null,
-        scheduledDate: meta?.scheduled_date ?? null,
-      }
-    }
 
     return NextResponse.json({
       subscription: {
@@ -169,25 +167,175 @@ export async function GET(
         intervalCount: recurringIntervalCount,
         currentPeriodStart,
         currentPeriodEnd,
-        cancelAtPeriodEnd,
+        cancelAtPeriodEnd: typeof sub.cancel_at_period_end === 'boolean' ? sub.cancel_at_period_end : false,
         isTest: !subscription.livemode,
         dashboardUrl: `https://dashboard.stripe.com/${!subscription.livemode ? 'test/' : ''}subscriptions/${subscription.id}`,
       },
-      // Annual base-fee invoices from the subscription (Year 1 + finalized later years)
-      invoices: subscriptionInvRes.data.map(mapInvoice),
-      // Pre-created annual base draft invoices for future years (Year 2+, status: draft)
-      annualDraftInvoices: annualDraftInvoices.map(mapInvoice),
-      // Separate one-time fee invoices (one per PS fee, created at push time)
-      oneTimeInvoices: oneTimeStandaloneInvoices.map(mapInvoice),
+      invoices:             subscriptionInvRes.data.map(mapStripeInvoice),
+      annualDraftInvoices:  annualDraftInvoices.map(mapStripeInvoice),
+      oneTimeInvoices:      oneTimeStandaloneInvoices.map(mapStripeInvoice),
       paymentSchedule,
-      oneTimeFees: terms?.one_time_fees ?? [],
-      contractStart: terms?.contract_start_date ?? null,
-      currency: terms?.currency ?? 'EUR',
-      paymentTermsDays: terms?.payment_terms_days ?? null,
-      computedInvoices: computedRes.data ?? [],
+      oneTimeFees:          terms?.one_time_fees ?? [],
+      contractStart:        terms?.contract_start_date ?? null,
+      currency:             terms?.currency ?? 'EUR',
+      paymentTermsDays:     terms?.payment_terms_days ?? null,
+      computedInvoices:     computedRes.data ?? [],
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return NextResponse.json({ error: msg }, { status: 502 })
   }
+}
+
+// ── New planned_invoices path ─────────────────────────────────────────────────
+
+async function handlePlannedInvoicesPath({
+  stripe, customerId, id, terms, planned, paymentSchedule, stripeKey,
+}: {
+  stripe:          import('stripe').Stripe
+  customerId:      string | null
+  id:              string
+  terms:           ContractTerms | undefined
+  planned:         Record<string, unknown>[]
+  paymentSchedule: { year: number; amount: number; currency: string; periodStart: string | null; periodEnd: string | null }[] | null
+  stripeKey:       string
+}): Promise<NextResponse> {
+
+  // Fetch all customer Stripe invoices so we can enrich sent rows with live status
+  const allCustomerInvoices = customerId
+    ? await stripe.invoices.list({ customer: customerId, limit: 100 }).catch(() => ({ data: [] }))
+    : { data: [] }
+
+  const stripeInvMap = new Map(allCustomerInvoices.data.map(inv => [inv.id, inv]))
+
+  type PlannedRow = {
+    id: string
+    year_num: number | null
+    period_start: string
+    period_end: string
+    base_amount: number
+    currency: string
+    fee_label: string | null
+    invoice_type: string
+    status: string
+    stripe_invoice_id: string | null
+    stripe_invoice_url: string | null
+    sent_at: string | null
+    paid_at: string | null
+    created_at: string
+  }
+
+  const rows = planned as PlannedRow[]
+
+  const mapPlanned = (row: PlannedRow) => {
+    const stripeInv = row.stripe_invoice_id ? stripeInvMap.get(row.stripe_invoice_id) : null
+    const liveStatus = stripeInv?.status ?? null
+    // Derive display status from live Stripe status when available
+    const status = row.status === 'paid' ? 'paid'
+      : liveStatus === 'paid' ? 'paid'
+      : liveStatus === 'open' ? 'open'
+      : row.status === 'sent' ? 'open'
+      : 'draft'
+
+    return {
+      id:            row.id,
+      number:        stripeInv?.number ?? null,
+      status,
+      amount:        stripeInv ? (stripeInv.amount_due ?? 0) / 100 : Number(row.base_amount),
+      currency:      (row.currency ?? 'EUR').toUpperCase(),
+      dueDate:       stripeInv?.due_date ? new Date(stripeInv.due_date * 1000).toISOString() : null,
+      created:       row.created_at,
+      periodEnd:     row.period_end,
+      pdfUrl:        stripeInv?.invoice_pdf        ?? null,
+      hostedUrl:     stripeInv?.hosted_invoice_url ?? row.stripe_invoice_url ?? null,
+      feeLabel:      row.fee_label,
+      yearNum:       row.year_num,
+      scheduledDate: row.period_start,
+    }
+  }
+
+  const periodRows  = rows.filter(r => r.invoice_type === 'period')
+  const oneTimeRows = rows.filter(r => r.invoice_type === 'one_time')
+
+  // ── invoices: individual period entries (shown in billing timeline per period) ──
+  const invoices = periodRows.map(mapPlanned)
+
+  // ── annualDraftInvoices: one entry per contract year (for commitment waterfall) ──
+  const yearGroups = new Map<number, PlannedRow[]>()
+  for (const row of periodRows) {
+    const yr = row.year_num ?? 1
+    if (!yearGroups.has(yr)) yearGroups.set(yr, [])
+    yearGroups.get(yr)!.push(row)
+  }
+
+  const annualDraftInvoices = [...yearGroups.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([yearNum, yearRows]) => {
+      const anyPaid = yearRows.some(r => {
+        const si = r.stripe_invoice_id ? stripeInvMap.get(r.stripe_invoice_id) : null
+        return r.status === 'paid' || si?.status === 'paid'
+      })
+      const anySent = yearRows.some(r => r.status === 'sent' || r.status === 'processing')
+      const status  = anyPaid ? 'paid' : anySent ? 'open' : 'draft'
+
+      const totalAmount = yearRows.reduce((s, r) => s + Number(r.base_amount), 0)
+      const firstRow    = yearRows[0]
+      const lastRow     = yearRows[yearRows.length - 1]
+
+      const latestSentRow = [...yearRows].reverse().find(r => r.stripe_invoice_id)
+      const latestStripeInv = latestSentRow?.stripe_invoice_id
+        ? stripeInvMap.get(latestSentRow.stripe_invoice_id)
+        : null
+
+      return {
+        id:            `year-${yearNum}-${id}`,
+        number:        null,
+        status,
+        amount:        totalAmount,
+        currency:      (firstRow.currency ?? 'EUR').toUpperCase(),
+        dueDate:       null,
+        created:       firstRow.created_at,
+        periodEnd:     lastRow.period_end,
+        pdfUrl:        latestStripeInv?.invoice_pdf        ?? null,
+        hostedUrl:     latestStripeInv?.hosted_invoice_url ?? null,
+        feeLabel:      null,
+        yearNum,
+        scheduledDate: firstRow.period_start,
+      }
+    })
+
+  // ── oneTimeInvoices: one-time fees ─────────────────────────────────────────
+  const oneTimeInvoices = oneTimeRows.map(mapPlanned)
+
+  // ── Synthetic subscription object from contract terms + planned state ───────
+  const { interval, intervalCount } = billingInterval(terms?.billing_frequency)
+  const sentPeriods    = periodRows.filter(r => r.status === 'sent' || r.status === 'paid')
+  const mostRecentSent = sentPeriods[sentPeriods.length - 1]
+  const anyActive      = sentPeriods.length > 0
+
+  const isTest       = stripeKey.includes('sk_test_')
+  const dashboardUrl = `https://dashboard.stripe.com/${isTest ? 'test/' : ''}customers/${customerId ?? ''}`
+
+  return NextResponse.json({
+    subscription: {
+      id:                  customerId ?? id,
+      status:              anyActive ? 'active' : 'draft',
+      interval,
+      intervalCount,
+      currentPeriodStart:  mostRecentSent?.period_start ?? terms?.contract_start_date ?? '',
+      currentPeriodEnd:    mostRecentSent?.period_end   ?? '',
+      cancelAtPeriodEnd:   false,
+      isTest,
+      dashboardUrl,
+    },
+    invoices,
+    annualDraftInvoices,
+    oneTimeInvoices,
+    paymentSchedule,
+    oneTimeFees:      terms?.one_time_fees ?? [],
+    contractStart:    terms?.contract_start_date ?? null,
+    currency:         terms?.currency      ?? 'EUR',
+    paymentTermsDays: terms?.payment_terms_days  ?? null,
+    computedInvoices: [],
+  })
 }

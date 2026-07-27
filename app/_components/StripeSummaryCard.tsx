@@ -233,7 +233,11 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         for (let i = 0; i < sortedSubInvoices.length; i++) {
           const inv = sortedSubInvoices[i]
           let planned: Date
-          if (base) {
+          // New model: scheduled_date metadata is the authoritative period_start date.
+          // Legacy subscription model: compute from contract start + billing interval index.
+          if (inv.scheduledDate) {
+            planned = new Date(inv.scheduledDate + 'T00:00:00')
+          } else if (base) {
             const d = new Date(base)
             if (sub.interval === 'year') {
               d.setFullYear(d.getFullYear() + i * sub.intervalCount)
@@ -244,22 +248,30 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
           } else {
             planned = new Date(inv.created)
           }
+          // Label: use formatted period date for new-model entries (scheduledDate present),
+          // or 'Subscription' for legacy subscription invoices.
+          const label = inv.scheduledDate
+            ? (sub.interval === 'year'
+                ? `Year ${(inv.yearNum ?? i) || i + 1} base fee`
+                : new Date(inv.scheduledDate + 'T00:00:00').toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }))
+            : 'Subscription'
           entries.push({
-            id: inv.id, label: 'Subscription',
+            id: inv.id, label,
             dateLabel: dateLabel(planned), date: planned,
             amount: inv.amount, currency: inv.currency,
             status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'subscription',
           })
         }
 
-        // Annual base-fee draft invoices (Year 2/3 standalone pre-created in Stripe).
-        // These are not subscription invoices but represent future year commitments.
-        // Include them so the timeline matches what revenue actuals counts.
+        // Annual base-fee draft invoices — commitment view, one entry per year.
+        // For new-model contracts these come from planned_invoices aggregated by year.
+        // For legacy contracts these are pre-created Stripe drafts.
         for (const inv of annualDraftInvoices) {
-          const ps = paymentSchedule?.find(p => p.year === inv.yearNum)
-          const planned = contractDate(ps?.periodStart)
-            ?? contractDate(contractStart)
-            ?? new Date(inv.created)
+          const planned = inv.scheduledDate
+            ? new Date(inv.scheduledDate + 'T00:00:00')
+            : contractDate(paymentSchedule?.find(p => p.year === inv.yearNum)?.periodStart)
+              ?? contractDate(contractStart)
+              ?? new Date(inv.created)
           entries.push({
             id: inv.id, label: `Year ${inv.yearNum ?? '?'} commitment`,
             dateLabel: dateLabel(planned), date: planned,
@@ -268,13 +280,14 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
           })
         }
 
-        // One-time fee invoices in Stripe — date from contract fee's due_date,
-        // or contract start if no fee-specific date is set.
+        // One-time fee invoices — date from scheduledDate (new model) or contract fee's due_date.
         for (const inv of oneTimeInvoices) {
           const matchingFee = oneTimeFees.find(f => f.fee_label === inv.feeLabel)
-          const planned = contractDate(matchingFee?.due_date)
-            ?? contractDate(contractStart)
-            ?? new Date(inv.created)
+          const planned = inv.scheduledDate
+            ? new Date(inv.scheduledDate + 'T00:00:00')
+            : contractDate(matchingFee?.due_date)
+              ?? contractDate(contractStart)
+              ?? new Date(inv.created)
           entries.push({
             id: inv.id, label: inv.feeLabel ?? 'One-time fee',
             dateLabel: dateLabel(planned), date: planned,

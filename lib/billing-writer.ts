@@ -1,37 +1,43 @@
 import { ContractTerms } from './types'
-import {
-  ensureStripeMeter,
-  createMeteredPrice,
-  createBasePrice,
-  billingInterval,
-  periodsPerYear,
-} from './stripe-meter'
-import { groupTiersByMetric } from './tariff'
+import { billingInterval } from './stripe-meter'
 import { supabaseServer } from './supabase'
 
-// Compute the total subscription amount for each contract year (base + additional,
-// discounts and escalators applied month-by-month). Used to pre-create annual
-// commitment draft invoices that make the full TCV visible in Stripe on day 1.
-function computeYearlyAmounts(terms: ContractTerms): number[] {
+// Compute all billing periods for the contract term with their base amounts
+// (base fee + additional recurring fees, no overages). Used at push time to
+// populate planned_invoices and by the scheduler to understand the schedule.
+interface BillingPeriod {
+  yearNum: number
+  periodIndex: number
+  periodStart: Date
+  periodEnd: Date
+  baseAmount: number
+}
+
+function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
   const termMonths = terms.contract_term_months ?? 0
   if (!termMonths) return []
 
-  const numYears          = Math.ceil(termMonths / 12)
-  const yearPricing       = terms.year_pricing
-  const rampSchedule      = terms.ramp_schedule && terms.ramp_schedule.length > 0
-    ? terms.ramp_schedule : null
-  // Prefer explicit monthly fee; fall back to annual / 12 when only base_annual_fee is set
-  // and there is no per-year pricing or ramp schedule (mirrors the RevenueModelTab logic).
-  const _baseAnnualFallback = terms.base_annual_fee ?? 0
-  const baseMonthly       = terms.base_monthly_fee
-    ?? ((_baseAnnualFallback > 0 && !yearPricing && !rampSchedule) ? _baseAnnualFallback / 12 : 0)
+  const { interval, intervalCount } = billingInterval(terms.billing_frequency)
+  const monthsPerPeriod = interval === 'year' ? 12 * intervalCount : intervalCount
+
+  const cs = terms.contract_start_date
+    ? new Date(terms.contract_start_date + 'T00:00:00')
+    : new Date()
+
+  const yearPricing  = terms.year_pricing
+  const rampSchedule = terms.ramp_schedule?.length ? terms.ramp_schedule : null
+
+  const baseAnnualFallback = terms.base_annual_fee ?? 0
+  const baseMonthly = terms.base_monthly_fee
+    ?? (baseAnnualFallback > 0 && !yearPricing && !rampSchedule ? baseAnnualFallback / 12 : 0)
+
   const additionalMonthly = (terms.additional_recurring_fees ?? [])
     .reduce((s, f) => s + (f.amount ?? 0), 0)
-  const escalators        = terms.escalators ?? []
-  const discounts         = terms.discounts  ?? []
-  const cs = terms.contract_start_date ? new Date(terms.contract_start_date) : new Date()
 
-  function monthlyBase(idx: number, d: Date): number {
+  const escalators = terms.escalators ?? []
+  const discounts  = terms.discounts  ?? []
+
+  function monthlyBase(globalMonthIdx: number, d: Date): number {
     if (rampSchedule) {
       for (const step of rampSchedule) {
         const s = new Date(step.start_date), e = new Date(step.end_date)
@@ -40,23 +46,41 @@ function computeYearlyAmounts(terms: ContractTerms): number[] {
       return rampSchedule[rampSchedule.length - 1].monthly_fee
     }
     if (yearPricing) {
-      const yr  = Math.floor(idx / 12) + 1
-      const key = `year${yr}`
+      const yr   = Math.floor(globalMonthIdx / 12) + 1
+      const key  = `year${yr}`
       const keys = Object.keys(yearPricing)
       return (yearPricing[key] ?? yearPricing[keys[keys.length - 1]] ?? 0) / 12
     }
     return baseMonthly
   }
 
-  return Array.from({ length: numYears }, (_, yi) => {
-    const monthsInYear = Math.min(12, termMonths - yi * 12)
-    let total = 0
-    for (let mi = 0; mi < monthsInYear; mi++) {
-      const idx = yi * 12 + mi
-      const d   = new Date(cs.getFullYear(), cs.getMonth() + idx, 1)
-      const base = monthlyBase(idx, d)
+  const periods: BillingPeriod[] = []
+  let periodIdx  = 0
+  let monthsUsed = 0
 
-      // Compound escalation (suppressed when year_pricing or ramp_schedule encodes rates)
+  while (monthsUsed < termMonths) {
+    const monthsInThisPeriod = Math.min(monthsPerPeriod, termMonths - monthsUsed)
+
+    const periodStart = new Date(
+      cs.getFullYear(),
+      cs.getMonth() + monthsUsed,
+      cs.getDate(),
+    )
+    const nextStart = new Date(
+      cs.getFullYear(),
+      cs.getMonth() + monthsUsed + monthsInThisPeriod,
+      cs.getDate(),
+    )
+    const periodEnd = new Date(nextStart.getTime() - 86_400_000)
+
+    const yearNum = Math.floor(monthsUsed / 12) + 1
+
+    let baseAmount = 0
+    for (let mi = 0; mi < monthsInThisPeriod; mi++) {
+      const globalMonthIdx = monthsUsed + mi
+      const d    = new Date(cs.getFullYear(), cs.getMonth() + globalMonthIdx, 1)
+      const base = monthlyBase(globalMonthIdx, d)
+
       let mult = 1
       if (!yearPricing && !rampSchedule) {
         for (const esc of escalators) {
@@ -70,6 +94,7 @@ function computeYearlyAmounts(terms: ContractTerms): number[] {
       }
 
       let amount = (base + additionalMonthly) * mult
+
       for (const disc of discounts) {
         const ds = disc.start_date ? new Date(disc.start_date) : null
         const de = disc.end_date   ? new Date(disc.end_date)   : null
@@ -78,10 +103,16 @@ function computeYearlyAmounts(terms: ContractTerms): number[] {
           break
         }
       }
-      total += amount
+
+      baseAmount += amount
     }
-    return total
-  })
+
+    periods.push({ yearNum, periodIndex: periodIdx, periodStart, periodEnd, baseAmount })
+    periodIdx++
+    monthsUsed += monthsInThisPeriod
+  }
+
+  return periods
 }
 
 export type BillingPlatform = 'stripe' | 'chargebee'
@@ -122,7 +153,7 @@ export interface LineItemInput {
 
 export interface ConfigureResult {
   platform: BillingPlatform
-  subscriptionId: string
+  subscriptionId: string | null
   customerId: string
   lineItemCount: number
   dashboardUrl: string
@@ -140,26 +171,23 @@ export async function configureBilling(
   return configureStripe(terms, lineItems, jobId, orgId)
 }
 
-async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[], jobId?: string, orgId?: string): Promise<ConfigureResult> {
+async function configureStripe(
+  terms: ContractTerms,
+  lineItems: LineItemInput[],
+  jobId?: string,
+  orgId?: string,
+): Promise<ConfigureResult> {
   const { default: Stripe } = await import('stripe')
   const orgConfig = orgId ? await getOrgConfig(orgId, 'stripe') : null
   const stripeKey = orgConfig?.secret_key ?? process.env.STRIPE_SECRET_KEY!
-  const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+  const stripe    = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
 
-  const cur             = (terms.currency ?? 'EUR').toLowerCase()
-  const contractId      = terms.contract_id ?? jobId ?? 'unknown'
-  // hasYearRates: contract has per-year rate differentials (escalator/ramp).
-  // This is INDEPENDENT of billing cadence — a monthly contract can have year pricing.
-  const hasYearRates    = !!(terms.year_pricing && Object.keys(terms.year_pricing).length > 0)
-  const { interval, intervalCount } = billingInterval(terms.billing_frequency)
-  const isAnnualBilling = interval === 'year'
-  const ppy             = periodsPerYear(interval, intervalCount) // periods per year
-  // isFiniteContract: contract has a defined term that ends — as opposed to an open-ended
-  // auto-renewing contract. Finite contracts get cancel_at on the subscription and
-  // pre-created annual commitment draft invoices so TCV is visible from day one.
-  const isFiniteContract = !!(terms.contract_term_months && terms.contract_term_months > 0)
+  const cur         = (terms.currency ?? 'EUR').toLowerCase()
+  const contractId  = terms.contract_id ?? jobId ?? 'unknown'
+  const daysUntilDue = terms.payment_terms_days ?? 30
+  const now          = new Date()
 
-  // ── 1. Upsert Stripe customer ────────────────────────────────────────────
+  // ── 1. Upsert Stripe customer ───────────────────────────────────────────────
   const emailInContact = terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
   const billingEmail   = emailInContact
     ?? `billing@${(terms.customer_name ?? 'customer').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}.com`
@@ -179,344 +207,193 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
     ? await stripe.customers.update(customer.id, customerFields)
     : await stripe.customers.create(customerFields)
 
-  // ── 2. Provision Billing Meters + metered prices (one per usage type) ───
-  const tiersByMetric = groupTiersByMetric(terms.overage_tiers ?? [])
-  type MeteredItemDraft = { unit_type: string; meter_id: string; price_id: string }
-  const meteredDrafts: MeteredItemDraft[] = []
+  const isTest = !customer.livemode
 
-  await Promise.all(
-    [...tiersByMetric.entries()].map(async ([, tiers]) => {
-      const unitType = tiers[0].unit_type ?? ''
-      const meter    = await ensureStripeMeter(stripe, unitType)
-      const price    = await createMeteredPrice(stripe, {
-        meterId:       meter.id,
-        currency:      cur,
-        interval,
-        intervalCount,
-        contractId,
-        unitType,
-        jobId,
-      })
-      meteredDrafts.push({ unit_type: unitType, meter_id: meter.id, price_id: price.id })
-    })
-  )
+  // ── 2. Compute full billing schedule ────────────────────────────────────────
+  const periods = computeBillingSchedule(terms)
 
-  // ── 3. Base subscription price ───────────────────────────────────────────
-  // When hasYearRates: set price to $0 — billing-writer (first invoice) and
-  // the webhook (subsequent invoices) inject the correct period amount directly.
-  // When flat-rate: use the actual periodic amount so Stripe handles it natively.
-  const baseAnnual  = terms.base_annual_fee ?? (terms.year_pricing?.['year1'] ?? 0)
-  // For monthly/sub-annual contracts without explicit monthly fee, derive from annual fee.
-  // Keeps the subscription price consistent with computeYearlyAmounts above.
-  const baseMonthly = terms.base_monthly_fee
-    ?? (!hasYearRates && !isAnnualBilling && baseAnnual > 0 ? baseAnnual / 12 : 0)
-  const baseAmount  = hasYearRates
-    ? 0
-    : isAnnualBilling
-      ? baseAnnual
-      : baseMonthly * intervalCount  // monthly→×1, quarterly→×3, semi-annual→×6
-
-  const basePrice = await createBasePrice(stripe, {
-    amountCents:   Math.round(baseAmount * 100),
-    currency:      cur,
-    interval,
-    intervalCount,
-    contractId,
-    customerName:  terms.customer_name ?? 'Customer',
-    isYearPricing: hasYearRates,
-    jobId,
-  })
-
-  // ── 3b. Additional recurring fee prices ─────────────────────────────────
-  // Each additional recurring fee (e.g. Dedicated Support) becomes its own
-  // Stripe subscription item at its stated periodic amount.
-  const additionalFees = terms.additional_recurring_fees ?? []
-  const additionalPrices = await Promise.all(
-    additionalFees
-      .filter(f => f.amount > 0)
-      .map(fee =>
-        stripe.prices.create({
-          currency:    cur,
-          unit_amount: Math.round(fee.amount * intervalCount * 100),
-          recurring:   { interval, interval_count: intervalCount },
-          product_data: { name: `${fee.fee_label} — ${contractId}` },
-          metadata: { verdix_contract: contractId, fee_type: 'additional_recurring', ...(jobId ? { verdix_job_id: jobId } : {}) },
-        })
-      )
-  )
-
-  // ── 4. Create subscription ───────────────────────────────────────────────
-  const subscriptionItems = [
-    { price: basePrice.id },
-    ...additionalPrices.map(p => ({ price: p.id })),
-    ...meteredDrafts.map(m => ({ price: m.price_id })),
-  ]
-
-  const subscription = await stripe.subscriptions.create({
-    customer:           customer.id,
-    items:              subscriptionItems,
-    collection_method:  'send_invoice',
-    days_until_due:     terms.payment_terms_days ?? 30,
-    // For finite contracts: cancel the subscription at contract end so it doesn't
-    // auto-renew indefinitely. Auto-renewing contracts get a new subscription per term.
-    ...(isFiniteContract && terms.contract_end_date
-      ? { cancel_at: Math.floor(new Date(terms.contract_end_date).getTime() / 1000) }
-      : {}),
-    metadata: {
-      contract_id:  contractId,
-      created_by:   'verdix',
-      ...(jobId ? { verdix_job_id: jobId } : {}),
-    },
-  })
-
-  // ── 5. Persist billing_metered_items back to Supabase ───────────────────
-  const stripeMeteredItems = meteredDrafts.map(draft => {
-    const subItem = subscription.items.data.find(si => si.price.id === draft.price_id)
-    return {
-      unit_type:           draft.unit_type,
-      meter_id:            draft.meter_id,
-      price_id:            draft.price_id,
-      subscription_item_id: subItem?.id ?? '',
-    }
-  })
-
-  if (jobId && stripeMeteredItems.length > 0) {
-    await supabaseServer
-      .from('contract_terms')
-      .update({ billing_metered_items: stripeMeteredItems })
-      .eq('job_id', jobId)
+  const fmtLabel  = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
+  const formatDate = (d: Date) => {
+    const y   = d.getFullYear()
+    const mo  = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${mo}-${day}`
   }
 
-  // ── 6. Process the first subscription invoice inline ─────────────────────
-  // Stripe fires invoice.created immediately when the subscription is created,
-  // BEFORE the approve route can save billing_subscription_id to the DB.
-  // The webhook handler therefore can't find the job and injects nothing.
-  // To eliminate this race, we inject the Year 1 base fee here directly and
-  // finalize the invoice. The webhook idempotency guard (computed_invoices)
-  // will skip it if the event arrives later.
-  const firstDraftInvoices = await stripe.invoices.list({
-    subscription: subscription.id,
-    limit: 1,
-  })
-  const firstInvoice = firstDraftInvoices.data[0]
+  type PlannedRow = {
+    job_id?: string; org_id?: string
+    year_num: number | null; period_start: string; period_end: string
+    base_amount: number; currency: string; fee_label: string | null
+    invoice_type: string; status: string
+    stripe_invoice_id: string | null; stripe_invoice_url: string | null
+    sent_at: string | null
+  }
+  const plannedRows: PlannedRow[] = []
 
-  if (firstInvoice && firstInvoice.status === 'draft' && hasYearRates && terms.year_pricing && jobId) {
-    const yp         = terms.year_pricing
-    const annualFeeY1 = yp['year1'] ?? yp[Object.keys(yp)[0]] ?? 0
+  // ── 3. Send immediately-due period invoices; queue future ones ──────────────
+  for (const period of periods) {
+    const isDue = period.periodStart <= now
 
-    if (annualFeeY1 > 0) {
-      const contractStart  = terms.contract_start_date ? new Date(terms.contract_start_date) : new Date()
-      const invPeriodStart = new Date((firstInvoice.period_start ?? 0) * 1000)
-      const invPeriodEnd   = new Date((firstInvoice.period_end   ?? 0) * 1000)
-      const fmt            = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
+    const description = `Base subscription — Year ${period.yearNum} (${fmtLabel(period.periodStart)} – ${fmtLabel(period.periodEnd)})`
 
-      let injectAmount: number
-      let description: string
-
-      if (isAnnualBilling) {
-        // Annual: one invoice covers a full contract year
-        const yearEnd = new Date(contractStart)
-        yearEnd.setFullYear(yearEnd.getFullYear() + 1)
-        yearEnd.setDate(yearEnd.getDate() - 1)
-        injectAmount = annualFeeY1
-        description  = `Base subscription — Year 1 (${fmt(contractStart)} – ${fmt(yearEnd)})`
-      } else {
-        // Monthly / quarterly / semi-annual: pro-rate the year 1 annual fee
-        injectAmount = annualFeeY1 / ppy
-        description  = `Base subscription — ${fmt(invPeriodStart)} – ${fmt(invPeriodEnd)}`
-      }
+    if (isDue && period.baseAmount > 0) {
+      const inv = await stripe.invoices.create({
+        customer:                       customer.id,
+        collection_method:              'send_invoice',
+        days_until_due:                 daysUntilDue,
+        pending_invoice_items_behavior: 'exclude',
+        metadata: {
+          verdix_job:      jobId ?? '',
+          verdix_contract: contractId,
+          invoice_type:    'period',
+          year:            String(period.yearNum),
+          scheduled_date:  formatDate(period.periodStart),
+        },
+      })
 
       await stripe.invoiceItems.create({
         customer:    customer.id,
-        invoice:     firstInvoice.id,
-        amount:      Math.round(injectAmount * 100),
+        invoice:     inv.id,
+        amount:      Math.round(period.baseAmount * 100),
         currency:    cur,
         description,
       })
 
-      // Persist to computed_invoices so the webhook's idempotency guard skips this invoice.
-      supabaseServer.from('computed_invoices').insert({
-        job_id:                   jobId,
-        external_invoice_id:      firstInvoice.id,
-        external_subscription_id: subscription.id,
-        connector:                'stripe',
-        period_start:             invPeriodStart.toISOString(),
-        period_end:               invPeriodEnd.toISOString(),
-        line_items:               [{ description, amount: injectAmount, currency: terms.currency ?? 'EUR', type: 'base' }],
-        total_amount:             injectAmount,
-        currency:                 terms.currency ?? 'EUR',
-        status:                   'VALIDATED',
-        validation_result:        [],
-      }).then(({ error }) => {
-        if (error) console.error('[billing-writer] computed_invoice insert failed', error)
+      const finalized = await stripe.invoices.finalizeInvoice(inv.id).catch(err => {
+        console.error('[billing-writer] finalizeInvoice failed', err)
+        return inv
       })
 
-      // Finalize the invoice — makes it open and sends it to the customer.
-      await stripe.invoices.finalizeInvoice(firstInvoice.id).catch(err =>
-        console.error('[billing-writer] finalise failed', err)
-      )
+      plannedRows.push({
+        year_num:          period.yearNum,
+        period_start:      formatDate(period.periodStart),
+        period_end:        formatDate(period.periodEnd),
+        base_amount:       period.baseAmount,
+        currency:          terms.currency ?? 'EUR',
+        fee_label:         null,
+        invoice_type:      'period',
+        status:            'sent',
+        stripe_invoice_id: inv.id,
+        stripe_invoice_url: finalized.hosted_invoice_url ?? null,
+        sent_at:           new Date().toISOString(),
+      })
+    } else {
+      plannedRows.push({
+        year_num:          period.yearNum,
+        period_start:      formatDate(period.periodStart),
+        period_end:        formatDate(period.periodEnd),
+        base_amount:       period.baseAmount,
+        currency:          terms.currency ?? 'EUR',
+        fee_label:         null,
+        invoice_type:      'period',
+        status:            period.baseAmount > 0 ? 'scheduled' : 'scheduled',
+        stripe_invoice_id: null,
+        stripe_invoice_url: null,
+        sent_at:           null,
+      })
     }
   }
 
-  // ── 6b. Pre-create annual commitment draft invoices ─────────────────────────
-  // Annual billing (year_pricing): pre-create Year 2, 3, … as drafts. The webhook
-  // redirects Stripe's auto-generated anniversary invoice into the pre-created draft.
-  //
-  // Monthly/sub-annual finite contracts: pre-create ALL years (including Year 1) as
-  // commitment drafts (auto_advance:false — internal visibility only, not sent to the
-  // customer). This makes the full contracted TCV visible in Stripe from day one.
-  // The subscription still handles actual monthly billing; these drafts represent
-  // the annual commitment for each year of the contract.
-  const fmtLabel      = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
-  const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date) : new Date()
-  const daysUntilDue  = terms.payment_terms_days ?? 30
-
-  if (isAnnualBilling && hasYearRates && terms.year_pricing && jobId) {
-    // Annual billing path — Year 2+ drafts (Year 1 was handled inline in step 6)
-    await Promise.all(
-      Object.entries(terms.year_pricing)
-        .filter(([key]) => parseInt(key.replace('year', ''), 10) > 1)
-        .map(async ([key, amount]) => {
-          const yearNum = parseInt(key.replace('year', ''), 10)
-
-          const yearStart = new Date(contractStart)
-          yearStart.setFullYear(yearStart.getFullYear() + yearNum - 1)
-          const yearEnd = new Date(yearStart)
-          yearEnd.setFullYear(yearEnd.getFullYear() + 1)
-          yearEnd.setDate(yearEnd.getDate() - 1)
-
-          const description = `Base subscription — Year ${yearNum} (${fmtLabel(yearStart)} – ${fmtLabel(yearEnd)})`
-
-          const draftInv = await stripe.invoices.create({
-            customer:                       customer.id,
-            collection_method:              'send_invoice',
-            days_until_due:                 daysUntilDue,
-            auto_advance:                   false,
-            pending_invoice_items_behavior: 'exclude',
-            metadata: {
-              verdix_job:      jobId,
-              verdix_contract: contractId,
-              invoice_type:    'annual_base',
-              year:            String(yearNum),
-              scheduled_date:  yearStart.toISOString().slice(0, 10),
-            },
-          })
-
-          await stripe.invoiceItems.create({
-            customer:    customer.id,
-            invoice:     draftInv.id,
-            amount:      Math.round(amount * 100),
-            currency:    cur,
-            description,
-            metadata:    { verdix_job: jobId, invoice_type: 'annual_base', year: String(yearNum) },
-          })
-        })
-    )
-  } else if (!isAnnualBilling && isFiniteContract && jobId) {
-    // Monthly/sub-annual finite contract path — commitment drafts for ALL years
-    const yearlyAmounts = computeYearlyAmounts(terms)
-    await Promise.all(
-      yearlyAmounts.map(async (amount, yi) => {
-        const yearNum   = yi + 1
-        const yearStart = new Date(contractStart)
-        yearStart.setFullYear(yearStart.getFullYear() + yi)
-        const yearEnd   = new Date(yearStart)
-        yearEnd.setFullYear(yearEnd.getFullYear() + 1)
-        yearEnd.setDate(yearEnd.getDate() - 1)
-        const description = `Base subscription — Year ${yearNum} (${fmtLabel(yearStart)} – ${fmtLabel(yearEnd)})`
-
-        const draftInv = await stripe.invoices.create({
-          customer:                       customer.id,
-          collection_method:              'send_invoice',
-          days_until_due:                 daysUntilDue,
-          auto_advance:                   false,
-          pending_invoice_items_behavior: 'exclude',
-          metadata: {
-            verdix_job:      jobId,
-            verdix_contract: contractId,
-            invoice_type:    'annual_base',
-            year:            String(yearNum),
-            scheduled_date:  yearStart.toISOString().slice(0, 10),
-          },
-        })
-
-        await stripe.invoiceItems.create({
-          customer:    customer.id,
-          invoice:     draftInv.id,
-          amount:      Math.round(amount * 100),
-          currency:    cur,
-          description,
-          metadata:    { verdix_job: jobId, invoice_type: 'annual_base', year: String(yearNum) },
-        })
-      })
-    )
-  }
-
-  // ── 7. Create standalone invoices for one-time fees ───────────────────────
-  // Each fee gets its own Stripe invoice with the exact due date from the
-  // contract. These are completely separate from the recurring subscription
-  // invoices — the subscription handles base fees + overages only.
+  // ── 4. One-time fees: immediately-due → Stripe now; future → planned row ─────
   type OneTimeFeeInput = { fee_label: string; amount: number; due_date?: string | null }
   const oneTimeFees = (terms.one_time_fees ?? []) as OneTimeFeeInput[]
 
-  await Promise.all(
-    oneTimeFees
-      .filter(fee => fee.amount && fee.amount > 0)
-      .map(async fee => {
-        // days_until_due drives the due_date once the invoice is finalized.
-        // If the contract specifies a future due_date, use that; otherwise (including
-        // when the extracted date is already past) fall back to payment_terms_days so
-        // we never clamp an agreement's net-30 to next-day just because the push
-        // happened after the extracted date.
-        const netDays = terms.payment_terms_days ?? 30
-        const feeDueDaysFromNow = fee.due_date
-          ? Math.ceil((new Date(fee.due_date).getTime() - Date.now()) / 86_400_000)
-          : 0
-        const daysUntilDue = feeDueDaysFromNow > 1 ? feeDueDaysFromNow : netDays
+  for (const fee of oneTimeFees.filter(f => f.amount > 0)) {
+    const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
+    const isDue      = !feeDueDate || feeDueDate <= now
 
-        // Create draft invoice — exclude pending items so only this fee is on it.
-        const oneTimeInv = await stripe.invoices.create({
-          customer:                      customer.id,
-          collection_method:             'send_invoice',
-          days_until_due:                daysUntilDue,
-          pending_invoice_items_behavior: 'exclude',
-          metadata: {
-            verdix_job:      jobId ?? '',
-            verdix_contract: contractId,
-            fee_type:        'one_time',
-            fee_label:       fee.fee_label,
-          },
-        })
+    if (isDue) {
+      const netDays         = terms.payment_terms_days ?? 30
+      const feeDueDaysFromNow = feeDueDate
+        ? Math.ceil((feeDueDate.getTime() - Date.now()) / 86_400_000)
+        : 0
+      const days = feeDueDaysFromNow > 1 ? feeDueDaysFromNow : netDays
 
-        // Attach the line item to this specific invoice.
-        await stripe.invoiceItems.create({
-          customer:    customer.id,
-          invoice:     oneTimeInv.id,
-          amount:      Math.round(fee.amount * 100),
-          currency:    cur,
-          description: fee.fee_label,
-          metadata:    { verdix_job: jobId ?? '', fee_type: 'one_time' },
-        })
-
-        // Finalize → status becomes "open", due_date is set, email sent to customer.
-        await stripe.invoices.finalizeInvoice(oneTimeInv.id)
+      const oneTimeInv = await stripe.invoices.create({
+        customer:                       customer.id,
+        collection_method:              'send_invoice',
+        days_until_due:                 days,
+        pending_invoice_items_behavior: 'exclude',
+        metadata: {
+          verdix_job:      jobId ?? '',
+          verdix_contract: contractId,
+          fee_type:        'one_time',
+          fee_label:       fee.fee_label,
+          invoice_type:    'one_time',
+          scheduled_date:  formatDate(feeDueDate ?? now),
+        },
       })
-  )
 
-  const isTest     = !subscription.livemode
-  const dashboardUrl = `https://dashboard.stripe.com/${isTest ? 'test/' : ''}subscriptions/${subscription.id}`
+      await stripe.invoiceItems.create({
+        customer:    customer.id,
+        invoice:     oneTimeInv.id,
+        amount:      Math.round(fee.amount * 100),
+        currency:    cur,
+        description: fee.fee_label,
+      })
+
+      const finalized = await stripe.invoices.finalizeInvoice(oneTimeInv.id).catch(err => {
+        console.error('[billing-writer] one-time finalizeInvoice failed', err)
+        return oneTimeInv
+      })
+
+      const dueDateStr = formatDate(feeDueDate ?? now)
+      plannedRows.push({
+        year_num:           null,
+        period_start:       dueDateStr,
+        period_end:         dueDateStr,
+        base_amount:        fee.amount,
+        currency:           terms.currency ?? 'EUR',
+        fee_label:          fee.fee_label,
+        invoice_type:       'one_time',
+        status:             'sent',
+        stripe_invoice_id:  oneTimeInv.id,
+        stripe_invoice_url: finalized.hosted_invoice_url ?? null,
+        sent_at:            new Date().toISOString(),
+      })
+    } else {
+      const dueDateStr = formatDate(feeDueDate!)
+      plannedRows.push({
+        year_num:           null,
+        period_start:       dueDateStr,
+        period_end:         dueDateStr,
+        base_amount:        fee.amount,
+        currency:           terms.currency ?? 'EUR',
+        fee_label:          fee.fee_label,
+        invoice_type:       'one_time',
+        status:             'scheduled',
+        stripe_invoice_id:  null,
+        stripe_invoice_url: null,
+        sent_at:            null,
+      })
+    }
+  }
+
+  // ── 5. Persist planned rows ──────────────────────────────────────────────────
+  if (jobId && plannedRows.length > 0) {
+    const { error } = await supabaseServer
+      .from('planned_invoices')
+      .insert(plannedRows.map(r => ({ ...r, job_id: jobId, org_id: orgId })))
+    if (error) console.error('[billing-writer] planned_invoices insert failed', error)
+  }
+
+  const dashboardUrl = `https://dashboard.stripe.com/${isTest ? 'test/' : ''}customers/${customer.id}`
 
   return {
     platform:       'stripe',
-    subscriptionId: subscription.id,
+    subscriptionId: null,
     customerId:     customer.id,
-    lineItemCount:  subscriptionItems.length + oneTimeFees.filter(f => f.amount > 0).length,
+    lineItemCount:  periods.length + oneTimeFees.filter(f => f.amount > 0).length,
     dashboardUrl,
   }
 }
 
-async function configureChargebee(terms: ContractTerms, lineItems: LineItemInput[], jobId?: string, orgId?: string): Promise<ConfigureResult> {
-  // Chargebee REST API — using native fetch
+async function configureChargebee(
+  terms: ContractTerms,
+  lineItems: LineItemInput[],
+  jobId?: string,
+  orgId?: string,
+): Promise<ConfigureResult> {
   const orgConfig = orgId ? await getOrgConfig(orgId, 'chargebee') : null
   const site   = orgConfig?.site    ?? process.env.CHARGEBEE_SITE!
   const apiKey = orgConfig?.api_key ?? process.env.CHARGEBEE_API_KEY!
@@ -526,21 +403,19 @@ async function configureChargebee(terms: ContractTerms, lineItems: LineItemInput
     'Content-Type': 'application/x-www-form-urlencoded',
   }
 
-  // Create/find customer
   const customerRes = await fetch(`${base}/customers`, {
     method: 'POST',
     headers,
     body: new URLSearchParams({
-      'first_name': terms.customer_name ?? 'Unknown',
-      'cf_contract_id': terms.contract_id ?? '',
-      'cf_source': 'verdix',
+      'first_name':     terms.customer_name ?? 'Unknown',
+      'cf_contract_id': terms.contract_id   ?? '',
+      'cf_source':      'verdix',
       ...(jobId ? { 'cf_revlens_job_id': jobId } : {}),
     }).toString(),
   })
   const customerData = await customerRes.json()
-  const customerId = customerData.customer?.id
+  const customerId   = customerData.customer?.id
 
-  // Create subscription
   const params = new URLSearchParams({ 'customer_id': customerId })
   lineItems.forEach((item, i) => {
     params.append(`subscription_items[item_price_id][${i}]`, item.product_name.toLowerCase().replace(/\s+/g, '-'))
@@ -553,15 +428,15 @@ async function configureChargebee(terms: ContractTerms, lineItems: LineItemInput
     headers,
     body: params.toString(),
   })
-  const subData = await subRes.json()
+  const subData      = await subRes.json()
   const subscriptionId = subData.subscription?.id ?? 'unknown'
 
   return {
-    platform: 'chargebee',
+    platform:       'chargebee',
     subscriptionId,
     customerId,
-    lineItemCount: lineItems.length,
-    dashboardUrl: `https://${site}.chargebee.com/subscriptions/${subscriptionId}`,
+    lineItemCount:  lineItems.length,
+    dashboardUrl:   `https://${site}.chargebee.com/subscriptions/${subscriptionId}`,
   }
 }
 
@@ -569,3 +444,7 @@ function detectPlatform(): BillingPlatform {
   if (process.env.CHARGEBEE_API_KEY) return 'chargebee'
   return 'stripe'
 }
+
+// Re-export computeBillingSchedule for use by the invoice scheduler
+export { computeBillingSchedule }
+export type { BillingPeriod }

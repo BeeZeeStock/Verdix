@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/admin/billing-cron",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/admin/invoice-scheduler",
+      "schedule": "0 7 * * *"
+    }
+  ]
+}
