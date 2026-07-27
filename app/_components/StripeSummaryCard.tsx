@@ -169,26 +169,6 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
 
   const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency, paymentTermsDays, contractStart } = summary
 
-  const now = new Date()
-  const currentYearNum = paymentSchedule?.find(y => {
-    const s = y.periodStart ? new Date(y.periodStart) : null
-    const e = y.periodEnd   ? new Date(y.periodEnd)   : null
-    return s && e && now >= s && now <= e
-  })?.year ?? null
-
-  // Match subscription invoices to years by arrival order (1st invoice = Year 1).
-  // Matching by creation date fails when the subscription is created weeks before
-  // the contract start date (invoice created Jul 18 but Year 1 starts Aug 1).
-  const sortedSubscriptionInvoices = [...invoices].sort(
-    (a, b) => new Date(a.created).getTime() - new Date(b.created).getTime()
-  )
-
-  // Index pre-created annual drafts by year number for O(1) lookup in the table.
-  const annualDraftByYear = new Map<number, InvoiceInfo>(
-    (annualDraftInvoices ?? [])
-      .filter(inv => inv.yearNum != null)
-      .map(inv => [inv.yearNum!, inv])
-  )
 
   return (
     <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
@@ -221,76 +201,6 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         </div>
       )}
 
-      {/* Payment schedule */}
-      {paymentSchedule && paymentSchedule.length > 0 && (
-        <div className="px-6 py-5" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-          <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-3">Payment schedule</p>
-          <table className="w-full">
-            <thead>
-              <tr>
-                {(['Year', 'Invoice date', 'Amount', 'Status'] as const).map((h, i) => (
-                  <th key={h} className="text-[10px] font-semibold text-stone/60 tracking-[0.09em] pb-2"
-                    style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: i === 0 || i === 3 ? 'left' : i === 2 ? 'right' : 'left', paddingRight: i < 3 ? 24 : 0 }}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {paymentSchedule.map(y => {
-                const isCurrent = y.year === currentYearNum
-                // Primary: subscription invoice matched by position (1st = Year 1, etc.)
-                const subscriptionInvoice = sortedSubscriptionInvoices[y.year - 1]
-                // Fallback: pre-created annual_base draft for this year
-                const draftInvoice = !subscriptionInvoice ? annualDraftByYear.get(y.year) : undefined
-                const displayInvoice = subscriptionInvoice ?? draftInvoice
-                return (
-                  <tr key={y.year} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                    <td className="py-2.5 pr-6 text-[12px] font-medium" style={{ color: isCurrent ? '#1A3D2B' : '#3D3935' }}>
-                      Year {y.year}
-                      {isCurrent && (
-                        <span className="ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#D4EAD9', color: '#1A3D2B' }}>NOW</span>
-                      )}
-                    </td>
-                    <td className="py-2.5 pr-6 text-[12px] text-stone">
-                      {y.periodStart ? (
-                        <>
-                          <span className="text-stone/50 text-[10px] mr-1">
-                            {(displayInvoice?.status === 'paid' || displayInvoice?.status === 'open')
-                              && new Date(y.periodStart) <= new Date()
-                              ? 'Issued' : 'Will be issued'}
-                          </span>
-                          {fmtDate(y.periodStart)}
-                        </>
-                      ) : '—'}
-                    </td>
-                    <td className="py-2.5 pr-6 text-[13px] font-semibold text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                      {fmt(y.amount, y.currency)}
-                    </td>
-                    <td className="py-2.5 text-[11px]">
-                      {displayInvoice
-                        ? <div className="flex items-center gap-2">
-                            <StatusPill status={displayInvoice.status} />
-                            {draftInvoice && !subscriptionInvoice && (
-                              <span className="text-[9px] text-stone/60 italic">pre-created</span>
-                            )}
-                            {displayInvoice.number && <span className="text-stone font-mono">{displayInvoice.number}</span>}
-                            {displayInvoice.hostedUrl && (
-                              <a href={displayInvoice.hostedUrl} target="_blank" rel="noreferrer" className="text-forest hover:text-sage" title="View invoice">
-                                <i className="ti ti-external-link" style={{ fontSize: 11 }} />
-                              </a>
-                            )}
-                          </div>
-                        : <span className="text-stone/50">No invoice found</span>
-                      }
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
 
       {/* ── Billing timeline ─────────────────────────────────────── */}
       {(() => {
@@ -376,12 +286,17 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
           return '#9CA3AF'
         }
 
-        const renderEntry = (e: TLEntry, isPast: boolean) => (
+        const renderEntry = (e: TLEntry, isPast: boolean) => {
+          // Future entries always display as Draft — the invoice hasn't been issued yet
+          // regardless of what Stripe may report (e.g. a draft created in advance).
+          // Only past entries show the real payment lifecycle status.
+          const effectiveStatus = isPast ? e.status : 'draft'
+          return (
           <div key={e.id} className="flex gap-4 group">
             {/* Dot */}
             <div className="flex flex-col items-center flex-shrink-0" style={{ width: 20 }}>
               <div className="w-3 h-3 rounded-full border-2 border-white flex-shrink-0 mt-0.5"
-                style={{ background: dotColor(e.status), boxShadow: `0 0 0 2px ${dotColor(e.status)}40` }} />
+                style={{ background: dotColor(effectiveStatus), boxShadow: `0 0 0 2px ${dotColor(effectiveStatus)}40` }} />
               <div className="flex-1 w-px mt-1" style={{ background: isPast ? 'rgba(26,61,43,0.12)' : 'rgba(26,61,43,0.06)', minHeight: 12 }} />
             </div>
 
@@ -400,7 +315,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
                     <span className="text-[13px] font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
                       {fmt(e.amount, e.currency)}
                     </span>
-                    <StatusPill status={e.status} />
+                    <StatusPill status={effectiveStatus} />
                     {e.pdfUrl && (
                       <a href={e.pdfUrl} target="_blank" rel="noreferrer"
                         className="text-stone/40 hover:text-stone transition-colors" title="Download PDF">
@@ -408,14 +323,15 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
                       </a>
                     )}
                   </div>
-                  {e.status === 'draft' && (
+                  {effectiveStatus === 'draft' && (
                     <p className="text-[10px] text-stone/50 text-right">Adjusts for actual usage at period end</p>
                   )}
                 </div>
               </div>
             </div>
           </div>
-        )
+          )
+        }
 
         return (
           <div className="px-6 py-5">

@@ -1494,12 +1494,12 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
 
       {/* ── Revenue actuals ───────────────────────────────────────────── */}
       {projectedTcv > 0 && (() => {
-        // Waterfall bars: Base billed → Overage billed → One-time → Remaining → TCV projected
+        // Aggregate all billed amounts into a single "Billed to date" bar.
+        const totalBilled = baseBilledToDate + actualOvgTotal + oneTimeFees
+        const elapsedMonths = modelMonths.filter(m => m.isPast).length
         type ABar = { label: string; sub?: string; amount: number; kind: 'segment' | 'total'; color: string; dashed?: boolean }
         const aBars: ABar[] = [
-          { label: 'Base billed', sub: `${modelMonths.filter(m => m.isPast).length} mo elapsed`, amount: baseBilledToDate, kind: 'segment', color: '#27AE60' },
-          ...(actualOvgTotal > 0 ? [{ label: 'Overage billed', amount: actualOvgTotal, kind: 'segment' as const, color: '#0B5C36' }] : []),
-          ...(oneTimeFees > 0 ? [{ label: 'One-time', amount: oneTimeFees, kind: 'segment' as const, color: '#D9A35A' }] : []),
+          { label: 'Billed to date', sub: `${elapsedMonths} mo elapsed`, amount: totalBilled, kind: 'segment', color: '#27AE60' },
           { label: 'Remaining', sub: 'contracted ARR', amount: remaining, kind: 'segment', color: '#C8E6D4', dashed: true },
           { label: 'TCV projected', amount: projectedTcv, kind: 'total', color: '#1A3D2B' },
         ]
@@ -1526,12 +1526,10 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
           <div className="bg-white border border-forest/10 rounded-2xl p-6">
             <div className="flex items-center justify-between mb-1">
               <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Revenue actuals — billed to date</h3>
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2 text-[10px] text-stone/60">
-                  <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Paid
-                  <span className="inline-block w-2 h-2 rounded-sm ml-1" style={{ background: '#D97706' }} /> Issued
-                </div>
-                <span className="text-[10px] text-stone/50">Remaining stays at contracted ARR · no overage projection</span>
+              <div className="flex items-center gap-3 text-[10px] text-stone/60">
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Billed to date</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm border border-dashed" style={{ background: '#C8E6D4', borderColor: '#4A7C59' }} /> Remaining</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#1A3D2B' }} /> TCV projected</span>
               </div>
             </div>
 
