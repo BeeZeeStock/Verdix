@@ -62,7 +62,7 @@ export default async function ConfigureListPage() {
           <p className="text-stone text-sm">Auto-configure billing from signed contracts</p>
         </div>
         <Link href="/configure/new" className="flex items-center gap-2 text-forest text-sm font-medium hover:opacity-70 transition-opacity self-start sm:self-auto">
-          <i className="ti ti-plus" style={{ fontSize: 14 }} /> Upload contract
+          <i className="ti ti-file-invoice" style={{ fontSize: 16 }} /> Upload contract
         </Link>
       </div>
 

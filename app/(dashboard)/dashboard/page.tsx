@@ -231,7 +231,7 @@ export default async function DashboardPage() {
                   href="/configure/new"
                   className="inline-flex items-center gap-1.5 text-xs font-medium text-forest hover:opacity-70 transition-opacity self-start"
                 >
-                  Upload contract <i className="ti ti-arrow-right" style={{ fontSize: 11 }} />
+                  <i className="ti ti-file-invoice" style={{ fontSize: 14 }} /> Upload contract
                 </Link>
               </div>
 
