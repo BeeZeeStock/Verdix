@@ -42,7 +42,7 @@ export async function GET(
   try {
     const [subscription, subscriptionInvRes, allCustomerInvRes, computedRes] = await Promise.all([
       stripe.subscriptions.retrieve(subId, { expand: ['items.data.price'] }),
-      stripe.invoices.list({ subscription: subId, limit: 12 }),
+      stripe.invoices.list({ subscription: subId, limit: 100 }),
       // Also fetch standalone (one-time fee) invoices for this customer.
       // These have no subscription attached and are identified by verdix_job metadata.
       customerId

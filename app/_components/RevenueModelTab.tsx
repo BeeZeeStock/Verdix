@@ -1500,10 +1500,14 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         const actualSubBilled = (billingData?.invoices ?? [])
           .filter(inv => isIssued(inv.status))
           .reduce((s, inv) => s + inv.amount, 0)
+        // Annual draft invoices (Year 2/3 standalone) may have been issued — count them too
+        const actualAnnualDraftBilled = (billingData?.annualDraftInvoices ?? [])
+          .filter(inv => isIssued(inv.status))
+          .reduce((s, inv) => s + inv.amount, 0)
         const actualOneTimeBilled = (billingData?.oneTimeInvoices ?? [])
           .filter(inv => isIssued(inv.status))
           .reduce((s, inv) => s + inv.amount, 0)
-        const totalBilled = actualSubBilled + actualOvgTotal + actualOneTimeBilled
+        const totalBilled = actualSubBilled + actualAnnualDraftBilled + actualOvgTotal + actualOneTimeBilled
         const elapsedMonths = modelMonths.filter(m => m.isPast).length
         const actualsRemaining = Math.max(0, totalTcv - totalBilled)
         type ABar = { label: string; sub?: string; amount: number; kind: 'segment' | 'total'; color: string; dashed?: boolean }
