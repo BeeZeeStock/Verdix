@@ -161,6 +161,7 @@ export async function GET(
       oneTimeFees: terms?.one_time_fees ?? [],
       contractStart: terms?.contract_start_date ?? null,
       currency: terms?.currency ?? 'EUR',
+      paymentTermsDays: terms?.payment_terms_days ?? null,
       computedInvoices: computedRes.data ?? [],
     })
   } catch (err) {

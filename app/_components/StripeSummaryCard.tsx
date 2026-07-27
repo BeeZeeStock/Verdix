@@ -53,6 +53,7 @@ type Summary = {
   oneTimeFees: OneTimeFee[]
   contractStart: string | null
   currency: string
+  paymentTermsDays: number | null
   computedInvoices: { external_invoice_id: string; status: string; total_amount: number; period_start: string }[]
 }
 
@@ -165,7 +166,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
 
   if (!summary) return null
 
-  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency } = summary
+  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency, paymentTermsDays } = summary
 
   const now = new Date()
   const currentYearNum = paymentSchedule?.find(y => {
@@ -303,27 +304,34 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
       {(() => {
         // Merge all invoices (subscription + one-time) into a unified chronological timeline
         type TLEntry = {
-          id: string; label: string; date: Date; amount: number; currency: string
+          id: string; label: string; dateLabel: string; date: Date; amount: number; currency: string
           status: string | null; hostedUrl?: string | null; pdfUrl?: string | null; kind: 'subscription' | 'one-time' | 'pending-setup'
         }
         const entries: TLEntry[] = []
+        const netDays = paymentTermsDays ?? 30
 
-        // One-time fee invoices that exist in Stripe
+        // One-time fee invoices that exist in Stripe.
+        // Due date = invoice creation date + contract payment terms (net N days).
+        // We recompute this rather than trusting Stripe's due_date, which can be
+        // clamped to 1 day when the contract-extracted due_date was already past
+        // at push time.
         for (const inv of oneTimeInvoices) {
-          const d = inv.dueDate ?? inv.created
+          const issued = new Date(inv.created)
+          const due = new Date(issued.getTime() + netDays * 86_400_000)
           entries.push({
             id: inv.id, label: inv.feeLabel ?? 'One-time fee',
-            date: new Date(d), amount: inv.amount, currency: inv.currency,
+            dateLabel: 'Due',
+            date: due, amount: inv.amount, currency: inv.currency,
             status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'one-time',
           })
         }
 
-        // Subscription invoices (recurring)
+        // Subscription invoices — date is when the invoice was issued
         for (const inv of invoices) {
-          const d = inv.dueDate ?? inv.created
           entries.push({
             id: inv.id, label: 'Subscription',
-            date: new Date(d), amount: inv.amount, currency: inv.currency,
+            dateLabel: 'Issued',
+            date: new Date(inv.created), amount: inv.amount, currency: inv.currency,
             status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'subscription',
           })
         }
@@ -331,10 +339,13 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         // One-time fees not yet in Stripe (pending setup)
         if (oneTimeInvoices.length === 0 && oneTimeFees.length > 0) {
           for (const fee of oneTimeFees) {
+            const due = fee.due_date
+              ? new Date(fee.due_date)
+              : new Date(Date.now() + netDays * 86_400_000)
             entries.push({
               id: `pending-${fee.fee_label}`, label: fee.fee_label,
-              date: fee.due_date ? new Date(fee.due_date) : new Date(),
-              amount: fee.amount, currency: currency,
+              dateLabel: 'Due',
+              date: due, amount: fee.amount, currency: currency,
               status: 'pending', kind: 'pending-setup',
             })
           }
@@ -373,7 +384,10 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className={`text-[12px] font-medium leading-tight ${isPast ? 'text-ink' : 'text-ink/80'}`}>{e.label}</p>
-                  <p className="text-[10px] text-stone mt-0.5">{e.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+                  <p className="text-[10px] text-stone mt-0.5">
+                    <span className="text-stone/50">{e.dateLabel} </span>
+                    {e.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </p>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <span className="text-[13px] font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
