@@ -1207,7 +1207,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
           ...(metricTiers.length > 0 ? [{
             label: `${genericMetricLabel ?? 'Usage'} overage`,
             value: totalGenericOvg,
-            sub: `${scenarioGenericMetric.toLocaleString()} / ${apiCallPeriodLabel} · ${includedGenericMetric > 0 ? `${includedGenericMetric.toLocaleString()} included` : 'no allowance'}`,
+            sub: `${scenarioGenericMetric.toLocaleString()} / ${apiCallPeriodLabel}${includedGenericMetric > 0 ? ` · ${includedGenericMetric.toLocaleString()} included` : ''}`,
             color: '#3DAA7F',
           }] : []),
           {
