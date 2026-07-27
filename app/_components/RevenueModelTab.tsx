@@ -1507,7 +1507,11 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         const actualOneTimeBilled = (billingData?.oneTimeInvoices ?? [])
           .filter(inv => isIssued(inv.status))
           .reduce((s, inv) => s + inv.amount, 0)
-        const totalBilled = actualSubBilled + actualAnnualDraftBilled + actualOvgTotal + actualOneTimeBilled
+        // actualOvgTotal is intentionally excluded: computed_invoices are internal
+        // records with no Stripe status — including them inflates billed-to-date
+        // with amounts not yet issued. Real billed overage is already in
+        // actualSubBilled (subscription line items) or actualOneTimeBilled (standalone).
+        const totalBilled = actualSubBilled + actualAnnualDraftBilled + actualOneTimeBilled
         const elapsedMonths = modelMonths.filter(m => m.isPast).length
         const actualsRemaining = Math.max(0, totalTcv - totalBilled)
         type ABar = { label: string; sub?: string; amount: number; kind: 'segment' | 'total'; color: string; dashed?: boolean }
