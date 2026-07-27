@@ -221,16 +221,47 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         // in the past (the billing event has already occurred per the schedule).
         const dateLabel = (planned: Date) => planned <= new Date() ? 'Issued' : 'Will be issued'
 
-        // Subscription invoices — date comes from the payment schedule (contract),
-        // not from when Verdix pushed the draft to Stripe.
-        for (let i = 0; i < invoices.length; i++) {
-          const inv = invoices[i]
-          // Year N planned issue date = contract start + (N-1) billing intervals
-          const planned = contractDate(paymentSchedule?.[i]?.periodStart)
+        // Subscription invoices — sort oldest-first so index i maps to billing period i.
+        // Stripe returns newest-first by default; reversing ensures month 1 → period 0, etc.
+        // Date = contractStart + (i * billing interval), which is contract-centric and works
+        // for both monthly and annual billing (unlike the old paymentSchedule index mapping,
+        // which only had one entry per year and broke for monthly contracts).
+        const sortedSubInvoices = [...invoices].sort(
+          (a, b) => new Date(a.created).getTime() - new Date(b.created).getTime()
+        )
+        const base = contractDate(contractStart)
+        for (let i = 0; i < sortedSubInvoices.length; i++) {
+          const inv = sortedSubInvoices[i]
+          let planned: Date
+          if (base) {
+            const d = new Date(base)
+            if (sub.interval === 'year') {
+              d.setFullYear(d.getFullYear() + i * sub.intervalCount)
+            } else {
+              d.setMonth(d.getMonth() + i * sub.intervalCount)
+            }
+            planned = d
+          } else {
+            planned = new Date(inv.created)
+          }
+          entries.push({
+            id: inv.id, label: 'Subscription',
+            dateLabel: dateLabel(planned), date: planned,
+            amount: inv.amount, currency: inv.currency,
+            status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'subscription',
+          })
+        }
+
+        // Annual base-fee draft invoices (Year 2/3 standalone pre-created in Stripe).
+        // These are not subscription invoices but represent future year commitments.
+        // Include them so the timeline matches what revenue actuals counts.
+        for (const inv of annualDraftInvoices) {
+          const ps = paymentSchedule?.find(p => p.year === inv.yearNum)
+          const planned = contractDate(ps?.periodStart)
             ?? contractDate(contractStart)
             ?? new Date(inv.created)
           entries.push({
-            id: inv.id, label: 'Subscription',
+            id: inv.id, label: `Year ${inv.yearNum ?? '?'} commitment`,
             dateLabel: dateLabel(planned), date: planned,
             amount: inv.amount, currency: inv.currency,
             status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'subscription',
