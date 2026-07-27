@@ -20,7 +20,11 @@ function computeYearlyAmounts(terms: ContractTerms): number[] {
   const yearPricing       = terms.year_pricing
   const rampSchedule      = terms.ramp_schedule && terms.ramp_schedule.length > 0
     ? terms.ramp_schedule : null
-  const baseMonthly       = terms.base_monthly_fee ?? 0
+  // Prefer explicit monthly fee; fall back to annual / 12 when only base_annual_fee is set
+  // and there is no per-year pricing or ramp schedule (mirrors the RevenueModelTab logic).
+  const _baseAnnualFallback = terms.base_annual_fee ?? 0
+  const baseMonthly       = terms.base_monthly_fee
+    ?? ((_baseAnnualFallback > 0 && !yearPricing && !rampSchedule) ? _baseAnnualFallback / 12 : 0)
   const additionalMonthly = (terms.additional_recurring_fees ?? [])
     .reduce((s, f) => s + (f.amount ?? 0), 0)
   const escalators        = terms.escalators ?? []
@@ -201,8 +205,11 @@ async function configureStripe(terms: ContractTerms, lineItems: LineItemInput[],
   // When hasYearRates: set price to $0 — billing-writer (first invoice) and
   // the webhook (subsequent invoices) inject the correct period amount directly.
   // When flat-rate: use the actual periodic amount so Stripe handles it natively.
-  const baseMonthly = terms.base_monthly_fee ?? 0
   const baseAnnual  = terms.base_annual_fee ?? (terms.year_pricing?.['year1'] ?? 0)
+  // For monthly/sub-annual contracts without explicit monthly fee, derive from annual fee.
+  // Keeps the subscription price consistent with computeYearlyAmounts above.
+  const baseMonthly = terms.base_monthly_fee
+    ?? (!hasYearRates && !isAnnualBilling && baseAnnual > 0 ? baseAnnual / 12 : 0)
   const baseAmount  = hasYearRates
     ? 0
     : isAnnualBilling

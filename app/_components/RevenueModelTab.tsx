@@ -1272,9 +1272,22 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         const hasYear1Draft = sortedDrafts.some(inv => inv.yearNum === 1)
 
         if (hasYear1Draft) {
-          // Finite monthly contracts: all years from annual commitment drafts
+          // Finite monthly contracts: all years from annual commitment drafts.
+          // If a draft has €0 (created before the base_annual_fee fallback fix), derive the
+          // expected annual commitment from the contract terms so the chart stays meaningful.
           for (const inv of sortedDrafts) {
-            rawEvents.push({ label: `Year ${inv.yearNum}`, date: scheduleDate(inv.yearNum, inv), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
+            const yearNum = inv.yearNum ?? 0
+            let displayAmount = inv.amount
+            if (displayAmount === 0 && yearNum > 0 && start) {
+              let expected = 0
+              for (let mi = 0; mi < 12; mi++) {
+                const idx = (yearNum - 1) * 12 + mi
+                const d   = new Date(start.getFullYear(), start.getMonth() + idx, 1)
+                expected += monthlyBaseFor(idx, d) + additionalMonthly
+              }
+              if (expected > 0) displayAmount = expected
+            }
+            rawEvents.push({ label: `Year ${inv.yearNum}`, date: scheduleDate(inv.yearNum, inv), amount: displayAmount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
           }
         } else {
           // Legacy (annual billing): Year 1 from first subscription invoice, Year 2+ from drafts
