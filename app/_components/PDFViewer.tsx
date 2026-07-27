@@ -7,6 +7,32 @@ function norm(s: string) {
   return s.replace(/[€$£¥,\s\-–—]/g, '').toLowerCase()
 }
 
+// Build a flat list of { node, text, parentEl } entries from a text layer,
+// then for each position produce a "window" string spanning up to N characters
+// across adjacent nodes within the same line-block. Returns [{combined, nodes[]}].
+function buildWindowedText(textLayer: Element): { combined: string; nodes: { node: Text; raw: string }[] }[] {
+  const entries: { node: Text; raw: string; parentEl: Element }[] = []
+  const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT)
+  let n: Text | null
+  while ((n = walker.nextNode() as Text | null)) {
+    const raw = n.textContent ?? ''
+    if (!raw.trim()) continue
+    entries.push({ node: n, raw, parentEl: (n.parentElement ?? textLayer) as Element })
+  }
+  // Produce windows: for each starting node, accumulate adjacent nodes (up to 120 chars)
+  const windows: { combined: string; nodes: { node: Text; raw: string }[] }[] = []
+  for (let i = 0; i < entries.length; i++) {
+    let combined = ''
+    const nodeList: { node: Text; raw: string }[] = []
+    for (let j = i; j < entries.length && combined.length < 120; j++) {
+      combined += entries[j].raw
+      nodeList.push({ node: entries[j].node, raw: entries[j].raw })
+    }
+    windows.push({ combined, nodes: nodeList })
+  }
+  return windows
+}
+
 interface Props {
   url: string
   /** Section heading to navigate to (e.g. "1.1 Base Platform Fee") */
@@ -42,6 +68,10 @@ export default function PDFViewer({ url, section }: Props) {
 
     if (!heading) return
     const needle = norm(heading)
+    if (!needle) return
+
+    // Track the first match across all pages so we only auto-scroll once
+    let globalFirstScrollDone = false
 
     for (const [, wrapper] of wrapperMap.current) {
       const textLayer = wrapper.querySelector('.pdf-text-layer')
@@ -56,57 +86,71 @@ export default function PDFViewer({ url, section }: Props) {
       }
 
       const wRect = wrapper.getBoundingClientRect()
-      let found = false
 
-      const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT)
-      let node: Text | null
-      while ((node = walker.nextNode() as Text | null)) {
-        const raw = node.textContent ?? ''
-        if (!norm(raw).includes(needle)) continue
+      // Build windowed text entries for this page
+      const windows = buildWindowedText(textLayer)
 
-        try {
+      // Find the first window whose combined normalized text contains the needle.
+      // Prefer exact section-number-prefix matches (e.g. "6.6" at the start) to
+      // avoid matching the table of contents before the actual section body.
+      let matchWindow = windows.find(w => {
+        const c = norm(w.combined)
+        if (!c.includes(needle)) return false
+        // If the needle starts with digits (section number), require it to appear
+        // near the beginning of the combined string (within first 20 chars) so TOC
+        // links with trailing dots/pages don't win over the actual heading.
+        const sectionNumMatch = /^\d/.test(needle)
+        if (sectionNumMatch) return c.indexOf(needle) < 20
+        return true
+      })
+      // Fallback: accept any window that contains the needle anywhere
+      if (!matchWindow) {
+        matchWindow = windows.find(w => norm(w.combined).includes(needle))
+      }
+      if (!matchWindow) continue
+
+      // Get bounding rects from all nodes in the matching window
+      try {
+        const allRects: DOMRect[] = []
+        let firstNode = matchWindow.nodes[0]
+        for (const { node, raw } of matchWindow.nodes) {
           const range = document.createRange()
           range.setStart(node, 0)
           range.setEnd(node, raw.length)
-          const rects = [...range.getClientRects()]
-          if (!rects.length) continue
+          allRects.push(...range.getClientRects())
+        }
+        if (!allRects.length) continue
 
-          // Bounding box of the matching text
-          const top  = Math.min(...rects.map(r => r.top))  - wRect.top - 4
-          const bot  = Math.max(...rects.map(r => r.bottom)) - wRect.top + 4
-          const h    = bot - top
+        const top = Math.min(...allRects.map(r => r.top))  - wRect.top - 4
+        const bot = Math.max(...allRects.map(r => r.bottom)) - wRect.top + 4
+        const h   = bot - top
 
-          // Mint background tint across full row
-          const bg = document.createElement('div')
-          bg.style.cssText = `position:absolute;left:0;top:${top}px;width:100%;height:${h}px;background:rgba(212,234,217,0.45);`
-          overlay.appendChild(bg)
+        const bg = document.createElement('div')
+        bg.style.cssText = `position:absolute;left:0;top:${top}px;width:100%;height:${h}px;background:rgba(212,234,217,0.45);`
+        overlay.appendChild(bg)
 
-          // 3 px green left bar (extends 60 px below heading to suggest section continues)
-          const bar = document.createElement('div')
-          bar.style.cssText = `position:absolute;left:0;top:${top}px;width:4px;height:${h + 60}px;background:#4A7C59;border-radius:0 2px 2px 0;`
-          overlay.appendChild(bar)
+        const bar = document.createElement('div')
+        bar.style.cssText = `position:absolute;left:0;top:${top}px;width:4px;height:${h + 60}px;background:#4A7C59;border-radius:0 2px 2px 0;`
+        overlay.appendChild(bar)
 
-          // Small "§" label at the bar top
-          const pill = document.createElement('div')
-          pill.textContent = '§'
-          pill.style.cssText = `position:absolute;left:6px;top:${top}px;background:#4A7C59;color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;line-height:${h}px;`
-          overlay.appendChild(pill)
+        const pill = document.createElement('div')
+        pill.textContent = '§'
+        pill.style.cssText = `position:absolute;left:6px;top:${top}px;background:#4A7C59;color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;line-height:${h}px;`
+        overlay.appendChild(pill)
 
-          if (!found) {
-            found = true
-            const firstRect = rects[0]
-            const scrollTarget = wrapper.closest('.pdf-scroll-container') as HTMLElement | null
-            if (scrollTarget) {
-              // offsetTop is relative to scroll container (position:relative)
-              // firstRect.top - wRect.top gives y-offset of text within the page
-              const scrollTop = wrapper.offsetTop + (firstRect.top - wRect.top) + scrollTarget.scrollTop - 100
-              scrollTarget.scrollTo({ top: Math.max(0, scrollTop), behavior: 'smooth' })
-            } else {
-              bg.scrollIntoView({ behavior: 'smooth', block: 'center' })
-            }
+        if (!globalFirstScrollDone) {
+          globalFirstScrollDone = true
+          const scrollTarget = wrapper.closest('.pdf-scroll-container') as HTMLElement | null
+          if (scrollTarget) {
+            const scrollTop = wrapper.offsetTop + top + scrollTarget.scrollTop - 100
+            scrollTarget.scrollTo({ top: Math.max(0, scrollTop), behavior: 'smooth' })
+          } else {
+            bg.scrollIntoView({ behavior: 'smooth', block: 'center' })
           }
-        } catch { /* skip */ }
-      }
+        }
+        // Only highlight the first match per document (stop after this page)
+        break
+      } catch { /* skip */ }
     }
   }, [])
 

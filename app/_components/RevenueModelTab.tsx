@@ -51,7 +51,7 @@ function fmt(n: number, cur = 'EUR', compact = false): string {
     if (Math.abs(n) >= 1_000)     return `${sym}${(n / 1_000).toFixed(0)}k`
     return `${sym}${n.toFixed(0)}`
   }
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, maximumFractionDigits: 0 }).format(n)
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
 }
 
 function shortMonth(d: Date) {
@@ -79,9 +79,15 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
   const userTiers  = allTiers.filter(t => t.unit_type?.toLowerCase().includes('user'))
   const apiTiers   = allTiers.filter(t =>
     t.unit_type?.toLowerCase().includes('api') || t.unit_type?.toLowerCase().includes('call'))
+  // Non-user, non-API tiers (e.g. Agreement Syncs, transactions, etc.)
+  const metricTiers = allTiers.filter(t =>
+    !t.unit_type?.toLowerCase().includes('user') &&
+    !t.unit_type?.toLowerCase().includes('api') &&
+    !t.unit_type?.toLowerCase().includes('call'))
 
-  const sortedUserTiers = [...userTiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
-  const sortedApiTiers  = [...apiTiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
+  const sortedUserTiers   = [...userTiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
+  const sortedApiTiers    = [...apiTiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
+  const sortedMetricTiers = [...metricTiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
 
   // Included seats for users (derived from first user tier's from_unit)
   const includedUsers = sortedUserTiers.length > 0
@@ -91,7 +97,13 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
   // Included units for API/transactional metrics — from tier boundary or explicit field
   const includedApiCalls = sortedApiTiers.length > 0
     ? Math.max(0, (sortedApiTiers[0].from_unit ?? 1) - 1)
-    : (terms.included_units ?? 0)
+    : (apiTiers.length > 0 ? (terms.included_units ?? 0) : 0)
+
+  // Generic metric (e.g. Agreement Syncs) — included units and label
+  const genericMetricLabel    = sortedMetricTiers[0]?.unit_type ?? terms.included_unit_type ?? null
+  const includedGenericMetric = sortedMetricTiers.length > 0
+    ? Math.max(0, (sortedMetricTiers[0].from_unit ?? 1) - 1)
+    : (metricTiers.length === 0 && apiTiers.length === 0 ? (terms.included_units ?? 0) : 0)
 
   // Billing period unit for scenario input and overage computation
   const billingFreq        = terms.billing_frequency ?? 'monthly'
@@ -139,8 +151,9 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
 
   // ── State ─────────────────────────────────────────────────────────────────
 
-  const [scenarioUsers,    setScenarioUsers]    = useState(() => includedUsers)
-  const [scenarioApiCalls, setScenarioApiCalls] = useState(0)
+  const [scenarioUsers,         setScenarioUsers]         = useState(() => includedUsers)
+  const [scenarioApiCalls,      setScenarioApiCalls]      = useState(0)
+  const [scenarioGenericMetric, setScenarioGenericMetric] = useState(0)
 
   // Overage per billing period — hoisted so JSX can reference it
   // (recomputed from state below, before the early-return guard)
@@ -261,16 +274,16 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
 
   // ── Overage amounts (computed once from scenario state) ───────────────────
 
-  // periodApiOvg: overage for one billing period at the scenario API call volume
-  const periodApiOvg = computeMetricOverage(scenarioApiCalls, apiTiers as OverageTier[], includedApiCalls)
-  // monthly spread of that overage (used in per-month chart bars)
-  const monthlyApiOvg = periodApiOvg / monthsPerPeriod
+  const periodApiOvg     = computeMetricOverage(scenarioApiCalls, apiTiers as OverageTier[], includedApiCalls)
+  const monthlyApiOvg    = periodApiOvg / monthsPerPeriod
+  const periodGenericOvg = computeMetricOverage(scenarioGenericMetric, metricTiers as OverageTier[], includedGenericMetric)
+  const monthlyGenericOvg = periodGenericOvg / monthsPerPeriod
 
   // ── Build per-month model data ────────────────────────────────────────────
 
   type ModelMonth = {
     date: Date; sub: number; inDiscount: boolean; escalated: boolean
-    discountPct: number; escalationMult: number; userOvg: number; apiOvg: number; total: number; isPast: boolean
+    discountPct: number; escalationMult: number; userOvg: number; apiOvg: number; genericOvg: number; total: number; isPast: boolean
   }
   const modelMonths: ModelMonth[] = []
   let cursor = new Date(start.getFullYear(), start.getMonth(), 1)
@@ -312,13 +325,14 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
     if (!yearPricing && !rampSchedule && applyEscalator && escalationMult > 1) sub = (effectiveBase + additionalMonthly) * escalationMult
     if (inDiscount && applyDiscount) sub *= (1 - discountPct / 100)
 
-    const userOvg = computeUserOverage(scenarioUsers, includedUsers, userTiers)
-    const apiOvg  = monthlyApiOvg
+    const userOvg    = computeUserOverage(scenarioUsers, includedUsers, userTiers)
+    const apiOvg     = monthlyApiOvg
+    const genericOvg = monthlyGenericOvg
 
     modelMonths.push({
       date: md, sub, inDiscount: inDiscount && applyDiscount,
       escalated, discountPct, escalationMult,
-      userOvg, apiOvg, total: sub + userOvg + apiOvg,
+      userOvg, apiOvg, genericOvg, total: sub + userOvg + apiOvg + genericOvg,
       isPast: md <= today,
     })
     cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)
@@ -329,9 +343,10 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
 
   // ── KPI totals ────────────────────────────────────────────────────────────
 
-  const totalSub     = modelMonths.reduce((s, m) => s + m.sub,     0)
-  const totalUserOvg = modelMonths.reduce((s, m) => s + m.userOvg, 0)
-  const totalApiOvg  = modelMonths.reduce((s, m) => s + m.apiOvg,  0)
+  const totalSub        = modelMonths.reduce((s, m) => s + m.sub,        0)
+  const totalUserOvg    = modelMonths.reduce((s, m) => s + m.userOvg,    0)
+  const totalApiOvg     = modelMonths.reduce((s, m) => s + m.apiOvg,     0)
+  const totalGenericOvg = modelMonths.reduce((s, m) => s + m.genericOvg, 0)
 
   // Split one-time amounts into positive fees and negative credits separately
   const oneTimeFromItems = items.filter(i => /one.?time/i.test(i.billing_period))
@@ -342,7 +357,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
   const negOneTime   = allOneTime.filter(ot => ot.amount < 0)
   const oneTimeFees  = posOneTime.reduce((s, ot) => s + ot.amount, 0)
   const creditTotal  = negOneTime.reduce((s, ot) => s + ot.amount, 0)   // negative value
-  const grossTcv     = totalSub + totalUserOvg + totalApiOvg + oneTimeFees
+  const grossTcv     = totalSub + totalUserOvg + totalApiOvg + totalGenericOvg + oneTimeFees
   const totalTcv     = grossTcv + creditTotal
 
   // ── Actuals (from computed_invoices) ───────────────────────────────
@@ -558,6 +573,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
             onClick={() => {
               setScenarioUsers(includedUsers)
               setScenarioApiCalls(0)
+              setScenarioGenericMetric(0)
               setApplyEscalator(true)
               setApplyDiscount(true)
               setEscPerYear(Array.from({ length: numEscYears }, () => contractEscPct))
@@ -569,133 +585,189 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
           </button>
         </div>
 
-        <div className={`grid gap-8 ${rampSchedule ? 'grid-cols-3' : 'grid-cols-4'}`}>
-          {/* Users */}
-          <div>
-            <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">Total users / month</label>
-            <input
-              type="number" min={0} value={scenarioUsers}
-              onChange={e => setScenarioUsers(Math.max(0, Number(e.target.value)))}
-              className="w-28 text-sm font-medium text-ink border border-forest/20 rounded-lg px-3 py-2 outline-none focus:border-forest"
-            />
-            <p className="text-[10px] text-stone mt-1.5">
-              {includedUsers > 0 ? `${includedUsers.toLocaleString()} seats included` : 'No seat allowance'}
-            </p>
-            {scenarioUsers > includedUsers && userTiers.length > 0 && (
-              <p className="text-[10px] text-[#4A7C59] mt-0.5 font-medium">
-                +{(scenarioUsers - includedUsers).toLocaleString()} extra → overage applies
-              </p>
-            )}
-          </div>
+        {(() => {
+          // Build columns dynamically — only show inputs relevant to this contract
+          const showUsers   = userTiers.length > 0 || includedUsers > 0
+          const showApi     = apiTiers.length > 0
+          const showMetric  = metricTiers.length > 0 || (genericMetricLabel && !showApi)
+          const showEsc     = !rampSchedule
+          const showDisc    = discounts.length > 0
+          const colCount    = [showUsers, showApi || showMetric, showEsc, showDisc].filter(Boolean).length || 2
+          return (
+            <div className={`grid gap-8`} style={{ gridTemplateColumns: `repeat(${colCount}, minmax(0, 1fr))` }}>
+              {/* Users — only shown when contract has user-based pricing */}
+              {showUsers && (
+                <div>
+                  <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">Total users / month</label>
+                  <input
+                    type="number" min={0} value={scenarioUsers}
+                    onChange={e => setScenarioUsers(Math.max(0, Number(e.target.value)))}
+                    className="w-28 text-sm font-medium text-ink border border-forest/20 rounded-lg px-3 py-2 outline-none focus:border-forest"
+                  />
+                  <p className="text-[10px] text-stone mt-1.5">
+                    {includedUsers > 0 ? `${includedUsers.toLocaleString()} seats included` : 'No seat allowance'}
+                  </p>
+                  {scenarioUsers > includedUsers && userTiers.length > 0 && (
+                    <p className="text-[10px] text-[#4A7C59] mt-0.5 font-medium">
+                      +{(scenarioUsers - includedUsers).toLocaleString()} extra → overage applies
+                    </p>
+                  )}
+                </div>
+              )}
 
-          {/* API calls */}
-          <div>
-            <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">
-              API calls / {apiCallPeriodLabel}
-            </label>
-            <input
-              type="number" min={0} step={10000} value={scenarioApiCalls}
-              onChange={e => setScenarioApiCalls(Math.max(0, Number(e.target.value)))}
-              className="w-36 text-sm font-medium text-ink border border-forest/20 rounded-lg px-3 py-2 outline-none focus:border-forest"
-            />
-            <p className="text-[10px] text-stone mt-1.5">
-              {includedApiCalls > 0
-                ? `${includedApiCalls.toLocaleString()} included / ${apiCallPeriodLabel}`
-                : apiTiers.length > 0 ? 'No free allowance' : 'No API overage tiers'}
-            </p>
-            {apiTiers.length > 0 && scenarioApiCalls > includedApiCalls && (
-              <p className="text-[10px] text-[#B9802F] mt-0.5 font-medium">
-                {(scenarioApiCalls - includedApiCalls).toLocaleString()} excess → €{(periodApiOvg).toFixed(0)}/{apiCallPeriodLabel}
-              </p>
-            )}
-            {apiTiers.length > 0 && scenarioApiCalls <= includedApiCalls && includedApiCalls > 0 && (
-              <p className="text-[10px] text-stone/60 mt-0.5">Within included allowance</p>
-            )}
-          </div>
+              {/* API calls — only shown when contract has API call tiers */}
+              {showApi && (
+                <div>
+                  <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">
+                    API calls / {apiCallPeriodLabel}
+                  </label>
+                  <input
+                    type="number" min={0} step={10000} value={scenarioApiCalls}
+                    onChange={e => setScenarioApiCalls(Math.max(0, Number(e.target.value)))}
+                    className="w-36 text-sm font-medium text-ink border border-forest/20 rounded-lg px-3 py-2 outline-none focus:border-forest"
+                  />
+                  <p className="text-[10px] text-stone mt-1.5">
+                    {includedApiCalls > 0
+                      ? `${includedApiCalls.toLocaleString()} included / ${apiCallPeriodLabel}`
+                      : 'No free allowance'}
+                  </p>
+                  {scenarioApiCalls > includedApiCalls && (
+                    <p className="text-[10px] text-[#B9802F] mt-0.5 font-medium">
+                      {(scenarioApiCalls - includedApiCalls).toLocaleString()} excess → {fmt(periodApiOvg, cur)}/{apiCallPeriodLabel}
+                    </p>
+                  )}
+                  {scenarioApiCalls <= includedApiCalls && includedApiCalls > 0 && (
+                    <p className="text-[10px] text-stone/60 mt-0.5">Within included allowance</p>
+                  )}
+                </div>
+              )}
 
-          {/* Escalator — per-year compound inputs (hidden when ramp_schedule encodes the rates) */}
-          {!rampSchedule && <div>
-            <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">Price escalator</label>
-            <div className="flex items-center gap-3 mb-3">
-              <button onClick={() => setApplyEscalator(v => !v)}
-                className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0 ${applyEscalator ? 'bg-forest' : 'bg-stone/25'}`}>
-                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${applyEscalator ? 'left-4' : 'left-0.5'}`} />
-              </button>
-              <span className="text-xs text-stone">{applyEscalator ? 'On' : 'Off'}</span>
-            </div>
-            {applyEscalator && (
-              <div className="space-y-2">
-                {escPerYear.map((pct, yi) => (
-                  <div key={yi} className="flex items-center gap-1.5">
-                    {numEscYears > 1 && (
-                      <span className="text-[9px] text-stone/70 w-[52px] flex-shrink-0 leading-tight">
-                        Yr {yi + 1}→{yi + 2}
-                      </span>
-                    )}
-                    <input
-                      type="number" min={0} max={50} step={0.5} value={pct}
-                      onChange={e => {
-                        const v = e.target.value === '' ? 0 : Number(e.target.value)
-                        setEscPerYear(arr => arr.map((x, i) => i === yi ? v : x))
-                        if (yi === 0) setSaved(false)
-                      }}
-                      className="w-16 text-sm font-medium text-ink border border-forest/20 rounded-lg px-2 py-1.5 outline-none focus:border-forest"
-                    />
-                    <span className="text-xs text-stone">%</span>
-                    {/* Confirm/save tick — appears on first-year input when it differs from the DB value */}
-                    {yi === 0 && escIsDirty && (
-                      <button
-                        onClick={saveEscalatorCorrection}
-                        disabled={saving}
-                        title="Save as contract default"
-                        className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold rounded-lg transition-colors border disabled:opacity-50"
-                        style={saved
-                          ? { background: '#D4EAD9', borderColor: 'rgba(74,124,89,0.35)', color: '#1A3D2B' }
-                          : { background: '#F0F8F3', borderColor: 'rgba(26,61,43,0.25)', color: '#1A3D2B' }}
-                      >
-                        {saving ? (
-                          <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 10 }} />
-                        ) : saved ? (
-                          <><i className="ti ti-check" style={{ fontSize: 10 }} /> Saved</>
-                        ) : (
-                          <><i className="ti ti-check" style={{ fontSize: 10 }} /> Save</>
+              {/* Generic metric (e.g. Agreement Syncs) — shown when not API-based */}
+              {showMetric && !showApi && (
+                <div>
+                  <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">
+                    {genericMetricLabel ?? 'Usage metric'} / {apiCallPeriodLabel}
+                  </label>
+                  <input
+                    type="number" min={0} step={10} value={scenarioGenericMetric}
+                    onChange={e => setScenarioGenericMetric(Math.max(0, Number(e.target.value)))}
+                    className="w-36 text-sm font-medium text-ink border border-forest/20 rounded-lg px-3 py-2 outline-none focus:border-forest"
+                  />
+                  <p className="text-[10px] text-stone mt-1.5">
+                    {includedGenericMetric > 0
+                      ? `${includedGenericMetric.toLocaleString()} included / ${apiCallPeriodLabel}`
+                      : metricTiers.length > 0 ? 'No free allowance' : `Included: ${(terms.included_units ?? 0).toLocaleString()}`}
+                  </p>
+                  {metricTiers.length > 0 && scenarioGenericMetric > includedGenericMetric && (
+                    <p className="text-[10px] text-[#B9802F] mt-0.5 font-medium">
+                      {(scenarioGenericMetric - includedGenericMetric).toLocaleString()} excess → {fmt(periodGenericOvg, cur)}/{apiCallPeriodLabel}
+                    </p>
+                  )}
+                  {metricTiers.length > 0 && scenarioGenericMetric <= includedGenericMetric && includedGenericMetric > 0 && (
+                    <p className="text-[10px] text-stone/60 mt-0.5">Within included allowance</p>
+                  )}
+                </div>
+              )}
+
+              {/* If neither API nor generic metric tiers: show included units read-only */}
+              {!showApi && !showMetric && (terms.included_units ?? 0) > 0 && (
+                <div>
+                  <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">
+                    {terms.included_unit_type ?? 'Included units'} / {apiCallPeriodLabel}
+                  </label>
+                  <p className="text-sm font-medium text-ink">
+                    {(terms.included_units ?? 0).toLocaleString()} included
+                  </p>
+                  <p className="text-[10px] text-stone/60 mt-1">No overage tiers configured</p>
+                </div>
+              )}
+
+              {/* Escalator — per-year compound inputs (hidden when ramp_schedule encodes the rates) */}
+              {showEsc && <div>
+                <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">Price escalator</label>
+                <div className="flex items-center gap-3 mb-3">
+                  <button onClick={() => setApplyEscalator(v => !v)}
+                    className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0 ${applyEscalator ? 'bg-forest' : 'bg-stone/25'}`}>
+                    <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${applyEscalator ? 'left-4' : 'left-0.5'}`} />
+                  </button>
+                  <span className="text-xs text-stone">{applyEscalator ? 'On' : 'Off'}</span>
+                </div>
+                {applyEscalator && (
+                  <div className="space-y-2">
+                    {escPerYear.map((pct, yi) => (
+                      <div key={yi} className="flex items-center gap-1.5">
+                        {numEscYears > 1 && (
+                          <span className="text-[9px] text-stone/70 w-[52px] flex-shrink-0 leading-tight">
+                            Yr {yi + 1}→{yi + 2}
+                          </span>
                         )}
-                      </button>
-                    )}
+                        <input
+                          type="number" min={0} max={50} step={0.5} value={pct}
+                          onChange={e => {
+                            const v = e.target.value === '' ? 0 : Number(e.target.value)
+                            setEscPerYear(arr => arr.map((x, i) => i === yi ? v : x))
+                            if (yi === 0) setSaved(false)
+                          }}
+                          className="w-16 text-sm font-medium text-ink border border-forest/20 rounded-lg px-2 py-1.5 outline-none focus:border-forest"
+                        />
+                        <span className="text-xs text-stone">%</span>
+                        {yi === 0 && escIsDirty && (
+                          <button
+                            onClick={saveEscalatorCorrection}
+                            disabled={saving}
+                            title="Save as contract default"
+                            className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold rounded-lg transition-colors border disabled:opacity-50"
+                            style={saved
+                              ? { background: '#D4EAD9', borderColor: 'rgba(74,124,89,0.35)', color: '#1A3D2B' }
+                              : { background: '#F0F8F3', borderColor: 'rgba(26,61,43,0.25)', color: '#1A3D2B' }}
+                          >
+                            {saving ? (
+                              <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 10 }} />
+                            ) : saved ? (
+                              <><i className="ti ti-check" style={{ fontSize: 10 }} /> Saved</>
+                            ) : (
+                              <><i className="ti ti-check" style={{ fontSize: 10 }} /> Save</>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
-            {escalators[0]?.effective_date && (
-              <p className="text-[10px] text-stone mt-2">
-                From {shortMonthYear(parseLocalDate(escalators[0].effective_date))} · compound annual
-              </p>
-            )}
-            {applyEscalator && escPerYear.length > 1 && (
-              <p className="text-[10px] text-stone/60 mt-0.5">Each year builds on the previous</p>
-            )}
-          </div>}
-
-          {/* Discount */}
-          <div>
-            <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">Introductory discount</label>
-            <div className="flex items-center gap-3 mb-3">
-              <button onClick={() => setApplyDiscount(v => !v)}
-                className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0 ${applyDiscount ? 'bg-forest' : 'bg-stone/25'}`}>
-                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${applyDiscount ? 'left-4' : 'left-0.5'}`} />
-              </button>
-              <span className="text-xs text-stone">{applyDiscount ? 'On' : 'Off'}</span>
-            </div>
-            {discounts.map((d, i) => (
-              <p key={i} className="text-[10px] text-stone">
-                {d.discount_pct}% off
-                {d.start_date && d.end_date && (
-                  <> &middot; {shortMonthYear(parseLocalDate(d.start_date))} – {shortMonthYear(parseLocalDate(d.end_date))}</>
                 )}
-              </p>
-            ))}
-          </div>
-        </div>
+                {escalators[0]?.effective_date && (
+                  <p className="text-[10px] text-stone mt-2">
+                    From {shortMonthYear(parseLocalDate(escalators[0].effective_date))} · compound annual
+                  </p>
+                )}
+                {applyEscalator && escPerYear.length > 1 && (
+                  <p className="text-[10px] text-stone/60 mt-0.5">Each year builds on the previous</p>
+                )}
+              </div>}
+
+              {/* Discount */}
+              {showDisc && (
+                <div>
+                  <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">Introductory discount</label>
+                  <div className="flex items-center gap-3 mb-3">
+                    <button onClick={() => setApplyDiscount(v => !v)}
+                      className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0 ${applyDiscount ? 'bg-forest' : 'bg-stone/25'}`}>
+                      <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${applyDiscount ? 'left-4' : 'left-0.5'}`} />
+                    </button>
+                    <span className="text-xs text-stone">{applyDiscount ? 'On' : 'Off'}</span>
+                  </div>
+                  {discounts.map((d, i) => (
+                    <p key={i} className="text-[10px] text-stone">
+                      {d.discount_pct}% off
+                      {d.start_date && d.end_date && (
+                        <> &middot; {shortMonthYear(parseLocalDate(d.start_date))} – {shortMonthYear(parseLocalDate(d.end_date))}</>
+                      )}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })()}
       </div>
 
       {/* ── Contract timeline ──────────────────────────────────────────── */}
@@ -932,8 +1004,9 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
               { color: '#27AE60', label: 'Base rate' },
               { color: '#1F7A4A', label: 'Escalated' },
               ...(userTiers.length > 0 ? [{ color: '#4A7C59', label: 'User overage' }] : []),
-              ...(apiTiers.length  > 0 ? [{ color: '#52C48A', label: 'API overage (scenario)'  }] : []),
-              ...(actualOvgByMonth.size > 0 ? [{ color: '#0B5C36', label: 'API overage - Actual billed' }] : []),
+              ...(apiTiers.length  > 0 ? [{ color: '#52C48A', label: 'API overage (scenario)' }] : []),
+              ...(metricTiers.length > 0 ? [{ color: '#52C48A', label: `${genericMetricLabel ?? 'Usage'} overage (scenario)` }] : []),
+              ...(actualOvgByMonth.size > 0 ? [{ color: '#0B5C36', label: 'Actual billed overage' }] : []),
               ...(creditByMonth.size > 0 ? [{ color: '#B45309', label: 'Credit applied' }] : []),
             ].map(li => (
               <div key={li.label} className="flex items-center gap-1.5">
@@ -1103,8 +1176,8 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
       </div>
 
       {/* ── KPI cards ─────────────────────────────────────────────────── */}
-      <div className={`grid gap-4 ${creditTotal < 0 ? 'grid-cols-5' : 'grid-cols-4'}`}>
-        {[
+      {(() => {
+        const kpiCards = [
           {
             label: 'Base TCV',
             value: totalSub + oneTimeFees,
@@ -1118,18 +1191,24 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
             color: '#B45309',
             isCredit: true,
           }] : []),
-          {
+          ...(userTiers.length > 0 ? [{
             label: 'User overage',
             value: totalUserOvg,
             sub: `${Math.max(0, scenarioUsers - includedUsers)} extra users × ${n} mo`,
             color: '#4A7C59',
-          },
-          {
+          }] : []),
+          ...(apiTiers.length > 0 ? [{
             label: 'API overage',
             value: totalApiOvg,
             sub: `${scenarioApiCalls.toLocaleString()} calls/${apiCallPeriodLabel} · ${includedApiCalls > 0 ? `${includedApiCalls.toLocaleString()} included` : 'no allowance'}`,
             color: '#B9802F',
-          },
+          }] : []),
+          ...(metricTiers.length > 0 ? [{
+            label: `${genericMetricLabel ?? 'Usage'} overage`,
+            value: totalGenericOvg,
+            sub: `${scenarioGenericMetric.toLocaleString()} / ${apiCallPeriodLabel} · ${includedGenericMetric > 0 ? `${includedGenericMetric.toLocaleString()} included` : 'no allowance'}`,
+            color: '#B9802F',
+          }] : []),
           {
             label: 'Total TCV',
             value: totalTcv,
@@ -1137,22 +1216,27 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
             color: '#1A3D2B',
             bold: true,
           },
-        ].map(c => (
-          <div key={c.label}
-            className="bg-white border rounded-2xl p-5"
-            style={{ borderColor: c.isCredit ? 'rgba(180,83,9,0.2)' : 'rgba(26,61,43,0.1)', background: c.isCredit ? '#FFFBEB' : 'white' }}>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] mb-2"
-              style={{ color: c.isCredit ? '#B45309' : '#6B6660' }}>
-              {c.label}
-            </p>
-            <p className={`${c.bold ? 'text-[28px]' : 'text-2xl'} font-medium leading-none`}
-              style={{ color: c.color, fontVariantNumeric: 'tabular-nums' }}>
-              {fmt(c.value, cur)}
-            </p>
-            <p className="text-[10px] mt-1.5" style={{ color: c.isCredit ? '#B45309' : '#6B6660' }}>{c.sub}</p>
+        ] as { label: string; value: number; sub: string; color: string; isCredit?: boolean; bold?: boolean }[]
+        return (
+          <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${kpiCards.length}, minmax(0, 1fr))` }}>
+            {kpiCards.map(c => (
+              <div key={c.label}
+                className="bg-white border rounded-2xl p-5"
+                style={{ borderColor: c.isCredit ? 'rgba(180,83,9,0.2)' : 'rgba(26,61,43,0.1)', background: c.isCredit ? '#FFFBEB' : 'white' }}>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] mb-2"
+                  style={{ color: c.isCredit ? '#B45309' : '#6B6660' }}>
+                  {c.label}
+                </p>
+                <p className={`${c.bold ? 'text-[28px]' : 'text-2xl'} font-medium leading-none`}
+                  style={{ color: c.color, fontVariantNumeric: 'tabular-nums' }}>
+                  {fmt(c.value, cur)}
+                </p>
+                <p className="text-[10px] mt-1.5" style={{ color: c.isCredit ? '#B45309' : '#6B6660' }}>{c.sub}</p>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        )
+      })()}
 
       {/* ── Configured billing schedule ───────────────────────────────── */}
       {billingLoading && (

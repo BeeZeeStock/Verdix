@@ -59,7 +59,7 @@ type Job = {
 
 function fmt(n: number | null | undefined, cur = 'EUR') {
   if (n == null) return '—'
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, maximumFractionDigits: 0 }).format(n)
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
 }
 
 // For per-unit rates which are often fractional (e.g. €0.05, €0.035).
@@ -2456,8 +2456,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                               )}
                             </td>
                             <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{item.quantity}</td>
-                            <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtUnit(item.unit_price, cur)}</td>
-                            <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(item.total_amount, cur)}</td>
+                            <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                              {classifyItem(item) === 'escalator'
+                                ? <span>{item.unit_price != null ? `${item.unit_price}%` : '—'}</span>
+                                : fmtUnit(item.unit_price, cur)}
+                            </td>
+                            <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                              {classifyItem(item) === 'escalator'
+                                ? <span>{item.total_amount != null ? `${item.total_amount}%` : '—'}</span>
+                                : fmt(item.total_amount, cur)}
+                            </td>
                             <td className="py-2.5 text-[11px] text-stone text-right capitalize">{item.billing_period}</td>
                           </tr>
                         ))}

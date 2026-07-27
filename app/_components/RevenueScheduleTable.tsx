@@ -36,7 +36,7 @@ function fmt(n: number, cur = 'EUR', compact = false): string {
     if (Math.abs(n) >= 1_000)     return `${sym}${(n / 1_000).toFixed(1)}k`
     return `${sym}${n.toFixed(0)}`
   }
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, maximumFractionDigits: 0 }).format(n)
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
 }
 
 function smy(d: Date): string {

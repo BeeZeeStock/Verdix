@@ -57,7 +57,7 @@ type Summary = {
 }
 
 function fmt(n: number, cur = 'EUR') {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, maximumFractionDigits: 0 }).format(n)
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
 }
 
 function fmtDate(iso: string | null | undefined, opts?: Intl.DateTimeFormatOptions) {
@@ -299,111 +299,143 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         </div>
       )}
 
-      {/* One-time fee invoices (standalone, created at push time) */}
-      {(oneTimeInvoices.length > 0 || oneTimeFees.length > 0) && (
-        <div className="px-6 py-5" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-          <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-3">
-            One-time fee invoices
-            <span className="ml-2 font-normal normal-case text-stone/60">separate invoices per milestone</span>
-          </p>
-          {oneTimeInvoices.length > 0 ? (
-            <table className="w-full">
-              <thead>
-                <tr>
-                  {['Description', 'Amount', 'Due date', 'Invoice', 'Status', ''].map((h, i) => (
-                    <th key={i} className="text-[10px] font-semibold text-stone/60 tracking-[0.09em] pb-2"
-                      style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: i === 1 ? 'right' : 'left', paddingRight: i < 5 ? 16 : 0 }}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {oneTimeInvoices.map(inv => (
-                  <tr key={inv.id} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                    <td className="py-2.5 pr-4 text-[12px] text-ink">{inv.feeLabel ?? inv.number ?? '—'}</td>
-                    <td className="py-2.5 pr-4 text-[13px] font-semibold text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                      {fmt(inv.amount, inv.currency)}
-                    </td>
-                    <td className="py-2.5 pr-4 text-[12px] text-stone">{fmtDate(inv.dueDate)}</td>
-                    <td className="py-2.5 pr-4 text-[11px] font-mono text-stone">{inv.number ?? inv.id.slice(0, 14)}</td>
-                    <td className="py-2.5 pr-4"><StatusPill status={inv.status} /></td>
-                    <td className="py-2.5 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        {inv.hostedUrl && (
-                          <a href={inv.hostedUrl} target="_blank" rel="noreferrer"
-                            className="text-[11px] font-semibold text-forest hover:text-sage transition-colors">
-                            View
-                          </a>
-                        )}
-                        {inv.pdfUrl && (
-                          <a href={inv.pdfUrl} target="_blank" rel="noreferrer"
-                            className="text-stone/50 hover:text-stone transition-colors" title="Download PDF">
-                            <i className="ti ti-file-download" style={{ fontSize: 12 }} />
-                          </a>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div className="rounded-xl px-4 py-3 text-[12px] text-amber-800" style={{ background: '#FFFBEB', border: '1px solid #FCD34D' }}>
-              {oneTimeFees.length} one-time fee{oneTimeFees.length > 1 ? 's' : ''} in contract
-              ({oneTimeFees.map(f => f.fee_label).join(', ')}) — invoices will be created in Stripe when you re-push this contract.
-            </div>
-          )}
-        </div>
-      )}
+      {/* ── Billing timeline ─────────────────────────────────────── */}
+      {(() => {
+        // Merge all invoices (subscription + one-time) into a unified chronological timeline
+        type TLEntry = {
+          id: string; label: string; subLabel?: string; date: Date; amount: number; currency: string
+          status: string | null; hostedUrl?: string | null; pdfUrl?: string | null; kind: 'subscription' | 'one-time' | 'pending-setup'
+        }
+        const entries: TLEntry[] = []
 
-      {/* Invoice history */}
-      {invoices.length > 0 && (
-        <div className="px-6 py-5">
-          <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-3">Invoice history</p>
-          <table className="w-full">
-            <thead>
-              <tr>
-                {['Invoice', 'Created', 'Due', 'Amount', 'Status', ''].map((h, i) => (
-                  <th key={i} className="text-[10px] font-semibold text-stone/60 tracking-[0.09em] pb-2"
-                    style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: i === 3 ? 'right' : 'left', paddingRight: i < 5 ? 16 : 0 }}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {invoices.map(inv => (
-                <tr key={inv.id} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                  <td className="py-2.5 pr-4 text-[11px] font-mono text-stone">{inv.number ?? inv.id.slice(0, 12)}</td>
-                  <td className="py-2.5 pr-4 text-[12px] text-stone">{fmtDate(inv.created)}</td>
-                  <td className="py-2.5 pr-4 text-[12px] text-stone">{fmtDate(inv.dueDate)}</td>
-                  <td className="py-2.5 pr-4 text-[13px] font-semibold text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                    {fmt(inv.amount, inv.currency)}
-                  </td>
-                  <td className="py-2.5 pr-4"><StatusPill status={inv.status} /></td>
-                  <td className="py-2.5 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      {inv.hostedUrl && (
-                        <a href={inv.hostedUrl} target="_blank" rel="noreferrer"
-                          className="text-[11px] font-semibold text-forest hover:text-sage transition-colors">
-                          View
-                        </a>
-                      )}
-                      {inv.pdfUrl && (
-                        <a href={inv.pdfUrl} target="_blank" rel="noreferrer"
-                          className="text-stone/50 hover:text-stone transition-colors" title="Download PDF">
-                          <i className="ti ti-file-download" style={{ fontSize: 12 }} />
-                        </a>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+        // One-time fee invoices that exist in Stripe
+        for (const inv of oneTimeInvoices) {
+          const d = inv.dueDate ?? inv.created
+          entries.push({
+            id: inv.id, label: inv.feeLabel ?? inv.number ?? 'One-time fee',
+            date: new Date(d), amount: inv.amount, currency: inv.currency,
+            status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'one-time',
+          })
+        }
+
+        // Subscription invoices (recurring)
+        for (const inv of invoices) {
+          const d = inv.dueDate ?? inv.created
+          entries.push({
+            id: inv.id, label: inv.number ?? inv.id.slice(0, 14),
+            subLabel: 'Subscription',
+            date: new Date(d), amount: inv.amount, currency: inv.currency,
+            status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'subscription',
+          })
+        }
+
+        // One-time fees not yet in Stripe (pending setup)
+        if (oneTimeInvoices.length === 0 && oneTimeFees.length > 0) {
+          for (const fee of oneTimeFees) {
+            entries.push({
+              id: `pending-${fee.fee_label}`, label: fee.fee_label,
+              date: fee.due_date ? new Date(fee.due_date) : new Date(),
+              amount: fee.amount, currency: currency,
+              status: 'pending', kind: 'pending-setup',
+            })
+          }
+        }
+
+        if (entries.length === 0) return null
+
+        // Sort chronologically
+        entries.sort((a, b) => a.date.getTime() - b.date.getTime())
+
+        const today = new Date()
+        const todayTs = today.getTime()
+
+        const pastEntries   = entries.filter(e => e.date.getTime() < todayTs)
+        const futureEntries = entries.filter(e => e.date.getTime() >= todayTs)
+
+        const dotColor = (status: string | null) => {
+          if (status === 'paid')    return '#27AE60'
+          if (status === 'open')    return '#D97706'
+          if (status === 'draft')   return '#6B9FD4'
+          if (status === 'pending') return '#9CA3AF'
+          return '#9CA3AF'
+        }
+
+        const renderEntry = (e: TLEntry, isPast: boolean) => (
+          <div key={e.id} className="flex gap-4 group">
+            {/* Dot */}
+            <div className="flex flex-col items-center flex-shrink-0" style={{ width: 20 }}>
+              <div className="w-3 h-3 rounded-full border-2 border-white flex-shrink-0 mt-0.5"
+                style={{ background: dotColor(e.status), boxShadow: `0 0 0 2px ${dotColor(e.status)}40` }} />
+              <div className="flex-1 w-px mt-1" style={{ background: isPast ? 'rgba(26,61,43,0.12)' : 'rgba(26,61,43,0.06)', minHeight: 12 }} />
+            </div>
+
+            {/* Content */}
+            <div className="pb-4 flex-1 min-w-0">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className={`text-[12px] font-medium leading-tight ${isPast ? 'text-ink' : 'text-ink/80'}`}>{e.label}</p>
+                  {e.subLabel && <p className="text-[10px] text-stone/60 mt-0.5">{e.subLabel}</p>}
+                  <p className="text-[10px] text-stone mt-0.5">{e.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="text-[13px] font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    {fmt(e.amount, e.currency)}
+                  </span>
+                  <StatusPill status={e.status} />
+                  {e.hostedUrl && (
+                    <a href={e.hostedUrl} target="_blank" rel="noreferrer"
+                      className="text-[11px] font-semibold text-forest hover:text-sage transition-colors">
+                      View
+                    </a>
+                  )}
+                  {e.pdfUrl && (
+                    <a href={e.pdfUrl} target="_blank" rel="noreferrer"
+                      className="text-stone/40 hover:text-stone transition-colors" title="Download PDF">
+                      <i className="ti ti-file-download" style={{ fontSize: 11 }} />
+                    </a>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+
+        return (
+          <div className="px-6 py-5">
+            <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-4">Billing timeline</p>
+
+            {/* One-time fee pending-setup notice */}
+            {oneTimeInvoices.length === 0 && oneTimeFees.length > 0 && (
+              <div className="rounded-xl px-4 py-3 text-[12px] text-amber-800 mb-4" style={{ background: '#FFFBEB', border: '1px solid #FCD34D' }}>
+                {oneTimeFees.length} one-time fee{oneTimeFees.length > 1 ? 's' : ''} ({oneTimeFees.map(f => f.fee_label).join(', ')}) — invoices will be created in Stripe when you re-push this contract.
+              </div>
+            )}
+
+            <div>
+              {/* Past invoices */}
+              {pastEntries.map(e => renderEntry(e, true))}
+
+              {/* Today marker */}
+              <div className="flex gap-4 my-1">
+                <div className="flex flex-col items-center flex-shrink-0" style={{ width: 20 }}>
+                  <div className="w-3.5 h-3.5 rounded-full flex-shrink-0 flex items-center justify-center mt-0.5"
+                    style={{ background: '#1A3D2B' }}>
+                    <div className="w-1.5 h-1.5 rounded-full bg-white" />
+                  </div>
+                  {futureEntries.length > 0 && <div className="flex-1 w-px mt-1" style={{ background: 'rgba(26,61,43,0.06)', minHeight: 12 }} />}
+                </div>
+                <div className="pb-4">
+                  <p className="text-[10px] font-bold text-[#1A3D2B] uppercase tracking-widest leading-tight mt-0.5">Today</p>
+                  <p className="text-[10px] text-stone/60">{today.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+                </div>
+              </div>
+
+              {/* Upcoming invoices */}
+              {futureEntries.map(e => renderEntry(e, false))}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Footer link */}
       <div className="px-6 py-3 flex items-center justify-between" style={{ background: 'rgba(26,61,43,0.03)', borderTop: '1px solid rgba(26,61,43,0.07)' }}>
