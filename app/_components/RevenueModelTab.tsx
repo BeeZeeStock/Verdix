@@ -1494,19 +1494,28 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
 
       {/* ── Revenue actuals ───────────────────────────────────────────── */}
       {projectedTcv > 0 && (() => {
-        // Aggregate all billed amounts into a single "Billed to date" bar.
-        const totalBilled = baseBilledToDate + actualOvgTotal + oneTimeFees
+        // "Billed to date" must only count invoices that have actually been issued
+        // (status open or paid in Stripe), not contract-planned amounts.
+        const isIssued = (s: string | null | undefined) => s === 'open' || s === 'paid'
+        const actualSubBilled = (billingData?.invoices ?? [])
+          .filter(inv => isIssued(inv.status))
+          .reduce((s, inv) => s + inv.amount, 0)
+        const actualOneTimeBilled = (billingData?.oneTimeInvoices ?? [])
+          .filter(inv => isIssued(inv.status))
+          .reduce((s, inv) => s + inv.amount, 0)
+        const totalBilled = actualSubBilled + actualOvgTotal + actualOneTimeBilled
         const elapsedMonths = modelMonths.filter(m => m.isPast).length
+        const actualsRemaining = Math.max(0, totalTcv - totalBilled)
         type ABar = { label: string; sub?: string; amount: number; kind: 'segment' | 'total'; color: string; dashed?: boolean }
         const aBars: ABar[] = [
-          { label: 'Billed to date', sub: `${elapsedMonths} mo elapsed`, amount: totalBilled, kind: 'segment', color: '#27AE60' },
-          { label: 'Remaining', sub: 'contracted ARR', amount: remaining, kind: 'segment', color: '#C8E6D4', dashed: true },
-          { label: 'TCV projected', amount: projectedTcv, kind: 'total', color: '#1A3D2B' },
+          { label: 'Billed to date', sub: elapsedMonths > 0 ? `${elapsedMonths} mo elapsed` : undefined, amount: totalBilled, kind: 'segment', color: '#27AE60' },
+          { label: 'Remaining', sub: 'contracted', amount: actualsRemaining, kind: 'segment', color: '#C8E6D4', dashed: true },
+          { label: 'TCV projected', amount: totalTcv, kind: 'total', color: '#1A3D2B' },
         ]
         let cum = 0
         const aPos = aBars.map(b => {
           const from = b.kind === 'total' ? 0 : cum
-          const to   = b.kind === 'total' ? projectedTcv : cum + b.amount
+          const to   = b.kind === 'total' ? totalTcv : cum + b.amount
           if (b.kind !== 'total') cum = to
           return { ...b, from, to }
         })
@@ -1518,7 +1527,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         const aGap = 24
         const aBW  = Math.min(140, (aw - aGap * (aN - 1)) / aN)
         const aStartX = ax1 + (aw - (aBW * aN + aGap * (aN - 1))) / 2
-        const aScale  = projectedTcv > 0 ? projectedTcv : 1
+        const aScale  = totalTcv > 0 ? totalTcv : 1
         const ayOf    = (v: number) => aBot - (v / aScale) * aPlotH
         const aGrid   = [0, 0.5, 1].map(f => f * aScale)
 

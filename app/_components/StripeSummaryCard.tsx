@@ -323,9 +323,6 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
                       </a>
                     )}
                   </div>
-                  {effectiveStatus === 'draft' && (
-                    <p className="text-[10px] text-stone/50 text-right">Adjusts for actual usage at period end</p>
-                  )}
                 </div>
               </div>
             </div>
