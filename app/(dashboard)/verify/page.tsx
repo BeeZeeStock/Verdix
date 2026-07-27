@@ -46,8 +46,8 @@ export default async function VerifyListPage() {
           <h1 className="font-display font-light text-ink text-2xl mb-1">Billing checks</h1>
           <p className="text-stone text-sm">Verify your billing matches your signed contracts</p>
         </div>
-        <Link href="/verify/new" className="flex items-center gap-2 bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors shadow-sm self-start sm:self-auto">
-          <i className="ti ti-plus" style={{ fontSize: 14 }} /> New verification
+        <Link href="/verify/new" className="flex items-center gap-2 text-forest text-sm font-medium hover:opacity-70 transition-opacity self-start sm:self-auto">
+          <i className="ti ti-file-search" style={{ fontSize: 16 }} /> New verification
         </Link>
       </div>
 
