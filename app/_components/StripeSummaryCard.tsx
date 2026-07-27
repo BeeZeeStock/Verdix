@@ -167,7 +167,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
 
   if (!summary) return null
 
-  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency, paymentTermsDays } = summary
+  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency, paymentTermsDays, contractStart } = summary
 
   const now = new Date()
   const currentYearNum = paymentSchedule?.find(y => {
@@ -253,19 +253,16 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
                       )}
                     </td>
                     <td className="py-2.5 pr-6 text-[12px] text-stone">
-                      {displayInvoice
-                        ? <span>
-                            <span className="text-stone/50 text-[10px] mr-1">
-                              {displayInvoice.status === 'draft' ? 'Expected' : 'Issued'}
-                            </span>
-                            {fmtDate(displayInvoice.status === 'draft'
-                              ? (displayInvoice.periodEnd ?? displayInvoice.created)
-                              : displayInvoice.created)}
+                      {y.periodStart ? (
+                        <>
+                          <span className="text-stone/50 text-[10px] mr-1">
+                            {(displayInvoice?.status === 'paid' || displayInvoice?.status === 'open')
+                              && new Date(y.periodStart) <= new Date()
+                              ? 'Issued' : 'Will be issued'}
                           </span>
-                        : <span className="text-stone/40">
-                            {y.periodStart ? <><span className="text-stone/30 text-[10px] mr-1">Scheduled</span>{fmtDate(y.periodStart)}</> : '—'}
-                          </span>
-                      }
+                          {fmtDate(y.periodStart)}
+                        </>
+                      ) : '—'}
                     </td>
                     <td className="py-2.5 pr-6 text-[13px] font-semibold text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
                       {fmt(y.amount, y.currency)}
@@ -303,60 +300,56 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
           status: string | null; hostedUrl?: string | null; pdfUrl?: string | null; kind: 'subscription' | 'one-time' | 'pending-setup'
         }
         const entries: TLEntry[] = []
-        const netDays = paymentTermsDays ?? 30
 
-        // One-time fee invoices that exist in Stripe — date is when the invoice
-        // was issued (created). Already-issued invoices appear in the past section.
-        for (const inv of oneTimeInvoices) {
-          entries.push({
-            id: inv.id, label: inv.feeLabel ?? 'One-time fee',
-            dateLabel: 'Issued',
-            date: new Date(inv.created), amount: inv.amount, currency: inv.currency,
-            status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'one-time',
-          })
-        }
+        // Helper: parse a contract date string as local midnight
+        const contractDate = (iso: string | null | undefined): Date | null =>
+          iso ? new Date(iso + 'T00:00:00') : null
 
-        // Subscription invoices — issued invoices use creation date; drafts use
-        // period_end as the expected issue date. If period_end is today or past
-        // (the current period is renewing right now), add one billing interval to
-        // show the *next* upcoming subscription event instead of "today".
-        const addInterval = (d: Date) => {
-          const next = new Date(d)
-          if (sub.interval === 'month') next.setMonth(next.getMonth() + sub.intervalCount)
-          else if (sub.interval === 'year') next.setFullYear(next.getFullYear() + sub.intervalCount)
-          else if (sub.interval === 'week') next.setDate(next.getDate() + sub.intervalCount * 7)
-          else next.setDate(next.getDate() + sub.intervalCount)
-          return next
-        }
-        for (const inv of invoices) {
-          const isDraft = inv.status === 'draft'
-          let date: Date
-          if (isDraft && inv.periodEnd) {
-            const periodEnd = new Date(inv.periodEnd)
-            // If the current period ends today or is already past, the subscription
-            // is renewing now — advance by one interval to show the next event.
-            date = periodEnd <= new Date() ? addInterval(periodEnd) : periodEnd
-          } else {
-            date = new Date(inv.created)
-          }
+        // Helper: planned issue date label — "Issued" only if the planned date is
+        // in the past (the billing event has already occurred per the schedule).
+        const dateLabel = (planned: Date) => planned <= new Date() ? 'Issued' : 'Will be issued'
+
+        // Subscription invoices — date comes from the payment schedule (contract),
+        // not from when Verdix pushed the draft to Stripe.
+        for (let i = 0; i < invoices.length; i++) {
+          const inv = invoices[i]
+          // Year N planned issue date = contract start + (N-1) billing intervals
+          const planned = contractDate(paymentSchedule?.[i]?.periodStart)
+            ?? contractDate(contractStart)
+            ?? new Date(inv.created)
           entries.push({
             id: inv.id, label: 'Subscription',
-            dateLabel: isDraft ? 'Will be issued' : 'Issued',
-            date, amount: inv.amount, currency: inv.currency,
+            dateLabel: dateLabel(planned), date: planned,
+            amount: inv.amount, currency: inv.currency,
             status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'subscription',
           })
         }
 
-        // One-time fees not yet pushed to Stripe — date is approximate issue date
+        // One-time fee invoices in Stripe — date from contract fee's due_date,
+        // or contract start if no fee-specific date is set.
+        for (const inv of oneTimeInvoices) {
+          const matchingFee = oneTimeFees.find(f => f.fee_label === inv.feeLabel)
+          const planned = contractDate(matchingFee?.due_date)
+            ?? contractDate(contractStart)
+            ?? new Date(inv.created)
+          entries.push({
+            id: inv.id, label: inv.feeLabel ?? 'One-time fee',
+            dateLabel: dateLabel(planned), date: planned,
+            amount: inv.amount, currency: inv.currency,
+            status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'one-time',
+          })
+        }
+
+        // One-time fees not yet in Stripe — date from contract fee or contract start
         if (oneTimeInvoices.length === 0 && oneTimeFees.length > 0) {
           for (const fee of oneTimeFees) {
-            const issueDate = fee.due_date && new Date(fee.due_date) > new Date()
-              ? new Date(fee.due_date)
-              : new Date()
+            const planned = contractDate(fee.due_date)
+              ?? contractDate(contractStart)
+              ?? new Date()
             entries.push({
               id: `pending-${fee.fee_label}`, label: fee.fee_label,
-              dateLabel: 'Will be issued',
-              date: issueDate, amount: fee.amount, currency: currency,
+              dateLabel: 'Will be issued', date: planned,
+              amount: fee.amount, currency,
               status: 'pending', kind: 'pending-setup',
             })
           }
@@ -369,11 +362,11 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
 
         const today = new Date()
 
-        // Draft/pending invoices haven't been sent yet — always in the future section.
-        // Sent invoices (open/paid) split on whether their date is before today.
-        const isUnsent = (e: TLEntry) => e.status === 'draft' || e.status === 'pending'
-        const pastEntries   = entries.filter(e => !isUnsent(e) && e.date <= today)
-        const futureEntries = entries.filter(e =>  isUnsent(e) || e.date > today)
+        // Split purely on the contract-planned date, not Stripe status.
+        // A contract date in the past means the billing event was due to be issued;
+        // future means it hasn't yet been scheduled to occur.
+        const pastEntries   = entries.filter(e => e.date <= today)
+        const futureEntries = entries.filter(e => e.date >  today)
 
         const dotColor = (status: string | null) => {
           if (status === 'paid')    return '#27AE60'
