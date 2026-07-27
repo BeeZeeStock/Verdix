@@ -1006,7 +1006,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
               { color: '#1F7A4A', label: 'Escalated' },
               ...(userTiers.length > 0 ? [{ color: '#4A7C59', label: 'User overage' }] : []),
               ...(apiTiers.length  > 0 ? [{ color: '#52C48A', label: 'API overage (scenario)' }] : []),
-              ...(metricTiers.length > 0 ? [{ color: '#6366F1', label: `${genericMetricLabel ?? 'Usage'} overage (scenario)` }] : []),
+              ...(metricTiers.length > 0 ? [{ color: '#3DAA7F', label: `${genericMetricLabel ?? 'Usage'} overage (scenario)` }] : []),
               ...(actualOvgByMonth.size > 0 ? [{ color: '#0B5C36', label: 'Actual billed overage' }] : []),
               ...(creditByMonth.size > 0 ? [{ color: '#B45309', label: 'Credit applied' }] : []),
             ].map(li => (
@@ -1202,13 +1202,13 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
             label: 'API overage',
             value: totalApiOvg,
             sub: `${scenarioApiCalls.toLocaleString()} calls/${apiCallPeriodLabel} · ${includedApiCalls > 0 ? `${includedApiCalls.toLocaleString()} included` : 'no allowance'}`,
-            color: '#B9802F',
+            color: '#52C48A',
           }] : []),
           ...(metricTiers.length > 0 ? [{
             label: `${genericMetricLabel ?? 'Usage'} overage`,
             value: totalGenericOvg,
             sub: `${scenarioGenericMetric.toLocaleString()} / ${apiCallPeriodLabel} · ${includedGenericMetric > 0 ? `${includedGenericMetric.toLocaleString()} included` : 'no allowance'}`,
-            color: '#6366F1',
+            color: '#3DAA7F',
           }] : []),
           {
             label: 'Total TCV',
@@ -1305,7 +1305,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
 
         const truncate = (s: string, max = 14) => s.length > max ? s.slice(0, max - 1) + '…' : s
         const statusColor = (s: string) =>
-          s === 'paid' ? '#27AE60' : s === 'open' ? '#D97706' : '#6B9FD4'
+          s === 'paid' ? '#27AE60' : s === 'open' ? '#D97706' : '#9CA3AF'
         const statusLabel = (s: string) =>
           s === 'paid' ? 'Paid' : s === 'open' ? 'Issued' : 'Draft'
 
@@ -1354,7 +1354,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
                 <div className="flex items-center gap-2 text-[10px] text-stone/60">
                   <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Paid
                   <span className="inline-block w-2 h-2 rounded-sm ml-1" style={{ background: '#D97706' }} /> Issued
-                  <span className="inline-block w-2 h-2 rounded-sm ml-1" style={{ background: '#6B9FD4' }} /> Draft
+                  <span className="inline-block w-2 h-2 rounded-sm ml-1" style={{ background: '#9CA3AF' }} /> Draft
                 </div>
                 {billingData.subscription.dashboardUrl && (
                   <a href={billingData.subscription.dashboardUrl} target="_blank" rel="noopener noreferrer"

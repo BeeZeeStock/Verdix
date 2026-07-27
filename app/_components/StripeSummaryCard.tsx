@@ -371,7 +371,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         const dotColor = (status: string | null) => {
           if (status === 'paid')    return '#27AE60'
           if (status === 'open')    return '#D97706'
-          if (status === 'draft')   return '#6B9FD4'
+          if (status === 'draft')   return '#9CA3AF'
           if (status === 'pending') return '#9CA3AF'
           return '#9CA3AF'
         }
