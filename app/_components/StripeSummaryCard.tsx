@@ -85,7 +85,7 @@ function StatusPill({ status }: { status: string | null }) {
     open:     { bg: '#FEF3C7', color: '#92400E', label: 'Awaiting payment' },
     paid:     { bg: '#D4EAD9', color: '#1A3D2B', label: 'Paid' },
     void:     { bg: '#F3F4F6', color: '#6B7280', label: 'Void' },
-    draft:    { bg: '#EFF6FF', color: '#1E40AF', label: 'Estimated' },
+    draft:    { bg: '#F3F4F6', color: '#6B7280', label: 'Draft' },
     uncollectible: { bg: '#FEE2E2', color: '#991B1B', label: 'Uncollectible' },
     past_due: { bg: '#FEE2E2', color: '#991B1B', label: 'Past due' },
     canceled: { bg: '#F3F4F6', color: '#6B7280', label: 'Canceled' },
