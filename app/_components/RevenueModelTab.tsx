@@ -35,6 +35,7 @@ type StripeBillingData = {
   oneTimeInvoices: BillingInv[]
   paymentSchedule: { year: number; amount: number; currency: string; periodStart: string | null; periodEnd: string | null }[] | null
   oneTimeFees: { fee_label: string; amount: number; due_date?: string | null }[]
+  contractStart: string | null
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1258,32 +1259,43 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         }
         const rawEvents: BillingEvent[] = []
 
+        // Resolve contract-planned issue date for a given year (1-indexed).
+        // Falls back through scheduledDate → contractStart → created.
+        const scheduleDate = (yearNum: number | null | undefined, inv: BillingInv): Date => {
+          const ps = billingData.paymentSchedule?.find(p => p.year === yearNum)
+          if (ps?.periodStart) return parseLocalDate(ps.periodStart)
+          if (billingData.contractStart) return parseLocalDate(billingData.contractStart)
+          return new Date(inv.created)
+        }
+
         const sortedDrafts = [...billingData.annualDraftInvoices].sort((a, b) => (a.yearNum ?? 0) - (b.yearNum ?? 0))
         const hasYear1Draft = sortedDrafts.some(inv => inv.yearNum === 1)
 
         if (hasYear1Draft) {
           // Finite monthly contracts: all years from annual commitment drafts
           for (const inv of sortedDrafts) {
-            const d = inv.scheduledDate ?? inv.dueDate ?? inv.created
-            rawEvents.push({ label: `Year ${inv.yearNum}`, date: new Date(d), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
+            rawEvents.push({ label: `Year ${inv.yearNum}`, date: scheduleDate(inv.yearNum, inv), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
           }
         } else {
           // Legacy (annual billing): Year 1 from first subscription invoice, Year 2+ from drafts
           const firstInv = billingData.invoices[0]
           if (firstInv) {
-            const d = firstInv.dueDate ?? firstInv.scheduledDate ?? firstInv.created
-            rawEvents.push({ label: 'Year 1', date: new Date(d), amount: firstInv.amount, currency: firstInv.currency, status: firstInv.status ?? 'unknown', hostedUrl: firstInv.hostedUrl })
+            rawEvents.push({ label: 'Year 1', date: scheduleDate(1, firstInv), amount: firstInv.amount, currency: firstInv.currency, status: firstInv.status ?? 'unknown', hostedUrl: firstInv.hostedUrl })
           }
           for (const inv of sortedDrafts) {
-            const d = inv.scheduledDate ?? inv.dueDate ?? inv.created
-            rawEvents.push({ label: `Year ${inv.yearNum}`, date: new Date(d), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
+            rawEvents.push({ label: `Year ${inv.yearNum}`, date: scheduleDate(inv.yearNum, inv), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
           }
         }
 
-        // One-time fees — sorted by date, interleaved chronologically
+        // One-time fees — use contract fee's due_date (= planned issue date), not Stripe due_date
         for (const inv of billingData.oneTimeInvoices) {
-          const d = inv.dueDate ?? inv.created
-          rawEvents.push({ label: inv.feeLabel ?? 'One-time fee', date: new Date(d), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'unknown', hostedUrl: inv.hostedUrl })
+          const contractFee = billingData.oneTimeFees.find(f => f.fee_label === inv.feeLabel)
+          const d = contractFee?.due_date
+            ? parseLocalDate(contractFee.due_date)
+            : billingData.contractStart
+              ? parseLocalDate(billingData.contractStart)
+              : new Date(inv.created)
+          rawEvents.push({ label: inv.feeLabel ?? 'One-time fee', date: d, amount: inv.amount, currency: inv.currency, status: inv.status ?? 'unknown', hostedUrl: inv.hostedUrl })
         }
 
         if (rawEvents.length === 0) return null
@@ -1295,7 +1307,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         const statusColor = (s: string) =>
           s === 'paid' ? '#27AE60' : s === 'open' ? '#D97706' : '#6B9FD4'
         const statusLabel = (s: string) =>
-          s === 'paid' ? 'Paid' : s === 'open' ? 'Due' : 'Draft'
+          s === 'paid' ? 'Paid' : s === 'open' ? 'Issued' : 'Draft'
 
         // Build cumulative waterfall bars (each starts where previous ended)
         type WBar = { label: string; sub: string; from: number; to: number; amount: number; status: string; kind: 'segment' | 'total' }
@@ -1341,7 +1353,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
               <div className="flex items-center gap-4 flex-shrink-0">
                 <div className="flex items-center gap-2 text-[10px] text-stone/60">
                   <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Paid
-                  <span className="inline-block w-2 h-2 rounded-sm ml-1" style={{ background: '#D97706' }} /> Due
+                  <span className="inline-block w-2 h-2 rounded-sm ml-1" style={{ background: '#D97706' }} /> Issued
                   <span className="inline-block w-2 h-2 rounded-sm ml-1" style={{ background: '#6B9FD4' }} /> Draft
                 </div>
                 {billingData.subscription.dashboardUrl && (
