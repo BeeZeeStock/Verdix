@@ -48,7 +48,7 @@ export default async function PartnerListPage() {
           <p className="text-stone text-sm">Validate partner invoices against signed agreements</p>
         </div>
         <Link href="/partner/new" className="flex items-center gap-2 text-forest text-sm font-medium hover:opacity-70 transition-opacity self-start sm:self-auto">
-          <i className="ti ti-plus" style={{ fontSize: 14 }} /> New reconciliation
+          <i className="ti ti-file-check" style={{ fontSize: 16 }} /> New reconciliation
         </Link>
       </div>
 
