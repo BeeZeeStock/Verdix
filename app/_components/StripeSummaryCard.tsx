@@ -82,10 +82,10 @@ function intervalLabel(interval: string, count: number) {
 function StatusPill({ status }: { status: string | null }) {
   const map: Record<string, { bg: string; color: string; label: string }> = {
     active:   { bg: '#D4EAD9', color: '#1A3D2B', label: 'Active' },
-    open:     { bg: '#FEF3C7', color: '#92400E', label: 'Open' },
+    open:     { bg: '#FEF3C7', color: '#92400E', label: 'Awaiting payment' },
     paid:     { bg: '#D4EAD9', color: '#1A3D2B', label: 'Paid' },
     void:     { bg: '#F3F4F6', color: '#6B7280', label: 'Void' },
-    draft:    { bg: '#EFF6FF', color: '#1E40AF', label: 'Draft' },
+    draft:    { bg: '#EFF6FF', color: '#1E40AF', label: 'Estimated' },
     uncollectible: { bg: '#FEE2E2', color: '#991B1B', label: 'Uncollectible' },
     past_due: { bg: '#FEE2E2', color: '#991B1B', label: 'Past due' },
     canceled: { bg: '#F3F4F6', color: '#6B7280', label: 'Canceled' },
@@ -392,16 +392,21 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
                     {e.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                   </p>
                 </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className="text-[13px] font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                    {fmt(e.amount, e.currency)}
-                  </span>
-                  <StatusPill status={e.status} />
-                  {e.pdfUrl && (
-                    <a href={e.pdfUrl} target="_blank" rel="noreferrer"
-                      className="text-stone/40 hover:text-stone transition-colors" title="Download PDF">
-                      <i className="ti ti-file-download" style={{ fontSize: 11 }} />
-                    </a>
+                <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {fmt(e.amount, e.currency)}
+                    </span>
+                    <StatusPill status={e.status} />
+                    {e.pdfUrl && (
+                      <a href={e.pdfUrl} target="_blank" rel="noreferrer"
+                        className="text-stone/40 hover:text-stone transition-colors" title="Download PDF">
+                        <i className="ti ti-file-download" style={{ fontSize: 11 }} />
+                      </a>
+                    )}
+                  </div>
+                  {e.status === 'draft' && (
+                    <p className="text-[10px] text-stone/50 text-right">Adjusts for actual usage at period end</p>
                   )}
                 </div>
               </div>
