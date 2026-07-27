@@ -303,7 +303,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
       {(() => {
         // Merge all invoices (subscription + one-time) into a unified chronological timeline
         type TLEntry = {
-          id: string; label: string; subLabel?: string; date: Date; amount: number; currency: string
+          id: string; label: string; date: Date; amount: number; currency: string
           status: string | null; hostedUrl?: string | null; pdfUrl?: string | null; kind: 'subscription' | 'one-time' | 'pending-setup'
         }
         const entries: TLEntry[] = []
@@ -312,7 +312,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         for (const inv of oneTimeInvoices) {
           const d = inv.dueDate ?? inv.created
           entries.push({
-            id: inv.id, label: inv.feeLabel ?? inv.number ?? 'One-time fee',
+            id: inv.id, label: inv.feeLabel ?? 'One-time fee',
             date: new Date(d), amount: inv.amount, currency: inv.currency,
             status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'one-time',
           })
@@ -322,8 +322,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         for (const inv of invoices) {
           const d = inv.dueDate ?? inv.created
           entries.push({
-            id: inv.id, label: inv.number ?? inv.id.slice(0, 14),
-            subLabel: 'Subscription',
+            id: inv.id, label: 'Subscription',
             date: new Date(d), amount: inv.amount, currency: inv.currency,
             status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'subscription',
           })
@@ -374,7 +373,6 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className={`text-[12px] font-medium leading-tight ${isPast ? 'text-ink' : 'text-ink/80'}`}>{e.label}</p>
-                  {e.subLabel && <p className="text-[10px] text-stone/60 mt-0.5">{e.subLabel}</p>}
                   <p className="text-[10px] text-stone mt-0.5">{e.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
