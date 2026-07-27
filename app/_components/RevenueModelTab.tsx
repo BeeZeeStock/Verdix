@@ -1005,7 +1005,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
               { color: '#1F7A4A', label: 'Escalated' },
               ...(userTiers.length > 0 ? [{ color: '#4A7C59', label: 'User overage' }] : []),
               ...(apiTiers.length  > 0 ? [{ color: '#52C48A', label: 'API overage (scenario)' }] : []),
-              ...(metricTiers.length > 0 ? [{ color: '#52C48A', label: `${genericMetricLabel ?? 'Usage'} overage (scenario)` }] : []),
+              ...(metricTiers.length > 0 ? [{ color: '#6366F1', label: `${genericMetricLabel ?? 'Usage'} overage (scenario)` }] : []),
               ...(actualOvgByMonth.size > 0 ? [{ color: '#0B5C36', label: 'Actual billed overage' }] : []),
               ...(creditByMonth.size > 0 ? [{ color: '#B45309', label: 'Credit applied' }] : []),
             ].map(li => (
@@ -1207,7 +1207,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
             label: `${genericMetricLabel ?? 'Usage'} overage`,
             value: totalGenericOvg,
             sub: `${scenarioGenericMetric.toLocaleString()} / ${apiCallPeriodLabel} · ${includedGenericMetric > 0 ? `${includedGenericMetric.toLocaleString()} included` : 'no allowance'}`,
-            color: '#B9802F',
+            color: '#6366F1',
           }] : []),
           {
             label: 'Total TCV',

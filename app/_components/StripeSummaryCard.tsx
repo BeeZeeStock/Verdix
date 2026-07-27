@@ -228,7 +228,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
           <table className="w-full">
             <thead>
               <tr>
-                {['Year', 'Period', 'Invoice amount', 'Status'].map((h, i) => (
+                {(['Year', 'Invoice date', 'Amount', 'Status'] as const).map((h, i) => (
                   <th key={h} className="text-[10px] font-semibold text-stone/60 tracking-[0.09em] pb-2"
                     style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: i === 0 || i === 3 ? 'left' : i === 2 ? 'right' : 'left', paddingRight: i < 3 ? 24 : 0 }}>
                     {h}
@@ -253,9 +253,19 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
                       )}
                     </td>
                     <td className="py-2.5 pr-6 text-[12px] text-stone">
-                      {y.periodStart && y.periodEnd
-                        ? `${fmtShortDate(y.periodStart)} – ${fmtShortDate(y.periodEnd)}`
-                        : '—'}
+                      {displayInvoice
+                        ? <span>
+                            <span className="text-stone/50 text-[10px] mr-1">
+                              {displayInvoice.status === 'draft' ? 'Expected' : 'Issued'}
+                            </span>
+                            {fmtDate(displayInvoice.status === 'draft'
+                              ? (displayInvoice.periodEnd ?? displayInvoice.created)
+                              : displayInvoice.created)}
+                          </span>
+                        : <span className="text-stone/40">
+                            {y.periodStart ? <><span className="text-stone/30 text-[10px] mr-1">Scheduled</span>{fmtDate(y.periodStart)}</> : '—'}
+                          </span>
+                      }
                     </td>
                     <td className="py-2.5 pr-6 text-[13px] font-semibold text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
                       {fmt(y.amount, y.currency)}
