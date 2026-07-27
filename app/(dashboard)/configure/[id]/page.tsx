@@ -1292,10 +1292,15 @@ function ReviewPanel({
                           <div className="text-xs">
                             <span className="text-stone">Rate · </span>
                             <span className="font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                              {fmtUnit(item.unit_price, item.currency)}/unit
+                              {kind === 'escalator'
+                                ? (() => {
+                                    const m = item.product_name.match(/\((\d+(?:\.\d+)?)%/)
+                                    return m ? `${m[1]}%` : '—%'
+                                  })()
+                                : `${fmtUnit(item.unit_price, item.currency)}/unit`}
                             </span>
                           </div>
-                          {item.quantity > 0 && (
+                          {item.quantity > 0 && kind !== 'escalator' && (
                             <div className="text-xs">
                               <span className="text-stone">Qty · </span>
                               <span className="font-semibold text-ink">{item.quantity}</span>
