@@ -305,12 +305,9 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
 
         const today = new Date()
 
-        // An entry is "past" if its planned date is in the past OR if Stripe has
-        // already issued it (open/paid) — an early-issued invoice should appear in
-        // the issued section even when its contract date is still in the future.
-        const isActuallyIssued = (e: TLEntry) => e.status === 'open' || e.status === 'paid'
-        const pastEntries   = entries.filter(e => e.date <= today || isActuallyIssued(e))
-        const futureEntries = entries.filter(e => e.date >  today && !isActuallyIssued(e))
+        // Contract date is the gate: past = billing event has occurred per schedule.
+        const pastEntries   = entries.filter(e => e.date <= today)
+        const futureEntries = entries.filter(e => e.date >  today)
 
         const timelineIcon = (status: string | null): { icon: string; color: string } => {
           if (status === 'paid')    return { icon: 'ti-circle-check',  color: '#27AE60' }
@@ -321,30 +318,27 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         }
 
         const renderEntry = (e: TLEntry, isPast: boolean) => {
-          // Stripe status is the authoritative signal for whether an invoice was issued.
-          // open/paid = customer has received it (show real status regardless of planned date).
-          // draft/pending = not yet sent; future entries stay as draft.
-          const effectiveStatus = (e.status === 'open' || e.status === 'paid')
-            ? e.status
-            : isPast ? e.status : 'draft'
-          const actuallyIssued = effectiveStatus === 'open' || effectiveStatus === 'paid'
-          const displayDateLabel = actuallyIssued ? 'Issued' : e.dateLabel
+          // Verdix terminology: contract date is the gate.
+          // Past date + Stripe open/paid = Issued (sent to customer, awaiting payment)
+          // Past date + Stripe paid      = Paid
+          // Future date                  = Draft (not yet issued, regardless of Stripe status)
+          const effectiveStatus = isPast ? e.status : 'draft'
           return (
           <div key={e.id} className="flex gap-4 group">
             {/* Icon */}
             <div className="flex flex-col items-center flex-shrink-0" style={{ width: 20 }}>
               <i className={`ti ${timelineIcon(effectiveStatus).icon} flex-shrink-0`}
                 style={{ fontSize: 15, color: timelineIcon(effectiveStatus).color, marginTop: 1 }} />
-              <div className="flex-1 w-px mt-1" style={{ background: (isPast || actuallyIssued) ? 'rgba(26,61,43,0.12)' : 'rgba(26,61,43,0.06)', minHeight: 12 }} />
+              <div className="flex-1 w-px mt-1" style={{ background: isPast ? 'rgba(26,61,43,0.12)' : 'rgba(26,61,43,0.06)', minHeight: 12 }} />
             </div>
 
             {/* Content */}
             <div className="pb-4 flex-1 min-w-0">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className={`text-[12px] font-medium leading-tight ${(isPast || actuallyIssued) ? 'text-ink' : 'text-ink/80'}`}>{e.label}</p>
+                  <p className={`text-[12px] font-medium leading-tight ${isPast ? 'text-ink' : 'text-ink/80'}`}>{e.label}</p>
                   <p className="text-[10px] text-stone mt-0.5">
-                    <span className="text-stone/50">{displayDateLabel} </span>
+                    <span className="text-stone/50">{e.dateLabel} </span>
                     {e.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                   </p>
                 </div>

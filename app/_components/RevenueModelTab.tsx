@@ -29,7 +29,7 @@ type BillingInv = {
   hostedUrl?: string | null; feeLabel?: string | null; yearNum?: number | null; scheduledDate?: string | null
 }
 type StripeBillingData = {
-  subscription: { id: string; status: string; dashboardUrl: string } | null
+  subscription: { id: string; status: string; dashboardUrl: string; interval: string; intervalCount: number } | null
   invoices: BillingInv[]
   annualDraftInvoices: BillingInv[]
   oneTimeInvoices: BillingInv[]
@@ -1494,23 +1494,51 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
 
       {/* ── Revenue actuals ───────────────────────────────────────────── */}
       {projectedTcv > 0 && (() => {
-        // "Billed to date" must only count invoices that have actually been issued
-        // (status open or paid in Stripe), not contract-planned amounts.
-        const isIssued = (s: string | null | undefined) => s === 'open' || s === 'paid'
-        const actualSubBilled = (billingData?.invoices ?? [])
-          .filter(inv => isIssued(inv.status))
+        // Verdix "Issued" = contract-planned date has arrived AND Stripe status is open/paid.
+        // Verdix "Draft"  = contract date is in the future (regardless of Stripe status —
+        //   Verdix pre-creates invoices in Stripe before their due date as billing setup).
+        // This mirrors the exact same gate used in the billing timeline.
+        const isStripeIssued = (s: string | null | undefined) => s === 'open' || s === 'paid'
+        const todayMs = today.getTime()
+        const cStart  = billingData?.contractStart ? parseLocalDate(billingData.contractStart) : null
+        const subInterval      = billingData?.subscription?.interval      ?? 'month'
+        const subIntervalCount = billingData?.subscription?.intervalCount ?? 1
+
+        // Subscription invoices: sort oldest-first so index i → contractStart + i periods
+        const sortedSubInvs = [...(billingData?.invoices ?? [])].sort(
+          (a, b) => new Date(a.created).getTime() - new Date(b.created).getTime()
+        )
+        const actualSubBilled = sortedSubInvs
+          .filter((inv, i) => {
+            if (!isStripeIssued(inv.status)) return false
+            if (!cStart) return true
+            const planned = new Date(cStart)
+            if (subInterval === 'year') planned.setFullYear(planned.getFullYear() + i * subIntervalCount)
+            else                        planned.setMonth(planned.getMonth() + i * subIntervalCount)
+            return planned.getTime() <= todayMs
+          })
           .reduce((s, inv) => s + inv.amount, 0)
-        // Annual draft invoices (Year 2/3 standalone) may have been issued — count them too
+
+        // Annual draft invoices (Year 2/3): gate on payment-schedule periodStart
         const actualAnnualDraftBilled = (billingData?.annualDraftInvoices ?? [])
-          .filter(inv => isIssued(inv.status))
+          .filter(inv => {
+            if (!isStripeIssued(inv.status)) return false
+            const ps = billingData?.paymentSchedule?.find(p => p.year === inv.yearNum)
+            const planned = ps?.periodStart ? parseLocalDate(ps.periodStart) : cStart
+            return planned ? planned.getTime() <= todayMs : true
+          })
           .reduce((s, inv) => s + inv.amount, 0)
+
+        // One-time invoices: gate on the contract fee's due_date
         const actualOneTimeBilled = (billingData?.oneTimeInvoices ?? [])
-          .filter(inv => isIssued(inv.status))
+          .filter(inv => {
+            if (!isStripeIssued(inv.status)) return false
+            const fee = (billingData?.oneTimeFees ?? []).find(f => f.fee_label === inv.feeLabel)
+            const planned = fee?.due_date ? parseLocalDate(fee.due_date) : cStart
+            return planned ? planned.getTime() <= todayMs : true
+          })
           .reduce((s, inv) => s + inv.amount, 0)
-        // actualOvgTotal is intentionally excluded: computed_invoices are internal
-        // records with no Stripe status — including them inflates billed-to-date
-        // with amounts not yet issued. Real billed overage is already in
-        // actualSubBilled (subscription line items) or actualOneTimeBilled (standalone).
+
         const totalBilled = actualSubBilled + actualAnnualDraftBilled + actualOneTimeBilled
         const elapsedMonths = modelMonths.filter(m => m.isPast).length
         const actualsRemaining = Math.max(0, totalTcv - totalBilled)
