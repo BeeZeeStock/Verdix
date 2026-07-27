@@ -120,36 +120,44 @@ export default function PDFViewer({ url, section }: Props) {
         }
         if (!allRects.length) continue
 
-        // Canvas renders at vp.width intrinsic pixels but CSS width:100% scales it to
-        // the container. The text layer stays at fixed vp.width px and does NOT scale.
-        // Multiply text-layer coordinates by this factor to hit the right visual line.
+        // Text-layer spans are positioned in PDF pixel space (0…vp.width × 0…vp.height).
+        // The canvas renders at vp.width intrinsic pixels but is CSS-scaled via width:100%;
+        // height:auto, so its rendered size changes when the panel is resized.
+        // Expressing the overlay position as a % of page height keeps it aligned to the
+        // correct line regardless of panel width — no ResizeObserver needed.
         const canvas = wrapper.querySelector('canvas') as HTMLCanvasElement | null
+        // scale is still needed for the initial scroll-into-view calculation.
         const scale = canvas && canvas.width > 0 ? wrapper.clientWidth / canvas.width : 1
 
         const rawTop = Math.min(...allRects.map(r => r.top)) - wRect.top - 4
         const rawBot = Math.max(...allRects.map(r => r.bottom)) - wRect.top + 4
-        const top = rawTop * scale
-        const bot = rawBot * scale
-        const h   = bot - top
+
+        // Page height in PDF pixel units = canvas intrinsic height.
+        // wrapper.clientHeight = canvas.height * scale, so top: X% resolves to
+        // (X/100) * canvas.height * scale = rawTop * scale (the correct visual offset).
+        const pageHeight = canvas && canvas.height > 0 ? canvas.height : (wrapper.clientHeight / (scale || 1))
+        const topPct   = (rawTop / pageHeight) * 100
+        const hPct     = Math.max((rawBot - rawTop) / pageHeight * 100, 0.4)
+        const barHPct  = ((rawBot - rawTop + 60) / pageHeight) * 100
 
         const bg = document.createElement('div')
-        bg.style.cssText = `position:absolute;left:0;top:${top}px;width:100%;height:${h}px;background:rgba(212,234,217,0.45);`
+        bg.style.cssText = `position:absolute;left:0;top:${topPct}%;width:100%;height:${hPct}%;background:rgba(212,234,217,0.45);`
         overlay.appendChild(bg)
 
         const bar = document.createElement('div')
-        bar.style.cssText = `position:absolute;left:0;top:${top}px;width:4px;height:${h + 60}px;background:#4A7C59;border-radius:0 2px 2px 0;`
+        bar.style.cssText = `position:absolute;left:0;top:${topPct}%;width:4px;height:${barHPct}%;background:#4A7C59;border-radius:0 2px 2px 0;`
         overlay.appendChild(bar)
 
         const pill = document.createElement('div')
         pill.textContent = '§'
-        pill.style.cssText = `position:absolute;left:6px;top:${top}px;background:#4A7C59;color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;line-height:${h}px;`
+        pill.style.cssText = `position:absolute;left:6px;top:${topPct}%;background:#4A7C59;color:#fff;font-size:9px;font-weight:700;padding:2px 5px;border-radius:3px;line-height:1.4;`
         overlay.appendChild(pill)
 
         if (!globalFirstScrollDone) {
           globalFirstScrollDone = true
           const scrollTarget = wrapper.closest('.pdf-scroll-container') as HTMLElement | null
           if (scrollTarget) {
-            const scrollTop = wrapper.offsetTop + top + scrollTarget.scrollTop - 100
+            const scrollTop = wrapper.offsetTop + rawTop * scale + scrollTarget.scrollTop - 100
             scrollTarget.scrollTo({ top: Math.max(0, scrollTop), behavior: 'smooth' })
           } else {
             bg.scrollIntoView({ behavior: 'smooth', block: 'center' })
