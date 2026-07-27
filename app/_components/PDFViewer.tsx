@@ -112,7 +112,6 @@ export default function PDFViewer({ url, section }: Props) {
       // Get bounding rects from all nodes in the matching window
       try {
         const allRects: DOMRect[] = []
-        let firstNode = matchWindow.nodes[0]
         for (const { node, raw } of matchWindow.nodes) {
           const range = document.createRange()
           range.setStart(node, 0)
@@ -121,8 +120,16 @@ export default function PDFViewer({ url, section }: Props) {
         }
         if (!allRects.length) continue
 
-        const top = Math.min(...allRects.map(r => r.top))  - wRect.top - 4
-        const bot = Math.max(...allRects.map(r => r.bottom)) - wRect.top + 4
+        // Canvas renders at vp.width intrinsic pixels but CSS width:100% scales it to
+        // the container. The text layer stays at fixed vp.width px and does NOT scale.
+        // Multiply text-layer coordinates by this factor to hit the right visual line.
+        const canvas = wrapper.querySelector('canvas') as HTMLCanvasElement | null
+        const scale = canvas && canvas.width > 0 ? wrapper.clientWidth / canvas.width : 1
+
+        const rawTop = Math.min(...allRects.map(r => r.top)) - wRect.top - 4
+        const rawBot = Math.max(...allRects.map(r => r.bottom)) - wRect.top + 4
+        const top = rawTop * scale
+        const bot = rawBot * scale
         const h   = bot - top
 
         const bg = document.createElement('div')
