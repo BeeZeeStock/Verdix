@@ -199,6 +199,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
           <p className="text-[11px] text-stone mt-1">Live configuration pulled from your Stripe account</p>
         </div>
         <div className="flex items-center gap-3">
+          <StatusPill status={sub.status} />
           {sub.isTest && (
             <span className="text-[10px] font-semibold px-2 py-1 rounded-full" style={{ background: '#EFF6FF', color: '#1E40AF', border: '1px solid #BFDBFE' }}>
               Test mode
@@ -214,24 +215,11 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         </div>
       </div>
 
-      {/* Subscription status row */}
-      <div className="px-6 py-4 grid grid-cols-3 gap-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)', background: 'rgba(26,61,43,0.02)' }}>
-        <div>
-          <p className="text-[10px] font-semibold text-stone/60 uppercase tracking-[0.1em] mb-1.5">Status</p>
-          <StatusPill status={sub.status} />
-          {sub.cancelAtPeriodEnd && (
-            <p className="text-[10px] text-amber-600 mt-1">Cancels at period end</p>
-          )}
+      {sub.cancelAtPeriodEnd && (
+        <div className="px-6 py-2" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)', background: 'rgba(26,61,43,0.02)' }}>
+          <p className="text-[10px] text-amber-600">Cancels at period end</p>
         </div>
-        <div>
-          <p className="text-[10px] font-semibold text-stone/60 uppercase tracking-[0.1em] mb-1.5">Billing cadence</p>
-          <p className="text-[13px] font-medium text-ink">{intervalLabel(sub.interval, sub.intervalCount)}</p>
-        </div>
-        <div>
-          <p className="text-[10px] font-semibold text-stone/60 uppercase tracking-[0.1em] mb-1.5">Next invoice</p>
-          <p className="text-[13px] font-medium text-ink">{fmtDate(sub.currentPeriodEnd)}</p>
-        </div>
-      </div>
+      )}
 
       {/* Payment schedule */}
       {paymentSchedule && paymentSchedule.length > 0 && (
