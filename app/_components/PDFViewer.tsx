@@ -7,6 +7,16 @@ function norm(s: string) {
   return s.replace(/[€$£¥,\s\-–—]/g, '').toLowerCase()
 }
 
+// Returns true if the match looks like a Table of Contents entry:
+// the text immediately after the needle consists only of dots/ellipsis
+// followed by a short page number (e.g. "...... 15" or "… 23").
+function isTocLike(normalizedCombined: string, needle: string): boolean {
+  const idx = normalizedCombined.indexOf(needle)
+  if (idx < 0) return false
+  const after = normalizedCombined.slice(idx + needle.length).replace(/[.…]/g, '').trim()
+  return after.length > 0 && after.length <= 4 && /^\d+$/.test(after)
+}
+
 // Build a flat list of { node, text, parentEl } entries from a text layer,
 // then for each position produce a "window" string spanning up to N characters
 // across adjacent nodes within the same line-block. Returns [{combined, nodes[]}].
@@ -91,21 +101,23 @@ export default function PDFViewer({ url, section }: Props) {
       const windows = buildWindowedText(textLayer)
 
       // Find the first window whose combined normalized text contains the needle.
-      // Prefer exact section-number-prefix matches (e.g. "6.6" at the start) to
-      // avoid matching the table of contents before the actual section body.
-      let matchWindow = windows.find(w => {
+      // Skip TOC-like entries (needle followed by dots + page number) so the
+      // actual section heading wins over the table of contents.
+      const isCandidate = (w: { combined: string; nodes: { node: Text; raw: string }[] }) => {
         const c = norm(w.combined)
         if (!c.includes(needle)) return false
-        // If the needle starts with digits (section number), require it to appear
-        // near the beginning of the combined string (within first 20 chars) so TOC
-        // links with trailing dots/pages don't win over the actual heading.
+        if (isTocLike(c, needle)) return false
         const sectionNumMatch = /^\d/.test(needle)
         if (sectionNumMatch) return c.indexOf(needle) < 20
         return true
-      })
-      // Fallback: accept any window that contains the needle anywhere
+      }
+      let matchWindow = windows.find(isCandidate)
+      // Fallback: allow needle anywhere in the window, still skipping TOC entries
       if (!matchWindow) {
-        matchWindow = windows.find(w => norm(w.combined).includes(needle))
+        matchWindow = windows.find(w => {
+          const c = norm(w.combined)
+          return c.includes(needle) && !isTocLike(c, needle)
+        })
       }
       if (!matchWindow) continue
 
