@@ -44,12 +44,29 @@ export async function POST(req: NextRequest) {
     { onConflict: 'email' }
   )
 
-  // Create org for the new user (company name → org name, user is owner)
-  try {
-    await createOrg(company, email)
-  } catch (err) {
-    console.error('[signup] org creation failed', err)
-    // Non-fatal — user is created, org can be created later
+  // If the user was invited, activate all their pending invitations rather than
+  // creating a fresh org. This is the primary join path when email delivery fails
+  // and the user goes directly to /signup.
+  const { data: pendingInvites } = await supabaseServer
+    .from('org_memberships')
+    .select('org_id')
+    .eq('user_email', email.toLowerCase().trim())
+    .eq('status', 'invited')
+
+  if (pendingInvites && pendingInvites.length > 0) {
+    await supabaseServer
+      .from('org_memberships')
+      .update({ status: 'active' })
+      .eq('user_email', email.toLowerCase().trim())
+      .eq('status', 'invited')
+    console.log('[signup] activated', pendingInvites.length, 'invited membership(s) for', email)
+  } else {
+    // Brand-new user — create their own org
+    try {
+      await createOrg(company, email)
+    } catch (err) {
+      console.error('[signup] org creation failed', err)
+    }
   }
 
   const resend = new Resend(process.env.RESEND_API_KEY)

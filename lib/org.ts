@@ -14,7 +14,8 @@ export interface OrgContext {
 const roleRank: Record<OrgRole, number> = { member: 0, admin: 1, owner: 2 }
 
 async function fetchMembership(email: string): Promise<{ org_id: string; role: string; name: string; slug: string } | null> {
-  const { data: members, error: memberErr } = await supabaseServer
+  // Check for active membership first
+  const { data: activeMembers, error: memberErr } = await supabaseServer
     .from('org_memberships')
     .select('org_id, role')
     .eq('user_email', email)
@@ -23,8 +24,42 @@ async function fetchMembership(email: string): Promise<{ org_id: string; role: s
     .limit(1)
 
   if (memberErr) console.error('[org] membership query error:', memberErr.message, 'email:', email)
-  const member = members?.[0] ?? null
-  if (!member) return null
+
+  const member = activeMembers?.[0] ?? null
+
+  // No active membership — check for pending invitations and activate them.
+  // This covers Google OAuth users who never go through /signup, and any
+  // invited user whose invite row wasn't activated at signup time.
+  if (!member) {
+    const { data: invites } = await supabaseServer
+      .from('org_memberships')
+      .select('org_id, role')
+      .eq('user_email', email)
+      .eq('status', 'invited')
+      .order('created_at', { ascending: true })
+
+    if (invites && invites.length > 0) {
+      // Activate all pending invites for this user in one go
+      await supabaseServer
+        .from('org_memberships')
+        .update({ status: 'active' })
+        .eq('user_email', email)
+        .eq('status', 'invited')
+
+      const first = invites[0]
+      const { data: orgs } = await supabaseServer
+        .from('organizations')
+        .select('name, slug')
+        .eq('id', first.org_id)
+        .limit(1)
+      const org = orgs?.[0] ?? null
+      if (org) {
+        console.log('[org] activated invited membership for', email, '→ org', first.org_id)
+        return { org_id: first.org_id, role: first.role, name: org.name, slug: org.slug }
+      }
+    }
+    return null
+  }
 
   const { data: orgs, error: orgErr } = await supabaseServer
     .from('organizations')
