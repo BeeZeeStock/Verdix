@@ -94,7 +94,7 @@ function SignupContent() {
         <div className="bg-white border border-forest/10 rounded-2xl p-8 shadow-sm">
           <div className="flex flex-col items-center mb-8">
             <VerdixLogo size={36} />
-            <h1 className="font-display font-light text-ink text-2xl mt-4 mb-1">Start finding leakage</h1>
+            <h1 className="font-display font-light text-ink text-2xl mt-4 mb-1">Automate your billing</h1>
             {planLabel ? (
               <div
                 className="mt-2 flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-medium"
@@ -104,7 +104,7 @@ function SignupContent() {
                 Signing up for {planLabel}
               </div>
             ) : (
-              <p className="text-stone text-sm">Free for your first audit. No credit card.</p>
+              <p className="text-stone text-sm">Revenue operations without the engineering overhead.</p>
             )}
           </div>
 
