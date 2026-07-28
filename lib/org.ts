@@ -58,6 +58,29 @@ async function fetchMembership(email: string): Promise<{ org_id: string; role: s
         return { org_id: first.org_id, role: first.role, name: org.name, slug: org.slug }
       }
     }
+
+    // No invite either — check domain-based auto-join (e.g. everyone @acme.com joins Acme org)
+    const domain = email.split('@')[1]?.toLowerCase()
+    if (domain) {
+      const { data: domainOrgs } = await supabaseServer
+        .from('organizations')
+        .select('id, name, slug')
+        .eq('allowed_domain', domain)
+        .limit(1)
+
+      const domainOrg = domainOrgs?.[0]
+      if (domainOrg) {
+        await supabaseServer
+          .from('org_memberships')
+          .upsert(
+            { org_id: domainOrg.id, user_email: email, role: 'member', status: 'active' },
+            { onConflict: 'org_id,user_email', ignoreDuplicates: true }
+          )
+        console.log('[org] domain auto-join for', email, '→ org', domainOrg.id)
+        return { org_id: domainOrg.id, role: 'member', name: domainOrg.name, slug: domainOrg.slug }
+      }
+    }
+
     return null
   }
 

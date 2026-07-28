@@ -44,28 +44,44 @@ export async function POST(req: NextRequest) {
     { onConflict: 'email' }
   )
 
-  // If the user was invited, activate all their pending invitations rather than
-  // creating a fresh org. This is the primary join path when email delivery fails
-  // and the user goes directly to /signup.
+  const normalizedEmail = email.toLowerCase().trim()
+  const emailDomain = normalizedEmail.split('@')[1]
+
+  // If the user was invited, activate all pending invitations rather than creating a fresh org.
   const { data: pendingInvites } = await supabaseServer
     .from('org_memberships')
     .select('org_id')
-    .eq('user_email', email.toLowerCase().trim())
+    .eq('user_email', normalizedEmail)
     .eq('status', 'invited')
 
   if (pendingInvites && pendingInvites.length > 0) {
     await supabaseServer
       .from('org_memberships')
       .update({ status: 'active' })
-      .eq('user_email', email.toLowerCase().trim())
+      .eq('user_email', normalizedEmail)
       .eq('status', 'invited')
-    console.log('[signup] activated', pendingInvites.length, 'invited membership(s) for', email)
-  } else {
-    // Brand-new user — create their own org
-    try {
-      await createOrg(company, email)
-    } catch (err) {
-      console.error('[signup] org creation failed', err)
+    console.log('[signup] activated', pendingInvites.length, 'invited membership(s) for', normalizedEmail)
+  } else if (emailDomain) {
+    // Check domain auto-join before creating a new org
+    const { data: domainOrg } = await supabaseServer
+      .from('organizations')
+      .select('id')
+      .eq('allowed_domain', emailDomain)
+      .maybeSingle()
+
+    if (domainOrg) {
+      await supabaseServer.from('org_memberships').upsert(
+        { org_id: domainOrg.id, user_email: normalizedEmail, role: 'member', status: 'active' },
+        { onConflict: 'org_id,user_email', ignoreDuplicates: true }
+      )
+      console.log('[signup] domain auto-joined', normalizedEmail, '→ org', domainOrg.id)
+    } else {
+      // Brand-new user — create their own org
+      try {
+        await createOrg(company, email)
+      } catch (err) {
+        console.error('[signup] org creation failed', err)
+      }
     }
   }
 

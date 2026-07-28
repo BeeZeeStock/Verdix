@@ -15,6 +15,7 @@ interface OrgData {
   orgName: string
   orgSlug: string
   role: 'owner' | 'admin' | 'member'
+  allowedDomain: string | null
   members: Member[]
 }
 
@@ -40,12 +41,17 @@ export default function TeamSettingsPage() {
   const [inviting, setInviting] = useState(false)
   const [inviteMsg, setInviteMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [domainInput, setDomainInput] = useState('')
+  const [savingDomain, setSavingDomain] = useState(false)
+  const [domainMsg, setDomainMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   async function load() {
     setLoading(true)
     const res = await fetch('/api/org')
     if (!res.ok) { setError('Failed to load org data'); setLoading(false); return }
-    setOrg(await res.json())
+    const data = await res.json()
+    setOrg(data)
+    setDomainInput(data.allowedDomain ?? '')
     setLoading(false)
   }
 
@@ -70,6 +76,25 @@ export default function TeamSettingsPage() {
       setInviteMsg({ ok: false, text: data.error ?? 'Failed to send invite' })
     }
     setInviting(false)
+  }
+
+  async function handleDomainSave(e: React.FormEvent) {
+    e.preventDefault()
+    setSavingDomain(true)
+    setDomainMsg(null)
+    const res = await fetch('/api/org', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allowedDomain: domainInput.trim() || null }),
+    })
+    const data = await res.json()
+    if (res.ok) {
+      setDomainMsg({ ok: true, text: domainInput.trim() ? `Auto-join enabled for @${domainInput.trim()}` : 'Auto-join disabled' })
+      load()
+    } else {
+      setDomainMsg({ ok: false, text: data.error ?? 'Failed to save' })
+    }
+    setSavingDomain(false)
   }
 
   async function handleRemove(email: string) {
@@ -151,7 +176,7 @@ export default function TeamSettingsPage() {
 
       {/* Invite form */}
       {canManage && (
-        <div className="bg-white border border-forest/10 rounded-2xl p-6">
+        <div className="bg-white border border-forest/10 rounded-2xl p-6 mb-4">
           <h2 className="text-sm font-medium text-ink mb-4">Invite a team member</h2>
           <form onSubmit={handleInvite} className="flex flex-col gap-3">
             <div className="flex gap-3">
@@ -187,6 +212,71 @@ export default function TeamSettingsPage() {
             <p className="text-xs text-stone">
               <strong>Member</strong> can view and run jobs. <strong>Admin</strong> can invite others and delete jobs.
             </p>
+          </form>
+        </div>
+      )}
+
+      {/* Domain auto-join */}
+      {canManage && (
+        <div className="bg-white border border-forest/10 rounded-2xl p-6">
+          <div className="flex items-start justify-between mb-1">
+            <h2 className="text-sm font-medium text-ink">Domain auto-join</h2>
+            {org.allowedDomain && (
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-forest bg-forest/8 px-2 py-0.5 rounded-full">
+                Active
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-stone mb-4">
+            Anyone who signs up with a matching email domain is automatically added as a member — no invite needed.
+          </p>
+          <form onSubmit={handleDomainSave} className="flex flex-col gap-3">
+            <div className="flex gap-3 items-center">
+              <span className="text-sm text-stone select-none">@</span>
+              <input
+                type="text"
+                placeholder="acme.com"
+                value={domainInput}
+                onChange={e => setDomainInput(e.target.value.toLowerCase().replace(/^@/, ''))}
+                className="flex-1 text-sm border border-forest/20 rounded-xl px-4 py-2.5 bg-white text-ink placeholder:text-stone/60 focus:outline-none focus:ring-2 focus:ring-forest/20 font-mono"
+              />
+              <button
+                type="submit"
+                disabled={savingDomain}
+                className="bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors disabled:opacity-50 whitespace-nowrap"
+              >
+                {savingDomain ? 'Saving…' : 'Save'}
+              </button>
+              {org.allowedDomain && (
+                <button
+                  type="button"
+                  disabled={savingDomain}
+                  onClick={async () => {
+                    setSavingDomain(true)
+                    setDomainMsg(null)
+                    const res = await fetch('/api/org', {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ allowedDomain: null }),
+                    })
+                    if (res.ok) {
+                      setDomainInput('')
+                      setDomainMsg({ ok: true, text: 'Auto-join disabled' })
+                      load()
+                    }
+                    setSavingDomain(false)
+                  }}
+                  className="text-xs text-red-500 hover:text-red-700 transition-colors whitespace-nowrap disabled:opacity-50"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            {domainMsg && (
+              <p className={`text-xs ${domainMsg.ok ? 'text-forest' : 'text-red-600'}`}>
+                {domainMsg.text}
+              </p>
+            )}
           </form>
         </div>
       )}
