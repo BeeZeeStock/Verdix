@@ -521,7 +521,7 @@ export default function PartnerResultsPage({ params }: { params: Promise<{ id: s
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
-              <pre className="text-sm text-ink whitespace-pre-wrap leading-relaxed" style={{ fontFamily: 'ui-monospace, monospace' }}>
+              <pre className="text-sm text-ink whitespace-pre-wrap leading-relaxed font-mono">
                 {buildDisputeLetter(job, invoice, findings, disputed, senderName)}
               </pre>
             </div>

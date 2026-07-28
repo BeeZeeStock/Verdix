@@ -2303,8 +2303,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         <div key={i} className="flex gap-6 py-4"
                           style={{ borderBottom: i < calcRows.length - 1 ? '1px solid rgba(26,61,43,0.07)' : undefined }}>
                           <p className="text-[11px] font-semibold text-stone w-16 flex-shrink-0 pt-0.5">{label}</p>
-                          <p className="text-[11.5px] leading-relaxed whitespace-pre-line"
-                            style={{ fontFamily: 'ui-monospace, monospace', color: '#1A3D2B' }}>{note}</p>
+                          <p className="text-[11.5px] font-mono leading-relaxed whitespace-pre-line"
+                            style={{ color: '#1A3D2B' }}>{note}</p>
                         </div>
                       ))}
                     </div>

@@ -259,9 +259,9 @@ function BillingVerificationSection() {
                             <div className="font-mono" style={{ fontSize: 8, color: '#6B6660' }}>{row.ref}</div>
                           </td>
                           <td style={{ padding: '7px 8px', fontSize: 10, color: row.tc, fontWeight: 500 }}>{row.type}</td>
-                          <td style={{ padding: '7px 8px', fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: '#27500A' }}>{row.cont}</td>
-                          <td style={{ padding: '7px 8px', fontFamily: "'JetBrains Mono',monospace", fontSize: 10, color: '#6B6660', textDecoration: 'line-through' }}>{row.billed}</td>
-                          <td style={{ padding: '7px 8px', fontFamily: "'JetBrains Mono',monospace", fontSize: 11, fontWeight: 500, color: '#791F1F', textAlign: 'right' }}>{row.leak}</td>
+                          <td className="font-mono" style={{ padding: '7px 8px', fontSize: 10, color: '#27500A' }}>{row.cont}</td>
+                          <td className="font-mono" style={{ padding: '7px 8px', fontSize: 10, color: '#6B6660', textDecoration: 'line-through' }}>{row.billed}</td>
+                          <td className="font-mono" style={{ padding: '7px 8px', fontSize: 11, fontWeight: 500, color: '#791F1F', textAlign: 'right' }}>{row.leak}</td>
                           <td style={{ padding: '7px 8px' }}>
                             <button style={{ fontSize: 9, padding: '3px 8px', background: row.btn, border: `0.5px solid ${row.btb}`, color: row.btc, borderRadius: 6, whiteSpace: 'nowrap' }}>{row.btnTxt}</button>
                           </td>
@@ -504,7 +504,7 @@ function HowItWorks() {
                   <i className="ti ti-shield-lock" style={{ fontSize: 11, color: '#1A3D2B' }} /> PII review
                 </div>
                 {['[PERSON_1]','[ORG_1]','[EMAIL_1]'].map((label, i) => (
-                  <div key={i} style={{ fontSize: 8, fontWeight: 500, background: '#EAF3DE', color: '#27500A', borderRadius: 4, padding: '2px 5px', display: 'inline-block', marginBottom: 3, fontFamily: "'JetBrains Mono',monospace" }}>{label}</div>
+                  <div key={i} className="font-mono" style={{ fontSize: 8, fontWeight: 500, background: '#EAF3DE', color: '#27500A', borderRadius: 4, padding: '2px 5px', display: 'inline-block', marginBottom: 3 }}>{label}</div>
                 ))}
                 <div style={{ fontSize: 9, fontWeight: 500, background: '#EAF3DE', color: '#27500A', borderRadius: 5, padding: '3px 7px', display: 'inline-block', marginTop: 4 }}>Masked before AI</div>
               </div>
@@ -566,7 +566,7 @@ function HowItWorks() {
                     <div style={{ height: 5, borderRadius: 3, background: c, flex: 1 }} />
                   </div>
                 ))}
-                <div style={{ fontSize: 9, fontWeight: 500, background: '#EAF3DE', color: '#27500A', borderRadius: 5, padding: '3px 7px', display: 'inline-block', fontFamily: "'JetBrains Mono',monospace" }}>sub_abc123 created</div>
+                <div className="font-mono" style={{ fontSize: 9, fontWeight: 500, background: '#EAF3DE', color: '#27500A', borderRadius: 5, padding: '3px 7px', display: 'inline-block' }}>sub_abc123 created</div>
               </div>
             </div>
 
@@ -656,8 +656,8 @@ function CalculationBreakdown() {
                   ].map((r) => (
                     <tr key={r.month + r.calc} style={{ borderBottom: '0.5px solid rgba(26,61,43,0.06)', background: r.red ? '#FCEBEB' : 'transparent' }}>
                       <td style={{ padding: '5px 8px 5px 0', fontSize: 9, color: r.red ? '#791F1F' : '#6B6660', whiteSpace: 'nowrap', fontWeight: r.red ? 500 : 400 }}>{r.month}</td>
-                      <td style={{ padding: '5px 8px', fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: r.red ? '#791F1F' : '#6B6660' }}>{r.calc}</td>
-                      <td style={{ padding: '5px 0 5px 8px', fontFamily: "'JetBrains Mono',monospace", fontSize: 10, fontWeight: 500, color: r.red ? '#A32D2D' : '#1A3D2B', textAlign: 'right' }}>{r.inv}</td>
+                      <td className="font-mono" style={{ padding: '5px 8px', fontSize: 9, color: r.red ? '#791F1F' : '#6B6660' }}>{r.calc}</td>
+                      <td className="font-mono" style={{ padding: '5px 0 5px 8px', fontSize: 10, fontWeight: 500, color: r.red ? '#A32D2D' : '#1A3D2B', textAlign: 'right' }}>{r.inv}</td>
                       <td style={{ padding: '5px 0 5px 8px' }}>
                         <span style={{ fontSize: 8, padding: '1px 6px', background: r.red ? '#FCEBEB' : '#EAF3DE', color: r.red ? '#791F1F' : '#27500A', borderRadius: 4 }}>{r.status}</span>
                       </td>
