@@ -62,8 +62,10 @@ export async function POST(req: NextRequest) {
   })
 
   if (emailError) {
-    console.error('[invite] email failed:', emailError)
-    return NextResponse.json({ error: `Membership created but invite email failed: ${emailError.message}` }, { status: 500 })
+    // Membership is already created — email failure is non-fatal.
+    // Log it and return success so the UI doesn't show a false error.
+    console.error('[invite] email failed (membership still created):', emailError)
+    return NextResponse.json({ ok: true, email, role, emailWarning: emailError.message })
   }
 
   return NextResponse.json({ ok: true, email, role })
