@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
             Sign up with this email address to join the organization automatically.
           </p>
           <p style="font-size:11px;color:#C4C4BE;margin-top:16px;padding-top:16px;border-top:1px solid #E5E7EB">
-            Verdix is a product by Lynora AB · Org. nr 559516-1190 · Vallentuna, Sweden
+            Verdix is a product by Lynora AB · Org. nr 559516-1190 · Sweden
           </p>
         </div>
       </div>

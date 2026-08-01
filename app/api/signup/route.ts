@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
             Any questions? <a href="mailto:bilal@lynoraai.com" style="color:#1A3D2B">bilal@lynoraai.com</a>
           </p>
           <p style="font-size:11px;color:#C4C4BE;margin-top:16px;padding-top:16px;border-top:1px solid #E5E7EB">
-            Verdix is a product by Lynora AB · Org. nr 559516-1190 · Vallentuna, Sweden
+            Verdix is a product by Lynora AB · Org. nr 559516-1190 · Sweden
           </p>
         </div>
       </div>

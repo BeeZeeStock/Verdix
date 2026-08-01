@@ -23,7 +23,7 @@ export default function TermsPage() {
           {[
             {
               title: '1. About these terms',
-              body: 'These Terms of Service ("Terms") govern your access to and use of the Verdix platform, a product of Lynora AB (Org. nr 559516-1190), with registered offices in Vallentuna, Sweden ("Lynora", "we", "us"). By creating an account you agree to these Terms. If you are accepting on behalf of a company or organisation, you represent that you have authority to bind that entity.',
+              body: 'These Terms of Service ("Terms") govern your access to and use of the Verdix platform, a product of Lynora AB (Org. nr 559516-1190), with registered offices in Sweden ("Lynora", "we", "us"). By creating an account you agree to these Terms. If you are accepting on behalf of a company or organisation, you represent that you have authority to bind that entity.',
             },
             {
               title: '2. The service',
@@ -67,7 +67,7 @@ export default function TermsPage() {
             },
             {
               title: '12. Contact',
-              body: 'For questions about these Terms: bilal@lynoraai.com. Lynora AB, Vallentuna, Sweden (Org. nr 559516-1190). Verdix is a trading name of Lynora AB.',
+              body: 'For questions about these Terms: bilal@lynoraai.com. Lynora AB, Sweden (Org. nr 559516-1190). Verdix is a trading name of Lynora AB.',
             },
           ].map(section => (
             <section key={section.title}>

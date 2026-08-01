@@ -24,16 +24,13 @@ function Nav() {
           <span className="font-sans font-semibold text-[16px]" style={{ color: '#1A3D2B', letterSpacing: '0.02em' }}>Verdix</span>
         </div>
         <div className="hidden md:flex items-center gap-8 text-sm font-medium text-stone">
-          <a href="#verify" className="hover:text-forest transition-colors">Billing verification</a>
+          <a href="#verify" className="hover:text-forest transition-colors">Billing automation</a>
           <a href="#configure" className="hover:text-forest transition-colors">Auto-configure</a>
           <a href="#partner" className="hover:text-forest transition-colors">Partner reconciliation</a>
           <a href="#security" className="hover:text-forest transition-colors">Security</a>
           <a href="#pricing" className="hover:text-forest transition-colors">Pricing</a>
           <Link href="/login" className="hover:text-forest transition-colors">Sign in</Link>
         </div>
-        <Link href="/signup" className="bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors shadow-sm">
-          Start free check →
-        </Link>
       </div>
     </nav>
   )
@@ -47,42 +44,56 @@ function Hero() {
       <div className="max-w-4xl mx-auto text-center relative">
         <div className="inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-medium mb-8" style={{ color: '#27500A', background: '#EAF3DE', border: '1px solid #C0DD97' }}>
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#27500A' }} />
-          Revenue intelligence for B2B SaaS
+          Contract-to-cash and partner reconciliation for B2B SaaS
         </div>
         <h1 className="font-display font-light text-ink leading-tight mb-5" style={{ fontSize: 'clamp(2.2rem,4.5vw,3.4rem)' }}>
-          Is your billing configured<br /><span className="text-forest">exactly as your contracts say?</span>
+          Automate bespoke contract billing—<br /><span className="text-forest">without replacing your finance stack.</span>
         </h1>
-        <p className="text-stone text-lg max-w-xl mx-auto leading-relaxed mb-10">
-          Verdix reads your signed contracts and checks your billing setup against them — surfacing mismatches before they cost you revenue. Then automates the setup for every new deal.
-        </p>
+        <div className="text-stone text-lg max-w-2xl mx-auto leading-relaxed mb-10 space-y-3">
+          <p>Verdix reads signed customer and partner agreements, pulls the required usage from your existing data endpoints, and turns the terms into automated billing and reconciliation workflows.</p>
+          <p style={{ fontSize: '1rem' }}>Create customer billing schedules, send invoice instructions to your chosen billing or payment system, and identify incorrect partner charges before payment.</p>
+        </div>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-4">
           <Link href="/signup" className="w-full sm:w-auto bg-forest text-white font-medium px-8 py-4 rounded-xl hover:bg-sage transition-colors shadow-md text-center">
-            Check your billing accuracy →
+            Automate your first agreement →
           </Link>
           <a href="#how" className="w-full sm:w-auto bg-white border border-sage text-sage font-medium px-8 py-4 rounded-xl hover:bg-mint transition-colors text-center">
-            See how it works
+            See how Verdix works
           </a>
         </div>
-        <p className="text-center mb-10" style={{ fontSize: 11, color: '#6B6660' }}>
-          Billing platforms supported: <span style={{ color: '#1A3D2B', fontWeight: 500 }}>Stripe</span>
-          <span style={{ color: '#9CA3AF' }}> · Others coming soon · </span><span style={{ color: '#6B6660' }}>available on request</span>
+        <p className="text-center mb-10" style={{ fontSize: 11, color: '#9CA3AF' }}>
+          EU-hosted · GDPR-first · Direct identifiers masked locally before AI processing
         </p>
-        <div className="grid grid-cols-3 gap-3 max-w-2xl mx-auto">
-          <div className="bg-white border border-forest/10 rounded-2xl p-5 text-center">
-            <div className="font-mono font-medium text-2xl mb-1" style={{ color: '#27500A' }}>3–9%</div>
-            <div className="text-stone text-xs leading-snug">Average ARR leakage in B2B SaaS</div>
-            <div className="mt-1.5" style={{ fontSize: 10, color: '#9CA3AF' }}>MGI Research / EY</div>
-          </div>
-          <div className="bg-white border border-forest/10 rounded-2xl p-5 text-center">
-            <div className="font-mono font-medium text-2xl mb-1" style={{ color: '#27500A' }}>$9B+</div>
-            <div className="text-stone text-xs leading-snug">Lost annually across the industry</div>
-            <div className="mt-1.5" style={{ fontSize: 10, color: '#9CA3AF' }}>$299B market × 3% floor</div>
-          </div>
-          <div className="bg-white border border-forest/10 rounded-2xl p-5 text-center">
-            <div className="font-mono font-medium text-2xl mb-1" style={{ color: '#27500A' }}>73%</div>
-            <div className="text-stone text-xs leading-snug">Companies with no automated detection</div>
-            <div className="mt-1.5" style={{ fontSize: 10, color: '#9CA3AF' }}>BCG, 2020</div>
-          </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-2xl mx-auto">
+          {[
+            {
+              icon: 'ti-file-invoice',
+              label: 'Customer contract-to-cash',
+              subtitle: 'From signed agreement to billing schedule',
+              body: 'Verdix extracts pricing, tiers, commitments and billing dates, pulls live usage, and prepares the correct invoice instructions.',
+            },
+            {
+              icon: 'ti-scale',
+              label: 'Partner reconciliation',
+              subtitle: 'Validate before you pay',
+              body: 'Compare partner invoices against agreed rates, operational activity, discounts, credits and thresholds.',
+            },
+            {
+              icon: 'ti-plug-connected',
+              label: 'Keep your existing stack',
+              subtitle: 'No billing-platform migration',
+              body: 'Continue using your ERP, payment rails and accounting systems. Verdix adds the agreement-operations layer.',
+            },
+          ].map(card => (
+            <div key={card.label} className="bg-white border border-forest/10 rounded-2xl p-5 flex flex-col items-center text-center">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-3 flex-shrink-0" style={{ background: '#EAF3DE' }}>
+                <i className={`ti ${card.icon}`} style={{ fontSize: 20, color: '#1A3D2B' }} />
+              </div>
+              <div className="text-xs font-semibold uppercase tracking-widest mb-1.5 w-full" style={{ color: '#27500A', minHeight: '2.6rem', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>{card.label}</div>
+              <div className="text-sm font-medium text-ink mb-2 w-full" style={{ minHeight: '2.5rem', display: 'flex', alignItems: 'flex-start', justifyContent: 'center' }}>{card.subtitle}</div>
+              <div className="text-xs text-stone leading-snug">{card.body}</div>
+            </div>
+          ))}
         </div>
       </div>
     </section>
@@ -95,11 +106,12 @@ function BillingVerificationSection() {
     <section id="verify" className="px-6 py-24 border-t border-forest/8">
       <div className="max-w-6xl mx-auto">
         <div className="text-center mb-12 max-w-2xl mx-auto">
-          <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Billing verification</div>
-          <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Check every billing setup against the signed contract — before the first invoice goes out</h2>
-          <p className="text-stone leading-relaxed mb-6">Upload your signed contracts and billing export. Verdix compares every commercial term against what&apos;s actually configured in your billing platform — wrong prices, expired discounts still running, overage tiers never set up. Find it. Fix it. One click.</p>
-          <div className="flex flex-wrap justify-center gap-x-8 gap-y-2">
-            {['Price escalators verified', 'Discount expiry enforced', 'Overage tiers checked', 'One-click API fix'].map(f => (
+          <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Contract-to-billing automation</div>
+          <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Turn every signed agreement into an approved billing schedule—before the first invoice goes out.</h2>
+          <p className="text-stone leading-relaxed mb-3">Connect the signed contract, your customer-usage endpoint and your preferred billing system. Verdix extracts the commercial terms, pulls the required usage automatically and creates the billing schedule for review.</p>
+          <p className="text-stone leading-relaxed mb-6">Once approved, Verdix sends the invoice instructions to your chosen billing infrastructure—while keeping every calculation traceable to the underlying agreement.</p>
+          <div className="flex flex-wrap justify-center gap-x-8 gap-y-2 mb-6">
+            {['Contract terms extracted and structured', 'Live usage pulled from your endpoint', 'Billing schedule generated automatically', 'Review, approve and sync'].map(f => (
               <span key={f} className="flex items-center gap-2 text-sm text-stone">
                 <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: '#EAF3DE', border: '1px solid #C0DD97' }}>
                   <i className="ti ti-check" style={{ fontSize: 10, color: '#27500A' }} />
@@ -108,168 +120,199 @@ function BillingVerificationSection() {
               </span>
             ))}
           </div>
+          <p className="text-stone text-sm italic">Built-in verification keeps pricing, discounts, tiers, escalators and amendments aligned with the signed agreement.</p>
         </div>
 
-        {/* Dashboard mockup */}
+        {/* Real UI mockup — billing schedule + timeline */}
         <div className="overflow-x-auto -mx-6 px-6 md:mx-0 md:px-0">
-        <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm mx-auto" style={{ fontSize: 12, maxWidth: 860, minWidth: 640 }}>
+        <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm mx-auto" style={{ fontSize: 12, maxWidth: 900, minWidth: 640 }}>
+
+          {/* Window chrome */}
           <div className="flex items-center gap-2 px-4 py-2.5 border-b border-forest/8" style={{ background: '#F5F3EE' }}>
             <div className="tl-r" /><div className="tl-y" /><div className="tl-g" />
-            <span className="font-mono text-xs text-stone ml-2">verdix — revenue leakage</span>
+            <span className="font-mono text-xs text-stone ml-2">verdix — Acme Enterprise Subscription Agreement</span>
           </div>
-          <div className="flex" style={{ minHeight: 420 }}>
+
+          <div className="flex" style={{ minHeight: 520 }}>
             {/* Sidebar */}
-            <div className="border-r border-forest/8 py-3 flex-shrink-0" style={{ width: 150, background: '#FAFAF8' }}>
+            <div className="border-r border-forest/8 py-3 flex-shrink-0" style={{ width: 154, background: '#FAFAF8' }}>
               <div className="flex items-center gap-2 px-3 pb-3 mb-1 border-b border-forest/8">
                 <VerdixLogo size={20} />
                 <span className="font-sans font-semibold" style={{ fontSize: 11, color: '#1A3D2B', letterSpacing: '0.02em' }}>Verdix</span>
               </div>
-              <div className="px-3 pt-2 pb-1" style={{ fontSize: 9, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.07em', color: '#9CA3AF' }}>Insights</div>
-              <div className="flex items-center gap-2 px-3 py-1.5 mx-1 rounded-lg" style={{ background: '#EAF3DE' }}>
-                <i className="ti ti-layout-dashboard" style={{ fontSize: 12, color: '#1A3D2B' }} />
-                <span style={{ fontSize: 11, fontWeight: 500, color: '#1A3D2B' }}>Dashboard</span>
-              </div>
-              <div className="flex items-center gap-2 px-3 py-1.5 text-stone"><i className="ti ti-chart-line" style={{ fontSize: 12 }} /><span style={{ fontSize: 11 }}>Leakage trends</span></div>
-              <div className="px-3 pt-3 pb-1" style={{ fontSize: 9, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.07em', color: '#9CA3AF' }}>Verification</div>
-              <div className="flex items-center gap-2 px-3 py-1.5 text-stone"><i className="ti ti-file-check" style={{ fontSize: 12 }} /><span style={{ fontSize: 11 }}>Billing checks</span></div>
-              <div className="flex items-center gap-2 px-3 py-1.5 text-stone"><i className="ti ti-alert-triangle" style={{ fontSize: 12 }} /><span style={{ fontSize: 11 }}>Findings</span></div>
-              <div className="flex items-center gap-2 px-3 py-1.5 text-stone"><i className="ti ti-users" style={{ fontSize: 12 }} /><span style={{ fontSize: 11 }}>Customers</span></div>
-              <div className="px-3 pt-3 pb-1" style={{ fontSize: 9, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.07em', color: '#9CA3AF' }}>Auto-configure</div>
-              <div className="flex items-center gap-2 px-3 py-1.5 text-stone"><i className="ti ti-bolt" style={{ fontSize: 12 }} /><span style={{ fontSize: 11 }}>New contracts</span></div>
-              <div className="flex items-center gap-2 px-3 py-1.5 text-stone"><i className="ti ti-history" style={{ fontSize: 12 }} /><span style={{ fontSize: 11 }}>Audit log</span></div>
-            </div>
-            {/* Main */}
-            <div className="flex-1 overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-2.5 border-b border-forest/8">
-                <span className="font-medium text-ink" style={{ fontSize: 15 }}>Revenue leakage</span>
-                <div className="flex items-center gap-2">
-                  <span className="border border-forest/15 rounded-lg px-2.5 py-1 text-stone" style={{ fontSize: 10 }}>Last 12 months</span>
-                  <div className="w-6 h-6 bg-forest rounded flex items-center justify-center"><i className="ti ti-chart-bar text-white" style={{ fontSize: 11 }} /></div>
-                </div>
-              </div>
-              <div className="flex border-b border-forest/8 px-4">
-                <div className="py-2 px-3 text-forest border-b-2 border-forest font-medium" style={{ fontSize: 11 }}>Leakage overview</div>
-                <div className="py-2 px-3 text-stone" style={{ fontSize: 11 }}>By customer</div>
-                <div className="py-2 px-3 text-stone" style={{ fontSize: 11 }}>By type</div>
-              </div>
-              <div className="p-3 space-y-3">
-                {/* Metric cards */}
-                <div className="grid grid-cols-4 gap-2">
-                  {[
-                    { label: 'Total leakage found', val: '$80,712', sub: '↓ 3 contracts audited', sc: '#A32D2D', mono: true },
-                    { label: 'Open findings', val: '14', sub: '3 critical · 11 high', sc: '#A32D2D', mono: false },
-                    { label: 'Recovered (fixed)', val: '$7,580', sub: '↑ 2 fixes applied', sc: '#27500A', mono: true },
-                    { label: 'Billing accuracy', val: '91%', sub: '↑ +4% this month', sc: '#27500A', mono: false },
-                  ].map(m => (
-                    <div key={m.label} className="rounded-xl p-2.5" style={{ background: '#F5F3EE' }}>
-                      <div style={{ fontSize: 9, color: '#6B6660', marginBottom: 3 }}>{m.label}</div>
-                      <div className={m.mono ? 'font-mono' : ''} style={{ fontSize: 16, fontWeight: 500, color: m.label === 'Open findings' || m.label === 'Billing accuracy' ? '#1C1917' : m.sc }}>{m.val}</div>
-                      <div style={{ fontSize: 9, color: m.sc }}>{m.sub}</div>
+              {[
+                { section: 'Insights', items: [{ icon: 'ti-layout-dashboard', label: 'Dashboard' }, { icon: 'ti-file-certificate', label: 'Contract ARR' }, { icon: 'ti-chart-bar', label: 'Partner trends' }] },
+                { section: 'Verification', items: [{ icon: 'ti-file-check', label: 'Billing checks' }, { icon: 'ti-plus', label: 'New verification' }] },
+                { section: 'Auto-configure', items: [{ icon: 'ti-bolt', label: 'New contracts', active: true }, { icon: 'ti-plus', label: 'Upload contract' }] },
+                { section: 'Partner Recon', items: [{ icon: 'ti-receipt', label: 'Partner checks' }, { icon: 'ti-plus', label: 'New reconciliation' }] },
+              ].map(s => (
+                <div key={s.section}>
+                  <div className="px-3 pt-3 pb-1" style={{ fontSize: 9, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.07em', color: '#9CA3AF' }}>{s.section}</div>
+                  {s.items.map(item => (
+                    <div key={item.label} className="flex items-center gap-2 px-3 py-1.5 mx-1 rounded-lg" style={{ background: (item as {active?: boolean}).active ? '#EAF3DE' : 'transparent' }}>
+                      <i className={`ti ${item.icon}`} style={{ fontSize: 12, color: (item as {active?: boolean}).active ? '#1A3D2B' : '#6B6660' }} />
+                      <span style={{ fontSize: 11, color: (item as {active?: boolean}).active ? '#1A3D2B' : '#6B6660', fontWeight: (item as {active?: boolean}).active ? 500 : 400 }}>{item.label}</span>
                     </div>
                   ))}
                 </div>
-                {/* Two col */}
-                <div className="grid grid-cols-2 gap-2">
-                  {/* Bar chart */}
-                  <div className="border border-forest/8 rounded-xl p-3" style={{ background: '#fff' }}>
-                    <div style={{ fontSize: 11, fontWeight: 500, color: '#1C1917', marginBottom: 2 }}>Leakage by month</div>
-                    <div style={{ fontSize: 9, color: '#6B6660', marginBottom: 8 }}>Contracted vs billed gap over time</div>
-                    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 52, marginBottom: 6 }}>
-                      {[
-                        { h: 18, c: '#EAF3DE', l: 'Jan' }, { h: 20, c: '#EAF3DE', l: 'Feb' }, { h: 16, c: '#EAF3DE', l: 'Mar' },
-                        { h: 22, c: '#EAF3DE', l: 'Apr' }, { h: 18, c: '#EAF3DE', l: 'May' }, { h: 26, c: '#FAEEDA', l: 'Jun' },
-                        { h: 30, c: '#FAEEDA', l: 'Jul' }, { h: 34, c: '#FCEBEB', l: 'Aug' }, { h: 38, c: '#FCEBEB', l: 'Sep' },
-                        { h: 42, c: '#FCEBEB', l: 'Oct' }, { h: 52, c: '#E24B4A', l: 'Nov' }, { h: 36, c: '#EAF3DE', l: 'Dec' },
-                      ].map(b => (
-                        <div key={b.l} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
-                          <div style={{ width: '100%', borderRadius: '2px 2px 0 0', height: b.h, background: b.c }} />
-                          <div style={{ fontSize: 7, color: '#9CA3AF' }}>{b.l}</div>
-                        </div>
-                      ))}
-                    </div>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      {[['#EAF3DE','#C0DD97','Low'],['#FAEEDA','#FAC775','Medium'],['#FCEBEB','#F09595','High'],['#E24B4A','','Critical']].map(([bg,bd,lbl]) => (
-                        <div key={lbl} style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 8, color: '#6B6660' }}>
-                          <div style={{ width: 8, height: 8, borderRadius: 2, background: bg, border: bd ? `0.5px solid ${bd}` : 'none' }} />
-                          {lbl}
-                        </div>
-                      ))}
-                    </div>
+              ))}
+            </div>
+
+            {/* Main content */}
+            <div className="flex-1 overflow-hidden flex flex-col">
+
+              {/* Contract page header with tabs */}
+              <div className="flex items-center justify-between px-5 py-3 border-b border-forest/8">
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: '#1C1917' }}>Acme Enterprise Subscription Agreement</div>
+                  <div style={{ fontSize: 10, color: '#9CA3AF', marginTop: 1 }}>Acme Software AB · VDX-ESA-2026-014</div>
+                </div>
+                <span style={{ fontSize: 10, padding: '3px 10px', background: '#EAF3DE', border: '0.5px solid #C0DD97', color: '#27500A', borderRadius: 999, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <i className="ti ti-circle-check" style={{ fontSize: 11 }} /> Configured in Stripe
+                </span>
+              </div>
+              <div className="flex border-b border-forest/8 px-5">
+                {['Contract · Commercials', 'Revenue model', 'Processed invoices', 'Configured in Stripe'].map((t, i) => (
+                  <div key={t} className="py-2 px-3 text-stone" style={{ fontSize: 11, color: i === 1 ? '#1A3D2B' : '#6B6660', borderBottom: i === 1 ? '2px solid #1A3D2B' : '2px solid transparent', fontWeight: i === 1 ? 500 : 400 }}>{t}</div>
+                ))}
+              </div>
+
+              <div className="p-4 space-y-3 overflow-auto">
+
+                {/* Waterfall card */}
+                <div className="border border-forest/8 rounded-xl p-4" style={{ background: '#fff' }}>
+                  <div className="flex items-center justify-between mb-3">
+                    <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.1em', color: '#6B6660' }}>Configured Billing Schedule</div>
+                    <span style={{ fontSize: 10, color: '#9CA3AF', display: 'flex', alignItems: 'center', gap: 3 }}>
+                      <i className="ti ti-external-link" style={{ fontSize: 10 }} /> Stripe
+                    </span>
                   </div>
-                  {/* At-risk */}
-                  <div className="border border-forest/8 rounded-xl p-3" style={{ background: '#fff' }}>
-                    <div style={{ fontSize: 11, fontWeight: 500, color: '#1C1917', marginBottom: 2 }}>At-risk customers</div>
-                    <div style={{ fontSize: 9, color: '#6B6660', marginBottom: 8 }}>By total leakage amount</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <svg width="64" height="64" viewBox="0 0 64 64">
-                        <circle cx="32" cy="32" r="24" fill="none" stroke="#F1EFE8" strokeWidth="10" />
-                        <circle cx="32" cy="32" r="24" fill="none" stroke="#E24B4A" strokeWidth="10" strokeDasharray="94 57" strokeDashoffset="18" strokeLinecap="round" />
-                        <circle cx="32" cy="32" r="24" fill="none" stroke="#FAC775" strokeWidth="10" strokeDasharray="27 124" strokeDashoffset="-76" strokeLinecap="round" />
-                        <circle cx="32" cy="32" r="24" fill="none" stroke="#C0DD97" strokeWidth="10" strokeDasharray="18 133" strokeDashoffset="-103" strokeLinecap="round" />
-                        <text x="32" y="29" textAnchor="middle" fontSize="7" fill="#6B6660">Total</text>
-                        <text x="32" y="39" textAnchor="middle" fontSize="9" fontWeight="500" fill="#1C1917">$80.7K</text>
-                      </svg>
-                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        {[
-                          { dot: '#E24B4A', name: 'Northgate Capital', val: '$73,132', vc: '#A32D2D' },
-                          { dot: '#FAC775', name: 'Meridian Health', val: '$7,040', vc: '#1C1917' },
-                          { dot: '#C0DD97', name: 'Acme Corp', val: '$540', vc: '#1C1917' },
-                        ].map(r => (
-                          <div key={r.name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                              <div style={{ width: 7, height: 7, borderRadius: '50%', background: r.dot, flexShrink: 0 }} />
-                              <span style={{ fontSize: 10, color: '#1C1917' }}>{r.name}</span>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                              <span className="font-mono" style={{ fontSize: 10, color: r.vc }}>{r.val}</span>
-                              <button style={{ fontSize: 9, padding: '2px 8px', background: '#EAF3DE', border: '0.5px solid #C0DD97', color: '#27500A', borderRadius: 6 }}>Fix</button>
-                            </div>
-                          </div>
-                        ))}
+                  {/*
+                    True waterfall: each bar floats starting at the previous bar's top.
+                    Chart: y=25 (€125k top) → y=145 (€0 baseline). Height = 120px = €125k.
+                    Scale: 120/125 ≈ 0.96 px per €1k.
+                    OF  €12k → height 11.5 → bottom=145 top=133.5 ≈ 133
+                    Y1  €53k → height 50.9 → bottom=133  top=82
+                    Y2  €60k → height 57.6 → bottom=82   top=24  ≈ 25
+                    TCV €125k→ height 120  → bottom=145  top=25 (full reference bar)
+                  */}
+                  <svg viewBox="0 0 680 185" style={{ width: '100%', height: 185, display: 'block' }}>
+                    {/* Grid lines */}
+                    <line x1="60" y1="25" x2="660" y2="25" stroke="#F0F2EE" strokeWidth="0.75" />
+                    <line x1="60" y1="85" x2="660" y2="85" stroke="#F0F2EE" strokeWidth="0.75" />
+                    <line x1="60" y1="145" x2="660" y2="145" stroke="#D1D5DB" strokeWidth="1" />
+                    <text x="54" y="29" textAnchor="end" fontSize="9" fill="#9CA3AF">€125k</text>
+                    <text x="54" y="89" textAnchor="end" fontSize="9" fill="#9CA3AF">€63k</text>
+                    <text x="54" y="149" textAnchor="end" fontSize="9" fill="#9CA3AF">€0</text>
+
+                    {/* Onboarding Fee — amber, floats €0 → €12k */}
+                    <rect x="110" y="133" width="90" height="12" rx="3" fill="#D9A35A" />
+                    {/* Dashed connector: top of OF → bottom of Y1 */}
+                    <line x1="200" y1="133" x2="240" y2="133" stroke="#C9CCC6" strokeWidth="1" strokeDasharray="3 2" />
+
+                    {/* Year 1 — mint green, floats €12k → €65k */}
+                    <rect x="240" y="82" width="110" height="51" rx="3" fill="#73C99B" />
+                    {/* Dashed connector: top of Y1 → bottom of Y2 */}
+                    <line x1="350" y1="82" x2="390" y2="82" stroke="#C9CCC6" strokeWidth="1" strokeDasharray="3 2" />
+
+                    {/* Year 2 — green, floats €65k → €125k */}
+                    <rect x="390" y="25" width="110" height="57" rx="3" fill="#27AE60" />
+
+                    {/* TCV — forest, full reference bar €0 → €125k */}
+                    <rect x="540" y="25" width="110" height="120" rx="3" fill="#1A3D2B" />
+
+                    {/* Increment amount labels above each bar */}
+                    <text x="155" y="126" textAnchor="middle" fontSize="10" fontWeight="600" fill="#3A3A38">€12k</text>
+                    <text x="295" y="75" textAnchor="middle" fontSize="10" fontWeight="600" fill="#3A3A38">€53k</text>
+                    <text x="445" y="18" textAnchor="middle" fontSize="10" fontWeight="600" fill="#3A3A38">€60k</text>
+                    <text x="595" y="18" textAnchor="middle" fontSize="11" fontWeight="700" fill="#3A3A38">€125k</text>
+
+                    {/* X-axis labels */}
+                    <text x="155" y="163" textAnchor="middle" fontSize="10" fill="#6B6660">Onboarding Fee</text>
+                    <text x="155" y="174" textAnchor="middle" fontSize="9" fill="#9CA3AF">27 Jul 26</text>
+                    <text x="295" y="163" textAnchor="middle" fontSize="10" fill="#6B6660">Year 1</text>
+                    <text x="295" y="174" textAnchor="middle" fontSize="9" fill="#9CA3AF">1 Aug 26</text>
+                    <text x="445" y="163" textAnchor="middle" fontSize="10" fill="#6B6660">Year 2</text>
+                    <text x="445" y="174" textAnchor="middle" fontSize="9" fill="#9CA3AF">1 Aug 27</text>
+                    <text x="595" y="163" textAnchor="middle" fontSize="10" fontWeight="700" fill="#1A3D2B">TCV</text>
+                  </svg>
+                  {/* Footer */}
+                  <div className="flex items-center justify-between pt-3 mt-1" style={{ borderTop: '0.5px solid rgba(26,61,43,0.08)' }}>
+                    <div className="flex gap-8">
+                      <div>
+                        <div style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.08em', color: '#9CA3AF' }}>Configured in Stripe</div>
+                        <div className="font-mono" style={{ fontSize: 15, fontWeight: 500, color: '#1C1917' }}>€125,184.00</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.08em', color: '#9CA3AF' }}>Contract TCV</div>
+                        <div className="font-mono" style={{ fontSize: 15, color: '#9CA3AF' }}>€125,184.00</div>
                       </div>
                     </div>
+                    <span style={{ fontSize: 11, fontWeight: 500, color: '#27AE60', display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> Matches contract
+                    </span>
                   </div>
                 </div>
-                {/* Findings table */}
+
+                {/* Billing timeline card */}
                 <div className="border border-forest/8 rounded-xl overflow-hidden" style={{ background: '#fff' }}>
-                  <div className="flex items-center justify-between px-3 py-2 border-b border-forest/8">
+                  <div className="flex items-center justify-between px-4 py-2.5 border-b border-forest/8">
                     <div>
-                      <div style={{ fontSize: 11, fontWeight: 500, color: '#1C1917' }}>Open findings</div>
-                      <div style={{ fontSize: 9, color: '#6B6660' }}>Billing mismatches requiring action</div>
+                      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.1em', color: '#6B6660' }}>Billing Setup</div>
+                      <div style={{ fontSize: 9, color: '#9CA3AF' }}>Live configuration pulled from your Stripe account</div>
                     </div>
-                    <span style={{ fontSize: 9, padding: '2px 8px', background: '#FCEBEB', border: '0.5px solid #F09595', color: '#791F1F', borderRadius: 999, fontWeight: 500 }}>3 critical</span>
+                    <div className="flex items-center gap-3">
+                      <span style={{ fontSize: 9, color: '#9CA3AF', display: 'flex', alignItems: 'center', gap: 3 }}><i className="ti ti-circle-dashed" style={{ fontSize: 11 }} /> Draft</span>
+                      <span style={{ fontSize: 9, color: '#6366F1', display: 'flex', alignItems: 'center', gap: 3 }}><i className="ti ti-test-pipe" style={{ fontSize: 11 }} /> Test mode</span>
+                      <span style={{ fontSize: 9, padding: '2px 8px', background: '#F5F3EE', border: '0.5px solid rgba(26,61,43,0.12)', color: '#6B6660', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 3 }}><i className="ti ti-refresh" style={{ fontSize: 10 }} /> Refresh</span>
+                    </div>
                   </div>
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '0.5px solid rgba(26,61,43,0.08)' }}>
-                        {['Customer','Type','Contracted','Billed','Leakage',''].map(h => (
-                          <th key={h} style={{ fontSize: 9, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.06em', color: '#6B6660', padding: '6px 8px', textAlign: h === 'Leakage' ? 'right' : 'left' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[
-                        { name: 'Northgate Capital', ref: 'CLR-2024-0078', type: 'Overages not set up', tc: '#791F1F', cont: '$0.012/call', billed: '$0.00', leak: '$73,132', btn: '#FCEBEB', btb: '#F09595', btc: '#791F1F', btnTxt: 'Fix now' },
-                        { name: 'Meridian Health', ref: 'CLR-2024-0031', type: 'Discount overhang', tc: '#633806', cont: '$3,200/mo', billed: '$2,560/mo', leak: '$7,040', btn: '#EAF3DE', btb: '#C0DD97', btc: '#27500A', btnTxt: 'Fix' },
-                        { name: 'Acme Corp', ref: 'CLR-2024-0042', type: 'Escalator miss', tc: '#633806', cont: '$4,635/mo', billed: '$4,500/mo', leak: '$540', btn: '#EAF3DE', btb: '#C0DD97', btc: '#27500A', btnTxt: 'Fix' },
-                      ].map((row, i) => (
-                        <tr key={row.name} className="ui-tr" style={{ borderBottom: i < 2 ? '0.5px solid rgba(26,61,43,0.06)' : 'none' }}>
-                          <td style={{ padding: '7px 10px' }}>
-                            <div style={{ fontSize: 10, fontWeight: 500, color: '#1C1917' }}>{row.name}</div>
-                            <div className="font-mono" style={{ fontSize: 8, color: '#6B6660' }}>{row.ref}</div>
-                          </td>
-                          <td style={{ padding: '7px 8px', fontSize: 10, color: row.tc, fontWeight: 500 }}>{row.type}</td>
-                          <td className="font-mono" style={{ padding: '7px 8px', fontSize: 10, color: '#27500A' }}>{row.cont}</td>
-                          <td className="font-mono" style={{ padding: '7px 8px', fontSize: 10, color: '#6B6660', textDecoration: 'line-through' }}>{row.billed}</td>
-                          <td className="font-mono" style={{ padding: '7px 8px', fontSize: 11, fontWeight: 500, color: '#791F1F', textAlign: 'right' }}>{row.leak}</td>
-                          <td style={{ padding: '7px 8px' }}>
-                            <button style={{ fontSize: 9, padding: '3px 8px', background: row.btn, border: `0.5px solid ${row.btb}`, color: row.btc, borderRadius: 6, whiteSpace: 'nowrap' }}>{row.btnTxt}</button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <div className="px-4 pt-3 pb-1" style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.09em', color: '#6B6660' }}>Billing Timeline</div>
+                  <div className="px-4 pb-3">
+                    {[
+                      { label: 'Onboarding Fee', sub: 'Issued 27 Jul 2026', amount: '€12,000.00', status: 'open', statusLabel: 'Awaiting payment', statusColor: '#D97706', dot: 'ring', past: true },
+                      { label: 'Aug 2026', sub: 'Issued 1 Aug 2026', amount: '€4,080.00', status: 'draft', statusLabel: 'Draft', statusColor: '#9CA3AF', dot: 'empty', past: true },
+                      { label: 'Year 1 commitment', sub: 'Issued 1 Aug 2026', amount: '€53,280.00', status: 'draft', statusLabel: 'Draft', statusColor: '#9CA3AF', dot: 'empty', past: true },
+                      { label: 'TODAY', sub: '1 Aug 2026', amount: '', status: '', statusLabel: '', statusColor: '', dot: 'today', past: false },
+                      { label: 'Sep 2026', sub: 'Will be issued 1 Sep 2026', amount: '€4,080.00', status: 'draft', statusLabel: 'Draft', statusColor: '#9CA3AF', dot: 'empty', past: false },
+                      { label: 'Oct 2026', sub: 'Will be issued 1 Oct 2026', amount: '€4,080.00', status: 'draft', statusLabel: 'Draft', statusColor: '#9CA3AF', dot: 'empty', past: false },
+                      { label: 'Nov 2026', sub: 'Will be issued 1 Nov 2026', amount: '€4,080.00', status: 'draft', statusLabel: 'Draft', statusColor: '#9CA3AF', dot: 'empty', past: false },
+                    ].map((row, i) => (
+                      <div key={i} className="flex items-start gap-3 py-2" style={{ borderBottom: i < 6 ? '0.5px solid rgba(26,61,43,0.06)' : 'none' }}>
+                        {/* Timeline dot */}
+                        <div className="flex-shrink-0 flex flex-col items-center" style={{ width: 18, paddingTop: 2 }}>
+                          {row.dot === 'today' ? (
+                            <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#1A3D2B', border: '2px solid #1A3D2B', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#fff' }} />
+                            </div>
+                          ) : row.dot === 'ring' ? (
+                            <div style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid #D97706', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <i className="ti ti-clock" style={{ fontSize: 8, color: '#D97706' }} />
+                            </div>
+                          ) : (
+                            <div style={{ width: 14, height: 14, borderRadius: '50%', border: '1.5px solid #D1D5DB', background: '#fff' }} />
+                          )}
+                        </div>
+                        {/* Content */}
+                        <div className="flex-1">
+                          <div style={{ fontSize: row.dot === 'today' ? 10 : 11, fontWeight: row.dot === 'today' ? 700 : 500, color: row.dot === 'today' ? '#1A3D2B' : '#1C1917', textTransform: row.dot === 'today' ? 'uppercase' : 'none', letterSpacing: row.dot === 'today' ? '.06em' : 'normal' }}>{row.label}</div>
+                          <div style={{ fontSize: 9, color: '#9CA3AF' }}>{row.sub}</div>
+                        </div>
+                        {/* Amount + status */}
+                        {row.amount && (
+                          <div className="text-right flex-shrink-0">
+                            <div className="font-mono" style={{ fontSize: 11, fontWeight: 500, color: '#1C1917' }}>{row.amount}</div>
+                            <div style={{ fontSize: 9, color: row.statusColor, display: 'flex', alignItems: 'center', gap: 2, justifyContent: 'flex-end' }}>
+                              <i className={`ti ${row.status === 'open' ? 'ti-clock' : 'ti-circle-dashed'}`} style={{ fontSize: 10 }} />
+                              {row.statusLabel}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
+
               </div>
             </div>
           </div>
@@ -1049,20 +1092,15 @@ function CTA() {
     <section className="px-6 py-24">
       <div className="max-w-3xl mx-auto">
         <div className="rounded-3xl p-8 md:p-14 text-center" style={{ background: '#EAF3DE', border: '0.5px solid #C0DD97' }}>
-          <h2 className="font-display font-light text-3xl mb-4" style={{ color: '#1A3D2B' }}>Find the revenue your billing<br />system is missing</h2>
-          <p className="leading-relaxed mb-10" style={{ color: '#27500A' }}>Upload a signed contract and a billing export. We&apos;ll show you exactly where they diverge — and fix it. Or validate a partner invoice against your agreement before you pay.</p>
+          <h2 className="font-display font-light text-3xl mb-4" style={{ color: '#1A3D2B' }}>From signed agreement to billing and reconciliation—automatically</h2>
+          <p className="leading-relaxed mb-10" style={{ color: '#27500A' }}>Connect a customer or partner agreement, your usage endpoint, and your preferred billing or payment system. Verdix pulls the required operational data, creates customer billing schedules, sends invoice instructions to your existing stack, and validates partner charges before payment.</p>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
             <Link href="/signup" className="inline-block bg-forest text-white font-medium px-8 py-4 rounded-xl hover:bg-sage transition-colors shadow-md text-sm">
-              Check your billing accuracy →
+              Automate your first agreement →
             </Link>
             <Link href="/design-partner" className="inline-block font-medium px-8 py-4 rounded-xl text-sm" style={{ background: '#EAF3DE', color: '#1A3D2B', border: '0.5px solid #C0DD97' }}>
               Apply as a Design Partner →
             </Link>
-          </div>
-          <div className="flex items-center justify-center gap-8 mt-6 text-xs" style={{ color: '#3B6D11' }}>
-            <span className="flex items-center gap-1.5"><i className="ti ti-credit-card-off" style={{ fontSize: 13 }} /> No credit card</span>
-            <span className="flex items-center gap-1.5"><i className="ti ti-shield" style={{ fontSize: 13 }} /> EU data residency</span>
-            <span className="flex items-center gap-1.5"><i className="ti ti-trash" style={{ fontSize: 13 }} /> Delete anytime</span>
           </div>
         </div>
       </div>
@@ -1088,7 +1126,7 @@ function Footer() {
         <div className="text-xs text-stone">© 2026 Verdix. All rights reserved.</div>
       </div>
       <div className="max-w-6xl mx-auto mt-5 pt-5 border-t border-forest/8 text-center text-xs text-stone/60">
-        Verdix is a product by Lynora AB · Org. nr 559516-1190 · Vallentuna, Sweden
+        Verdix is a product by Lynora AB · Org. nr 559516-1190 · Sweden
       </div>
     </footer>
   )

@@ -23,9 +23,6 @@ function Nav() {
         </Link>
         <div className="flex items-center gap-4">
           <Link href="/login" className="text-sm font-medium text-stone hover:text-forest transition-colors">Sign in</Link>
-          <Link href="/signup" className="bg-forest text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-sage transition-colors shadow-sm">
-            Start free check →
-          </Link>
         </div>
       </div>
     </nav>
@@ -49,7 +46,7 @@ function Footer() {
         <div className="text-xs text-stone">© 2026 Verdix. All rights reserved.</div>
       </div>
       <div className="max-w-6xl mx-auto mt-5 pt-5 border-t border-forest/8 text-center text-xs text-stone/60">
-        Verdix is a product by Lynora AB · Org. nr 559516-1190 · Vallentuna, Sweden
+        Verdix is a product by Lynora AB · Org. nr 559516-1190 · Sweden
       </div>
     </footer>
   )

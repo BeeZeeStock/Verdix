@@ -23,7 +23,7 @@ export default function PrivacyPage() {
           {[
             {
               title: '1. Who we are',
-              body: 'Verdix is a product of Lynora AB ("Lynora", "we", "us"), the data controller for personal data processed through the Verdix Revenue Intelligence platform. Lynora AB is incorporated in Sweden (Org. nr 559516-1190), with registered offices in Vallentuna, Sweden. Our primary data infrastructure is hosted within the European Union.',
+              body: 'Verdix is a product of Lynora AB ("Lynora", "we", "us"), the data controller for personal data processed through the Verdix Revenue Intelligence platform. Lynora AB is incorporated in Sweden (Org. nr 559516-1190), with registered offices in Sweden. Our primary data infrastructure is hosted within the European Union.',
             },
             {
               title: '2. What data we collect',
@@ -55,7 +55,7 @@ export default function PrivacyPage() {
             },
             {
               title: '9. Contact',
-              body: 'For privacy enquiries: bilal@lynoraai.com. Postal: Lynora AB, Vallentuna, Sweden. Verdix is a trading name of Lynora AB (Org. nr 559516-1190).',
+              body: 'For privacy enquiries: bilal@lynoraai.com. Postal: Lynora AB, Sweden. Verdix is a trading name of Lynora AB (Org. nr 559516-1190).',
             },
           ].map(section => (
             <section key={section.title}>

@@ -217,7 +217,7 @@ export default function PricingPage() {
       </main>
 
       <footer className="border-t border-forest/10 py-8 text-center">
-        <p className="text-xs text-stone/60">Verdix is a product by Lynora AB · Org. nr 559516-1190 · Vallentuna, Sweden</p>
+        <p className="text-xs text-stone/60">Verdix is a product by Lynora AB · Org. nr 559516-1190 · Sweden</p>
         <div className="flex items-center justify-center gap-4 mt-3 text-xs text-stone">
           <Link href="/privacy" className="hover:text-forest transition-colors">Privacy Policy</Link>
           <Link href="/terms" className="hover:text-forest transition-colors">Terms of Service</Link>
