@@ -75,12 +75,17 @@ function SignupContent() {
         const checkoutRes = await fetch('/api/billing/checkout', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ planId: plan }),
+          body: JSON.stringify({ planId: resolvedPlan }),
         })
-        if (checkoutRes.ok) {
-          const { url } = await checkoutRes.json()
-          if (url) { window.location.href = url; return }
+        const checkoutData = await checkoutRes.json()
+        if (checkoutData.url) {
+          window.location.href = checkoutData.url
+          return
         }
+        // Checkout failed — show the error and stay on signup page so user knows
+        setError(checkoutData.error ?? 'Could not start checkout. Please try upgrading from your billing page.')
+        router.push('/dashboard')
+        return
       }
 
       router.push('/dashboard')

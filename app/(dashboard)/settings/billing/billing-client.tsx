@@ -52,8 +52,9 @@ function BillingPageInner() {
   const [entSent, setEntSent]             = useState(false)
   const [portalLoading, setPortalLoading] = useState(false)
 
-  const upgraded  = params.get('upgraded') === '1'
-  const cancelled = params.get('cancelled') === '1'
+  const upgraded      = params.get('upgraded') === '1'
+  const cancelled     = params.get('cancelled') === '1'
+  const checkoutError = params.get('checkout_error')
 
   useEffect(() => {
     fetch('/api/billing/status')
@@ -137,6 +138,11 @@ function BillingPageInner() {
       {cancelled && (
         <div className="mb-6 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-700">
           Upgrade cancelled. Your current plan is unchanged.
+        </div>
+      )}
+      {checkoutError && (
+        <div className="mb-6 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+          Checkout could not be started: <span className="font-mono">{checkoutError}</span>. Please contact support or try again.
         </div>
       )}
 

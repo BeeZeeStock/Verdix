@@ -53,12 +53,12 @@ export async function GET(req: NextRequest) {
 
     if (!stripeKey) {
       console.error('[checkout-redirect] No Stripe key available')
-      return NextResponse.redirect(new URL('/settings/billing?cancelled=1', base()))
+      return NextResponse.redirect(new URL('/settings/billing?checkout_error=no_key', base()))
     }
 
     if (liveActive && stripeKey.startsWith('sk_test_')) {
       console.error('[checkout-redirect] Live checkout active but STRIPE_SECRET_KEY_LIVE not set')
-      return NextResponse.redirect(new URL('/settings/billing?cancelled=1', base()))
+      return NextResponse.redirect(new URL('/settings/billing?checkout_error=wrong_key', base()))
     }
 
     const { default: Stripe } = await import('stripe')
@@ -70,7 +70,7 @@ export async function GET(req: NextRequest) {
 
     if (!priceId) {
       console.error(`[checkout-redirect] No price for plan "${planId}" in ${liveActive ? 'live' : 'sandbox'} mode`)
-      return NextResponse.redirect(new URL('/settings/billing', base()))
+      return NextResponse.redirect(new URL('/settings/billing?checkout_error=no_price', base()))
     }
 
     // Verify or create customer in the correct Stripe account
@@ -95,10 +95,13 @@ export async function GET(req: NextRequest) {
         metadata: { verdix_org_id: org.orgId },
       })
       customerId = customer.id
+      // Upsert — brand-new users may not have an org_subscriptions row yet
       await supabaseServer
         .from('org_subscriptions')
-        .update({ stripe_customer_id: customerId, updated_at: new Date().toISOString() })
-        .eq('org_id', org.orgId)
+        .upsert(
+          { org_id: org.orgId, stripe_customer_id: customerId, plan_id: 'trial', updated_at: new Date().toISOString() },
+          { onConflict: 'org_id' }
+        )
     }
 
     const returnUrl = `${base()}/settings/billing`
@@ -124,7 +127,8 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.redirect(checkoutSession.url!)
   } catch (err) {
-    console.error('[checkout-redirect]', err)
-    return NextResponse.redirect(new URL('/settings/billing?cancelled=1', base()))
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[checkout-redirect] unexpected error:', msg)
+    return NextResponse.redirect(new URL(`/settings/billing?checkout_error=${encodeURIComponent(msg.slice(0, 80))}`, base()))
   }
 }
