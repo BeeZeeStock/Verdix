@@ -1,20 +1,35 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { VerdixLogo } from '@/components/VerdixLogo'
+
+const DEMO_ARTIFACT_URL = 'https://claude.ai/code/artifact/bac31a88-3fda-4886-9971-a5443f9040a6'
 
 /* ─────────────── NAV ─────────────── */
 function Nav() {
   const [shadow, setShadow] = useState(false)
+  const [resOpen, setResOpen] = useState(false)
+  const navRef = useRef<HTMLElement>(null)
+
   useEffect(() => {
-    const fn = () => setShadow(window.scrollY > 16)
-    window.addEventListener('scroll', fn)
-    return () => window.removeEventListener('scroll', fn)
+    const onScroll = () => setShadow(window.scrollY > 16)
+    window.addEventListener('scroll', onScroll)
+    return () => window.removeEventListener('scroll', onScroll)
   }, [])
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (navRef.current && !navRef.current.contains(e.target as Node)) setResOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [])
+
   return (
     <nav
       id="nav"
+      ref={navRef}
       className="sticky top-0 z-50 bg-cream/95 backdrop-blur-md border-b border-forest/10 px-6 py-3.5"
       style={{ boxShadow: shadow ? '0 1px 8px rgba(26,61,43,.08)' : 'none' }}
     >
@@ -29,6 +44,118 @@ function Nav() {
           <a href="#partner" className="hover:text-forest transition-colors">Partner reconciliation</a>
           <a href="#security" className="hover:text-forest transition-colors">Security</a>
           <a href="#pricing" className="hover:text-forest transition-colors">Pricing</a>
+
+          {/* Resources dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setResOpen(v => !v)}
+              className={`flex items-center gap-1 transition-colors ${resOpen ? 'text-forest' : 'hover:text-forest'}`}
+            >
+              Resources
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                style={{ transform: resOpen ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}>
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+
+            {resOpen && (
+              <div
+                className="absolute top-full right-0 mt-3 bg-white border border-forest/10 rounded-2xl shadow-2xl overflow-hidden"
+                style={{ width: 680, boxShadow: '0 20px 60px rgba(26,61,43,.14), 0 4px 12px rgba(26,61,43,.06)' }}
+              >
+                <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr 200px' }}>
+
+                  {/* Left – Resource Centre card */}
+                  <div className="p-6 flex flex-col justify-between border-r border-forest/8" style={{ background: '#FAFAF8' }}>
+                    <div>
+                      <div className="w-9 h-9 rounded-xl flex items-center justify-center mb-4" style={{ background: '#EAF3DE' }}>
+                        <VerdixLogo size={20} />
+                      </div>
+                      <div className="text-sm font-semibold text-ink mb-2">Resource Centre</div>
+                      <p className="text-xs text-stone leading-relaxed">
+                        Learn how modern contract billing and partner reconciliation works for B2B/B2B2C companies.
+                      </p>
+                    </div>
+                    <a href="#" className="mt-5 flex items-center gap-1.5 text-xs font-semibold text-forest transition-all hover:gap-2.5">
+                      Explore resources
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
+                    </a>
+                  </div>
+
+                  {/* Middle – Explore links */}
+                  <div className="p-6 border-r border-forest/8">
+                    <div className="text-[10px] font-semibold uppercase tracking-widest text-stone mb-5">Explore</div>
+                    <div className="space-y-4">
+                      {([
+                        { icon: 'ti-article',                   label: 'Blog',         desc: 'News and updates from Verdix' },
+                        { icon: 'ti-device-desktop-analytics',  label: 'Demos',        desc: 'See Verdix in action', href: DEMO_ARTIFACT_URL },
+                        { icon: 'ti-book',                      label: 'Guides',       desc: 'How-to guides and documentation' },
+                        { icon: 'ti-users',                     label: 'Case studies', desc: 'How teams use Verdix', soon: true },
+                      ] as { icon: string; label: string; desc: string; href?: string; soon?: boolean }[]).map(item => (
+                        <a
+                          key={item.label}
+                          href={item.href ?? '#'}
+                          target={item.href ? '_blank' : undefined}
+                          rel={item.href ? 'noopener noreferrer' : undefined}
+                          className="flex items-start gap-3 group"
+                          onClick={() => setResOpen(false)}
+                        >
+                          <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: '#EAF3DE' }}>
+                            <i className={`ti ${item.icon}`} style={{ fontSize: 15, color: '#1A3D2B' }} />
+                          </div>
+                          <div>
+                            <div className="text-sm font-medium text-ink group-hover:text-forest transition-colors flex items-center gap-2">
+                              {item.label}
+                              {item.soon && (
+                                <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded uppercase tracking-wider" style={{ background: 'rgba(26,61,43,.07)', color: '#9CA3AF' }}>Soon</span>
+                              )}
+                            </div>
+                            <div className="text-xs text-stone mt-0.5">{item.desc}</div>
+                          </div>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Right – Featured demo card */}
+                  <div className="p-5">
+                    <div className="text-[10px] font-semibold uppercase tracking-widest text-stone mb-4">Featured</div>
+                    <a
+                      href={DEMO_ARTIFACT_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block group"
+                      onClick={() => setResOpen(false)}
+                    >
+                      {/* Preview tile */}
+                      <div
+                        className="rounded-xl mb-3 flex flex-col items-center justify-center gap-2 transition-opacity group-hover:opacity-90"
+                        style={{ background: 'linear-gradient(135deg,#1A3D2B 0%,#2D6344 100%)', height: 110 }}
+                      >
+                        <svg width="32" height="32" viewBox="0 0 28 28" fill="none">
+                          <rect width="28" height="28" rx="7" fill="rgba(255,255,255,0.15)" />
+                          <path d="M7.5 7L11 7L14 18.5L17 7L20.5 7L14 22Z" fill="#fff" />
+                          <rect x="11" y="24" width="6" height="1.5" rx=".75" fill="#73C99B" />
+                        </svg>
+                        <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'rgba(255,255,255,.6)' }}>
+                          Interactive Demo
+                        </span>
+                      </div>
+                      <div className="text-[10px] font-semibold uppercase tracking-widest mb-1" style={{ color: '#4A7C59' }}>Demo</div>
+                      <div className="text-sm font-semibold text-ink group-hover:text-forest transition-colors leading-snug mb-1">
+                        Contract to billing schedule
+                      </div>
+                      <div className="text-xs text-stone leading-relaxed">
+                        5-step walkthrough: upload, PII review, term extraction, waterfall and billing timeline.
+                      </div>
+                    </a>
+                  </div>
+
+                </div>
+              </div>
+            )}
+          </div>
+
           <Link href="/login" className="hover:text-forest transition-colors">Sign in</Link>
         </div>
       </div>
