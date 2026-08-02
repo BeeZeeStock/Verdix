@@ -44,7 +44,7 @@ function Hero() {
       <div className="max-w-4xl mx-auto text-center relative">
         <div className="inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-medium mb-8" style={{ color: '#27500A', background: '#EAF3DE', border: '1px solid #C0DD97' }}>
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#27500A' }} />
-          Contract-to-cash and partner reconciliation for B2B SaaS
+          Contract-to-cash and partner reconciliation for B2B/B2B2C companies requiring EU residency & GDPR compliance
         </div>
         <h1 className="font-display font-light text-ink leading-tight mb-5" style={{ fontSize: 'clamp(2.2rem,4.5vw,3.4rem)' }}>
           Automate bespoke contract billing—<br /><span className="text-forest">without replacing your finance stack.</span>
