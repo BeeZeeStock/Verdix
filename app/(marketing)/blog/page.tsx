@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'why-contract-to-cash-is-still-manual',
+    title: 'Why contract-to-cash is still a manual workflow in modern SaaS',
+    excerpt: 'Modern SaaS companies use CRM, CLM, billing and payment software, yet bespoke contract-to-cash workflows remain manual. Here is why.',
+    category: 'Finance operations · Revenue',
+    date: 'July 2026',
+    readTime: '8 min read',
+  },
+  {
     slug: 'why-bespoke-enterprise-contracts-are-difficult-to-bill',
     title: 'Why bespoke enterprise contracts are still difficult to bill',
     excerpt: 'Bespoke SaaS contracts enable flexible enterprise deals, but they create complex billing work across Finance, RevOps and Product. Here is why.',
