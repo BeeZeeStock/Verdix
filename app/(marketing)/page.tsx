@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { VerdixLogo } from '@/components/VerdixLogo'
 
-const DEMO_ARTIFACT_URL = 'https://claude.ai/code/artifact/bac31a88-3fda-4886-9971-a5443f9040a6'
+const DEMO_ARTIFACT_URL = '/demos/contract-to-billing.html'
 
 /* ─────────────── NAV ─────────────── */
 function Nav() {

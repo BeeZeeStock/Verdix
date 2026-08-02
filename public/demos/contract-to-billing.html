@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verdix — Contract to Billing Demo</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --f:#1A3D2B;--sg:#4A7C59;--ink:#1A1A18;--st:#6B6660;
+  --cr:#F5F0E8;--mt:#EAF3DE;--wh:#fff;--sb:#FAFAF8;
+  --b:rgba(26,61,43,.10);--bm:rgba(26,61,43,.20)
+}
+html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:var(--ink);background:var(--cr)}
+#app{display:flex;height:100vh;overflow:hidden}
+
+/* ── Sidebar ── */
+#sb{width:210px;flex-shrink:0;background:var(--sb);border-right:1px solid var(--b);display:flex;flex-direction:column;height:100%;overflow:hidden}
+.sb-logo{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--b)}
+.sb-logo-txt{font-weight:600;font-size:15px;color:var(--f);letter-spacing:.02em}
+.sb-nav{flex:1;overflow-y:auto;padding:6px 0}
+.sb-s{padding:10px 16px 3px;font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#9CA3AF}
+.ni{display:flex;align-items:center;gap:9px;margin:1px 7px;padding:7px 11px;border-radius:8px;font-size:13px;color:var(--st)}
+.ni.a{background:var(--mt);color:var(--f);font-weight:500}
+.ni svg{width:15px;height:15px;flex-shrink:0;opacity:.6}
+.ni.a svg{opacity:1}
+.sb-user{border-top:1px solid var(--b);padding:11px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0}
+.av{width:26px;height:26px;border-radius:50%;background:var(--f);color:#fff;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.sb-un{font-size:12px;font-weight:500;color:var(--ink)}
+.sb-ue{font-size:10px;color:var(--st)}
+
+/* ── Main ── */
+#main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+
+/* Step bar */
+#stepbar{padding:9px 20px;border-bottom:1px solid var(--b);background:var(--wh);display:flex;align-items:center;gap:2px;flex-shrink:0}
+.sp{display:flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;font-size:10.5px;font-weight:600;color:#B0A8A0;transition:all .3s;white-space:nowrap}
+.sp.a{background:var(--mt);color:var(--f)}
+.sp.d{color:var(--sg)}
+.sn{width:16px;height:16px;border-radius:50%;border:1.5px solid currentColor;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;flex-shrink:0}
+.sp.a .sn{background:var(--f);border-color:var(--f);color:#fff}
+.sp.d .sn{background:var(--mt);border-color:var(--sg);color:var(--sg)}
+.sc{flex:1;height:1px;background:var(--bm);min-width:8px;max-width:32px}
+
+/* Slides */
+#sa{flex:1;position:relative;overflow:hidden}
+.slide{position:absolute;inset:0;padding:20px 24px;overflow-y:auto;opacity:0;transform:translateX(28px);pointer-events:none;transition:opacity .32s ease,transform .32s ease}
+.slide.a{opacity:1;transform:none;pointer-events:auto}
+.slide.ex{opacity:0;transform:translateX(-28px)}
+
+/* Controls */
+#ctrl{padding:10px 20px;background:var(--wh);border-top:1px solid var(--b);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.cb{display:flex;align-items:center;gap:6px;padding:7px 16px;border-radius:10px;font-size:12.5px;font-weight:500;cursor:pointer;border:none;transition:all .15s}
+.cb.g{background:transparent;color:var(--st);border:1px solid var(--bm)}
+.cb.g:hover{background:var(--cr)}
+.cb.g:disabled{opacity:.3;pointer-events:none}
+.cb.p{background:var(--f);color:#fff}
+.cb.p:hover{background:var(--sg)}
+.dots{display:flex;gap:5px;align-items:center}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--bm);cursor:pointer;transition:all .2s}
+.dot.a{background:var(--f);width:20px;border-radius:3px}
+
+/* ── Shared ── */
+.card{background:var(--wh);border:1px solid var(--b);border-radius:16px}
+.pg-back{font-size:12px;color:var(--st);margin-bottom:7px;display:flex;align-items:center;gap:4px}
+.pg-back svg{width:11px;height:11px}
+.pg-title{font-family:Georgia,'Times New Roman',serif;font-weight:300;font-size:21px;color:var(--ink);margin-bottom:3px}
+.pg-sub{font-size:13px;color:var(--st);margin-bottom:16px}
+.lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--st)}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:600;padding:4px 10px;border-radius:999px;background:#EEF9F2;color:#1A3D2B;border:1px solid rgba(74,124,89,.25)}
+
+/* ── S1: Upload ── */
+.dz{border:2px dashed var(--bm);border-radius:14px;padding:34px 20px;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:150px;transition:all .3s}
+.dz.filled{border-color:var(--f);background:#F2FAF2}
+.dz-hint{font-size:13px;color:var(--st)}
+.dz-sm{font-size:11px;color:rgba(107,102,96,.45)}
+.sec-hd{font-size:12px;font-weight:500;color:var(--ink);display:flex;align-items:center;gap:6px;margin-bottom:13px}
+.sec-hd svg{width:14px;height:14px;color:var(--f)}
+.up-btn{width:100%;margin-top:16px;padding:11px;border-radius:12px;border:none;font-size:13px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:7px;transition:all .2s}
+.up-btn.off{background:rgba(26,61,43,.12);color:rgba(107,102,96,.5);cursor:default}
+.up-btn.on{background:var(--f);color:#fff;cursor:pointer}
+
+/* ── S2: PII Review ── */
+.pii-table{width:100%;border-collapse:collapse}
+.pii-table th{text-align:left;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.09em;color:var(--st);padding:10px 16px;border-bottom:1px solid var(--b)}
+.pii-table td{padding:10px 16px;border-bottom:1px solid rgba(26,61,43,.06);font-size:13px}
+.pii-table tr:last-child td{border-bottom:0}
+.pii-table tr{transition:background .15s}
+.pii-table tr:hover td{background:rgba(26,61,43,.02)}
+.type-pill{font-size:10px;font-weight:600;padding:3px 8px;border-radius:999px}
+.mono{font-family:ui-monospace,monospace;font-size:12px}
+.conf{font-size:12px;color:var(--st)}
+.act-row{display:flex;align-items:center;gap:6px;justify-content:flex-end}
+.appr-sm{font-size:11px;background:rgba(26,61,43,.08);color:var(--f);border:none;padding:4px 10px;border-radius:8px;cursor:pointer;transition:all .2s;font-weight:500}
+.appr-sm:hover{background:rgba(26,61,43,.15)}
+.appr-done{font-size:11px;color:var(--sg);display:flex;align-items:center;gap:4px;font-weight:500}
+.icon-btn{background:none;border:none;cursor:pointer;color:var(--st);opacity:.6;padding:2px;line-height:1;font-size:13px;transition:opacity .15s}
+.icon-btn:hover{opacity:1}
+.pii-cta{display:flex;gap:10px;margin-top:14px}
+.pii-note{font-size:11px;color:var(--st);text-align:center;margin-top:8px}
+@keyframes apprAnim{from{transform:scale(.7);opacity:0}to{transform:scale(1);opacity:1}}
+.appr-in{animation:apprAnim .2s ease forwards}
+
+/* ── S3: Processing ── */
+.proc-wrap{max-width:460px;margin:0 auto;padding-top:4px}
+.proc-hd{text-align:center;margin-bottom:24px}
+.proc-title{font-family:Georgia,'Times New Roman',serif;font-weight:300;font-size:21px}
+.proc-file{font-size:13px;color:var(--st);margin-top:3px}
+.srow{display:flex;align-items:flex-start;gap:12px;margin-bottom:16px}
+.sico{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;margin-top:1px;transition:all .25s}
+.sico.done{background:var(--mt);color:var(--sg)}
+.sico.run{background:var(--f);color:#fff}
+.sico.wait{background:rgba(26,61,43,.07);color:rgba(107,102,96,.3)}
+.srow-b{flex:1;padding-top:3px}
+.srow-l{font-size:13px;font-weight:500;color:var(--ink);transition:color .3s}
+.srow-l.dim{color:rgba(107,102,96,.38)}
+.srow-d{font-size:11px;color:var(--st);margin-top:2px;line-height:1.5}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{display:inline-block;animation:spin .7s linear infinite}
+@keyframes popIn{0%{transform:scale(.4);opacity:0}70%{transform:scale(1.2)}100%{transform:scale(1);opacity:1}}
+.popIn{animation:popIn .25s ease forwards}
+
+/* ── S4: Extracted Terms ── */
+.cfg{display:grid;grid-template-columns:178px 1fr;gap:14px;align-items:start}
+.pdf-t{background:var(--wh);border:1px solid var(--b);border-radius:12px;overflow:hidden;aspect-ratio:210/297;padding:13px 12px;display:flex;flex-direction:column;gap:5px}
+.pl{height:6px;border-radius:3px;background:#E8E4DF}
+.pl.h{height:9px;background:#D5D0CB;width:58%}
+.pl.s{width:52%}.pl.m{width:76%}.pl.f{width:100%}
+.psec{margin-top:4px;padding-top:5px;border-top:1px solid #EDE9E4;display:flex;flex-direction:column;gap:5px}
+.pr{display:flex;gap:5px;align-items:center}
+.prb{height:7px;border-radius:2px;background:rgba(26,61,43,.13)}
+.pii-tag{font-size:7.5px;font-weight:700;text-transform:uppercase;background:rgba(26,61,43,.10);color:var(--sg);padding:1px 5px;border-radius:3px;flex-shrink:0}
+.tabs{display:flex;border-bottom:1px solid var(--b);margin-bottom:13px}
+.tb{font-size:12px;font-weight:500;padding:8px 13px;border:none;background:none;color:var(--st);border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer;transition:all .15s}
+.tb:hover{color:var(--f)}
+.tb.a{color:var(--f);border-bottom-color:var(--f)}
+.summ{background:#F6FAF3;border:1px solid rgba(74,124,89,.18);border-radius:12px;padding:12px 14px;margin-bottom:13px;font-size:12px;color:var(--st);line-height:1.65}
+.sg{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;margin-bottom:14px}
+.st .lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--st);margin-bottom:3px}
+.st .val{font-size:13px;font-weight:500;color:var(--ink);display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.chip{font-size:9px;font-weight:600;padding:2px 6px;border-radius:999px;background:var(--mt);color:var(--sg);border:1px solid rgba(74,124,89,.2)}
+.wf-card{background:var(--wh);border:1px solid var(--b);border-radius:14px;padding:16px}
+.wf-head{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--st);margin-bottom:12px}
+#wf-canvas{width:100%;height:160px;display:block}
+
+/* ── S5: Billing Timeline ── */
+.btl{overflow-y:auto;max-height:calc(100vh - 250px)}
+.btl-hd{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:var(--st);padding:12px 20px 10px}
+.btl-row{display:flex;align-items:stretch;padding-right:20px}
+.btl-trk{width:52px;flex-shrink:0;display:flex;flex-direction:column;align-items:center}
+.btl-line{flex:1;width:1px;background:#E5E5E2;margin:0 auto;min-height:8px}
+.btl-info{flex:1;padding:10px 0;min-height:46px}
+.btl-iname{font-size:14px;font-weight:600;color:var(--ink)}
+.btl-iwhen{font-size:12px;color:var(--st);margin-top:2px}
+.btl-iwhen b{color:#6B6660;font-weight:400}
+.btl-right{display:flex;align-items:center;gap:12px;padding:10px 0;white-space:nowrap;min-width:220px;justify-content:flex-end}
+.btl-amt{font-size:14px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}
+.btl-badge{display:flex;align-items:center;gap:5px;font-size:12px;font-weight:500;min-width:130px;justify-content:flex-end}
+.btl-badge.paid{color:var(--sg)}
+.btl-badge.awpay{color:#D97706}
+.btl-badge.draft{color:#B0A8A0}
+.btl-today-info{flex:1;padding:7px 0}
+.btl-today-lbl{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--ink)}
+.btl-today-dt{font-size:12px;color:var(--st);margin-top:1px}
+.btl-more{padding:6px 20px 6px 52px;font-size:11px;color:var(--st);font-style:italic}
+.btl-ramp{font-size:10px;color:var(--sg);font-weight:600;margin-left:6px;font-style:normal}
+.appr-btn{width:100%;margin-top:14px;padding:12px;border-radius:12px;border:none;background:var(--f);color:#fff;font-size:13px;font-weight:500;cursor:pointer;transition:background .15s;display:flex;align-items:center;justify-content:center;gap:7px}
+.appr-btn:hover{background:var(--sg)}
+.appr-btn.done{background:var(--sg);pointer-events:none}
+.ok-msg{display:none;background:var(--mt);border:1px solid rgba(74,124,89,.3);border-radius:12px;padding:13px 16px;margin-top:11px;font-size:13px;font-weight:500;color:var(--f);align-items:center;gap:9px}
+.ok-msg.show{display:flex}
+@keyframes fu{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.fu{animation:fu .35s ease forwards}
+</style>
+</head>
+<body>
+<div id="app">
+<!-- Sidebar -->
+<aside id="sb">
+  <div class="sb-logo">
+    <svg width="26" height="26" viewBox="0 0 28 28" fill="none"><rect width="28" height="28" rx="7" fill="#1A3D2B"/><path d="M7.5 7L11 7L14 18.5L17 7L20.5 7L14 22Z" fill="#fff"/><rect x="11" y="24" width="6" height="1.5" rx=".75" fill="#73C99B"/></svg>
+    <span class="sb-logo-txt">Verdix</span>
+  </div>
+  <nav class="sb-nav">
+    <div class="sb-s">Insights</div>
+    <div class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Dashboard</div>
+    <div class="sb-s">Auto-configure</div>
+    <div class="ni" id="ni-cfg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>New contracts</div>
+    <div class="ni a" id="ni-up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Upload contract</div>
+    <div class="sb-s">Partner Recon</div>
+    <div class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg>Partner checks</div>
+    <div class="sb-s">Account</div>
+    <div class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</div>
+  </nav>
+  <div class="sb-user">
+    <div class="av">S</div>
+    <div><div class="sb-un">Sara Lindqvist</div><div class="sb-ue">sara@yourcompany.com</div></div>
+  </div>
+</aside>
+
+<!-- Main -->
+<div id="main">
+  <div id="stepbar">
+    <div class="sp a" id="sp1"><div class="sn">1</div>Upload</div>
+    <div class="sc"></div>
+    <div class="sp" id="sp2"><div class="sn">2</div>PII Review</div>
+    <div class="sc"></div>
+    <div class="sp" id="sp3"><div class="sn">3</div>Extracting</div>
+    <div class="sc"></div>
+    <div class="sp" id="sp4"><div class="sn">4</div>Review terms</div>
+    <div class="sc"></div>
+    <div class="sp" id="sp5"><div class="sn">5</div>Billing schedule</div>
+  </div>
+
+  <div id="sa">
+    <!-- S1: Upload -->
+    <div class="slide a" id="s1">
+      <div class="pg-back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg> Auto-configure</div>
+      <div class="pg-title">Upload new contract</div>
+      <div class="pg-sub">Verdix will extract commercial terms and propose billing configuration</div>
+      <div class="card" style="padding:22px">
+        <div class="sec-hd">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Manual upload
+        </div>
+        <div class="dz" id="dz">
+          <div id="dz-e">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="rgba(26,61,43,.28)" stroke-width="1.4" style="margin-bottom:8px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            <div class="dz-hint">Drop your signed contract PDF here</div>
+            <div class="dz-sm">or click to browse · PDF only</div>
+          </div>
+          <div id="dz-f" style="display:none;flex-direction:column;align-items:center;gap:8px">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4A7C59" stroke-width="1.5" style="margin-bottom:2px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="9 15 11 17 15 13"/></svg>
+            <div style="font-size:13px;font-weight:500;color:var(--ink)">Nexaline_SaaS_Master_Agreement.pdf</div>
+            <div style="font-size:11px;color:var(--st)">512 KB · PDF · Ready to upload</div>
+          </div>
+        </div>
+        <button class="up-btn off" id="up-btn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/></svg>
+          Upload and process →
+        </button>
+      </div>
+    </div>
+
+    <!-- S2: PII Review -->
+    <div class="slide" id="s2">
+      <div class="pg-back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg> Upload contract</div>
+      <div class="pg-title">PII Review</div>
+      <div class="pg-sub">These values were detected in your contract. Approve the ones that should be masked before the document is sent to AI, or remove false positives.</div>
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--b);display:flex;align-items:center;justify-content:space-between">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:13px;font-weight:500">Detected entities</span>
+            <span style="font-size:12px;color:var(--st)" id="pii-count">3 approved · 2 pending</span>
+          </div>
+          <span style="font-size:11px;color:var(--f);cursor:pointer">+ Add manually</span>
+        </div>
+        <table class="pii-table">
+          <thead><tr><th>Type</th><th>Value</th><th>Masked as</th><th>Source</th><th>Confidence</th><th></th></tr></thead>
+          <tbody>
+            <tr id="pii-r1"><td><span class="type-pill" style="color:#7C3AED;background:#7C3AED18">Person</span></td><td class="mono">Jonas Ek</td><td class="mono" style="color:var(--st)">[PERSON-001]</td><td style="font-size:12px;color:var(--st)">AI detected</td><td class="conf">98%</td><td><div class="act-row"><div class="appr-done" id="a1"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Approved</div><button class="icon-btn">✕</button></div></td></tr>
+            <tr id="pii-r2"><td><span class="type-pill" style="color:#2563EB;background:#2563EB18">Organisation</span></td><td class="mono">Nexaline Technologies AB</td><td class="mono" style="color:var(--st)">[ORG-001]</td><td style="font-size:12px;color:var(--st)">AI detected</td><td class="conf">95%</td><td><div class="act-row"><div class="appr-done" id="a2"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Approved</div><button class="icon-btn">✕</button></div></td></tr>
+            <tr id="pii-r3"><td><span class="type-pill" style="color:#D97706;background:#D9770618">Email</span></td><td class="mono">j.ek@nexaline.se</td><td class="mono" style="color:var(--st)">[EMAIL-001]</td><td style="font-size:12px;color:var(--st)">AI detected</td><td class="conf">99%</td><td><div class="act-row"><div class="appr-done" id="a3"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Approved</div><button class="icon-btn">✕</button></div></td></tr>
+            <tr id="pii-r4"><td><span class="type-pill" style="color:#DC2626;background:#DC262618">IBAN</span></td><td class="mono">SE45 5000 0000 0583 9825 7466</td><td class="mono" style="color:var(--st)">[IBAN-001]</td><td style="font-size:12px;color:var(--st)">AI detected</td><td class="conf">97%</td><td><div class="act-row"><button class="appr-sm" id="ab4" onclick="approvePII(4)">Approve</button><button class="icon-btn">✕</button></div></td></tr>
+            <tr id="pii-r5"><td><span class="type-pill" style="color:#DC2626;background:#DC262618">VAT No.</span></td><td class="mono">SE556112233401</td><td class="mono" style="color:var(--st)">[VAT-001]</td><td style="font-size:12px;color:var(--st)">AI detected</td><td class="conf">96%</td><td><div class="act-row"><button class="appr-sm" id="ab5" onclick="approvePII(5)">Approve</button><button class="icon-btn">✕</button></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pii-cta">
+        <button class="cb p" style="flex:1;justify-content:center;padding:11px 20px" onclick="goSlide(2)">Approve all &amp; extract contract terms →</button>
+      </div>
+      <p class="pii-note">Approved entities will be masked before the document is sent to AI. Rejected ones pass through as-is.</p>
+    </div>
+
+    <!-- S3: Processing -->
+    <div class="slide" id="s3">
+      <div class="proc-wrap">
+        <div class="proc-hd">
+          <div class="proc-title">Analysing your contract</div>
+          <div class="proc-file">Nexaline_SaaS_Master_Agreement.pdf · 512 KB</div>
+        </div>
+        <div class="card" style="padding:24px">
+          <div class="srow"><div class="sico wait" id="pi1"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg></div><div class="srow-b"><div class="srow-l dim" id="pl1">Contract secured</div><div class="srow-d" id="pd1" style="display:none">PDF uploaded and encrypted at rest (EU-Frankfurt)</div></div></div>
+          <div class="srow"><div class="sico wait" id="pi2"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg></div><div class="srow-b"><div class="srow-l dim" id="pl2">5 PII entities masked</div><div class="srow-d" id="pd2" style="display:none">Person, Organisation, Email, IBAN, VAT masked before AI processing</div></div></div>
+          <div class="srow"><div class="sico wait" id="pi3"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg></div><div class="srow-b"><div class="srow-l dim" id="pl3">Extracting commercial terms</div><div class="srow-d" id="pd3" style="display:none">Pricing, ramp schedule, dates, payment terms extracted</div></div></div>
+          <div class="srow" style="margin-bottom:0"><div class="sico wait" id="pi4"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg></div><div class="srow-b"><div class="srow-l dim" id="pl4">Proposing billing configuration</div><div class="srow-d" id="pd4" style="display:none">Schedule and invoice line items ready for review</div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- S4: Extracted Terms -->
+    <div class="slide" id="s4">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px;gap:10px;flex-wrap:wrap">
+        <div>
+          <div class="pg-back" style="margin-bottom:5px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px"><path d="M19 12H5M12 5l-7 7 7 7"/></svg> New contracts</div>
+          <div class="pg-title" style="margin-bottom:0;font-size:19px">Nexaline SaaS Master Agreement</div>
+        </div>
+        <span class="badge"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Ramp — Fixed Subscription</span>
+      </div>
+      <div class="cfg">
+        <div class="pdf-t">
+          <div class="pl h"></div><div class="pl s"></div>
+          <div style="height:8px"></div>
+          <div class="pl f"></div><div class="pl m"></div><div class="pl f"></div><div class="pl s"></div>
+          <div class="psec"><div class="pl h" style="width:68%"></div><div class="pr"><div class="prb" style="width:38%"></div><div class="pii-tag">PII</div></div><div class="pr"><div class="prb" style="width:52%"></div><div class="pii-tag">PII</div></div><div class="pl f"></div><div class="pl m"></div></div>
+          <div class="psec"><div class="pl h" style="width:52%"></div><div class="pl f"></div><div class="pl m"></div><div class="pl f"></div><div class="pr"><div class="prb" style="width:60%"></div><div class="pii-tag">PII</div></div><div class="pl s"></div></div>
+          <div class="psec"><div class="pl h" style="width:60%"></div><div class="pl f"></div><div class="pl m"></div><div class="pl f"></div><div class="pl s"></div></div>
+        </div>
+        <div>
+          <div class="tabs">
+            <button class="tb a" id="tb-rm" onclick="switchTab('rm')">Revenue Model</button>
+            <button class="tb" id="tb-bs" onclick="switchTab('bs')">Billing Schedule</button>
+            <button class="tb" id="tb-inv" onclick="switchTab('inv')">Invoices</button>
+          </div>
+          <div id="tc-rm">
+            <div class="summ">3-year ramp subscription for <strong style="color:var(--ink)">[ORG-001]</strong>, running 36 months from 1 Jan 2025 to 31 Dec 2027. Monthly fee steps from <strong style="color:var(--ink)">€8,000 → €12,000 → €16,000</strong> across contract years. Total contract value: <strong style="color:var(--ink)">€432,000</strong>.</div>
+            <div class="sg">
+              <div class="st"><div class="lbl">Customer</div><div class="val">[ORG-001] <span class="chip">§1</span></div></div>
+              <div class="st"><div class="lbl">Billing frequency</div><div class="val">Monthly · Net 30</div></div>
+              <div class="st"><div class="lbl">Contract start</div><div class="val">1 Jan 2025 <span class="chip">§2.1</span></div></div>
+              <div class="st"><div class="lbl">Contract end</div><div class="val">31 Dec 2027</div></div>
+              <div class="st"><div class="lbl">Year 1 monthly fee</div><div class="val">€8,000 <span class="chip">§4.1</span></div></div>
+              <div class="st"><div class="lbl">Year 2 monthly fee</div><div class="val">€12,000 <span class="chip">§4.2</span></div></div>
+              <div class="st"><div class="lbl">Year 3 monthly fee</div><div class="val">€16,000 <span class="chip">§4.3</span></div></div>
+              <div class="st"><div class="lbl">Auto-renewal</div><div class="val">Yes · 90-day notice</div></div>
+            </div>
+            <div class="wf-card">
+              <div class="wf-head">TCV waterfall — how contract value builds</div>
+              <canvas id="wf-canvas"></canvas>
+            </div>
+          </div>
+          <div id="tc-bs" style="display:none"><p style="font-size:12px;color:var(--st)">Proceed to step 5 to see the full billing schedule.</p></div>
+          <div id="tc-inv" style="display:none"><p style="font-size:12px;color:var(--st)">Invoice line items appear here after approval.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- S5: Billing Timeline -->
+    <div class="slide" id="s5">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px;gap:10px;flex-wrap:wrap">
+        <div>
+          <div class="pg-back" style="margin-bottom:5px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px"><path d="M19 12H5M12 5l-7 7 7 7"/></svg> New contracts</div>
+          <div class="pg-title" style="margin-bottom:0;font-size:19px">Nexaline SaaS Master Agreement</div>
+        </div>
+        <span class="badge"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Ramp — Fixed Subscription</span>
+      </div>
+      <div class="card" style="padding:0;overflow:hidden">
+        <div class="tabs" style="padding:0 16px;margin-bottom:0">
+          <button class="tb" style="padding-top:11px">Revenue Model</button>
+          <button class="tb a" style="padding-top:11px">Billing Schedule</button>
+          <button class="tb" style="padding-top:11px">Invoices</button>
+        </div>
+        <div class="btl">
+          <div class="btl-hd">Billing Timeline</div>
+          <div class="btl-row"><div class="btl-trk"><div class="btl-line t"></div><svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="#1A3D2B"/><path d="M6 10.5l2.5 2.5 5-5.5" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><div class="btl-line b"></div></div><div class="btl-info"><div class="btl-iname">Jan 2025</div><div class="btl-iwhen">Issued <b>1 Jan 2025</b></div></div><div class="btl-right"><span class="btl-amt">€8,000.00</span><span class="btl-badge paid"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="#4A7C59"/><path d="M4.5 7l2 2 3-3.5" stroke="#fff" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg>Paid</span></div></div>
+          <div class="btl-row"><div class="btl-trk"><div class="btl-line t"></div><svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="#1A3D2B"/><path d="M6 10.5l2.5 2.5 5-5.5" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><div class="btl-line b"></div></div><div class="btl-info"><div class="btl-iname">Feb 2025</div><div class="btl-iwhen">Issued <b>1 Feb 2025</b></div></div><div class="btl-right"><span class="btl-amt">€8,000.00</span><span class="btl-badge paid"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="#4A7C59"/><path d="M4.5 7l2 2 3-3.5" stroke="#fff" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg>Paid</span></div></div>
+          <div class="btl-row"><div class="btl-trk"><div class="btl-line t"></div><svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="#1A3D2B"/><path d="M6 10.5l2.5 2.5 5-5.5" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><div class="btl-line b"></div></div><div class="btl-info"><div class="btl-iname">Mar 2025</div><div class="btl-iwhen">Issued <b>1 Mar 2025</b></div></div><div class="btl-right"><span class="btl-amt">€8,000.00</span><span class="btl-badge paid"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="#4A7C59"/><path d="M4.5 7l2 2 3-3.5" stroke="#fff" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg>Paid</span></div></div>
+          <div class="btl-row"><div class="btl-trk"><div class="btl-line t"></div><svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="#1A3D2B"/><path d="M6 10.5l2.5 2.5 5-5.5" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><div class="btl-line b"></div></div><div class="btl-info"><div class="btl-iname">Apr 2025</div><div class="btl-iwhen">Issued <b>1 Apr 2025</b></div></div><div class="btl-right"><span class="btl-amt">€8,000.00</span><span class="btl-badge paid"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="#4A7C59"/><path d="M4.5 7l2 2 3-3.5" stroke="#fff" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg>Paid</span></div></div>
+          <div class="btl-row"><div class="btl-trk"><div class="btl-line t"></div><svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="#D97706"/><path d="M10 6v4.2l2.5 1.5" stroke="#fff" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg><div class="btl-line b"></div></div><div class="btl-info"><div class="btl-iname">May 2025</div><div class="btl-iwhen">Issued <b>1 May 2025</b></div></div><div class="btl-right"><span class="btl-amt">€8,000.00</span><span class="btl-badge awpay"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="#D97706"/><path d="M7 4v3.2l1.8 1.1" stroke="#fff" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg>Awaiting payment</span></div></div>
+          <div class="btl-row"><div class="btl-trk"><div class="btl-line t"></div><svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="#1A1A18"/></svg><div class="btl-line b"></div></div><div class="btl-today-info"><div class="btl-today-lbl">TODAY</div><div class="btl-today-dt">1 Jun 2025</div></div><div class="btl-right"></div></div>
+          <div class="btl-row"><div class="btl-trk"><div class="btl-line t"></div><svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="#C5C0BB" stroke-width="1.5" stroke-dasharray="4 3"/></svg><div class="btl-line b"></div></div><div class="btl-info"><div class="btl-iname">Jun 2025</div><div class="btl-iwhen">Will be issued <b>1 Jun 2025</b></div></div><div class="btl-right"><span class="btl-amt">€8,000.00</span><span class="btl-badge draft"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="#C5C0BB" stroke-width="1.2" stroke-dasharray="3 2"/></svg>Draft</span></div></div>
+          <div class="btl-row"><div class="btl-trk"><div class="btl-line t"></div><svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="#C5C0BB" stroke-width="1.5" stroke-dasharray="4 3"/></svg><div class="btl-line b"></div></div><div class="btl-info"><div class="btl-iname">Jul 2025</div><div class="btl-iwhen">Will be issued <b>1 Jul 2025</b></div></div><div class="btl-right"><span class="btl-amt">€8,000.00</span><span class="btl-badge draft"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="#C5C0BB" stroke-width="1.2" stroke-dasharray="3 2"/></svg>Draft</span></div></div>
+          <div class="btl-row"><div class="btl-trk"><div class="btl-line t"></div><svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="#C5C0BB" stroke-width="1.5" stroke-dasharray="4 3"/></svg><div class="btl-line b"></div></div><div class="btl-info"><div class="btl-iname">Aug 2025</div><div class="btl-iwhen">Will be issued <b>1 Aug 2025</b></div></div><div class="btl-right"><span class="btl-amt">€8,000.00</span><span class="btl-badge draft"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="#C5C0BB" stroke-width="1.2" stroke-dasharray="3 2"/></svg>Draft</span></div></div>
+          <div class="btl-more">… and 4 more invoices at €8,000.00 through Dec 2025</div>
+          <div class="btl-row"><div class="btl-trk"><div class="btl-line t"></div><svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="#C5C0BB" stroke-width="1.5" stroke-dasharray="4 3"/></svg><div class="btl-line b"></div></div><div class="btl-info"><div class="btl-iname">Jan 2026 <span class="btl-ramp">↑ Year 2 ramp</span></div><div class="btl-iwhen">Will be issued <b>1 Jan 2026</b></div></div><div class="btl-right"><span class="btl-amt">€12,000.00</span><span class="btl-badge draft"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="#C5C0BB" stroke-width="1.2" stroke-dasharray="3 2"/></svg>Draft</span></div></div>
+          <div class="btl-more">… and 11 more invoices at €12,000.00 through Dec 2026</div>
+          <div class="btl-row"><div class="btl-trk"><div class="btl-line t"></div><svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="#C5C0BB" stroke-width="1.5" stroke-dasharray="4 3"/></svg><div class="btl-line b"></div></div><div class="btl-info"><div class="btl-iname">Jan 2027 <span class="btl-ramp">↑ Year 3 ramp</span></div><div class="btl-iwhen">Will be issued <b>1 Jan 2027</b></div></div><div class="btl-right"><span class="btl-amt">€16,000.00</span><span class="btl-badge draft"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="#C5C0BB" stroke-width="1.2" stroke-dasharray="3 2"/></svg>Draft</span></div></div>
+          <div class="btl-more" style="padding-bottom:16px">… and 11 more invoices at €16,000.00 through Dec 2027 · TCV €432,000</div>
+        </div>
+      </div>
+      <button class="appr-btn" id="appr-btn" onclick="approve()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+        Approve &amp; activate billing
+      </button>
+      <div class="ok-msg" id="ok-msg">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+        <div>
+          <div style="font-weight:600">Billing schedule activated</div>
+          <div style="font-size:12px;font-weight:400;color:var(--sg);margin-top:2px">36 invoices queued in Stripe · Issued on the 1st of each month · TCV €432,000</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="ctrl">
+    <button class="cb g" id="btn-prev" onclick="goSlide(cur-1)" disabled>← Back</button>
+    <div class="dots">
+      <div class="dot a" onclick="goSlide(0)"></div>
+      <div class="dot" onclick="goSlide(1)"></div>
+      <div class="dot" onclick="goSlide(2)"></div>
+      <div class="dot" onclick="goSlide(3)"></div>
+      <div class="dot" onclick="goSlide(4)"></div>
+    </div>
+    <button class="cb p" id="btn-next" onclick="goSlide(cur+1)">Next →</button>
+  </div>
+</div>
+</div>
+
+<script>
+let cur = 0
+const TOTAL = 5
+const sideNav = ['ni-up','ni-up','ni-up','ni-cfg','ni-cfg']
+
+function goSlide(n) {
+  if (n < 0 || n >= TOTAL) return
+  const prev = cur; cur = n
+  document.querySelectorAll('.ni').forEach(el => el.classList.remove('a'))
+  const ni = document.getElementById(sideNav[cur])
+  if (ni) ni.classList.add('a')
+  const oldEl = document.getElementById('s'+(prev+1))
+  const newEl = document.getElementById('s'+(cur+1))
+  if (oldEl !== newEl) {
+    oldEl.classList.remove('a'); oldEl.classList.add('ex')
+    setTimeout(() => oldEl.classList.remove('ex'), 380)
+    newEl.classList.add('a')
+  }
+  for (let i=1;i<=TOTAL;i++) {
+    const el = document.getElementById('sp'+i)
+    el.classList.remove('a','d')
+    if (i-1 < cur) el.classList.add('d')
+    else if (i-1 === cur) el.classList.add('a')
+  }
+  document.querySelectorAll('.dot').forEach((d,i) => d.classList.toggle('a', i===cur))
+  document.getElementById('btn-prev').disabled = (cur===0)
+  const nb = document.getElementById('btn-next')
+  if (cur === TOTAL-1) { nb.textContent='Restart →'; nb.onclick=restart }
+  else { nb.textContent='Next →'; nb.onclick=()=>goSlide(cur+1) }
+  if (cur===0) initS1()
+  if (cur===1) initS2()
+  if (cur===2) initS3()
+  if (cur===3) { switchTab('rm'); setTimeout(enterWaterfall, 200) }
+}
+
+let s1ready = false
+function initS1() {
+  if (s1ready) return
+  setTimeout(() => {
+    document.getElementById('dz-e').style.display='none'
+    const f=document.getElementById('dz-f'); f.style.display='flex'
+    document.getElementById('dz').classList.add('filled')
+  }, 1500)
+  setTimeout(() => {
+    const b=document.getElementById('up-btn'); b.classList.remove('off'); b.classList.add('on')
+    s1ready=true
+  }, 2100)
+}
+
+let s2done = false
+function initS2() {
+  if (s2done) return
+  setTimeout(() => approvePII(4), 800)
+  setTimeout(() => approvePII(5), 1500)
+  s2done = true
+}
+
+function approvePII(n) {
+  const btn = document.getElementById('ab'+n)
+  if (!btn) return
+  btn.parentNode.innerHTML = '<div class="appr-done appr-in"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Approved</div><button class="icon-btn">✕</button>'
+  const pending = document.querySelectorAll('.appr-sm').length
+  document.getElementById('pii-count').textContent = (5-pending) + ' approved · ' + pending + ' pending'
+}
+
+let s3done = false
+function initS3() {
+  if (s3done) return
+  s3done = true
+  for(let i=1;i<=4;i++){
+    const ico=document.getElementById('pi'+i), lbl=document.getElementById('pl'+i), det=document.getElementById('pd'+i)
+    ico.className='sico wait'; ico.innerHTML='<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>'
+    lbl.classList.add('dim'); det.style.display='none'
+  }
+  [[1,400,900],[2,1050,1700],[3,1850,3200],[4,3350,4400]].forEach(([i,start,end]) => {
+    setTimeout(() => {
+      const ico=document.getElementById('pi'+i), lbl=document.getElementById('pl'+i)
+      ico.className='sico run'; ico.innerHTML='<span class="spin">↻</span>'; lbl.classList.remove('dim')
+    }, start)
+    setTimeout(() => {
+      const ico=document.getElementById('pi'+i), det=document.getElementById('pd'+i)
+      ico.className='sico done popIn'; ico.innerHTML='<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>'
+      det.style.display='block'
+    }, end)
+  })
+}
+
+function switchTab(id) {
+  ;['rm','bs','inv'].forEach(t => {
+    document.getElementById('tb-'+t)?.classList.toggle('a', t===id)
+    const tc=document.getElementById('tc-'+t); if(tc) tc.style.display=(t===id)?'block':'none'
+  })
+  if (id==='rm') setTimeout(enterWaterfall,100)
+}
+
+function drawWaterfall(progress) {
+  const canvas = document.getElementById('wf-canvas')
+  if (!canvas) return
+  const dpr = window.devicePixelRatio||1
+  const W = canvas.offsetWidth, H = canvas.offsetHeight
+  if (!W||!H) return
+  canvas.width = W*dpr; canvas.height = H*dpr
+  const ctx = canvas.getContext('2d')
+  ctx.scale(dpr,dpr)
+  const PAD = {l:54,r:14,t:24,b:46}
+  const cW = W-PAD.l-PAD.r, cH = H-PAD.t-PAD.b
+  const maxV = 432000
+  const toH = v => (v/maxV)*cH
+  const toY = v => PAD.t + cH - toH(v)
+  const p = typeof progress==='number' ? progress : 1
+  ctx.textAlign='right'; ctx.font='10px system-ui'
+  ;[0,.25,.5,.75,1].forEach(pct => {
+    const y = PAD.t + cH*(1-pct)
+    ctx.strokeStyle='#E8E4DF'; ctx.lineWidth=1
+    ctx.beginPath(); ctx.moveTo(PAD.l,y); ctx.lineTo(PAD.l+cW,y); ctx.stroke()
+    ctx.fillStyle='#9CA3AF'
+    ctx.fillText('€'+(maxV*pct/1000)+'k', PAD.l-6, y+3.5)
+  })
+  const bars = [
+    { label:'Year 1', rate:'€8,000/mo',  value:96000,  base:0,      color:'#1A3D2B' },
+    { label:'Year 2', rate:'€12,000/mo', value:144000, base:96000,  color:'#4A7C59' },
+    { label:'Year 3', rate:'€16,000/mo', value:192000, base:240000, color:'#D97706' },
+    { label:'TCV',    rate:'€432,000',   value:432000, base:0,      color:'#1A3D2B', total:true },
+  ]
+  const bW = Math.floor(cW/6.5), slotW = cW/5
+  const slots = [0,1,2,4]
+  bars.forEach((bar,i) => {
+    const x = PAD.l + slots[i]*slotW + (slotW-bW)/2
+    const bH = toH(bar.value) * p
+    const y = bar.total ? (PAD.t + cH - bH) : toY(bar.base + bar.value) + toH(bar.value) - toH(bar.value)*p
+    ctx.fillStyle = bar.color + (bar.total ? '' : 'DD')
+    ctx.beginPath()
+    if (ctx.roundRect) ctx.roundRect(x,y,bW,bH,[3,3,0,0]); else ctx.rect(x,y,bW,bH)
+    ctx.fill()
+    if (p > 0.8) {
+      const alpha = Math.min(1,(p-0.8)/0.2)
+      ctx.fillStyle = `rgba(26,61,43,${alpha})`
+      ctx.font = 'bold 11px system-ui'; ctx.textAlign='center'
+      ctx.fillText(bar.total ? '€432k' : '€'+(bar.value/1000)+'k', x+bW/2, y-6)
+    }
+    if (!bar.total && i < 2) {
+      const nextX = PAD.l + slots[i+1]*slotW + (slotW-bW)/2
+      const connY = PAD.t + cH - toH(bar.base + bar.value)
+      ctx.strokeStyle='#C5DECA'; ctx.lineWidth=1.5; ctx.setLineDash([4,4])
+      ctx.beginPath(); ctx.moveTo(x+bW, connY); ctx.lineTo(nextX, connY); ctx.stroke()
+      ctx.setLineDash([])
+    }
+    ctx.fillStyle='#6B6660'; ctx.font='11px system-ui'; ctx.textAlign='center'
+    ctx.fillText(bar.label, x+bW/2, H-PAD.b+14)
+    ctx.fillStyle='#9CA3AF'; ctx.font='10px system-ui'
+    ctx.fillText(bar.rate, x+bW/2, H-PAD.b+26)
+  })
+}
+
+let wfAnimated = false
+function enterWaterfall() {
+  const canvas = document.getElementById('wf-canvas')
+  if (!canvas) return
+  if (!canvas.offsetWidth) { setTimeout(enterWaterfall, 60); return }
+  if (wfAnimated) { drawWaterfall(1); return }
+  wfAnimated = true
+  let t = 0
+  ;(function step() {
+    t = Math.min(1, t + 0.045)
+    drawWaterfall(1 - Math.pow(1 - t, 3))
+    if (t < 1) requestAnimationFrame(step)
+  })()
+}
+
+function approve() {
+  const btn=document.getElementById('appr-btn'), msg=document.getElementById('ok-msg')
+  btn.classList.add('done')
+  btn.innerHTML='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Approved'
+  msg.classList.add('show','fu')
+}
+
+function restart() {
+  s1ready=false; s2done=false; s3done=false; wfAnimated=false
+  document.getElementById('dz').classList.remove('filled')
+  document.getElementById('dz-e').style.display='flex'
+  document.getElementById('dz-f').style.display='none'
+  const ub=document.getElementById('up-btn'); ub.classList.add('off'); ub.classList.remove('on')
+  ;[4,5].forEach(n => {
+    const td=document.getElementById('pii-r'+n).querySelector('td:last-child')
+    td.innerHTML='<div class="act-row"><button class="appr-sm" id="ab'+n+'" onclick="approvePII('+n+')">Approve</button><button class="icon-btn">✕</button></div>'
+  })
+  document.getElementById('pii-count').textContent='3 approved · 2 pending'
+  document.getElementById('appr-btn').classList.remove('done')
+  document.getElementById('appr-btn').innerHTML='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>Approve &amp; activate billing'
+  document.getElementById('ok-msg').classList.remove('show','fu')
+  switchTab('rm')
+  document.getElementById('btn-next').textContent='Next →'
+  document.getElementById('btn-next').onclick=()=>goSlide(cur+1)
+  goSlide(0)
+  setTimeout(initS1, 100)
+}
+
+setTimeout(initS1, 600)
+</script>
+</body>
+</html>
