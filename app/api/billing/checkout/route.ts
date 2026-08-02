@@ -29,22 +29,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid plan' }, { status: 400 })
     }
 
-    const [{ data: plan }, stripe, mode] = await Promise.all([
+    const [{ data: plan }, mode] = await Promise.all([
       supabaseServer
         .from('verdix_plans')
         .select('stripe_price_id_test, stripe_price_id_live, stripe_price_id, name')
         .eq('id', planId)
         .maybeSingle(),
-      getVerdixStripe(),
       getBillingMode(),
     ])
 
-    // Prefer mode-specific column; fall back to legacy stripe_price_id until migration is run
-    const priceId = (mode === 'live' ? plan?.stripe_price_id_live : plan?.stripe_price_id_test)
-      ?? plan?.stripe_price_id
+    // Use mode-specific price if available (post-migration), otherwise fall back to legacy
+    const modeSpecificPriceId = mode === 'live' ? plan?.stripe_price_id_live : plan?.stripe_price_id_test
+    const priceId = modeSpecificPriceId ?? plan?.stripe_price_id
     if (!priceId) {
-      return NextResponse.json({ error: `Plan not yet pushed to Stripe ${mode}. Go to Admin → Billing and push the plan.` }, { status: 400 })
+      return NextResponse.json({ error: `Plan not yet pushed to Stripe. Go to Admin → Billing and push the plan.` }, { status: 400 })
     }
+
+    // Use mode-aware Stripe key when using env-specific price; fall back to original key for legacy prices
+    const { default: Stripe } = await import('stripe')
+    const stripeKey = modeSpecificPriceId
+      ? (mode === 'live' ? (process.env.STRIPE_SECRET_KEY_LIVE ?? process.env.STRIPE_SECRET_KEY) : (process.env.STRIPE_SECRET_KEY_TEST ?? process.env.STRIPE_SECRET_KEY))
+      : process.env.STRIPE_SECRET_KEY
+    if (!stripeKey) throw new Error('Missing STRIPE_SECRET_KEY env var')
+    const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
 
     const sub = await getOrgSubscription(org.orgId)
 
