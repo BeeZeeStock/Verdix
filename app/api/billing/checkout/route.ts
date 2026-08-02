@@ -101,13 +101,19 @@ export async function POST(req: NextRequest) {
 
     const stripe = buildStripe(stripeKey)
 
-    // Prefer env-specific price (post-migration); fall back to legacy price ID.
+    // Prefer env-specific price (post-migration); fall back to legacy only in sandbox mode.
+    // In live mode we never use the legacy test price — it won't exist in the live account.
     const envPriceId = liveActive ? plan?.stripe_price_id_live : plan?.stripe_price_id_test
-    const priceId = envPriceId ?? plan?.stripe_price_id
+    const priceId = envPriceId ?? (liveActive ? null : plan?.stripe_price_id)
 
     if (!priceId) {
+      if (liveActive) {
+        return NextResponse.json({
+          error: 'Plans not yet pushed to live Stripe. Go to Admin → Billing → switch Push environment to Live → push each plan → then retry.',
+        }, { status: 400 })
+      }
       return NextResponse.json({
-        error: `Plan not yet pushed to Stripe ${liveActive ? 'live' : 'sandbox'}. Go to Admin → Billing and push the plan.`,
+        error: 'Plan not yet pushed to Stripe sandbox. Go to Admin → Billing and push the plan.',
       }, { status: 400 })
     }
 
