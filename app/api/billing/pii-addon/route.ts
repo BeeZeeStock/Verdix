@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getVerdixStripe } from '@/lib/stripe-verdix'
 import { auth } from '@/lib/auth'
 import { getActiveOrg } from '@/lib/org'
 import { supabaseServer } from '@/lib/supabase'
@@ -46,8 +47,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'No Stripe customer found. Please contact support.' }, { status: 400 })
   }
 
-  const { default: Stripe } = await import('stripe')
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+
+  const stripe = await getVerdixStripe()
 
   // Resolve the active subscription ID — the stored one may be stale if the
   // user upgraded via Checkout (which creates a new subscription) before the

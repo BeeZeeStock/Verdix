@@ -257,8 +257,8 @@ export async function runBillingForOrg(
   }
 
   // ── Push to Stripe ─────────────────────────────────────────────────────────
-  const { default: Stripe } = await import('stripe')
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+  const { getVerdixStripe } = await import('./stripe-verdix')
+  const stripe = await getVerdixStripe()
 
   for (const item of lineItems) {
     await stripe.invoiceItems.create({

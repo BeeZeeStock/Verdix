@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { getVerdixStripe } from '@/lib/stripe-verdix'
 import { requireAdmin } from '@/lib/admin'
 
 const BILLING_WEBHOOK_EVENTS = [
@@ -14,8 +15,8 @@ export async function POST() {
   const base = process.env.AUTH_URL || process.env.NEXTAUTH_URL || 'https://lynoraai.com'
   const url = `${base}/api/billing/webhook`
 
-  const { default: Stripe } = await import('stripe')
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+
+  const stripe = await getVerdixStripe()
 
   // Delete any existing webhooks pointing at this URL so we get a fresh secret
   const existing = await stripe.webhookEndpoints.list({ limit: 100 })

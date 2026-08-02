@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getVerdixStripe } from '@/lib/stripe-verdix'
 import { requireAdmin } from '@/lib/admin'
 import { supabaseServer } from '@/lib/supabase'
 
@@ -38,8 +39,8 @@ export async function PATCH(req: NextRequest) {
   const canPushStripe = id !== 'trial' && id !== 'enterprise'
 
   if (canPushStripe && (pushToStripe || pushCycle)) {
-    const { default: Stripe } = await import('stripe')
-    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+  
+    const stripe = await getVerdixStripe()
 
     const { data: current } = await supabaseServer
       .from('verdix_plans')

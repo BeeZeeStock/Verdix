@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { getVerdixStripe } from '@/lib/stripe-verdix'
 import { auth } from '@/lib/auth'
 import { getActiveOrg } from '@/lib/org'
 import { getOrgSubscription } from '@/lib/billing'
@@ -16,8 +17,8 @@ export async function POST() {
     return NextResponse.json({ error: 'No Stripe customer yet' }, { status: 400 })
   }
 
-  const { default: Stripe } = await import('stripe')
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+
+  const stripe = await getVerdixStripe()
 
   const portalSession = await stripe.billingPortal.sessions.create({
     customer: sub.stripe_customer_id,

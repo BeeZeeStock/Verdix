@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getVerdixStripe } from '@/lib/stripe-verdix'
 import { auth } from '@/lib/auth'
 import { supabaseServer } from '@/lib/supabase'
 import { getOrgSubscription, getOrCreateStripeCustomer } from '@/lib/billing'
@@ -38,8 +39,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Plan not yet pushed to Stripe. Ask admin to push.' }, { status: 400 })
   }
 
-  const { default: Stripe } = await import('stripe')
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+
+  const stripe = await getVerdixStripe()
 
   const sub = await getOrgSubscription(org.orgId)
 

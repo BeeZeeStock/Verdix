@@ -12,6 +12,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
+import { constructVerdixWebhookEvent, getVerdixStripe } from '@/lib/stripe-verdix'
 
 type StripeInvoice = import('stripe').default.Invoice
 
@@ -19,19 +20,14 @@ export async function POST(req: NextRequest) {
   const rawBody = await req.text()
   const sig     = req.headers.get('stripe-signature') ?? ''
 
-  const { default: Stripe } = await import('stripe')
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
-
   let event: import('stripe').default.Event
   try {
-    event = stripe.webhooks.constructEvent(
-      rawBody,
-      sig,
-      process.env.STRIPE_BILLING_WEBHOOK_SECRET ?? process.env.STRIPE_WEBHOOK_SECRET!,
-    )
+    event = await constructVerdixWebhookEvent(rawBody, sig)
   } catch {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 })
   }
+
+  const stripe = await getVerdixStripe()
 
   try {
     // ── checkout.session.completed ───────────────────────────────────────────

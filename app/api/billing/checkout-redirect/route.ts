@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getVerdixStripe } from '@/lib/stripe-verdix'
 import { auth } from '@/lib/auth'
 import { supabaseServer } from '@/lib/supabase'
 import { getOrCreateStripeCustomer } from '@/lib/billing'
@@ -41,8 +42,8 @@ export async function GET(req: NextRequest) {
 
   const customerId = await getOrCreateStripeCustomer(org.orgId, org.orgName, session.user.email)
 
-  const { default: Stripe } = await import('stripe')
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+
+  const stripe = await getVerdixStripe()
 
   const returnUrl = `${base()}/settings/billing`
 

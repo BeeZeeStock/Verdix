@@ -180,8 +180,8 @@ export async function getOrCreateStripeCustomer(orgId: string, orgName: string, 
   const sub = await getOrgSubscription(orgId)
   if (sub.stripe_customer_id) return sub.stripe_customer_id
 
-  const { default: Stripe } = await import('stripe')
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
+  const { getVerdixStripe } = await import('./stripe-verdix')
+  const stripe = await getVerdixStripe()
 
   const customer = await stripe.customers.create({ name: orgName, email, metadata: { verdix_org_id: orgId } })
 

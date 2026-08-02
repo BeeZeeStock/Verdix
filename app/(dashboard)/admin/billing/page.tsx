@@ -37,6 +37,8 @@ export default function AdminBillingPage() {
   const [cycleEdits, setCycleEdits] = useState<Record<string, Record<string, number>>>({})
   const [trialLimit, setTrialLimit] = useState('')
   const [savingTrial, setSavingTrial] = useState(false)
+  const [billingMode, setBillingMode] = useState<'test' | 'live'>('test')
+  const [savingMode, setSavingMode] = useState(false)
   const [webhookSecret, setWebhookSecret] = useState<string | null>(null)
   const [registeringWebhook, setRegisteringWebhook] = useState(false)
   const [webhookMsg, setWebhookMsg] = useState<{ ok: boolean; text: string } | null>(null)
@@ -50,6 +52,8 @@ export default function AdminBillingPage() {
         setSettings(d.settings ?? [])
         const tl = d.settings?.find((s: Setting) => s.key === 'trial_sync_limit')
         if (tl) setTrialLimit(String(tl.value))
+        const bm = d.settings?.find((s: Setting) => s.key === 'billing_mode')
+        if (bm?.value === 'live') setBillingMode('live')
         setLoading(false)
       })
       .catch(() => setLoading(false))
@@ -150,6 +154,17 @@ export default function AdminBillingPage() {
     setRegisteringWebhook(false)
   }
 
+  const saveBillingMode = async (mode: 'test' | 'live') => {
+    setSavingMode(true)
+    await fetch('/api/admin/billing', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: 'billing_mode', value: mode }),
+    })
+    setBillingMode(mode)
+    setSavingMode(false)
+  }
+
   const saveTrialLimit = async () => {
     setSavingTrial(true)
     const res = await fetch('/api/admin/billing', {
@@ -168,6 +183,46 @@ export default function AdminBillingPage() {
       <div className="mb-8">
         <h1 className="font-display font-light text-ink text-2xl mb-1">Billing & Packages</h1>
         <p className="text-stone text-sm">Manage Verdix SaaS pricing tiers, billing cycles, and push to Stripe</p>
+      </div>
+
+      {/* Stripe environment toggle */}
+      <div className={`rounded-2xl p-6 mb-6 border ${billingMode === 'live' ? 'bg-red-50 border-red-200' : 'bg-white border-forest/10'}`}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-sm font-medium text-ink">Stripe environment</span>
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${billingMode === 'live' ? 'bg-red-100 text-red-700' : 'bg-forest/8 text-forest'}`}>
+                {billingMode === 'live' ? 'LIVE' : 'TEST'}
+              </span>
+            </div>
+            <p className="text-xs text-stone max-w-md">
+              {billingMode === 'live'
+                ? 'Customers are checking out and being billed on your live Stripe account. Real money is being collected.'
+                : 'Customers are checking out in Stripe sandbox. No real money is collected. Safe for testing.'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              onClick={() => saveBillingMode('test')}
+              disabled={savingMode || billingMode === 'test'}
+              className={`text-sm font-medium px-4 py-2 rounded-xl transition-colors disabled:opacity-40 ${billingMode === 'test' ? 'bg-forest text-white' : 'border border-forest/20 text-forest hover:bg-forest/5'}`}
+            >
+              Sandbox
+            </button>
+            <button
+              onClick={() => saveBillingMode('live')}
+              disabled={savingMode || billingMode === 'live'}
+              className={`text-sm font-medium px-4 py-2 rounded-xl transition-colors disabled:opacity-40 ${billingMode === 'live' ? 'bg-red-600 text-white' : 'border border-red-300 text-red-600 hover:bg-red-50'}`}
+            >
+              {savingMode ? 'Switching…' : 'Go Live'}
+            </button>
+          </div>
+        </div>
+        {billingMode === 'live' && (
+          <div className="mt-4 bg-red-100 border border-red-200 rounded-xl px-4 py-3 text-xs text-red-700 font-medium">
+            ⚠ Live mode is active. All checkouts, upgrades, and webhook events use your live Stripe keys. Switch back to Sandbox for any testing.
+          </div>
+        )}
       </div>
 
       {/* Free plan global limit */}
