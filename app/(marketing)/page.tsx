@@ -968,6 +968,7 @@ function Pricing() {
       badge: null,
       highlight: false,
       features: [
+        'Manual upload – Contractual agreements',
         '3 agreements processed: customer billing or partner reconciliation',
         'Contract terms extracted automatically',
         'Usage pulled from your connected endpoint',
@@ -987,6 +988,7 @@ function Pricing() {
       badgeHighlight: false,
       highlight: false,
       features: [
+        'Manual upload – Contractual agreements',
         'Customer billing or partner invoice reconciliation',
         'No monthly subscription',
         'Automated usage retrieval from your connected endpoint',
@@ -1007,6 +1009,7 @@ function Pricing() {
       badgeHighlight: true,
       highlight: true,
       features: [
+        'Manual upload – Contractual agreements',
         '100 agreements processed included: customer billing or partner reconciliation',
         '€3 per additional agreement processed',
         'Automated usage retrieval from multiple connected endpoints',
@@ -1068,12 +1071,19 @@ function Pricing() {
               ) : <div className="h-[26px]" />}
 
               <div className="p-5 flex flex-col flex-1">
-                <div className="mb-4">
+                {/* Price section — min-h so all cards reach the same baseline */}
+                <div className="mb-4 min-h-[56px]">
                   <div className="text-[11px] font-semibold text-stone uppercase tracking-widest mb-2">{plan.name}</div>
                   <div className="flex items-baseline gap-1 flex-wrap">
                     <span className="text-2xl font-semibold text-ink">{plan.price}</span>
                     {plan.period && <span className="text-stone text-xs leading-tight">{plan.period}</span>}
                   </div>
+                </div>
+
+                {/* Best suited for — immediately after price so it aligns across all cards */}
+                <div className="mb-4 pb-4" style={{ borderBottom: '0.5px solid rgba(26,61,43,0.08)' }}>
+                  <div className="text-[10px] font-semibold uppercase tracking-widest text-stone mb-1.5">Best suited for</div>
+                  <p className="text-[11px] text-stone leading-relaxed">{plan.bestFor}</p>
                 </div>
 
                 <ul className="space-y-2 mb-4 flex-1">
@@ -1087,10 +1097,7 @@ function Pricing() {
                   ))}
                 </ul>
 
-                <div className="mb-5 pt-3" style={{ borderTop: '0.5px solid rgba(26,61,43,0.08)' }}>
-                  <div className="text-[10px] font-semibold uppercase tracking-widest text-stone mb-1.5">Best suited for</div>
-                  <p className="text-[11px] text-stone leading-relaxed">{plan.bestFor}</p>
-                </div>
+                <div />
 
                 <Link
                   href={plan.href}

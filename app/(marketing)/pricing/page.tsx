@@ -14,6 +14,7 @@ const plans = [
     cta: 'Try 3 runs free',
     ctaHref: '/signup',
     features: [
+      'Manual upload – Contractual agreements',
       'Contract terms extracted automatically',
       'Usage pulled from your connected endpoint',
       'Approved billing schedules sent to your preferred billing platform',
@@ -34,6 +35,7 @@ const plans = [
     cta: 'Start pay as you go',
     ctaHref: '/signup?plan=payg',
     features: [
+      'Manual upload – Contractual agreements',
       'Customer billing or partner invoice reconciliation',
       'Automated usage retrieval from your connected endpoint',
       'Approved billing schedules sent to your preferred billing platform',
@@ -55,6 +57,7 @@ const plans = [
     cta: 'Start with Scale',
     ctaHref: '/signup?plan=scale',
     features: [
+      'Manual upload – Contractual agreements',
       'Automated usage retrieval from multiple connected endpoints',
       'Approved billing schedules sent to your preferred billing platforms',
       'Multiple customer and partner agreements',
@@ -141,7 +144,8 @@ export default function PricingPage() {
               ) : <div className="h-[30px]" />}
 
               <div className="p-6 flex flex-col flex-1">
-                <div className="mb-5">
+                {/* Price section — min-h ensures all cards reach the same baseline */}
+                <div className="mb-4 min-h-[100px]">
                   <div className="text-xs font-semibold text-stone uppercase tracking-widest mb-2">{plan.name}</div>
                   <div className="flex items-baseline gap-1.5 flex-wrap mb-1">
                     <span className="text-3xl font-semibold text-ink">{plan.price}</span>
@@ -153,6 +157,12 @@ export default function PricingPage() {
                   )}
                 </div>
 
+                {/* Best suited for — immediately after price so it aligns across all cards */}
+                <div className="mb-4 pb-4" style={{ borderBottom: '0.5px solid rgba(26,61,43,0.08)' }}>
+                  <div className="text-[10px] font-semibold uppercase tracking-widest text-stone mb-1.5">Best suited for</div>
+                  <p className="text-[11px] text-stone leading-relaxed">{plan.bestFor}</p>
+                </div>
+
                 <ul className="space-y-2 flex-1 mb-5">
                   {plan.features.map(f => (
                     <li key={f} className="flex items-start gap-2 text-xs text-stone leading-relaxed">
@@ -161,11 +171,6 @@ export default function PricingPage() {
                     </li>
                   ))}
                 </ul>
-
-                <div className="mb-5 pt-3" style={{ borderTop: '0.5px solid rgba(26,61,43,0.08)' }}>
-                  <div className="text-[10px] font-semibold uppercase tracking-widest text-stone mb-1.5">Best suited for</div>
-                  <p className="text-[11px] text-stone leading-relaxed">{plan.bestFor}</p>
-                </div>
 
                 <Link
                   href={plan.ctaHref}
