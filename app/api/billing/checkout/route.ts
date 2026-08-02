@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getBillingMode } from '@/lib/stripe-verdix'
 import { auth } from '@/lib/auth'
 import { supabaseServer } from '@/lib/supabase'
 import { getOrgSubscription } from '@/lib/billing'
@@ -7,24 +6,18 @@ import { getActiveOrg } from '@/lib/org'
 
 const PLAN_ALIAS: Record<string, string> = { free: 'trial', payg: 'core', scale: 'pro' }
 
-async function getStripeForCheckout() {
-  // Live checkout is controlled by a separate setting from the push environment.
-  // live_checkout_active must be explicitly 'true' to charge real money.
-  const { data: setting } = await supabaseServer
+async function getLiveCheckoutActive(): Promise<boolean> {
+  const { data } = await supabaseServer
     .from('verdix_settings')
     .select('value')
     .eq('key', 'live_checkout_active')
     .maybeSingle()
+  return (data?.value as string) === 'true'
+}
 
-  const liveActive = (setting?.value as string) === 'true'
-  const { default: Stripe } = await import('stripe')
-
-  const key = liveActive
-    ? (process.env.STRIPE_SECRET_KEY_LIVE ?? process.env.STRIPE_SECRET_KEY)
-    : (process.env.STRIPE_SECRET_KEY_TEST ?? process.env.STRIPE_SECRET_KEY)
-
-  if (!key) throw new Error('Missing Stripe key. Set STRIPE_SECRET_KEY in environment.')
-  return { stripe: new Stripe(key, { apiVersion: '2026-06-24.dahlia' }), liveActive }
+function buildStripe(key: string) {
+  const Stripe = require('stripe')
+  return new Stripe(key, { apiVersion: '2026-06-24.dahlia' })
 }
 
 async function resolveCustomer(
@@ -42,12 +35,11 @@ async function resolveCustomer(
   const existingId = sub?.stripe_customer_id as string | null
 
   if (existingId) {
-    // Verify the customer exists in the current Stripe account
     try {
       await stripe.customers.retrieve(existingId)
       return existingId
     } catch {
-      // Customer belongs to a different Stripe account — create fresh
+      // Customer doesn't exist in this Stripe account — create fresh below
     }
   }
 
@@ -83,38 +75,52 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid plan' }, { status: 400 })
     }
 
-    const [{ data: plan }, { stripe, liveActive }, mode] = await Promise.all([
+    const [{ data: plan }, liveActive] = await Promise.all([
       supabaseServer
         .from('verdix_plans')
-        .select('stripe_price_id_test, stripe_price_id_live, stripe_price_id, name')
+        .select('stripe_price_id_test, stripe_price_id_live, stripe_price_id, name, overage_price_eur, base_price_eur')
         .eq('id', planId)
         .maybeSingle(),
-      getStripeForCheckout(),
-      getBillingMode(),
+      getLiveCheckoutActive(),
     ])
 
-    // Prefer env-specific price (post-migration); fall back to legacy column
-    const modeSpecificPriceId = liveActive ? plan?.stripe_price_id_live : plan?.stripe_price_id_test
-    const priceId = modeSpecificPriceId ?? plan?.stripe_price_id
+    // Determine which price ID to use and which Stripe key to pair it with.
+    // Legacy stripe_price_id was created with STRIPE_SECRET_KEY — must use the same key.
+    // Env-specific IDs use the matching env key.
+    const envPriceId = liveActive ? plan?.stripe_price_id_live : plan?.stripe_price_id_test
+    const legacyPriceId = plan?.stripe_price_id
+    const priceId = envPriceId ?? legacyPriceId
+
     if (!priceId) {
       return NextResponse.json({
         error: `Plan not yet pushed to Stripe ${liveActive ? 'live' : 'sandbox'}. Go to Admin → Billing and push the plan.`,
       }, { status: 400 })
     }
 
+    // Use STRIPE_SECRET_KEY for legacy prices (created with that key).
+    // Use env-specific keys only when env-specific price IDs are in place.
+    const stripeKey = envPriceId
+      ? liveActive
+        ? (process.env.STRIPE_SECRET_KEY_LIVE ?? process.env.STRIPE_SECRET_KEY)
+        : (process.env.STRIPE_SECRET_KEY_TEST ?? process.env.STRIPE_SECRET_KEY)
+      : process.env.STRIPE_SECRET_KEY
+
+    if (!stripeKey) throw new Error('Missing Stripe key. Set STRIPE_SECRET_KEY in environment.')
+    const stripe = buildStripe(stripeKey)
+
     const sub = await getOrgSubscription(org.orgId)
 
-    // ── Upgrade path ──────────────────────────────────────────────────────────
+    // ── Upgrade path (existing active subscription) ────────────────────────────
     if (sub.stripe_subscription_id && ['active', 'trialing'].includes(sub.status ?? '')) {
       const existing = await stripe.subscriptions.retrieve(sub.stripe_subscription_id, {
         expand: ['items'],
       })
 
       const toDelete = existing.items.data
-        .filter(item => item.price.id !== priceId)
-        .map(item => ({ id: item.id, deleted: true as const }))
+        .filter((item: { price: { id: string } }) => item.price.id !== priceId)
+        .map((item: { id: string }) => ({ id: item.id, deleted: true as const }))
 
-      const alreadyHasPlan = existing.items.data.some(item => item.price.id === priceId)
+      const alreadyHasPlan = existing.items.data.some((item: { price: { id: string } }) => item.price.id === priceId)
       const toAdd = alreadyHasPlan ? [] : [{ price: priceId, quantity: 1 }]
 
       await stripe.subscriptions.update(sub.stripe_subscription_id, {
@@ -131,9 +137,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ upgraded: true })
     }
 
-    // ── New subscription ──────────────────────────────────────────────────────
+    // ── New subscription ───────────────────────────────────────────────────────
     const customerId = await resolveCustomer(stripe, org.orgId, org.orgName, session.user.email)
     const base = returnUrl ?? `${process.env.AUTH_URL || process.env.NEXTAUTH_URL || 'https://lynoraai.com'}/settings/billing`
+
+    // For pay-as-you-go plans (€0 base, overage per agreement), show a note
+    // in the checkout so customers understand how they'll be billed.
+    const isPayg = !plan?.base_price_eur && plan?.overage_price_eur
+    const overageNote = isPayg
+      ? `€${plan.overage_price_eur} per agreement processed, billed monthly in arrears based on usage.`
+      : undefined
 
     const checkoutSession = await stripe.checkout.sessions.create({
       customer: customerId,
@@ -146,6 +159,11 @@ export async function POST(req: NextRequest) {
         metadata: { verdix_org_id: org.orgId, verdix_plan_id: planId },
       },
       allow_promotion_codes: true,
+      ...(overageNote ? {
+        custom_text: {
+          submit: { message: overageNote },
+        },
+      } : {}),
     })
 
     return NextResponse.json({ url: checkoutSession.url })
