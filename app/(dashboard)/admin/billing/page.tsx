@@ -201,7 +201,7 @@ export default function AdminBillingPage() {
             <p className="text-xs text-stone max-w-md">
               {billingMode === 'live'
                 ? 'Customers are checking out and being billed on your live Stripe account. Real money is being collected.'
-                : 'Customers are checking out in Stripe sandbox. No real money is collected. Safe for testing.'}
+                : 'Live customers continue checking out on live Stripe unaffected. You are editing in sandbox — changes here will not affect live customers until you switch to Go Live and push the plans.'}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -223,7 +223,7 @@ export default function AdminBillingPage() {
         </div>
         {billingMode === 'live' && (
           <div className="mt-4 bg-red-100 border border-red-200 rounded-xl px-4 py-3 text-xs text-red-700 font-medium">
-            ⚠ Live mode is active. All checkouts, upgrades, and webhook events use your live Stripe keys. Switch back to Sandbox for any testing.
+            ⚠ Live mode is active. Any plan changes pushed here will affect real customer checkouts. Switch to Sandbox to safely edit and test before pushing to live.
           </div>
         )}
       </div>
