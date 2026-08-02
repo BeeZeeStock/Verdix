@@ -69,8 +69,14 @@ function BillingPageInner() {
       body: JSON.stringify({ planId }),
     })
     const data = await res.json()
-    if (data.url) window.location.assign(data.url)
-    else setUpgrading(null)
+    if (data.url) {
+      window.location.assign(data.url)
+    } else if (data.upgraded) {
+      // In-place subscription upgrade — reload to reflect new plan
+      window.location.assign('/settings/billing?upgraded=1')
+    } else {
+      setUpgrading(null)
+    }
   }
 
   const openPortal = async () => {
