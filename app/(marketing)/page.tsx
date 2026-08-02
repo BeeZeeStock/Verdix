@@ -87,7 +87,7 @@ function Nav() {
                     <div className="text-[10px] font-semibold uppercase tracking-widest text-stone mb-5">Explore</div>
                     <div className="space-y-4">
                       {([
-                        { icon: 'ti-article',                   label: 'Blog',         desc: 'News and updates from Verdix' },
+                        { icon: 'ti-article',                   label: 'Blog',         desc: 'News and updates from Verdix', href: '/blog' },
                         { icon: 'ti-device-desktop-analytics',  label: 'Demos',        desc: 'See Verdix in action', href: DEMO_ARTIFACT_URL },
                         { icon: 'ti-book',                      label: 'Guides',       desc: 'How-to guides and documentation' },
                         { icon: 'ti-users',                     label: 'Case studies', desc: 'How teams use Verdix', soon: true },
