@@ -94,8 +94,9 @@ export async function POST(req: NextRequest) {
 
     // If live checkout is active but only a test key is available, warn clearly.
     if (liveActive && stripeKey?.startsWith('sk_test_')) {
+      console.error('[billing/checkout] Live checkout active but STRIPE_SECRET_KEY_LIVE not set — falling back to test key.')
       return NextResponse.json({
-        error: 'Live checkout is active but STRIPE_SECRET_KEY_LIVE is not set. Add your live Stripe key to Vercel environment variables.',
+        error: 'Checkout is temporarily unavailable. Please contact support.',
       }, { status: 400 })
     }
 
@@ -107,13 +108,9 @@ export async function POST(req: NextRequest) {
     const priceId = envPriceId ?? (liveActive ? null : plan?.stripe_price_id)
 
     if (!priceId) {
-      if (liveActive) {
-        return NextResponse.json({
-          error: 'Plans not yet pushed to live Stripe. Go to Admin → Billing → switch Push environment to Live → push each plan → then retry.',
-        }, { status: 400 })
-      }
+      console.error(`[billing/checkout] No Stripe price for plan "${planId}" in ${liveActive ? 'live' : 'sandbox'} mode. Admin needs to push plans from Admin → Billing.`)
       return NextResponse.json({
-        error: 'Plan not yet pushed to Stripe sandbox. Go to Admin → Billing and push the plan.',
+        error: 'This plan is temporarily unavailable. Please contact support.',
       }, { status: 400 })
     }
 
