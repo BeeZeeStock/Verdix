@@ -12,7 +12,7 @@
   --b:rgba(26,61,43,.10);--bm:rgba(26,61,43,.20)
 }
 html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:var(--ink);background:var(--cr)}
-#app{display:flex;height:100vh;overflow:hidden}
+#app{display:flex;height:100vh;height:100dvh;overflow:hidden}
 
 /* ── Sidebar ── */
 #sb{width:210px;flex-shrink:0;background:var(--sb);border-right:1px solid var(--b);display:flex;flex-direction:column;height:100%;overflow:hidden}
@@ -215,7 +215,7 @@ html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-s
   .btl-more{padding-left:38px;font-size:10px}
 
   /* Controls */
-  #ctrl{padding:9px 14px}
+  #ctrl{padding:9px 14px;padding-bottom:max(9px,env(safe-area-inset-bottom))}
   .cb{padding:7px 12px;font-size:12px}
 }
 </style>
