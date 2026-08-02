@@ -116,32 +116,43 @@ export async function POST(req: NextRequest) {
 
     const sub = await getOrgSubscription(org.orgId)
 
-    // ── Upgrade path (existing active subscription) ────────────────────────────
+    // ── Upgrade path (existing active subscription in this Stripe account) ──────
+    // Only attempt upgrade if the subscription actually exists in the current
+    // Stripe account. A test subscription ID won't exist in the live account.
+    let useNewCheckout = true
     if (sub.stripe_subscription_id && ['active', 'trialing'].includes(sub.status ?? '')) {
-      const existing = await stripe.subscriptions.retrieve(sub.stripe_subscription_id, {
-        expand: ['items'],
-      })
+      try {
+        const existing = await stripe.subscriptions.retrieve(sub.stripe_subscription_id, {
+          expand: ['items'],
+        })
 
-      const toDelete = existing.items.data
-        .filter((item: { price: { id: string } }) => item.price.id !== priceId)
-        .map((item: { id: string }) => ({ id: item.id, deleted: true as const }))
+        const toDelete = existing.items.data
+          .filter((item: { price: { id: string } }) => item.price.id !== priceId)
+          .map((item: { id: string }) => ({ id: item.id, deleted: true as const }))
 
-      const alreadyHasPlan = existing.items.data.some((item: { price: { id: string } }) => item.price.id === priceId)
-      const toAdd = alreadyHasPlan ? [] : [{ price: priceId, quantity: 1 }]
+        const alreadyHasPlan = existing.items.data.some((item: { price: { id: string } }) => item.price.id === priceId)
+        const toAdd = alreadyHasPlan ? [] : [{ price: priceId, quantity: 1 }]
 
-      await stripe.subscriptions.update(sub.stripe_subscription_id, {
-        items: [...toDelete, ...toAdd],
-        proration_behavior: 'create_prorations',
-        metadata: { verdix_org_id: org.orgId, verdix_plan_id: planId },
-      })
+        await stripe.subscriptions.update(sub.stripe_subscription_id, {
+          items: [...toDelete, ...toAdd],
+          proration_behavior: 'create_prorations',
+          metadata: { verdix_org_id: org.orgId, verdix_plan_id: planId },
+        })
 
-      await supabaseServer
-        .from('org_subscriptions')
-        .update({ plan_id: planId, updated_at: new Date().toISOString() })
-        .eq('org_id', org.orgId)
+        await supabaseServer
+          .from('org_subscriptions')
+          .update({ plan_id: planId, updated_at: new Date().toISOString() })
+          .eq('org_id', org.orgId)
 
-      return NextResponse.json({ upgraded: true })
+        return NextResponse.json({ upgraded: true })
+      } catch (err) {
+        // Subscription not found in this Stripe account (e.g. test sub in live mode).
+        // Fall through to create a fresh checkout session.
+        console.warn('[billing/checkout] Subscription not in this Stripe account, using new checkout:', err instanceof Error ? err.message : err)
+        useNewCheckout = true
+      }
     }
+    void useNewCheckout
 
     // ── New subscription ───────────────────────────────────────────────────────
     const customerId = await resolveCustomer(stripe, org.orgId, org.orgName, session.user.email)
