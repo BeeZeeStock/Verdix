@@ -130,14 +130,14 @@ function Nav() {
                       {/* Preview tile */}
                       <div
                         className="rounded-xl mb-3 flex flex-col items-center justify-center gap-2 transition-opacity group-hover:opacity-90"
-                        style={{ background: 'linear-gradient(135deg,#1A3D2B 0%,#2D6344 100%)', height: 110 }}
+                        style={{ background: '#fff', border: '1px solid rgba(26,61,43,0.12)', height: 110 }}
                       >
                         <svg width="32" height="32" viewBox="0 0 28 28" fill="none">
-                          <rect width="28" height="28" rx="7" fill="rgba(255,255,255,0.15)" />
-                          <path d="M7.5 7L11 7L14 18.5L17 7L20.5 7L14 22Z" fill="#fff" />
-                          <rect x="11" y="24" width="6" height="1.5" rx=".75" fill="#73C99B" />
+                          <rect width="28" height="28" rx="7" fill="#EAF3DE" />
+                          <path d="M7.5 7L11 7L14 18.5L17 7L20.5 7L14 22Z" fill="#1A3D2B" />
+                          <rect x="11" y="24" width="6" height="1.5" rx=".75" fill="#27AE60" />
                         </svg>
-                        <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'rgba(255,255,255,.6)' }}>
+                        <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: '#9CA3AF' }}>
                           Interactive Demo
                         </span>
                       </div>
@@ -181,7 +181,10 @@ function Hero() {
           <p style={{ fontSize: '1rem' }}>Create customer billing schedules, send invoice instructions to your chosen billing or payment system, and identify incorrect partner charges before payment.</p>
         </div>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-4">
-          <Link href="/signup" className="w-full sm:w-auto bg-forest text-white font-medium px-8 py-4 rounded-xl hover:bg-sage transition-colors shadow-md text-center">
+          <Link href="/signup" className="w-full sm:w-auto text-white font-medium px-8 py-4 rounded-xl transition-colors shadow-md text-center" style={{ background: '#27AE60' }}
+            onMouseOver={e => (e.currentTarget.style.background = '#219150')}
+            onMouseOut={e => (e.currentTarget.style.background = '#27AE60')}
+          >
             Automate your first agreement →
           </Link>
           <a href="#how" className="w-full sm:w-auto bg-white border border-sage text-sage font-medium px-8 py-4 rounded-xl hover:bg-mint transition-colors text-center">
@@ -1231,7 +1234,7 @@ function Pricing() {
                   className="block text-center text-sm font-medium py-2.5 rounded-xl transition-colors"
                   style={
                     plan.highlight
-                      ? { background: '#1A3D2B', color: '#fff' }
+                      ? { background: '#27AE60', color: '#fff' }
                       : { background: 'transparent', color: '#1A3D2B', border: '1px solid rgba(26,61,43,0.25)' }
                   }
                 >
@@ -1281,7 +1284,10 @@ function CTA() {
           <h2 className="font-display font-light text-3xl mb-4" style={{ color: '#1A3D2B' }}>From signed agreement to billing and reconciliation—automatically</h2>
           <p className="leading-relaxed mb-10" style={{ color: '#27500A' }}>Connect a customer or partner agreement, your usage endpoint, and your preferred billing or payment system. Verdix pulls the required operational data, creates customer billing schedules, sends invoice instructions to your existing stack, and validates partner charges before payment.</p>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
-            <Link href="/signup" className="inline-block bg-forest text-white font-medium px-8 py-4 rounded-xl hover:bg-sage transition-colors shadow-md text-sm">
+            <Link href="/signup" className="inline-block text-white font-medium px-8 py-4 rounded-xl transition-colors shadow-md text-sm" style={{ background: '#27AE60' }}
+              onMouseOver={e => (e.currentTarget.style.background = '#219150')}
+              onMouseOut={e => (e.currentTarget.style.background = '#27AE60')}
+            >
               Automate your first agreement →
             </Link>
             <Link href="/design-partner" className="inline-block font-medium px-8 py-4 rounded-xl text-sm" style={{ background: '#EAF3DE', color: '#1A3D2B', border: '0.5px solid #C0DD97' }}>
