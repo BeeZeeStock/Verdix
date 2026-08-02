@@ -33,20 +33,23 @@ type BillingStatus = {
 }
 
 const PLAN_ORDER = ['trial', 'core', 'pro', 'enterprise']
-const PLAN_COLORS: Record<string, string> = { trial: '#9CA3AF', core: '#2563EB', pro: '#7C3AED', enterprise: '#1A3D2B' }
+const PLAN_COLORS: Record<string, string> = {
+  trial: '#9CA3AF',
+  core: '#2563EB',
+  pro: '#7C3AED',
+  enterprise: '#1A3D2B',
+}
 
 function BillingPageInner() {
   const params = useSearchParams()
   const [status, setStatus]               = useState<BillingStatus | null>(null)
   const [loading, setLoading]             = useState(true)
   const [upgrading, setUpgrading]         = useState<string | null>(null)
-  const [piiToggling, setPiiToggling]     = useState(false)
   const [showEnterprise, setShowEnterprise] = useState(false)
   const [entForm, setEntForm]             = useState({ name: '', company: '', message: '' })
   const [entSending, setEntSending]       = useState(false)
   const [entSent, setEntSent]             = useState(false)
   const [portalLoading, setPortalLoading] = useState(false)
-  const [piiMsg, setPiiMsg]               = useState<{ ok: boolean; text: string } | null>(null)
 
   const upgraded  = params.get('upgraded') === '1'
   const cancelled = params.get('cancelled') === '1'
@@ -58,39 +61,16 @@ function BillingPageInner() {
       .catch(() => setLoading(false))
   }, [])
 
-  const upgrade = async (planId: string, includePiiAddon = false) => {
+  const upgrade = async (planId: string) => {
     setUpgrading(planId)
     const res = await fetch('/api/billing/checkout', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ planId, includePiiAddon }),
+      body: JSON.stringify({ planId }),
     })
     const data = await res.json()
     if (data.url) window.location.assign(data.url)
     else setUpgrading(null)
-  }
-
-  const togglePii = async (enable: boolean) => {
-    setPiiToggling(true)
-    setPiiMsg(null)
-    const res = await fetch('/api/billing/pii-addon', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ enable }),
-    })
-    const data = await res.json()
-    if (!res.ok) {
-      setPiiMsg({ ok: false, text: data.error ?? 'Something went wrong. Please try again.' })
-    } else {
-      setStatus(prev => prev ? { ...prev, subscription: { ...prev.subscription, pii_addon_enabled: enable } } : prev)
-      setPiiMsg({
-        ok: true,
-        text: enable
-          ? 'Advanced PII Data Masking is now active. Your next invoice will include the +€45/month add-on.'
-          : 'Advanced PII Data Masking has been disabled.',
-      })
-    }
-    setPiiToggling(false)
   }
 
   const openPortal = async () => {
@@ -119,8 +99,14 @@ function BillingPageInner() {
   const syncsUsed = subscription.syncs_used
   const usagePct  = syncLimit ? Math.min(100, Math.round((syncsUsed / syncLimit) * 100)) : 0
 
+  const planColor = PLAN_COLORS[plan.id] ?? '#1A3D2B'
+
   const nextPlans = plans
-    .filter(p => PLAN_ORDER.indexOf(p.id) > PLAN_ORDER.indexOf(plan.id) && p.id !== 'enterprise')
+    .filter(p => {
+      const pRank = PLAN_ORDER.indexOf(p.id)
+      const curRank = PLAN_ORDER.indexOf(plan.id)
+      return pRank > curRank && p.id !== 'enterprise' && p.id !== 'pii_addon'
+    })
     .sort((a, b) => PLAN_ORDER.indexOf(a.id) - PLAN_ORDER.indexOf(b.id))
 
   return (
@@ -151,12 +137,16 @@ function BillingPageInner() {
             <div>
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xl font-semibold text-ink">{plan.name}</span>
-                <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: `${PLAN_COLORS[plan.id]}18`, color: PLAN_COLORS[plan.id] }}>
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: `${planColor}18`, color: planColor }}>
                   {subscription.status}
                 </span>
               </div>
               <div className="text-sm text-stone">
-                {plan.base_price_eur > 0 ? `€${plan.base_price_eur}/month` : 'Free'}
+                {plan.base_price_eur > 0
+                  ? `€${plan.base_price_eur}/month`
+                  : plan.overage_price_eur
+                    ? `€${plan.overage_price_eur} per agreement processed`
+                    : 'Free'}
                 {subscription.current_period_end && (
                   <span className="ml-2 text-stone/60">
                     · Renews {new Date(subscription.current_period_end).toLocaleDateString('en-IE', { day: 'numeric', month: 'long' })}
@@ -179,7 +169,7 @@ function BillingPageInner() {
           {syncLimit != null && (
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs text-stone">Agreement syncs this period</span>
+                <span className="text-xs text-stone">Agreements processed this period</span>
                 <span className="text-xs font-mono font-medium text-ink">{syncsUsed} / {syncLimit}</span>
               </div>
               <div className="h-2 bg-forest/8 rounded-full overflow-hidden">
@@ -193,57 +183,20 @@ function BillingPageInner() {
               </div>
               {isOverLimit && (
                 <p className="text-xs text-red-600 mt-1.5 font-medium">
-                  Over limit — {plan.overage_price_eur ? `€${plan.overage_price_eur}/extra sync will be billed at month end` : 'upgrade to continue'}
+                  Over limit — {plan.overage_price_eur
+                    ? `€${plan.overage_price_eur} per additional agreement processed will be billed at month end`
+                    : 'upgrade to continue'}
                 </p>
               )}
               {isNearLimit && !isOverLimit && (
                 <p className="text-xs text-amber-600 mt-1.5">
-                  Approaching your monthly limit
+                  Approaching your monthly included agreements
                 </p>
               )}
             </div>
           )}
         </div>
       </div>
-
-      {/* PII add-on */}
-      {plan.pii_addon_available && (
-        <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden mb-4">
-          <div className="px-6 py-4 border-b border-forest/8">
-            <span className="text-sm font-medium text-ink">Advanced PII Data Masking</span>
-          </div>
-          <div className="p-6 space-y-4">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-sm text-stone leading-relaxed">
-                  Names, emails, and identifiers are detected and masked before being sent to AI.
-                  {plan.id === 'enterprise' ? ' Included in your Enterprise plan.' : ' +€45/month, billed for the full month.'}
-                </p>
-              </div>
-              <button
-                onClick={() => togglePii(!subscription.pii_addon_enabled)}
-                disabled={piiToggling}
-                className={`flex-shrink-0 text-sm font-medium px-4 py-2 rounded-xl transition-colors disabled:opacity-50 ${
-                  subscription.pii_addon_enabled
-                    ? 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100'
-                    : 'bg-forest text-white hover:bg-sage'
-                }`}
-              >
-                {piiToggling ? '…' : subscription.pii_addon_enabled ? 'Disable' : 'Enable — €45/mo'}
-              </button>
-            </div>
-            {piiMsg && (
-              <div className={`text-sm rounded-xl px-4 py-3 ${
-                piiMsg.ok
-                  ? 'bg-forest/8 border border-forest/20 text-forest'
-                  : 'bg-red-50 border border-red-200 text-red-700'
-              }`}>
-                {piiMsg.ok ? '✓ ' : '⚠ '}{piiMsg.text}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Upgrade options */}
       {nextPlans.length > 0 && (
@@ -257,8 +210,13 @@ function BillingPageInner() {
                 <div>
                   <div className="text-sm font-semibold text-ink mb-0.5">{p.name}</div>
                   <div className="text-xs text-stone">
-                    €{p.base_price_eur}/month · {p.sync_limit} syncs included
-                    {p.overage_price_eur ? ` · €${p.overage_price_eur}/extra` : ''}
+                    {p.base_price_eur > 0
+                      ? `€${p.base_price_eur}/month`
+                      : p.overage_price_eur
+                        ? `€${p.overage_price_eur} per agreement processed`
+                        : 'Free'}
+                    {p.base_price_eur > 0 && p.sync_limit ? ` · ${p.sync_limit} agreements included` : ''}
+                    {p.base_price_eur > 0 && p.overage_price_eur ? ` · €${p.overage_price_eur}/extra` : ''}
                   </div>
                 </div>
                 <button
@@ -281,7 +239,7 @@ function BillingPageInner() {
           <div className="p-6 flex items-center justify-between">
             <div>
               <div className="text-sm font-semibold text-ink mb-0.5">Verdix Enterprise</div>
-              <div className="text-xs text-stone">Contact the Verdix team for a custom offer tailored to your organisation&apos;s specific needs.</div>
+              <div className="text-xs text-stone">Custom agreement-processing volumes, dedicated EU environment, SSO and custom integrations.</div>
             </div>
             <button
               onClick={() => setShowEnterprise(true)}
@@ -327,6 +285,10 @@ function BillingPageInner() {
           )}
         </div>
       )}
+
+      <div className="mt-6 text-xs text-stone/60 text-center">
+        PII masking is included on all plans. <Link href="/pricing" className="text-forest hover:underline">View full pricing details →</Link>
+      </div>
     </div>
   )
 }

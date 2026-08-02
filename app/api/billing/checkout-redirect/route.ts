@@ -7,7 +7,10 @@ import { getActiveOrg } from '@/lib/org'
 const base = () =>
   process.env.AUTH_URL || process.env.NEXTAUTH_URL || 'https://lynoraai.com'
 
-// GET /api/billing/checkout-redirect?plan=core
+// Alias new marketing plan IDs to DB plan IDs (DB IDs unchanged for Stripe compatibility)
+const PLAN_ALIAS: Record<string, string> = { free: 'trial', payg: 'core', scale: 'pro' }
+
+// GET /api/billing/checkout-redirect?plan=payg|scale|core|pro
 // Used as callbackUrl after Google OAuth when user arrived from a plan CTA.
 export async function GET(req: NextRequest) {
   const session = await auth()
@@ -15,7 +18,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL('/login', base()))
   }
 
-  const planId = new URL(req.url).searchParams.get('plan')
+  const rawPlanId = new URL(req.url).searchParams.get('plan')
+  const planId = rawPlanId ? (PLAN_ALIAS[rawPlanId] ?? rawPlanId) : null
   if (!planId || !['core', 'pro'].includes(planId)) {
     return NextResponse.redirect(new URL('/dashboard', base()))
   }

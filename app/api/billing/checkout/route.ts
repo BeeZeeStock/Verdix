@@ -4,8 +4,11 @@ import { supabaseServer } from '@/lib/supabase'
 import { getOrgSubscription, getOrCreateStripeCustomer } from '@/lib/billing'
 import { getActiveOrg } from '@/lib/org'
 
+// Alias new marketing plan IDs to DB plan IDs (DB IDs unchanged for Stripe compatibility)
+const PLAN_ALIAS: Record<string, string> = { free: 'trial', payg: 'core', scale: 'pro' }
+
 // POST /api/billing/checkout
-// Body: { planId: 'core' | 'pro', includePiiAddon?: boolean, returnUrl?: string }
+// Body: { planId: 'payg' | 'scale' | 'core' | 'pro', returnUrl?: string }
 export async function POST(req: NextRequest) {
   const session = await auth()
   if (!session?.user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -13,11 +16,12 @@ export async function POST(req: NextRequest) {
   const org = await getActiveOrg()
   if (!org) return NextResponse.json({ error: 'No organisation' }, { status: 400 })
 
-  const { planId, includePiiAddon, returnUrl } = await req.json() as {
+  const { planId: rawPlanId, returnUrl } = await req.json() as {
     planId: string
-    includePiiAddon?: boolean
     returnUrl?: string
   }
+
+  const planId = PLAN_ALIAS[rawPlanId] ?? rawPlanId
 
   if (!['core', 'pro'].includes(planId)) {
     return NextResponse.json({ error: 'Invalid plan' }, { status: 400 })

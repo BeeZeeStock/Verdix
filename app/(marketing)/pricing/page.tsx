@@ -3,61 +3,65 @@ import { VerdixLogo } from '@/components/VerdixLogo'
 
 const plans = [
   {
-    id: 'trial',
-    name: 'Standard',
-    badge: 'Free',
+    id: 'free',
+    name: 'Free',
+    badge: null,
     price: '€0',
     period: '',
-    description: 'Try Verdix with no commitment.',
-    syncs: 'First 3 agreement syncs',
+    description: '3 agreements processed: customer billing or partner reconciliation',
     overage: null,
     highlight: false,
-    cta: 'Get started free',
+    cta: 'Try 3 runs free',
     ctaHref: '/signup',
     features: [
-      'Contract PDF upload',
-      'Basic billing configuration check',
-      'Standard leakage dashboard',
-      'Manual billing audit',
+      'Contract terms extracted automatically',
+      'Usage pulled from your connected endpoint',
+      'Approved billing schedules sent to your preferred billing platform',
+      'PII masking included',
     ],
+    bestFor: 'Founders and Finance or RevOps teams that want to test Verdix using a small number of bespoke customer or partner agreements.',
   },
   {
-    id: 'core',
-    name: 'Core',
-    badge: null,
-    price: '€95',
-    period: '/month',
-    description: 'For growing teams rolling out usage metrics.',
-    syncs: 'First 10 synced agreements',
-    overage: '€5.00 per excess sync',
+    id: 'payg',
+    name: 'Pay as you go',
+    badge: 'Best for getting started',
+    badgeHighlight: false,
+    price: '€10',
+    period: 'per agreement processed',
+    description: 'No monthly subscription',
+    overage: null,
     highlight: false,
-    cta: 'Start with Core',
-    ctaHref: '/signup?plan=core',
+    cta: 'Start pay as you go',
+    ctaHref: '/signup?plan=payg',
     features: [
-      'Automated contract configuration sync',
-      'Native Stripe billing integration',
-      'Invoice audit checks against pricebooks',
-      'Advanced PII masking add-on (€45/mo)',
+      'Customer billing or partner invoice reconciliation',
+      'Automated usage retrieval from your connected endpoint',
+      'Approved billing schedules sent to your preferred billing platform',
+      'Agreement-linked calculation trace',
+      'PII masking included',
     ],
+    bestFor: 'Early-stage and smaller B2B SaaS, AI, fintech and platform companies with irregular processing volumes or fewer than approximately 40 agreement workflows per month.',
   },
   {
-    id: 'pro',
-    name: 'Pro',
-    badge: 'Most popular',
-    price: '€445',
+    id: 'scale',
+    name: 'Scale',
+    badge: 'Best value',
+    badgeHighlight: true,
+    price: '€399',
     period: '/month',
-    description: 'For scaling mid-market companies with hybrid billing models.',
-    syncs: 'First 100 synced agreements',
-    overage: '€2.50 per excess sync',
+    description: '100 agreements processed included: customer billing or partner reconciliation',
+    overage: '€3 per additional agreement processed',
     highlight: true,
-    cta: 'Start with Pro',
-    ctaHref: '/signup?plan=pro',
+    cta: 'Start with Scale',
+    ctaHref: '/signup?plan=scale',
     features: [
-      'Automated contract configuration sync',
-      'Native Stripe billing integration',
-      'Invoice audit checks against pricebooks',
-      'Advanced PII masking add-on (€45/mo)',
+      'Automated usage retrieval from multiple connected endpoints',
+      'Approved billing schedules sent to your preferred billing platforms',
+      'Multiple customer and partner agreements',
+      'Team access and priority support',
+      'PII masking included',
     ],
+    bestFor: 'Growing B2B SaaS, fintech, marketplace and digital-platform companies with recurring bespoke billing, multiple partner agreements and collaborative Finance, RevOps or Partner Operations teams.',
   },
   {
     id: 'enterprise',
@@ -65,17 +69,21 @@ const plans = [
     badge: null,
     price: 'Custom',
     period: '',
-    description: 'For multi-entity corporations and highly regulated sectors.',
-    syncs: 'Custom offer tailored to your organisation\'s specific needs',
+    description: 'For higher-volume or regulated organisations requiring advanced security, integrations and support.',
     overage: null,
     highlight: false,
-    cta: 'Contact sales',
+    cta: 'Talk to us',
     ctaHref: 'mailto:bilal@lynoraai.com?subject=Verdix Enterprise',
     features: [
-      'All Pro capabilities',
-      'Advanced PII data masking included',
-      'Dedicated onboarding & SLA',
+      'Custom agreement-processing volumes',
+      'Volume-based pricing',
+      'Dedicated EU environment',
+      'SSO and role-based access',
+      'Advanced audit logs and retention controls',
+      'Custom billing, ERP and payment integrations',
+      'SLA and dedicated support',
     ],
+    bestFor: 'Larger Nordic and European companies, regulated businesses and multi-entity organisations with complex customer and partner agreements, advanced security requirements and custom finance infrastructure.',
   },
 ]
 
@@ -100,50 +108,52 @@ export default function PricingPage() {
 
       <main className="max-w-6xl mx-auto px-6 py-16 md:py-24">
         {/* Header */}
-        <div className="text-center mb-16">
+        <div className="text-center mb-12">
           <h1 className="font-display font-light text-ink text-4xl md:text-5xl mb-4">
-            Simple, usage-based pricing
+            Pay only when Verdix completes an agreement workflow
           </h1>
-          <p className="text-stone text-lg max-w-xl mx-auto leading-relaxed">
-            Pay for what you use. One agreement sync covers a contract upload, a billing audit, or a partner reconciliation.
+          <p className="text-stone text-lg max-w-2xl mx-auto leading-relaxed mb-3">
+            No percentage of revenue, no charge per raw usage event, and no requirement to replace your billing or payment infrastructure.
+          </p>
+          <p className="text-stone max-w-2xl mx-auto leading-relaxed">
+            Built for B2B SaaS, AI, fintech, marketplace and digital-platform companies managing bespoke customer or partner agreements—especially Finance, RevOps, Billing Operations and Partner Operations teams that want automation while keeping their existing systems.
           </p>
         </div>
 
         {/* Plan grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 mb-16">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
           {plans.map(plan => (
             <div
               key={plan.id}
               className="bg-white rounded-2xl border flex flex-col overflow-hidden transition-shadow hover:shadow-md"
               style={{ borderColor: plan.highlight ? '#1A3D2B' : 'rgba(26,61,43,0.1)' }}
             >
-              {plan.badge ? (
+              {(plan as { badge?: string | null }).badge ? (
                 <div
                   className="text-center text-xs font-semibold py-1.5 tracking-wide"
-                  style={{ background: plan.highlight ? '#1A3D2B' : '#EAF3DE', color: plan.highlight ? '#fff' : '#27500A' }}
+                  style={{
+                    background: (plan as { badgeHighlight?: boolean }).badgeHighlight ? '#1A3D2B' : '#EAF3DE',
+                    color: (plan as { badgeHighlight?: boolean }).badgeHighlight ? '#fff' : '#27500A',
+                  }}
                 >
-                  {plan.badge}
+                  {(plan as { badge?: string | null }).badge}
                 </div>
               ) : <div className="h-[30px]" />}
 
               <div className="p-6 flex flex-col flex-1">
                 <div className="mb-5">
                   <div className="text-xs font-semibold text-stone uppercase tracking-widest mb-2">{plan.name}</div>
-                  <div className="flex items-baseline gap-1 mb-2">
+                  <div className="flex items-baseline gap-1.5 flex-wrap mb-1">
                     <span className="text-3xl font-semibold text-ink">{plan.price}</span>
-                    {plan.period && <span className="text-stone text-sm">{plan.period}</span>}
+                    {plan.period && <span className="text-stone text-xs leading-tight">{plan.period}</span>}
                   </div>
                   <p className="text-xs text-stone leading-relaxed">{plan.description}</p>
-                </div>
-
-                <div className="bg-cream rounded-xl p-3 mb-5">
-                  <div className="text-[11px] font-semibold text-ink mb-0.5">{plan.syncs}</div>
                   {plan.overage && (
-                    <div className="text-[11px] text-stone">{plan.overage}</div>
+                    <p className="text-xs text-stone leading-relaxed mt-1">{plan.overage}</p>
                   )}
                 </div>
 
-                <ul className="space-y-2 flex-1 mb-6">
+                <ul className="space-y-2 flex-1 mb-5">
                   {plan.features.map(f => (
                     <li key={f} className="flex items-start gap-2 text-xs text-stone leading-relaxed">
                       <i className="ti ti-check flex-shrink-0 mt-0.5" style={{ fontSize: 13, color: '#1A3D2B' }} />
@@ -151,6 +161,11 @@ export default function PricingPage() {
                     </li>
                   ))}
                 </ul>
+
+                <div className="mb-5 pt-3" style={{ borderTop: '0.5px solid rgba(26,61,43,0.08)' }}>
+                  <div className="text-[10px] font-semibold uppercase tracking-widest text-stone mb-1.5">Best suited for</div>
+                  <p className="text-[11px] text-stone leading-relaxed">{plan.bestFor}</p>
+                </div>
 
                 <Link
                   href={plan.ctaHref}
@@ -168,15 +183,33 @@ export default function PricingPage() {
           ))}
         </div>
 
-        {/* PII add-on callout */}
+        {/* What counts as one agreement processed */}
+        <div className="bg-white border border-forest/10 rounded-2xl p-6 md:p-8 mb-8">
+          <div className="text-xs font-semibold uppercase tracking-widest text-stone mb-3">What counts as one agreement processed?</div>
+          <p className="text-sm text-stone leading-relaxed mb-3">One agreement processed is either:</p>
+          <ul className="space-y-2 mb-4">
+            {[
+              'one customer billing cycle generated from an agreement and its associated usage data; or',
+              'one partner invoice reconciled against the relevant agreement and operational data.',
+            ].map(item => (
+              <li key={item} className="flex items-start gap-2 text-sm text-stone leading-relaxed">
+                <i className="ti ti-check flex-shrink-0 mt-0.5" style={{ fontSize: 13, color: '#1A3D2B' }} />
+                {item}
+              </li>
+            ))}
+          </ul>
+          <p className="text-sm text-stone leading-relaxed">Start free or use Pay as you go, then move to Scale as your processing volume grows.</p>
+        </div>
+
+        {/* PII masking callout */}
         <div className="bg-white border border-forest/10 rounded-2xl p-6 md:p-8 mb-16 flex flex-col md:flex-row md:items-center gap-6">
           <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: '#EAF3DE' }}>
             <i className="ti ti-shield-lock" style={{ fontSize: 20, color: '#27500A' }} />
           </div>
           <div className="flex-1">
-            <div className="text-sm font-semibold text-ink mb-1">Advanced PII Data Masking — +€45/month add-on</div>
+            <div className="text-sm font-semibold text-ink mb-1">Advanced PII Data Masking</div>
             <p className="text-sm text-stone leading-relaxed">
-              Available on Core and Pro plans. Names, emails, and identifiers are detected and masked locally before being sent to AI for analysis — meeting strict corporate compliance requirements. Natively included in Enterprise at no extra cost.
+              Available on all plans. Names, emails, and identifiers are detected and masked locally before being sent to AI for analysis — meeting strict corporate compliance requirements.
             </p>
           </div>
         </div>
@@ -187,20 +220,20 @@ export default function PricingPage() {
           <div className="space-y-5">
             {[
               {
-                q: 'What counts as an agreement sync?',
-                a: 'One sync is consumed when you upload and configure a customer contract, run a billing audit, or complete a partner reconciliation. All three actions count equally.',
+                q: 'What counts as one agreement processed?',
+                a: 'One agreement processed is either a customer billing cycle generated from an agreement and its associated usage data, or a partner invoice reconciled against the relevant agreement and operational data.',
               },
               {
-                q: 'What happens when I reach my sync limit?',
-                a: 'You\'ll see a warning banner and we\'ll notify you. You can keep running syncs — any overages are billed at the per-sync rate at the end of your monthly billing cycle. You\'re never cut off.',
+                q: 'What happens when I reach my included volume on Scale?',
+                a: 'Additional agreements processed beyond the 100 included are billed at €3 each at the end of your monthly billing cycle. You are never cut off mid-workflow.',
               },
               {
-                q: 'Can I change my plan mid-month?',
-                a: 'Yes. Upgrades take effect immediately via Stripe Checkout. Your sync counter carries over to the new plan.',
+                q: 'Can I switch between Free, Pay as you go, and Scale?',
+                a: 'Yes. You can move to Scale at any time. If your volume is irregular, Pay as you go lets you process agreements without a monthly commitment.',
               },
               {
                 q: 'What billing platforms are supported?',
-                a: 'Stripe is supported today. Other platforms (Chargebee, Maxio, and others) are available on request and are on our roadmap.',
+                a: 'Stripe is supported today. Other platforms (Chargebee, Maxio, and others) are available on request and on our roadmap. Enterprise plans include custom integrations.',
               },
               {
                 q: 'Is my contract data private?',

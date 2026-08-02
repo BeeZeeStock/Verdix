@@ -7,8 +7,10 @@ import { signIn } from 'next-auth/react'
 import { VerdixLogo } from '@/components/VerdixLogo'
 
 const PLAN_LABELS: Record<string, string> = {
-  core: 'Core — €95/month',
-  pro: 'Pro — €445/month',
+  payg: 'Pay as you go — €10/agreement',
+  scale: 'Scale — €399/month',
+  core: 'Pay as you go — €10/agreement',
+  pro: 'Scale — €399/month',
 }
 
 function SignupContent() {
@@ -68,7 +70,8 @@ function SignupContent() {
       }
 
       // If a paid plan was selected, go straight to Stripe Checkout
-      if (plan && ['core', 'pro'].includes(plan)) {
+      const resolvedPlan = plan === 'payg' ? 'core' : plan === 'scale' ? 'pro' : plan
+      if (resolvedPlan && ['core', 'pro'].includes(resolvedPlan)) {
         const checkoutRes = await fetch('/api/billing/checkout', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

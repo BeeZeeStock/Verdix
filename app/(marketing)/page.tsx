@@ -961,40 +961,63 @@ function DesignPartnerSection() {
 function Pricing() {
   const plans = [
     {
-      id: 'trial',
-      name: 'Standard',
+      id: 'free',
+      name: 'Free',
       price: '€0',
       period: '',
-      badge: 'Free',
-      badgeHighlight: false,
-      features: ['3 agreement syncs included', 'Contract PDF upload', 'Basic billing check', 'Leakage dashboard'],
-      cta: 'Get started free',
-      href: '/signup',
-      highlight: false,
-    },
-    {
-      id: 'core',
-      name: 'Core',
-      price: '€95',
-      period: '/mo',
       badge: null,
-      badgeHighlight: false,
-      features: ['10 synced agreements', 'Automated contract sync', 'Native Stripe integration', 'PII masking add-on (+€45)'],
-      cta: 'Start with Core',
-      href: '/signup?plan=core',
       highlight: false,
+      features: [
+        '3 agreements processed: customer billing or partner reconciliation',
+        'Contract terms extracted automatically',
+        'Usage pulled from your connected endpoint',
+        'Approved billing schedules sent to your preferred billing platform',
+        'PII masking included',
+      ],
+      bestFor: 'Founders and Finance or RevOps teams that want to test Verdix using a small number of bespoke customer or partner agreements.',
+      cta: 'Try 3 runs free',
+      href: '/signup',
     },
     {
-      id: 'pro',
-      name: 'Pro',
-      price: '€445',
-      period: '/mo',
-      badge: 'Most popular',
+      id: 'payg',
+      name: 'Pay as you go',
+      price: '€10',
+      period: 'per agreement processed',
+      badge: 'Best for getting started',
+      badgeHighlight: false,
+      highlight: false,
+      features: [
+        'Customer billing or partner invoice reconciliation',
+        'No monthly subscription',
+        'Automated usage retrieval from your connected endpoint',
+        'Approved billing schedules sent to your preferred billing platform',
+        'Agreement-linked calculation trace',
+        'PII masking included',
+      ],
+      bestFor: 'Early-stage and smaller B2B SaaS, AI, fintech and platform companies with irregular processing volumes or fewer than approximately 40 agreement workflows per month.',
+      cta: 'Start pay as you go',
+      href: '/signup?plan=payg',
+    },
+    {
+      id: 'scale',
+      name: 'Scale',
+      price: '€399',
+      period: '/month',
+      badge: 'Best value',
       badgeHighlight: true,
-      features: ['100 synced agreements', 'Automated contract sync', 'Native Stripe integration', 'PII masking add-on (+€45)'],
-      cta: 'Start with Pro',
-      href: '/signup?plan=pro',
       highlight: true,
+      features: [
+        '100 agreements processed included: customer billing or partner reconciliation',
+        '€3 per additional agreement processed',
+        'Automated usage retrieval from multiple connected endpoints',
+        'Approved billing schedules sent to your preferred billing platforms',
+        'Multiple customer and partner agreements',
+        'Team access and priority support',
+        'PII masking included',
+      ],
+      bestFor: 'Growing B2B SaaS, fintech, marketplace and digital-platform companies with recurring bespoke billing, multiple partner agreements and collaborative Finance, RevOps or Partner Operations teams.',
+      cta: 'Start with Scale',
+      href: '/signup?plan=scale',
     },
     {
       id: 'enterprise',
@@ -1002,25 +1025,33 @@ function Pricing() {
       price: 'Custom',
       period: '',
       badge: null,
-      badgeHighlight: false,
-      features: [],
-      desc: 'Contact the Verdix team for a custom offer tailored to your organisation\'s specific needs.',
+      highlight: false,
+      features: [
+        'Custom agreement-processing volumes',
+        'Volume-based pricing',
+        'Dedicated EU environment',
+        'SSO and role-based access',
+        'Advanced audit logs and retention controls',
+        'Custom billing, ERP and payment integrations',
+        'SLA and dedicated support',
+      ],
+      bestFor: 'Larger Nordic and European companies, regulated businesses and multi-entity organisations with complex customer and partner agreements, advanced security requirements and custom finance infrastructure.',
       cta: 'Talk to us',
       href: 'mailto:bilal@lynoraai.com?subject=Verdix Enterprise',
-      highlight: false,
     },
   ]
 
   return (
     <section id="pricing" className="px-6 py-24 border-t border-forest/8">
       <div className="max-w-5xl mx-auto">
-        <div className="text-center mb-12">
+        <div className="text-center mb-4">
           <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Pricing</div>
-          <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Simple, usage-based pricing</h2>
-          <p className="text-stone max-w-lg mx-auto leading-relaxed">One agreement sync = one contract audit, billing check, or partner reconciliation.</p>
+          <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Pay only when Verdix completes an agreement workflow</h2>
+          <p className="text-stone max-w-2xl mx-auto leading-relaxed mb-2">No percentage of revenue, no charge per raw usage event, and no requirement to replace your billing or payment infrastructure.</p>
+          <p className="text-stone text-sm max-w-2xl mx-auto leading-relaxed mb-10">Built for B2B SaaS, AI, fintech, marketplace and digital-platform companies managing bespoke customer or partner agreements—especially Finance, RevOps, Billing Operations and Partner Operations teams that want automation while keeping their existing systems.</p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           {plans.map(plan => (
             <div
               key={plan.id}
@@ -1030,7 +1061,7 @@ function Pricing() {
               {plan.badge ? (
                 <div
                   className="text-center text-[11px] font-semibold py-1.5 tracking-wide"
-                  style={{ background: plan.badgeHighlight ? '#1A3D2B' : '#EAF3DE', color: plan.badgeHighlight ? '#fff' : '#27500A' }}
+                  style={{ background: (plan as {badgeHighlight?: boolean}).badgeHighlight ? '#1A3D2B' : '#EAF3DE', color: (plan as {badgeHighlight?: boolean}).badgeHighlight ? '#fff' : '#27500A' }}
                 >
                   {plan.badge}
                 </div>
@@ -1039,26 +1070,27 @@ function Pricing() {
               <div className="p-5 flex flex-col flex-1">
                 <div className="mb-4">
                   <div className="text-[11px] font-semibold text-stone uppercase tracking-widest mb-2">{plan.name}</div>
-                  <div className="flex items-baseline gap-1">
+                  <div className="flex items-baseline gap-1 flex-wrap">
                     <span className="text-2xl font-semibold text-ink">{plan.price}</span>
-                    {plan.period && <span className="text-stone text-sm">{plan.period}</span>}
+                    {plan.period && <span className="text-stone text-xs leading-tight">{plan.period}</span>}
                   </div>
                 </div>
 
-                {'desc' in plan && plan.desc ? (
-                  <p className="text-xs text-stone leading-relaxed flex-1 mb-5">{plan.desc}</p>
-                ) : (
-                  <ul className="space-y-2 flex-1 mb-5">
-                    {plan.features.map(f => (
-                      <li key={f} className="flex items-start gap-2 text-xs text-stone leading-relaxed">
-                        <div className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: '#EAF3DE' }}>
-                          <i className="ti ti-check" style={{ fontSize: 9, color: '#27500A' }} />
-                        </div>
-                        {f}
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                <ul className="space-y-2 mb-4 flex-1">
+                  {plan.features.map(f => (
+                    <li key={f} className="flex items-start gap-2 text-xs text-stone leading-relaxed">
+                      <div className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: '#EAF3DE' }}>
+                        <i className="ti ti-check" style={{ fontSize: 9, color: '#27500A' }} />
+                      </div>
+                      {f}
+                    </li>
+                  ))}
+                </ul>
+
+                <div className="mb-5 pt-3" style={{ borderTop: '0.5px solid rgba(26,61,43,0.08)' }}>
+                  <div className="text-[10px] font-semibold uppercase tracking-widest text-stone mb-1.5">Best suited for</div>
+                  <p className="text-[11px] text-stone leading-relaxed">{plan.bestFor}</p>
+                </div>
 
                 <Link
                   href={plan.href}
@@ -1074,6 +1106,26 @@ function Pricing() {
               </div>
             </div>
           ))}
+        </div>
+
+        {/* What counts as one agreement processed */}
+        <div className="bg-white border border-forest/10 rounded-2xl p-6 mb-8">
+          <div className="text-[11px] font-semibold uppercase tracking-widest text-stone mb-3">What counts as one agreement processed?</div>
+          <p className="text-sm text-stone leading-relaxed mb-3">One agreement processed is either:</p>
+          <ul className="space-y-1.5 mb-4">
+            {[
+              'one customer billing cycle generated from an agreement and its associated usage data; or',
+              'one partner invoice reconciled against the relevant agreement and operational data.',
+            ].map(item => (
+              <li key={item} className="flex items-start gap-2 text-sm text-stone leading-relaxed">
+                <div className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: '#EAF3DE' }}>
+                  <i className="ti ti-check" style={{ fontSize: 9, color: '#27500A' }} />
+                </div>
+                {item}
+              </li>
+            ))}
+          </ul>
+          <p className="text-sm text-stone leading-relaxed">Start free or use Pay as you go, then move to Scale as your processing volume grows.</p>
         </div>
 
         <div className="text-center">

@@ -20,7 +20,7 @@ type Plan = {
 
 type Setting = { key: string; value: number | string }
 
-const EDITABLE_PLANS = ['core', 'pro', 'pii_addon']
+const EDITABLE_PLANS = ['trial', 'core', 'pro']
 const ALL_CYCLES: Array<{ cycle: BillingCycle['cycle']; label: string; stripeDesc: string }> = [
   { cycle: 'monthly',   label: 'Monthly',   stripeDesc: 'every month' },
   { cycle: 'quarterly', label: 'Quarterly', stripeDesc: 'every 3 months' },
@@ -170,10 +170,10 @@ export default function AdminBillingPage() {
         <p className="text-stone text-sm">Manage Verdix SaaS pricing tiers, billing cycles, and push to Stripe</p>
       </div>
 
-      {/* Trial global limit */}
+      {/* Free plan global limit */}
       <div className="bg-white border border-forest/10 rounded-2xl p-6 mb-6">
-        <div className="text-sm font-medium text-ink mb-1">Global trial sync limit</div>
-        <p className="text-xs text-stone mb-4">Default max agreement syncs for all Trial accounts.</p>
+        <div className="text-sm font-medium text-ink mb-1">Global Free plan agreement limit</div>
+        <p className="text-xs text-stone mb-4">Maximum agreements processed for all Free accounts.</p>
         <div className="flex items-center gap-3">
           <input
             type="number" value={trialLimit}
@@ -181,7 +181,7 @@ export default function AdminBillingPage() {
             className="w-28 bg-cream border border-forest/15 rounded-xl px-4 py-2.5 text-sm text-ink outline-none focus:border-forest"
             min={0}
           />
-          <span className="text-sm text-stone">syncs / month</span>
+          <span className="text-sm text-stone">agreements / month</span>
           <button onClick={saveTrialLimit} disabled={savingTrial}
             className="bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors disabled:opacity-50">
             {savingTrial ? 'Saving…' : 'Save'}
@@ -245,8 +245,32 @@ export default function AdminBillingPage() {
 
               {/* Core plan fields */}
               <div className="p-6 grid grid-cols-2 md:grid-cols-3 gap-4 border-b border-forest/6">
+                <div className="col-span-2 md:col-span-3">
+                  <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Package display name</label>
+                  <input
+                    type="text"
+                    value={(getVal(plan.id, 'name', plan.name) as string) ?? ''}
+                    placeholder={plan.name}
+                    onChange={e => setField(plan.id, 'name', e.target.value)}
+                    disabled={!isEditable}
+                    className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest disabled:opacity-50"
+                  />
+                  <p className="text-[10px] text-stone/60 mt-1">Shown to customers in their billing view and on invoices. Saving also updates the Stripe product name.</p>
+                </div>
                 <div>
-                  <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Sync limit</label>
+                  <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Base monthly price (€)</label>
+                  <input
+                    type="number" step="0.01" min={0}
+                    value={getVal(plan.id, 'base_price_eur', plan.base_price_eur) ?? ''}
+                    placeholder="0"
+                    onChange={e => setField(plan.id, 'base_price_eur', e.target.value ? Number(e.target.value) : 0)}
+                    disabled={!isEditable}
+                    className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest disabled:opacity-50"
+                  />
+                  <p className="text-[10px] text-stone/60 mt-1">Set to 0 for pure pay-as-you-go plans</p>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Agreements included / limit</label>
                   <input
                     type="number"
                     value={getVal(plan.id, 'sync_limit', plan.sync_limit) ?? ''}
@@ -257,7 +281,7 @@ export default function AdminBillingPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Overage price (€/sync)</label>
+                  <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Price per agreement (€)</label>
                   <input
                     type="number" step="0.01"
                     value={getVal(plan.id, 'overage_price_eur', plan.overage_price_eur) ?? ''}

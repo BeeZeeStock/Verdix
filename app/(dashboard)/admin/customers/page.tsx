@@ -17,7 +17,7 @@ type OrgRow = {
   }
 }
 
-const PLAN_LABELS: Record<string, string> = { trial: 'Trial', core: 'Core', pro: 'Pro', enterprise: 'Enterprise' }
+const PLAN_LABELS: Record<string, string> = { trial: 'Free', core: 'Pay as you go', pro: 'Scale', enterprise: 'Enterprise' }
 const PLAN_COLORS: Record<string, string> = { trial: '#9CA3AF', core: '#2563EB', pro: '#7C3AED', enterprise: '#1A3D2B' }
 
 export default function AdminCustomersPage() {
