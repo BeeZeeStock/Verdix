@@ -1,15 +1,70 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getVerdixStripe, getBillingMode } from '@/lib/stripe-verdix'
+import { getBillingMode } from '@/lib/stripe-verdix'
 import { auth } from '@/lib/auth'
 import { supabaseServer } from '@/lib/supabase'
-import { getOrgSubscription, getOrCreateStripeCustomer } from '@/lib/billing'
+import { getOrgSubscription } from '@/lib/billing'
 import { getActiveOrg } from '@/lib/org'
 
-// Alias new marketing plan IDs to DB plan IDs (DB IDs unchanged for Stripe compatibility)
 const PLAN_ALIAS: Record<string, string> = { free: 'trial', payg: 'core', scale: 'pro' }
 
-// POST /api/billing/checkout
-// Body: { planId: 'payg' | 'scale' | 'core' | 'pro', returnUrl?: string }
+async function getStripeForCheckout() {
+  // Live checkout is controlled by a separate setting from the push environment.
+  // live_checkout_active must be explicitly 'true' to charge real money.
+  const { data: setting } = await supabaseServer
+    .from('verdix_settings')
+    .select('value')
+    .eq('key', 'live_checkout_active')
+    .maybeSingle()
+
+  const liveActive = (setting?.value as string) === 'true'
+  const { default: Stripe } = await import('stripe')
+
+  const key = liveActive
+    ? (process.env.STRIPE_SECRET_KEY_LIVE ?? process.env.STRIPE_SECRET_KEY)
+    : (process.env.STRIPE_SECRET_KEY_TEST ?? process.env.STRIPE_SECRET_KEY)
+
+  if (!key) throw new Error('Missing Stripe key. Set STRIPE_SECRET_KEY in environment.')
+  return { stripe: new Stripe(key, { apiVersion: '2026-06-24.dahlia' }), liveActive }
+}
+
+async function resolveCustomer(
+  stripe: import('stripe').default,
+  orgId: string,
+  orgName: string,
+  email: string,
+): Promise<string> {
+  const { data: sub } = await supabaseServer
+    .from('org_subscriptions')
+    .select('stripe_customer_id')
+    .eq('org_id', orgId)
+    .maybeSingle()
+
+  const existingId = sub?.stripe_customer_id as string | null
+
+  if (existingId) {
+    // Verify the customer exists in the current Stripe account
+    try {
+      await stripe.customers.retrieve(existingId)
+      return existingId
+    } catch {
+      // Customer belongs to a different Stripe account — create fresh
+    }
+  }
+
+  const customer = await stripe.customers.create({
+    name: orgName,
+    email,
+    metadata: { verdix_org_id: orgId },
+  })
+
+  await supabaseServer
+    .from('org_subscriptions')
+    .update({ stripe_customer_id: customer.id, updated_at: new Date().toISOString() })
+    .eq('org_id', orgId)
+
+  return customer.id
+}
+
 export async function POST(req: NextRequest) {
   try {
     const session = await auth()
@@ -24,38 +79,32 @@ export async function POST(req: NextRequest) {
     }
 
     const planId = PLAN_ALIAS[rawPlanId] ?? rawPlanId
-
     if (!['core', 'pro'].includes(planId)) {
       return NextResponse.json({ error: 'Invalid plan' }, { status: 400 })
     }
 
-    const [{ data: plan }, mode] = await Promise.all([
+    const [{ data: plan }, { stripe, liveActive }, mode] = await Promise.all([
       supabaseServer
         .from('verdix_plans')
         .select('stripe_price_id_test, stripe_price_id_live, stripe_price_id, name')
         .eq('id', planId)
         .maybeSingle(),
+      getStripeForCheckout(),
       getBillingMode(),
     ])
 
-    // Use mode-specific price if available (post-migration), otherwise fall back to legacy
-    const modeSpecificPriceId = mode === 'live' ? plan?.stripe_price_id_live : plan?.stripe_price_id_test
+    // Prefer env-specific price (post-migration); fall back to legacy column
+    const modeSpecificPriceId = liveActive ? plan?.stripe_price_id_live : plan?.stripe_price_id_test
     const priceId = modeSpecificPriceId ?? plan?.stripe_price_id
     if (!priceId) {
-      return NextResponse.json({ error: `Plan not yet pushed to Stripe. Go to Admin → Billing and push the plan.` }, { status: 400 })
+      return NextResponse.json({
+        error: `Plan not yet pushed to Stripe ${liveActive ? 'live' : 'sandbox'}. Go to Admin → Billing and push the plan.`,
+      }, { status: 400 })
     }
-
-    // Use mode-aware Stripe key when using env-specific price; fall back to original key for legacy prices
-    const { default: Stripe } = await import('stripe')
-    const stripeKey = modeSpecificPriceId
-      ? (mode === 'live' ? (process.env.STRIPE_SECRET_KEY_LIVE ?? process.env.STRIPE_SECRET_KEY) : (process.env.STRIPE_SECRET_KEY_TEST ?? process.env.STRIPE_SECRET_KEY))
-      : process.env.STRIPE_SECRET_KEY
-    if (!stripeKey) throw new Error('Missing STRIPE_SECRET_KEY env var')
-    const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
 
     const sub = await getOrgSubscription(org.orgId)
 
-    // ── Upgrade path: org already has an active subscription ──────────────────
+    // ── Upgrade path ──────────────────────────────────────────────────────────
     if (sub.stripe_subscription_id && ['active', 'trialing'].includes(sub.status ?? '')) {
       const existing = await stripe.subscriptions.retrieve(sub.stripe_subscription_id, {
         expand: ['items'],
@@ -82,9 +131,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ upgraded: true })
     }
 
-    // ── New subscription path: no active subscription yet ─────────────────────
-    const customerId = await getOrCreateStripeCustomer(org.orgId, org.orgName, session.user.email)
-
+    // ── New subscription ──────────────────────────────────────────────────────
+    const customerId = await resolveCustomer(stripe, org.orgId, org.orgName, session.user.email)
     const base = returnUrl ?? `${process.env.AUTH_URL || process.env.NEXTAUTH_URL || 'https://lynoraai.com'}/settings/billing`
 
     const checkoutSession = await stripe.checkout.sessions.create({

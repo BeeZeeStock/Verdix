@@ -41,7 +41,9 @@ export default function AdminBillingPage() {
   const [trialLimit, setTrialLimit] = useState('')
   const [savingTrial, setSavingTrial] = useState(false)
   const [billingMode, setBillingMode] = useState<'test' | 'live'>('test')
+  const [liveCheckout, setLiveCheckout] = useState(false)
   const [savingMode, setSavingMode] = useState(false)
+  const [savingCheckout, setSavingCheckout] = useState(false)
   const [webhookSecret, setWebhookSecret] = useState<string | null>(null)
   const [registeringWebhook, setRegisteringWebhook] = useState(false)
   const [webhookMsg, setWebhookMsg] = useState<{ ok: boolean; text: string } | null>(null)
@@ -57,6 +59,8 @@ export default function AdminBillingPage() {
         if (tl) setTrialLimit(String(tl.value))
         const bm = d.settings?.find((s: Setting) => s.key === 'billing_mode')
         if (bm?.value === 'live') setBillingMode('live')
+        const lc = d.settings?.find((s: Setting) => s.key === 'live_checkout_active')
+        if (lc?.value === 'true') setLiveCheckout(true)
         setLoading(false)
       })
       .catch(() => setLoading(false))
@@ -168,6 +172,18 @@ export default function AdminBillingPage() {
     setSavingMode(false)
   }
 
+  const toggleLiveCheckout = async () => {
+    const next = !liveCheckout
+    setSavingCheckout(true)
+    await fetch('/api/admin/billing', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: 'live_checkout_active', value: next ? 'true' : 'false' }),
+    })
+    setLiveCheckout(next)
+    setSavingCheckout(false)
+  }
+
   const saveTrialLimit = async () => {
     setSavingTrial(true)
     const res = await fetch('/api/admin/billing', {
@@ -188,44 +204,74 @@ export default function AdminBillingPage() {
         <p className="text-stone text-sm">Manage Verdix SaaS pricing tiers, billing cycles, and push to Stripe</p>
       </div>
 
-      {/* Stripe environment toggle */}
-      <div className={`rounded-2xl p-6 mb-6 border ${billingMode === 'live' ? 'bg-red-50 border-red-200' : 'bg-white border-forest/10'}`}>
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-sm font-medium text-ink">Stripe environment</span>
-              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${billingMode === 'live' ? 'bg-red-100 text-red-700' : 'bg-forest/8 text-forest'}`}>
-                {billingMode === 'live' ? 'LIVE' : 'TEST'}
-              </span>
-            </div>
-            <p className="text-xs text-stone max-w-md">
-              {billingMode === 'live'
-                ? 'Customers are checking out and being billed on your live Stripe account. Real money is being collected.'
-                : 'Live customers continue checking out on live Stripe unaffected. You are editing in sandbox — changes here will not affect live customers until you switch to Go Live and push the plans.'}
-            </p>
-          </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <button
-              onClick={() => saveBillingMode('test')}
-              disabled={savingMode || billingMode === 'test'}
-              className={`text-sm font-medium px-4 py-2 rounded-xl transition-colors disabled:opacity-40 ${billingMode === 'test' ? 'bg-forest text-white' : 'border border-forest/20 text-forest hover:bg-forest/5'}`}
-            >
-              Sandbox
-            </button>
-            <button
-              onClick={() => saveBillingMode('live')}
-              disabled={savingMode || billingMode === 'live'}
-              className={`text-sm font-medium px-4 py-2 rounded-xl transition-colors disabled:opacity-40 ${billingMode === 'live' ? 'bg-red-600 text-white' : 'border border-red-300 text-red-600 hover:bg-red-50'}`}
-            >
-              {savingMode ? 'Switching…' : 'Go Live'}
-            </button>
-          </div>
+      {/* Stripe environment controls */}
+      <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden mb-6">
+        <div className="px-6 py-4 border-b border-forest/8">
+          <span className="text-sm font-medium text-ink">Stripe environment</span>
         </div>
-        {billingMode === 'live' && (
-          <div className="mt-4 bg-red-100 border border-red-200 rounded-xl px-4 py-3 text-xs text-red-700 font-medium">
-            ⚠ Live mode is active. Any plan changes pushed here will affect real customer checkouts. Switch to Sandbox to safely edit and test before pushing to live.
+        <div className="p-6 space-y-6">
+
+          {/* Push environment */}
+          <div className="flex items-start justify-between gap-6">
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-ink mb-0.5">Push environment</div>
+              <p className="text-xs text-stone">
+                Plans pushed from this page go to this Stripe account. Edit freely in sandbox — it will not affect live customers until you switch to live and push.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 flex-shrink-0">
+              <span className={`text-xs font-medium ${billingMode === 'test' ? 'text-forest' : 'text-stone/50'}`}>Sandbox</span>
+              <button
+                role="switch"
+                aria-checked={billingMode === 'live'}
+                onClick={() => saveBillingMode(billingMode === 'live' ? 'test' : 'live')}
+                disabled={savingMode}
+                className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-50 ${billingMode === 'live' ? 'bg-sage' : 'bg-stone/20'}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${billingMode === 'live' ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+              <span className={`text-xs font-medium ${billingMode === 'live' ? 'text-forest' : 'text-stone/50'}`}>Live</span>
+            </div>
           </div>
-        )}
+
+          <div className="border-t border-forest/6" />
+
+          {/* Live checkout */}
+          <div className="flex items-start justify-between gap-6">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="text-sm font-medium text-ink">Live checkout</span>
+                {liveCheckout && (
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-mint text-forest">ACTIVE</span>
+                )}
+              </div>
+              <p className="text-xs text-stone">
+                {liveCheckout
+                  ? 'Customers are checking out on your live Stripe account. Real payments are being collected.'
+                  : 'Customers check out in sandbox. No real money is collected. Toggle on when you are ready to take live payments.'}
+              </p>
+              {liveCheckout && (
+                <p className="text-xs text-sage font-medium mt-1.5">
+                  Toggle off to deactivate live checkout and route customers to sandbox at any time.
+                </p>
+              )}
+            </div>
+            <div className="flex items-center gap-3 flex-shrink-0">
+              <span className={`text-xs font-medium ${!liveCheckout ? 'text-forest' : 'text-stone/50'}`}>Off</span>
+              <button
+                role="switch"
+                aria-checked={liveCheckout}
+                onClick={toggleLiveCheckout}
+                disabled={savingCheckout}
+                className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-50 ${liveCheckout ? 'bg-forest' : 'bg-stone/20'}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${liveCheckout ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+              <span className={`text-xs font-medium ${liveCheckout ? 'text-forest' : 'text-stone/50'}`}>On</span>
+            </div>
+          </div>
+
+        </div>
       </div>
 
       {/* Free plan global limit */}
@@ -254,7 +300,7 @@ export default function AdminBillingPage() {
       <div className="bg-white border border-forest/10 rounded-2xl p-6 mb-6">
         <div className="text-sm font-medium text-ink mb-1">Stripe billing webhook</div>
         <p className="text-xs text-stone mb-4">
-          Registers <code className="bg-cream px-1 rounded font-mono">/api/billing/webhook</code> with the active Stripe environment ({billingMode === 'live' ? 'live' : 'sandbox'}).
+          Registers <code className="bg-cream px-1 rounded font-mono">/api/billing/webhook</code> with the push environment ({billingMode === 'live' ? 'live' : 'sandbox'}).
           Copy the secret to Vercel as <code className="bg-cream px-1 rounded font-mono">{billingMode === 'live' ? 'STRIPE_BILLING_WEBHOOK_SECRET_LIVE' : 'STRIPE_BILLING_WEBHOOK_SECRET_TEST'}</code>.
         </p>
         <div className="flex items-center gap-3 flex-wrap">
