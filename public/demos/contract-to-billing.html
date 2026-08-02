@@ -188,12 +188,14 @@ html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-s
   .pg-title{font-size:17px}
   .pg-sub{font-size:12px;margin-bottom:12px}
 
-  /* PII table: hide Source + Confidence columns, tighter padding */
+  /* PII table: keep only Type | Value | Actions */
+  .pii-table th:nth-child(3),.pii-table td:nth-child(3),
   .pii-table th:nth-child(4),.pii-table td:nth-child(4),
   .pii-table th:nth-child(5),.pii-table td:nth-child(5){display:none}
   .pii-table td,.pii-table th{padding:8px 8px;font-size:12px}
   .pii-table td:first-child,.pii-table th:first-child{padding-left:12px}
-  .mono{font-size:10px}
+  .pii-table td:nth-child(2){word-break:break-all;max-width:140px}
+  .mono{font-size:10.5px}
   .type-pill{font-size:9px;padding:2px 6px}
 
   /* Extracted terms: hide PDF preview panel, single column */
