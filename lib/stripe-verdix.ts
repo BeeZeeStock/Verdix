@@ -27,9 +27,9 @@ export async function getBillingMode(): Promise<BillingMode> {
 export async function getVerdixStripe() {
   const mode = await getBillingMode()
   const key = mode === 'live'
-    ? process.env.STRIPE_SECRET_KEY_LIVE
-    : process.env.STRIPE_SECRET_KEY_TEST
-  if (!key) throw new Error(`Missing env var: STRIPE_SECRET_KEY_${mode.toUpperCase()}`)
+    ? (process.env.STRIPE_SECRET_KEY_LIVE ?? process.env.STRIPE_SECRET_KEY)
+    : (process.env.STRIPE_SECRET_KEY_TEST ?? process.env.STRIPE_SECRET_KEY)
+  if (!key) throw new Error(`Missing Stripe key for billing_mode="${mode}". Set STRIPE_SECRET_KEY_${mode.toUpperCase()} in env.`)
   const { default: Stripe } = await import('stripe')
   return new Stripe(key, { apiVersion: '2026-06-24.dahlia' })
 }
