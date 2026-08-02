@@ -45,6 +45,7 @@ function BillingPageInner() {
   const [status, setStatus]               = useState<BillingStatus | null>(null)
   const [loading, setLoading]             = useState(true)
   const [upgrading, setUpgrading]         = useState<string | null>(null)
+  const [upgradeError, setUpgradeError]   = useState<string | null>(null)
   const [showEnterprise, setShowEnterprise] = useState(false)
   const [entForm, setEntForm]             = useState({ name: '', company: '', message: '' })
   const [entSending, setEntSending]       = useState(false)
@@ -63,18 +64,24 @@ function BillingPageInner() {
 
   const upgrade = async (planId: string) => {
     setUpgrading(planId)
-    const res = await fetch('/api/billing/checkout', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ planId }),
-    })
-    const data = await res.json()
-    if (data.url) {
-      window.location.assign(data.url)
-    } else if (data.upgraded) {
-      // In-place subscription upgrade — reload to reflect new plan
-      window.location.assign('/settings/billing?upgraded=1')
-    } else {
+    setUpgradeError(null)
+    try {
+      const res = await fetch('/api/billing/checkout', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ planId }),
+      })
+      const data = await res.json()
+      if (data.url) {
+        window.location.assign(data.url)
+      } else if (data.upgraded) {
+        window.location.assign('/settings/billing?upgraded=1')
+      } else {
+        setUpgradeError(data.error ?? 'Something went wrong. Please try again.')
+        setUpgrading(null)
+      }
+    } catch {
+      setUpgradeError('Network error. Please try again.')
       setUpgrading(null)
     }
   }
@@ -210,6 +217,11 @@ function BillingPageInner() {
           <div className="px-6 py-4 border-b border-forest/8">
             <span className="text-sm font-medium text-ink">Upgrade plan</span>
           </div>
+          {upgradeError && (
+            <div className="mx-6 mt-4 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-xs text-red-700">
+              {upgradeError}
+            </div>
+          )}
           <div className="p-6 space-y-3">
             {nextPlans.map(p => (
               <div key={p.id} className="flex items-center justify-between p-4 border border-forest/10 rounded-xl hover:border-forest/20 transition-colors">

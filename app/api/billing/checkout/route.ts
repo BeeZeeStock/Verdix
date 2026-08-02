@@ -31,14 +31,16 @@ export async function POST(req: NextRequest) {
   const [{ data: plan }, stripe, mode] = await Promise.all([
     supabaseServer
       .from('verdix_plans')
-      .select('stripe_price_id_test, stripe_price_id_live, name')
+      .select('stripe_price_id_test, stripe_price_id_live, stripe_price_id, name')
       .eq('id', planId)
       .maybeSingle(),
     getVerdixStripe(),
     getBillingMode(),
   ])
 
-  const priceId = mode === 'live' ? plan?.stripe_price_id_live : plan?.stripe_price_id_test
+  // Prefer mode-specific column; fall back to legacy stripe_price_id until migration is run
+  const priceId = (mode === 'live' ? plan?.stripe_price_id_live : plan?.stripe_price_id_test)
+    ?? plan?.stripe_price_id
   if (!priceId) {
     return NextResponse.json({ error: `Plan not yet pushed to Stripe ${mode}. Go to Admin → Billing and push the plan.` }, { status: 400 })
   }

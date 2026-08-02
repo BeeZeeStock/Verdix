@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
   const [{ data: plan }, stripe, mode, customerId] = await Promise.all([
     supabaseServer
       .from('verdix_plans')
-      .select('stripe_price_id_test, stripe_price_id_live, name')
+      .select('stripe_price_id_test, stripe_price_id_live, stripe_price_id, name')
       .eq('id', planId)
       .maybeSingle(),
     getVerdixStripe(),
@@ -41,7 +41,8 @@ export async function GET(req: NextRequest) {
     getOrCreateStripeCustomer(org.orgId, org.orgName, session.user.email),
   ])
 
-  const priceId = mode === 'live' ? plan?.stripe_price_id_live : plan?.stripe_price_id_test
+  const priceId = (mode === 'live' ? plan?.stripe_price_id_live : plan?.stripe_price_id_test)
+    ?? plan?.stripe_price_id
   if (!priceId) {
     return NextResponse.redirect(new URL('/settings/billing', base()))
   }
