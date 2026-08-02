@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getVerdixStripe } from '@/lib/stripe-verdix'
+import { getVerdixStripe, getBillingMode } from '@/lib/stripe-verdix'
 import { requireAdmin } from '@/lib/admin'
 import { supabaseServer } from '@/lib/supabase'
 
@@ -39,70 +39,73 @@ export async function PATCH(req: NextRequest) {
   const canPushStripe = id !== 'trial' && id !== 'enterprise'
 
   if (canPushStripe && (pushToStripe || pushCycle)) {
-  
-    const stripe = await getVerdixStripe()
+    const [stripe, mode] = await Promise.all([getVerdixStripe(), getBillingMode()])
+
+    // Column names are environment-specific so sandbox and live don't overwrite each other
+    const productCol     = mode === 'live' ? 'stripe_product_id_live'    : 'stripe_product_id_test'
+    const priceCol       = mode === 'live' ? 'stripe_price_id_live'      : 'stripe_price_id_test'
+    const cyclePricesCol = mode === 'live' ? 'stripe_cycle_prices_live'  : 'stripe_cycle_prices_test'
 
     const { data: current } = await supabaseServer
       .from('verdix_plans')
-      .select('stripe_product_id, stripe_price_id, stripe_cycle_prices, name')
+      .select(`${productCol}, ${priceCol}, ${cyclePricesCol}, name`)
       .eq('id', id)
       .maybeSingle()
 
-    // Ensure product exists
-    let productId = current?.stripe_product_id as string | undefined
-    const planName = (fields.name ?? (current?.name as string) ?? id)
+    const currentData = current as Record<string, unknown> | null
+
+    // Ensure product exists in the active Stripe environment
+    let productId = currentData?.[productCol] as string | undefined
+    const planName = (fields.name ?? (currentData?.name as string) ?? id)
     if (!productId) {
       const product = await stripe.products.create({ name: planName, metadata: { verdix_plan_id: id } })
       productId = product.id
     } else if (fields.name) {
       await stripe.products.update(productId, { name: planName })
     }
-    updatePayload.stripe_product_id = productId
+    updatePayload[productCol] = productId
 
     // Helper: map cycle → Stripe recurring params
     const cycleInterval = (cycle: string): { interval: 'month' | 'year'; interval_count: number } => {
-      if (cycle === 'yearly')   return { interval: 'year',  interval_count: 1 }
+      if (cycle === 'yearly')    return { interval: 'year',  interval_count: 1 }
       if (cycle === 'quarterly') return { interval: 'month', interval_count: 3 }
-      return                           { interval: 'month', interval_count: 1 }
+      return                            { interval: 'month', interval_count: 1 }
     }
 
-    const existingCyclePrices = ((current?.stripe_cycle_prices ?? {}) as Record<string, string>)
+    const existingCyclePrices = ((currentData?.[cyclePricesCol] ?? {}) as Record<string, string>)
 
     if (pushCycle) {
-      // Push a single billing cycle price
       const cycles: Array<{ cycle: string; price_eur: number }> = fields.billing_cycles ?? []
       const entry = cycles.find(c => c.cycle === pushCycle)
       if (entry) {
         const oldPriceId = existingCyclePrices[pushCycle]
         const price = await stripe.prices.create({
-          product:    productId,
+          product:     productId,
           unit_amount: Math.round(entry.price_eur * 100),
-          currency:   'eur',
-          recurring:  cycleInterval(pushCycle),
-          metadata:   { verdix_plan_id: id, billing_cycle: pushCycle },
+          currency:    'eur',
+          recurring:   cycleInterval(pushCycle),
+          metadata:    { verdix_plan_id: id, billing_cycle: pushCycle },
         })
         if (oldPriceId && oldPriceId !== price.id) {
           await stripe.prices.update(oldPriceId, { active: false }).catch(() => null)
         }
-        // If this is the monthly cycle, also update the legacy stripe_price_id
-        if (pushCycle === 'monthly') updatePayload.stripe_price_id = price.id
-        updatePayload.stripe_cycle_prices = { ...existingCyclePrices, [pushCycle]: price.id }
+        if (pushCycle === 'monthly') updatePayload[priceCol] = price.id
+        updatePayload[cyclePricesCol] = { ...existingCyclePrices, [pushCycle]: price.id }
       }
     } else if (pushToStripe && fields.base_price_eur != null) {
-      // Legacy: push just the monthly price (backward compat)
-      const oldPriceId = current?.stripe_price_id as string | undefined
+      const oldPriceId = currentData?.[priceCol] as string | undefined
       const price = await stripe.prices.create({
-        product:    productId,
+        product:     productId,
         unit_amount: Math.round(fields.base_price_eur * 100),
-        currency:   'eur',
-        recurring:  { interval: 'month' },
-        metadata:   { verdix_plan_id: id, billing_cycle: 'monthly' },
+        currency:    'eur',
+        recurring:   { interval: 'month' },
+        metadata:    { verdix_plan_id: id, billing_cycle: 'monthly' },
       })
       if (oldPriceId && oldPriceId !== price.id) {
         await stripe.prices.update(oldPriceId, { active: false }).catch(() => null)
       }
-      updatePayload.stripe_price_id = price.id
-      updatePayload.stripe_cycle_prices = { ...existingCyclePrices, monthly: price.id }
+      updatePayload[priceCol] = price.id
+      updatePayload[cyclePricesCol] = { ...existingCyclePrices, monthly: price.id }
     }
   }
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getVerdixStripe } from '@/lib/stripe-verdix'
+import { getVerdixStripe, getBillingMode } from '@/lib/stripe-verdix'
 import { auth } from '@/lib/auth'
 import { supabaseServer } from '@/lib/supabase'
 import { getOrgSubscription, getOrCreateStripeCustomer } from '@/lib/billing'
@@ -28,19 +28,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid plan' }, { status: 400 })
   }
 
-  // Fetch the plan's Stripe price
-  const { data: plan } = await supabaseServer
-    .from('verdix_plans')
-    .select('stripe_price_id, name')
-    .eq('id', planId)
-    .maybeSingle()
+  const [{ data: plan }, stripe, mode] = await Promise.all([
+    supabaseServer
+      .from('verdix_plans')
+      .select('stripe_price_id_test, stripe_price_id_live, name')
+      .eq('id', planId)
+      .maybeSingle(),
+    getVerdixStripe(),
+    getBillingMode(),
+  ])
 
-  if (!plan?.stripe_price_id) {
-    return NextResponse.json({ error: 'Plan not yet pushed to Stripe. Ask admin to push.' }, { status: 400 })
+  const priceId = mode === 'live' ? plan?.stripe_price_id_live : plan?.stripe_price_id_test
+  if (!priceId) {
+    return NextResponse.json({ error: `Plan not yet pushed to Stripe ${mode}. Go to Admin → Billing and push the plan.` }, { status: 400 })
   }
-
-
-  const stripe = await getVerdixStripe()
 
   const sub = await getOrgSubscription(org.orgId)
 
@@ -51,11 +52,11 @@ export async function POST(req: NextRequest) {
     })
 
     const toDelete = existing.items.data
-      .filter(item => item.price.id !== plan.stripe_price_id)
+      .filter(item => item.price.id !== priceId)
       .map(item => ({ id: item.id, deleted: true as const }))
 
-    const alreadyHasPlan = existing.items.data.some(item => item.price.id === plan.stripe_price_id)
-    const toAdd = alreadyHasPlan ? [] : [{ price: plan.stripe_price_id, quantity: 1 }]
+    const alreadyHasPlan = existing.items.data.some(item => item.price.id === priceId)
+    const toAdd = alreadyHasPlan ? [] : [{ price: priceId, quantity: 1 }]
 
     await stripe.subscriptions.update(sub.stripe_subscription_id, {
       items: [...toDelete, ...toAdd],
@@ -79,7 +80,7 @@ export async function POST(req: NextRequest) {
   const checkoutSession = await stripe.checkout.sessions.create({
     customer: customerId,
     mode: 'subscription',
-    line_items: [{ price: plan.stripe_price_id, quantity: 1 }],
+    line_items: [{ price: priceId, quantity: 1 }],
     success_url: `${base}?upgraded=1`,
     cancel_url:  `${base}?cancelled=1`,
     metadata: { verdix_org_id: org.orgId, verdix_plan_id: planId },

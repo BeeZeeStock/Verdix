@@ -11,9 +11,12 @@ type Plan = {
   sync_limit: number | null
   overage_price_eur: number | null
   pii_addon_available: boolean
-  stripe_product_id: string | null
-  stripe_price_id: string | null
-  stripe_cycle_prices: Record<string, string>
+  stripe_product_id_test: string | null
+  stripe_product_id_live: string | null
+  stripe_price_id_test: string | null
+  stripe_price_id_live: string | null
+  stripe_cycle_prices_test: Record<string, string>
+  stripe_cycle_prices_live: Record<string, string>
   billing_cycles: BillingCycle[]
   sort_order: number
 }
@@ -251,8 +254,8 @@ export default function AdminBillingPage() {
       <div className="bg-white border border-forest/10 rounded-2xl p-6 mb-6">
         <div className="text-sm font-medium text-ink mb-1">Stripe billing webhook</div>
         <p className="text-xs text-stone mb-4">
-          Registers <code className="bg-cream px-1 rounded font-mono">/api/billing/webhook</code> with Stripe.
-          Copy the secret to Vercel as <code className="bg-cream px-1 rounded font-mono">STRIPE_BILLING_WEBHOOK_SECRET</code>.
+          Registers <code className="bg-cream px-1 rounded font-mono">/api/billing/webhook</code> with the active Stripe environment ({billingMode === 'live' ? 'live' : 'sandbox'}).
+          Copy the secret to Vercel as <code className="bg-cream px-1 rounded font-mono">{billingMode === 'live' ? 'STRIPE_BILLING_WEBHOOK_SECRET_LIVE' : 'STRIPE_BILLING_WEBHOOK_SECRET_TEST'}</code>.
         </p>
         <div className="flex items-center gap-3 flex-wrap">
           <button onClick={registerWebhook} disabled={registeringWebhook}
@@ -286,8 +289,10 @@ export default function AdminBillingPage() {
               <div className="px-6 py-4 border-b border-forest/8 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-medium text-ink">{plan.name}</span>
-                  {plan.stripe_price_id && (
-                    <span className="text-[10px] bg-forest/8 text-forest px-2 py-0.5 rounded-full font-medium">Stripe live</span>
+                  {(billingMode === 'live' ? plan.stripe_price_id_live : plan.stripe_price_id_test) && (
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${billingMode === 'live' ? 'bg-red-100 text-red-700' : 'bg-forest/8 text-forest'}`}>
+                      In Stripe {billingMode === 'live' ? 'live' : 'sandbox'}
+                    </span>
                   )}
                   {isDraft && (
                     <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full font-medium">Unsaved changes</span>
@@ -347,8 +352,12 @@ export default function AdminBillingPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Stripe Product ID</label>
-                  <div className="text-xs text-stone mt-2 font-mono break-all">{plan.stripe_product_id ?? '—'}</div>
+                  <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">
+                    Stripe Product ID ({billingMode === 'live' ? 'live' : 'sandbox'})
+                  </label>
+                  <div className="text-xs text-stone mt-2 font-mono break-all">
+                    {(billingMode === 'live' ? plan.stripe_product_id_live : plan.stripe_product_id_test) ?? '—'}
+                  </div>
                 </div>
               </div>
 
@@ -376,7 +385,8 @@ export default function AdminBillingPage() {
                       cycleEdits[plan.id]?.[ac.cycle] !== undefined
                     ).map(ac => {
                       const price = getCyclePrice(plan.id, plan, ac.cycle)
-                      const stripeId = (plan.stripe_cycle_prices ?? {})[ac.cycle]
+                      const cyclePrices = billingMode === 'live' ? (plan.stripe_cycle_prices_live ?? {}) : (plan.stripe_cycle_prices_test ?? {})
+                      const stripeId = cyclePrices[ac.cycle]
                       const pushKey = `${plan.id}:${ac.cycle}`
                       const isPushing = pushingCycle === pushKey
 
@@ -408,7 +418,7 @@ export default function AdminBillingPage() {
                             disabled={isPushing || price <= 0}
                             className="text-[10px] font-medium border border-forest text-forest px-3 py-1 rounded-lg hover:bg-forest/5 transition-colors disabled:opacity-40 flex-shrink-0"
                           >
-                            {isPushing ? 'Pushing…' : stripeId ? 'Update in Stripe' : 'Push to Stripe →'}
+                            {isPushing ? 'Pushing…' : stripeId ? `Update in ${billingMode === 'live' ? 'live' : 'sandbox'}` : `Push to ${billingMode === 'live' ? 'live' : 'sandbox'} →`}
                           </button>
                         </div>
                       )
@@ -438,7 +448,7 @@ export default function AdminBillingPage() {
                         disabled={saving === plan.id}
                         className="border border-forest text-forest text-sm font-medium px-4 py-2 rounded-xl hover:bg-forest/5 transition-colors disabled:opacity-40"
                       >
-                        Save & push monthly to Stripe
+                        Save & push monthly to {billingMode === 'live' ? 'live' : 'sandbox'}
                       </button>
                       <button
                         onClick={() => {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getVerdixStripe } from '@/lib/stripe-verdix'
+import { getVerdixStripe, getBillingMode } from '@/lib/stripe-verdix'
 import { auth } from '@/lib/auth'
 import { supabaseServer } from '@/lib/supabase'
 import { getOrCreateStripeCustomer } from '@/lib/billing'
@@ -30,27 +30,28 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL('/dashboard', base()))
   }
 
-  const { data: plan } = await supabaseServer
-    .from('verdix_plans')
-    .select('stripe_price_id, name')
-    .eq('id', planId)
-    .maybeSingle()
+  const [{ data: plan }, stripe, mode, customerId] = await Promise.all([
+    supabaseServer
+      .from('verdix_plans')
+      .select('stripe_price_id_test, stripe_price_id_live, name')
+      .eq('id', planId)
+      .maybeSingle(),
+    getVerdixStripe(),
+    getBillingMode(),
+    getOrCreateStripeCustomer(org.orgId, org.orgName, session.user.email),
+  ])
 
-  if (!plan?.stripe_price_id) {
+  const priceId = mode === 'live' ? plan?.stripe_price_id_live : plan?.stripe_price_id_test
+  if (!priceId) {
     return NextResponse.redirect(new URL('/settings/billing', base()))
   }
-
-  const customerId = await getOrCreateStripeCustomer(org.orgId, org.orgName, session.user.email)
-
-
-  const stripe = await getVerdixStripe()
 
   const returnUrl = `${base()}/settings/billing`
 
   const checkoutSession = await stripe.checkout.sessions.create({
     customer: customerId,
     mode: 'subscription',
-    line_items: [{ price: plan.stripe_price_id, quantity: 1 }],
+    line_items: [{ price: priceId, quantity: 1 }],
     success_url: `${returnUrl}?upgraded=1`,
     cancel_url:  `${returnUrl}?cancelled=1`,
     metadata: { verdix_org_id: org.orgId, verdix_plan_id: planId },
