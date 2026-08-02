@@ -48,6 +48,7 @@ export default function AdminBillingPage() {
   const [registeringWebhook, setRegisteringWebhook] = useState(false)
   const [webhookMsg, setWebhookMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [pushingCycle, setPushingCycle] = useState<string | null>(null)
+  const [healthIssues, setHealthIssues] = useState<string[]>([])
 
   useEffect(() => {
     fetch('/api/admin/billing')
@@ -62,6 +63,11 @@ export default function AdminBillingPage() {
         const lc = d.settings?.find((s: Setting) => s.key === 'live_checkout_active')
         if (lc?.value === 'true') setLiveCheckout(true)
         setLoading(false)
+        // Fetch health check after settings are known
+        fetch('/api/admin/billing/checkout-health')
+          .then(r => r.json())
+          .then(h => { if (h.issues?.length) setHealthIssues(h.issues) })
+          .catch(() => null)
       })
       .catch(() => setLoading(false))
   }, [])
@@ -182,6 +188,11 @@ export default function AdminBillingPage() {
     })
     setLiveCheckout(next)
     setSavingCheckout(false)
+    // Re-check health after toggle
+    fetch('/api/admin/billing/checkout-health')
+      .then(r => r.json())
+      .then(h => setHealthIssues(h.issues ?? []))
+      .catch(() => null)
   }
 
   const saveTrialLimit = async () => {
@@ -203,6 +214,21 @@ export default function AdminBillingPage() {
         <h1 className="font-display font-light text-ink text-2xl mb-1">Billing & Packages</h1>
         <p className="text-stone text-sm">Manage Verdix SaaS pricing tiers, billing cycles, and push to Stripe</p>
       </div>
+
+      {/* Live checkout health warnings */}
+      {healthIssues.length > 0 && (
+        <div className="bg-mint border border-forest/20 rounded-2xl p-5 mb-6">
+          <div className="text-sm font-semibold text-forest mb-2">Live checkout is not ready</div>
+          <ul className="space-y-1.5">
+            {healthIssues.map((issue, i) => (
+              <li key={i} className="text-xs text-forest/80 flex items-start gap-2">
+                <span className="mt-0.5 flex-shrink-0">·</span>
+                <span>{issue}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Stripe environment controls */}
       <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden mb-6">
