@@ -169,8 +169,8 @@ function Hero() {
     <section className="relative px-6 pt-12 md:pt-20 pb-12 md:pb-16 overflow-hidden">
       <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 80% 60% at 50% -10%,#D4EAD9 0%,transparent 70%)' }} />
       <div className="max-w-4xl mx-auto text-center relative">
-        <div className="inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-medium mb-8" style={{ color: '#27500A', background: '#EAF3DE', border: '1px solid #C0DD97' }}>
-          <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#27500A' }} />
+        <div className="inline-flex items-center gap-2 text-xs font-medium mb-8" style={{ color: '#27500A' }}>
+          <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: '#27500A' }} />
           Contract-to-cash and partner reconciliation for B2B/B2B2C companies requiring EU residency & GDPR compliance
         </div>
         <h1 className="font-display font-light text-ink leading-tight mb-5" style={{ fontSize: 'clamp(2.2rem,4.5vw,3.4rem)' }}>
