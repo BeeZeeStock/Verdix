@@ -84,29 +84,32 @@ export async function POST(req: NextRequest) {
       getLiveCheckoutActive(),
     ])
 
-    // Determine which price ID to use and which Stripe key to pair it with.
-    // Legacy stripe_price_id was created with STRIPE_SECRET_KEY — must use the same key.
-    // Env-specific IDs use the matching env key.
+    // Key is always chosen by live_checkout_active — not by whether env-specific prices exist.
+    // This ensures the toggle actually switches Stripe accounts.
+    const stripeKey = liveActive
+      ? (process.env.STRIPE_SECRET_KEY_LIVE ?? process.env.STRIPE_SECRET_KEY)
+      : (process.env.STRIPE_SECRET_KEY_TEST ?? process.env.STRIPE_SECRET_KEY)
+
+    if (!stripeKey) throw new Error('Missing Stripe key. Set STRIPE_SECRET_KEY in environment.')
+
+    // If live checkout is active but only a test key is available, warn clearly.
+    if (liveActive && stripeKey?.startsWith('sk_test_')) {
+      return NextResponse.json({
+        error: 'Live checkout is active but STRIPE_SECRET_KEY_LIVE is not set. Add your live Stripe key to Vercel environment variables.',
+      }, { status: 400 })
+    }
+
+    const stripe = buildStripe(stripeKey)
+
+    // Prefer env-specific price (post-migration); fall back to legacy price ID.
     const envPriceId = liveActive ? plan?.stripe_price_id_live : plan?.stripe_price_id_test
-    const legacyPriceId = plan?.stripe_price_id
-    const priceId = envPriceId ?? legacyPriceId
+    const priceId = envPriceId ?? plan?.stripe_price_id
 
     if (!priceId) {
       return NextResponse.json({
         error: `Plan not yet pushed to Stripe ${liveActive ? 'live' : 'sandbox'}. Go to Admin → Billing and push the plan.`,
       }, { status: 400 })
     }
-
-    // Use STRIPE_SECRET_KEY for legacy prices (created with that key).
-    // Use env-specific keys only when env-specific price IDs are in place.
-    const stripeKey = envPriceId
-      ? liveActive
-        ? (process.env.STRIPE_SECRET_KEY_LIVE ?? process.env.STRIPE_SECRET_KEY)
-        : (process.env.STRIPE_SECRET_KEY_TEST ?? process.env.STRIPE_SECRET_KEY)
-      : process.env.STRIPE_SECRET_KEY
-
-    if (!stripeKey) throw new Error('Missing Stripe key. Set STRIPE_SECRET_KEY in environment.')
-    const stripe = buildStripe(stripeKey)
 
     const sub = await getOrgSubscription(org.orgId)
 
