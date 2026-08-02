@@ -10,6 +10,7 @@ const DEMO_ARTIFACT_URL = '/demos/contract-to-billing.html'
 function Nav() {
   const [shadow, setShadow] = useState(false)
   const [resOpen, setResOpen] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
   const navRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
@@ -20,7 +21,10 @@ function Nav() {
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
-      if (navRef.current && !navRef.current.contains(e.target as Node)) setResOpen(false)
+      if (navRef.current && !navRef.current.contains(e.target as Node)) {
+        setResOpen(false)
+        setMenuOpen(false)
+      }
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
@@ -30,14 +34,16 @@ function Nav() {
     <nav
       id="nav"
       ref={navRef}
-      className="sticky top-0 z-50 bg-cream/95 backdrop-blur-md border-b border-forest/10 px-6 py-3.5"
+      className="sticky top-0 z-50 bg-cream/95 backdrop-blur-md border-b border-forest/10"
       style={{ boxShadow: shadow ? '0 1px 8px rgba(26,61,43,.08)' : 'none' }}
     >
-      <div className="max-w-6xl mx-auto flex items-center justify-between">
+      <div className="max-w-6xl mx-auto px-6 py-3.5 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <VerdixLogo size={28} />
           <span className="font-sans font-semibold text-[16px]" style={{ color: '#1A3D2B', letterSpacing: '0.02em' }}>Verdix</span>
         </div>
+
+        {/* Desktop nav */}
         <div className="hidden md:flex items-center gap-8 text-sm font-medium text-stone">
           <a href="#verify" className="hover:text-forest transition-colors">Billing automation</a>
           <a href="#configure" className="hover:text-forest transition-colors">Auto-configure</a>
@@ -158,7 +164,68 @@ function Nav() {
 
           <Link href="/login" className="hover:text-forest transition-colors">Sign in</Link>
         </div>
+
+        {/* Mobile: sign in + hamburger */}
+        <div className="flex md:hidden items-center gap-3">
+          <Link href="/login" className="text-sm text-stone hover:text-forest transition-colors">Sign in</Link>
+          <button
+            onClick={() => { setMenuOpen(v => !v); setResOpen(false) }}
+            className="p-1.5 rounded-lg hover:bg-forest/8 transition-colors"
+            aria-label="Toggle menu"
+          >
+            {menuOpen ? (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#1A3D2B' }}>
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#1A3D2B' }}>
+                <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
+
+      {/* Mobile menu */}
+      {menuOpen && (
+        <div className="md:hidden border-t border-forest/8" style={{ background: '#fff' }}>
+          <div className="px-6 py-4 flex flex-col">
+            {[
+              { href: '#verify', label: 'Billing automation' },
+              { href: '#configure', label: 'Auto-configure' },
+              { href: '#partner', label: 'Partner reconciliation' },
+              { href: '#security', label: 'Security' },
+              { href: '#pricing', label: 'Pricing' },
+            ].map(item => (
+              <a
+                key={item.label}
+                href={item.href}
+                onClick={() => setMenuOpen(false)}
+                className="py-3 text-sm text-stone hover:text-forest transition-colors border-b border-forest/6 last:border-0"
+              >
+                {item.label}
+              </a>
+            ))}
+            <div className="pt-4 pb-1">
+              <div className="text-[10px] font-semibold uppercase tracking-widest mb-3" style={{ color: '#9CA3AF' }}>Resources</div>
+              <Link href="/blog" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm text-stone hover:text-forest transition-colors">
+                <i className="ti ti-article" style={{ fontSize: 15, color: '#1A3D2B' }} /> Blog
+              </Link>
+              <a href={DEMO_ARTIFACT_URL} target="_blank" rel="noopener noreferrer" onClick={() => setMenuOpen(false)} className="flex items-center gap-2 py-2.5 text-sm text-stone hover:text-forest transition-colors">
+                <i className="ti ti-device-desktop-analytics" style={{ fontSize: 15, color: '#1A3D2B' }} /> Interactive demo
+              </a>
+            </div>
+            <Link
+              href="/signup"
+              onClick={() => setMenuOpen(false)}
+              className="mt-3 w-full text-center text-white font-medium py-3 rounded-xl text-sm"
+              style={{ background: '#27AE60' }}
+            >
+              Get started →
+            </Link>
+          </div>
+        </div>
+      )}
     </nav>
   )
 }
@@ -460,7 +527,8 @@ function AutoConfigureSection() {
       <div className="max-w-6xl mx-auto">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
           {/* HITL Mockup */}
-          <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm order-2 lg:order-1" style={{ fontSize: 12 }}>
+          <div className="overflow-x-auto order-2 lg:order-1 -mx-6 px-6 lg:mx-0 lg:px-0">
+          <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm" style={{ fontSize: 12, minWidth: 480 }}>
             <div className="flex items-center gap-2 px-4 py-2.5 border-b border-forest/8" style={{ background: '#F5F3EE' }}>
               <div className="tl-r" /><div className="tl-y" /><div className="tl-g" />
               <span className="font-mono text-xs text-stone ml-2">verdix — new contract · Northgate Capital</span>
@@ -523,6 +591,7 @@ function AutoConfigureSection() {
               </div>
             </div>
           </div>
+          </div>
           {/* Copy */}
           <div className="order-1 lg:order-2">
             <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Auto-configure</div>
@@ -580,7 +649,8 @@ function PartnerReconciliationSection() {
             </ul>
           </div>
           {/* Partner recon mockup */}
-          <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm" style={{ fontSize: 12 }}>
+          <div className="overflow-x-auto -mx-6 px-6 lg:mx-0 lg:px-0">
+          <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm" style={{ fontSize: 12, minWidth: 480 }}>
             <div className="flex items-center gap-2 px-4 py-2.5 border-b border-forest/8" style={{ background: '#F5F3EE' }}>
               <div className="tl-r" /><div className="tl-y" /><div className="tl-g" />
               <span className="font-mono text-xs text-stone ml-2">verdix — partner reconciliation · Helios Technologies AB</span>
@@ -633,6 +703,7 @@ function PartnerReconciliationSection() {
                 </div>
               </div>
             </div>
+          </div>
           </div>
         </div>
       </div>
