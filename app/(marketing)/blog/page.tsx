@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'tabs-vs-verdix-full-revenue-platform-or-focused-agreement-operations',
+    title: 'Tabs vs Verdix: full revenue platform or focused agreement operations?',
+    excerpt: 'Compare Tabs and Verdix across contract interpretation, usage billing, invoicing, collections, revenue recognition, existing-system integration and partner reconciliation.',
+    category: 'Finance operations · Product',
+    date: 'August 2026',
+    readTime: '8 min read',
+  },
+  {
     slug: 'gdpr-compliance-eu-data-residency-and-digital-sovereignty-are-not-the-same-thing',
     title: 'GDPR compliance, EU data residency and digital sovereignty are not the same thing',
     excerpt: 'Understand the difference between GDPR compliance, EU data residency, pseudonymisation and digital sovereignty when choosing AI and billing infrastructure.',
