@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'metering-billing-invoicing-payments',
+    title: 'Metering, billing, invoicing and payments: what does each system actually do?',
+    excerpt: 'The terminology around modern billing can be confusing. Here is what each layer in the billing stack actually does — and where agreement operations fits in.',
+    category: 'Finance operations · Product',
+    date: 'July 2026',
+    readTime: '9 min read',
+  },
+  {
     slug: 'why-contract-to-cash-is-still-manual',
     title: 'Why contract-to-cash is still a manual workflow in modern SaaS',
     excerpt: 'Modern SaaS companies use CRM, CLM, billing and payment software, yet bespoke contract-to-cash workflows remain manual. Here is why.',
