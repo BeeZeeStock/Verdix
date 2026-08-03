@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'replace-extend-or-orchestrate-choosing-the-right-approach-to-billing-automation',
+    title: 'Replace, extend or orchestrate: choosing the right approach to billing automation',
+    excerpt: 'Should you replace your billing platform, add a metering layer or automate the workflow around your existing stack? Here is how to decide.',
+    category: 'Finance operations · Product',
+    date: 'August 2026',
+    readTime: '8 min read',
+  },
+  {
     slug: 'do-you-need-a-metering-engine-or-an-agreement-operations-layer',
     title: 'Do you need a metering engine—or an agreement-operations layer?',
     excerpt: 'Metering engines capture what happened. Agreement-operations layers determine what should be billed. Most B2B billing complexity comes from the second problem, not the first.',
