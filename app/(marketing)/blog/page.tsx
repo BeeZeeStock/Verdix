@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'platform-fees-billing-percentages-and-event-charges-how-billing-software-is-priced',
+    title: 'Platform fees, billing percentages and event charges: how billing software is priced',
+    excerpt: 'Billing platforms may charge by revenue, usage events, contracts, customers or subscription tier. Learn how each model works and how to estimate the true cost.',
+    category: 'Finance operations · Product',
+    date: 'August 2026',
+    readTime: '9 min read',
+  },
+  {
     slug: 'replace-extend-or-orchestrate-choosing-the-right-approach-to-billing-automation',
     title: 'Replace, extend or orchestrate: choosing the right approach to billing automation',
     excerpt: 'Should you replace your billing platform, add a metering layer or automate the workflow around your existing stack? Here is how to decide.',
