@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'stripe-billing-vs-verdix-billing-execution-or-agreement-led-automation',
+    title: 'Stripe Billing vs Verdix: billing execution or agreement-led automation?',
+    excerpt: 'Compare Stripe Billing and Verdix across subscriptions, usage metering, bespoke contracts, invoice execution, pricing and partner reconciliation.',
+    category: 'Finance operations · Product',
+    date: 'August 2026',
+    readTime: '9 min read',
+  },
+  {
     slug: 'metronome-vs-verdix-real-time-monetisation-or-agreement-led-automation',
     title: 'Metronome vs Verdix: real-time monetisation or agreement-led automation?',
     excerpt: 'Compare Metronome and Verdix across usage metering, enterprise contracts, pricing, invoicing, implementation and partner reconciliation.',
