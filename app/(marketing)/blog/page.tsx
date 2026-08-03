@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'what-do-you-need-to-launch-usage-based-pricing',
+    title: 'What do you need to launch usage-based pricing?',
+    excerpt: 'Usage-based pricing requires more than tracking product activity. Learn how to define billable usage, connect contract terms, calculate charges and integrate with your existing billing stack.',
+    category: 'Finance operations · Product',
+    date: 'July 2026',
+    readTime: '10 min read',
+  },
+  {
     slug: 'metering-billing-invoicing-payments',
     title: 'Metering, billing, invoicing and payments: what does each system actually do?',
     excerpt: 'The terminology around modern billing can be confusing. Here is what each layer in the billing stack actually does — and where agreement operations fits in.',
