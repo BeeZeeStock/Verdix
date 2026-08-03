@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'gdpr-compliance-eu-data-residency-and-digital-sovereignty-are-not-the-same-thing',
+    title: 'GDPR compliance, EU data residency and digital sovereignty are not the same thing',
+    excerpt: 'Understand the difference between GDPR compliance, EU data residency, pseudonymisation and digital sovereignty when choosing AI and billing infrastructure.',
+    category: 'Privacy · Finance operations',
+    date: 'August 2026',
+    readTime: '9 min read',
+  },
+  {
     slug: 'platform-fees-billing-percentages-and-event-charges-how-billing-software-is-priced',
     title: 'Platform fees, billing percentages and event charges: how billing software is priced',
     excerpt: 'Billing platforms may charge by revenue, usage events, contracts, customers or subscription tier. Learn how each model works and how to estimate the true cost.',
