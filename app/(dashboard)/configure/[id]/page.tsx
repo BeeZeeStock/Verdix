@@ -1854,15 +1854,15 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             </div>
             <div className="h-4 w-px bg-forest/15" />
             {/* Tab nav */}
-            <div className="flex items-center gap-0.5 bg-forest/6 rounded-lg p-0.5">
+            <div className="flex items-center">
               {(['terms', 'model', 'invoices'] as const).map(tab => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
-                  className="text-xs font-medium px-3 py-1.5 rounded-md transition-colors"
+                  className="text-xs font-medium px-3 py-1.5 transition-colors border-b-2"
                   style={activeTab === tab
-                    ? { background: 'white', color: '#1A3D2B', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }
-                    : { color: '#6B6660' }
+                    ? { color: '#1A3D2B', borderBottomColor: '#1A3D2B' }
+                    : { color: '#9CA3AF', borderBottomColor: 'transparent' }
                   }
                 >
                   {tab === 'terms' ? 'Contract · Commercials' : tab === 'model' ? 'Revenue model' : 'Processed invoices'}
@@ -1871,12 +1871,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             </div>
           </div>
           {isConfigured ? (
-            <span className="text-xs font-semibold px-3 py-1 rounded-full flex items-center gap-1.5" style={{ background: '#D4EAD9', border: '1px solid rgba(74,124,89,0.3)', color: '#1A3D2B' }}>
-              <i className="ti ti-circle-check" style={{ fontSize: 12 }} /> Configured in Stripe
+            <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: '#4A7C59' }}>
+              <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> Configured in Stripe
             </span>
           ) : needsReview === 0 ? (
-            <span className="text-xs font-semibold px-3 py-1 rounded-full flex items-center gap-1.5" style={{ background: '#D4EAD9', border: '1px solid rgba(74,124,89,0.3)', color: '#1A3D2B' }}>
-              <i className="ti ti-circle-check" style={{ fontSize: 12 }} /> Ready to approve
+            <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: '#4A7C59' }}>
+              <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> Ready to approve
             </span>
           ) : null}
         </div>

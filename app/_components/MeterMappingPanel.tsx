@@ -244,19 +244,18 @@ export function MeterMappingPanel({ jobId, currency, onConfirmedChange }: Props)
               </div>
 
               {/* Confirm toggle */}
-              <div className="flex-shrink-0 flex flex-col items-center gap-1">
+              <div className="flex-shrink-0">
                 <button
                   onClick={() => setEdit(s.contract_unit_type, 'confirmed', !confirmed)}
-                  className="w-8 h-8 rounded-lg border-2 flex items-center justify-center transition-all"
+                  className="w-5 h-5 rounded border flex items-center justify-center transition-all"
                   style={confirmed
                     ? { background: '#1A3D2B', borderColor: '#1A3D2B' }
-                    : { background: 'white', borderColor: 'rgba(26,61,43,0.25)' }
+                    : { background: 'white', borderColor: 'rgba(26,61,43,0.3)' }
                   }
                   title={confirmed ? 'Confirmed' : 'Click to confirm'}
                 >
-                  {confirmed && <i className="ti ti-check text-white" style={{ fontSize: 14 }} />}
+                  {confirmed && <i className="ti ti-check text-white" style={{ fontSize: 11 }} />}
                 </button>
-                <span className="text-[9px] text-stone">{confirmed ? 'Confirmed' : 'Confirm'}</span>
               </div>
             </div>
           )
