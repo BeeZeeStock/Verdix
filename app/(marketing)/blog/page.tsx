@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'orb-vs-verdix-billing-infrastructure-or-agreement-led-orchestration',
+    title: 'Orb vs Verdix: billing infrastructure or agreement-led orchestration?',
+    excerpt: 'Compare Orb and Verdix across contract interpretation, usage data, metering, invoicing, existing-system integration, pricing and partner reconciliation.',
+    category: 'Finance operations · Product',
+    date: 'August 2026',
+    readTime: '9 min read',
+  },
+  {
     slug: 'tabs-vs-verdix-full-revenue-platform-or-focused-agreement-operations',
     title: 'Tabs vs Verdix: full revenue platform or focused agreement operations?',
     excerpt: 'Compare Tabs and Verdix across contract interpretation, usage billing, invoicing, collections, revenue recognition, existing-system integration and partner reconciliation.',
