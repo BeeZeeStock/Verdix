@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'push-pull-or-upload-how-should-usage-reach-your-billing-workflow',
+    title: 'Push, pull or upload: how should usage reach your billing workflow?',
+    excerpt: 'Compare event streaming, API-based usage retrieval and file uploads for usage billing — and learn which approach fits your product, contracts and finance stack.',
+    category: 'Finance operations · Product',
+    date: 'August 2026',
+    readTime: '8 min read',
+  },
+  {
     slug: 'from-contract-clause-to-billable-metric',
     title: 'From contract clause to billable metric',
     excerpt: 'A price in a contract is not yet a billing rule. Learn how to turn commercial language into a reliable billable metric connected to operational data, pricing rules and invoice workflows.',
