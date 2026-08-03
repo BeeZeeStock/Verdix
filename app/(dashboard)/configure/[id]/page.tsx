@@ -1906,8 +1906,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
             {/* ── 1. Contract Brief ── */}
             {summaryLines.length > 0 && (
-              <div className="rounded-2xl p-5" style={{ background: 'linear-gradient(135deg, #EEF9F2 0%, #F6FCF8 100%)', border: '1px solid rgba(74,124,89,0.18)' }}>
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] mb-3" style={{ color: '#4A7C59' }}>
+              <div className="py-1">
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] mb-2" style={{ color: '#4A7C59' }}>
                   Contract brief
                 </p>
                 {summaryLines.map((line, i) => (
@@ -1918,9 +1918,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
             {/* ── Items need review callout ── */}
             {needsReview > 0 && (
-              <div className="rounded-2xl px-5 py-4 flex items-center justify-between gap-4" style={{ background: '#FFFBEB', border: '1px solid #FCD34D' }}>
-                <div className="flex items-start gap-3">
-                  <i className="ti ti-alert-triangle flex-shrink-0 mt-0.5" style={{ fontSize: 15, color: '#D97706' }} />
+              <div className="flex items-center justify-between gap-4 py-3 border-t border-b border-amber-200/60">
+                <div className="flex items-start gap-2.5">
+                  <i className="ti ti-alert-triangle flex-shrink-0 mt-0.5" style={{ fontSize: 14, color: '#D97706' }} />
                   <div>
                     <p className="text-sm font-medium" style={{ color: '#92400E' }}>
                       {needsReview} extracted value{needsReview > 1 ? 's' : ''} flagged for review
@@ -1932,8 +1932,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 </div>
                 <button
                   onClick={() => setReviewPanelOpen(true)}
-                  className="flex-shrink-0 text-xs font-semibold px-4 py-2 rounded-xl transition-colors whitespace-nowrap"
-                  style={{ background: '#FEF3C7', color: '#92400E', border: '1px solid #F59E0B' }}
+                  className="flex-shrink-0 text-xs font-medium transition-colors whitespace-nowrap hover:underline"
+                  style={{ color: '#92400E' }}
                 >
                   Review items →
                 </button>

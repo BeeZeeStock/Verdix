@@ -131,14 +131,12 @@ export function MeterMappingPanel({ jobId, currency, onConfirmedChange }: Props)
             <i className="ti ti-plug-connected text-amber-700" style={{ fontSize: 15 }} />
             <span className="text-sm font-medium text-ink">Configure billing meters</span>
             {allConfirmed && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                style={{ background: '#D4EAD9', color: '#1A3D2B' }}>
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold" style={{ color: '#4A7C59' }}>
                 <i className="ti ti-check" style={{ fontSize: 10 }} /> All confirmed
               </span>
             )}
             {!allConfirmed && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                style={{ background: '#FEF3C7', color: '#92400E' }}>
+              <span className="text-[10px] font-semibold" style={{ color: '#B45309' }}>
                 Required before approve
               </span>
             )}
