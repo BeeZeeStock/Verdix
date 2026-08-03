@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'from-contract-clause-to-billable-metric',
+    title: 'From contract clause to billable metric',
+    excerpt: 'A price in a contract is not yet a billing rule. Learn how to turn commercial language into a reliable billable metric connected to operational data, pricing rules and invoice workflows.',
+    category: 'Finance operations · Product',
+    date: 'August 2026',
+    readTime: '8 min read',
+  },
+  {
     slug: 'what-do-you-need-to-launch-usage-based-pricing',
     title: 'What do you need to launch usage-based pricing?',
     excerpt: 'Usage-based pricing requires more than tracking product activity. Learn how to define billable usage, connect contract terms, calculate charges and integrate with your existing billing stack.',
