@@ -198,7 +198,7 @@ function TraceabilityChain() {
       <div className="trace-chain" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6 }}>
         {TRACE_STEPS.map((s, i) => (
           <div key={i} style={{ position: 'relative' as const }}>
-            <div style={{ borderRadius: 10, padding: '12px 10px', background: s.bg, textAlign: 'center' as const }}>
+            <div style={{ borderRadius: 10, height: 62, display: 'flex', alignItems: 'center', justifyContent: 'center', background: s.bg, textAlign: 'center' as const, padding: '0 10px' }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: s.text, lineHeight: 1.35 }}>{s.label}</div>
             </div>
             {i < TRACE_STEPS.length - 1 && (
@@ -233,7 +233,7 @@ function WorkflowDiagram() {
       <div className="trace-chain" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6 }}>
         {WORKFLOW_STEPS.map((s, i) => (
           <div key={i} style={{ position: 'relative' as const }}>
-            <div style={{ borderRadius: 8, padding: '9px 8px', background: s.bg, textAlign: 'center' as const }}>
+            <div style={{ borderRadius: 8, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', background: s.bg, textAlign: 'center' as const, padding: '0 8px' }}>
               <div style={{ fontSize: 11.5, fontWeight: 600, color: s.text }}>{s.label}</div>
             </div>
             {i < WORKFLOW_STEPS.length - 1 && (
