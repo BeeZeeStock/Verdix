@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'lago-vs-verdix-billing-infrastructure-or-agreement-led-automation',
+    title: 'Lago vs Verdix: billing infrastructure or agreement-led automation?',
+    excerpt: 'Compare Lago and Verdix across usage metering, bespoke contracts, invoicing, deployment, implementation and partner reconciliation.',
+    category: 'Finance operations · Product',
+    date: 'August 2026',
+    readTime: '8 min read',
+  },
+  {
     slug: 'orb-vs-verdix-billing-infrastructure-or-agreement-led-orchestration',
     title: 'Orb vs Verdix: billing infrastructure or agreement-led orchestration?',
     excerpt: 'Compare Orb and Verdix across contract interpretation, usage data, metering, invoicing, existing-system integration, pricing and partner reconciliation.',
