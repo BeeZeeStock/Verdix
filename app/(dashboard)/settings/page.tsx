@@ -15,16 +15,16 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <div className="px-6 py-4 border-b border-forest/8">
         <span className="text-sm font-medium text-ink">{title}</span>
       </div>
-      <div className="p-6">{children}</div>
+      {children}
     </div>
   )
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1.5 mb-4 last:mb-0">
-      <label className="text-xs font-medium text-stone uppercase tracking-wider">{label}</label>
-      {children}
+    <div className="flex flex-col md:flex-row md:items-start gap-2 md:gap-8 px-6 py-4 border-b border-forest/6 last:border-0">
+      <label className="text-xs font-medium text-stone uppercase tracking-wider md:w-36 md:pt-2.5 flex-shrink-0">{label}</label>
+      <div className="flex-1">{children}</div>
     </div>
   )
 }
@@ -124,7 +124,7 @@ export default function SettingsPage() {
   const isOAuthUser = session?.user?.provider === 'google'
 
   return (
-    <div className="p-4 md:p-8 max-w-xl">
+    <div className="p-4 md:p-8 max-w-2xl mx-auto">
       <div className="mb-8">
         <h1 className="font-display font-light text-ink text-2xl mb-1">Settings</h1>
         <p className="text-stone text-sm">Manage your account and organization</p>
@@ -149,7 +149,7 @@ export default function SettingsPage() {
             />
             <p className="text-xs text-stone">Email cannot be changed.</p>
           </Field>
-          <div className="flex items-center gap-3 mt-5">
+          <div className="flex items-center gap-3 px-6 py-4">
             <button type="submit" disabled={savingProfile} className={btnCls}>
               {savingProfile ? 'Saving…' : 'Save name'}
             </button>
@@ -172,7 +172,7 @@ export default function SettingsPage() {
             <Field label="Confirm new password">
               <input type="password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)} className={inputCls} placeholder="••••••••" required />
             </Field>
-            <div className="flex items-center gap-3 mt-5">
+            <div className="flex items-center gap-3 px-6 py-4">
               <button type="submit" disabled={savingPw} className={btnCls}>
                 {savingPw ? 'Updating…' : 'Update password'}
               </button>
@@ -203,7 +203,7 @@ export default function SettingsPage() {
               <div className="text-sm text-ink capitalize">{org.role}</div>
             </Field>
             {canEditOrg && (
-              <div className="flex items-center gap-3 mt-5">
+              <div className="flex items-center gap-3 px-6 py-4">
                 <button type="submit" disabled={savingOrg} className={btnCls}>
                   {savingOrg ? 'Saving…' : 'Save organization'}
                 </button>

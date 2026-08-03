@@ -334,9 +334,8 @@ function PlatformCard({
   }
 
   return (
-    <div
-      className="bg-white rounded-2xl border overflow-hidden transition-colors"
-      style={{ borderColor: connected ? 'rgba(74,124,89,0.3)' : 'rgba(26,61,43,0.1)' }}
+    <div className={`bg-white rounded-xl overflow-hidden transition-all${open ? ' md:col-span-2' : ''}`}
+      style={{ boxShadow: connected ? '0 0 0 1.5px rgba(74,124,89,0.22)' : '0 0 0 1px rgba(26,61,43,0.07)' }}
     >
       {/* Card header */}
       <div className="flex items-center gap-4 px-5 py-4">
@@ -354,17 +353,13 @@ function PlatformCard({
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-semibold text-ink">{platform.name}</p>
             {connected && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full"
-                style={{ background: '#ECFDF5', color: '#065F46', border: '1px solid rgba(74,124,89,0.3)' }}>
+              <span className="inline-flex items-center gap-1 text-xs font-medium" style={{ color: '#4A7C59' }}>
                 <span className="w-1.5 h-1.5 rounded-full bg-current inline-block" />
                 Connected
               </span>
             )}
             {!isLive && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full"
-                style={{ background: '#F3F4F6', color: '#6B7280', border: '1px solid #E5E7EB' }}>
-                {platform.phase ?? 'Coming soon'}
-              </span>
+              <span className="text-xs text-stone/50">{platform.phase ?? 'Coming soon'}</span>
             )}
           </div>
           <p className="text-xs text-stone mt-0.5 leading-snug">{platform.description}</p>
@@ -401,8 +396,8 @@ function PlatformCard({
           <div className="flex items-center justify-between mb-1">
             <p className="text-[10px] font-bold uppercase tracking-wider text-stone">Webhook</p>
             {isWebhookActive
-              ? <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: '#ECFDF5', color: '#065F46', border: '1px solid rgba(74,124,89,0.3)' }}>✓ Active</span>
-              : <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: 'rgba(220,38,38,0.08)', color: '#DC2626', border: '1px solid rgba(220,38,38,0.2)' }}>Setup failed</span>
+              ? <span className="text-xs font-medium" style={{ color: '#4A7C59' }}>✓ Active</span>
+              : <span className="text-xs font-medium text-red-600">Setup failed</span>
             }
           </div>
           {isWebhookActive ? (
@@ -563,7 +558,7 @@ export default function IntegrationsPage() {
   }
 
   return (
-    <div className="p-4 md:p-8 max-w-2xl">
+    <div className="p-4 md:p-8 max-w-5xl mx-auto">
 
       {/* Header */}
       <div className="mb-8">
@@ -589,7 +584,7 @@ export default function IntegrationsPage() {
             <span className="text-xs text-forest font-medium">1 connected</span>
           )}
         </div>
-        <div className="flex flex-col gap-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {BILLING_PLATFORMS.map(p => (
             <PlatformCard
               key={p.id}
@@ -621,7 +616,7 @@ export default function IntegrationsPage() {
             <span className="text-xs text-forest font-medium">1 connected</span>
           )}
         </div>
-        <div className="flex flex-col gap-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {CRM_PLATFORMS.map(p => (
             <PlatformCard
               key={p.id}

@@ -119,7 +119,7 @@ export default function TeamSettingsPage() {
   if (!org) return null
 
   return (
-    <div className="p-4 md:p-8 max-w-2xl">
+    <div className="p-4 md:p-8 max-w-4xl mx-auto">
       <div className="mb-8">
         <h1 className="font-display font-light text-ink text-2xl mb-1">Team</h1>
         <p className="text-stone text-sm">Manage members of <strong>{org.orgName}</strong></p>
@@ -222,9 +222,7 @@ export default function TeamSettingsPage() {
           <div className="flex items-start justify-between mb-1">
             <h2 className="text-sm font-medium text-ink">Domain auto-join</h2>
             {org.allowedDomain && (
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-forest bg-forest/8 px-2 py-0.5 rounded-full">
-                Active
-              </span>
+              <span className="text-xs font-medium" style={{ color: '#4A7C59' }}>Active</span>
             )}
           </div>
           <p className="text-xs text-stone mb-4">
