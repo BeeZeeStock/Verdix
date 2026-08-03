@@ -262,6 +262,119 @@ const CRM_PLATFORMS: Platform[] = [
   },
 ]
 
+// ── Featured connected card ────────────────────────────────────────────────────
+
+function FeaturedCard({
+  platform,
+  orgId,
+  configKeys,
+  isAdmin,
+  onDisconnect,
+}: {
+  platform:     Platform
+  orgId:        string | null
+  configKeys:   string[]
+  isAdmin:      boolean
+  onDisconnect: (id: string) => Promise<void>
+}) {
+  const [removing, setRemoving] = useState(false)
+  const [copied,   setCopied]   = useState(false)
+  const Logo = LOGOS[platform.id]
+
+  const webhookUrl = platform.id === 'stripe' && orgId
+    ? `${typeof window !== 'undefined' ? window.location.origin : ''}/api/stripe/webhook?orgId=${orgId}`
+    : null
+  const isWebhookActive = configKeys.includes('webhook_secret')
+
+  async function handleDisconnect() {
+    setRemoving(true)
+    await onDisconnect(platform.id)
+    setRemoving(false)
+  }
+
+  function copyWebhookUrl() {
+    if (!webhookUrl) return
+    navigator.clipboard.writeText(webhookUrl).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
+  return (
+    <div className="bg-white rounded-xl overflow-hidden mb-4">
+      <div className="flex flex-col md:flex-row">
+
+        {/* Left: platform info + disconnect */}
+        <div className="flex items-start gap-4 px-5 py-5 md:w-80 flex-shrink-0">
+          <div className="w-10 h-10 rounded-xl overflow-hidden flex-shrink-0 shadow-sm">
+            {Logo ? <Logo /> : (
+              <div className="w-full h-full flex items-center justify-center bg-forest/10 text-forest text-xs font-bold">
+                {platform.name[0]}
+              </div>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-0.5">
+              <p className="text-sm font-semibold text-ink">{platform.name}</p>
+              <span className="inline-flex items-center gap-1 text-xs font-medium" style={{ color: '#4A7C59' }}>
+                <span className="w-1.5 h-1.5 rounded-full bg-current inline-block" />
+                Connected
+              </span>
+            </div>
+            <p className="text-xs text-stone leading-snug">{platform.description}</p>
+            {isAdmin && (
+              <button
+                onClick={handleDisconnect}
+                disabled={removing}
+                className="mt-3 text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50"
+                style={{ borderColor: 'rgba(220,38,38,0.2)', color: '#DC2626' }}
+              >
+                {removing ? 'Removing…' : 'Disconnect'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Right: webhook info */}
+        {webhookUrl && (
+          <div className="flex-1 min-w-0 border-t md:border-t-0 md:border-l px-5 py-5"
+            style={{ borderColor: 'rgba(26,61,43,0.08)', background: '#FAFAF8' }}>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-stone">Webhook</p>
+              {isWebhookActive
+                ? <span className="text-xs font-medium" style={{ color: '#4A7C59' }}>✓ Active</span>
+                : <span className="text-xs font-medium text-red-600">Setup failed</span>
+              }
+            </div>
+            {isWebhookActive ? (
+              <div className="space-y-2">
+                <p className="text-xs text-stone">Auto-configured to receive invoice events from your Stripe account.</p>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 font-mono text-[11px] bg-white border border-forest/15 rounded-lg px-3 py-2 text-ink break-all">
+                    {webhookUrl}
+                  </code>
+                  <button
+                    onClick={copyWebhookUrl}
+                    className="flex-shrink-0 text-xs font-medium px-3 py-2 rounded-lg border transition-colors"
+                    style={{ borderColor: 'rgba(26,61,43,0.2)', color: '#1A3D2B' }}
+                  >
+                    {copied ? '✓ Copied' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-red-600">
+                Webhook registration failed. Disconnect and reconnect Stripe to retry.
+              </p>
+            )}
+          </div>
+        )}
+
+      </div>
+    </div>
+  )
+}
+
 // ── Card component ─────────────────────────────────────────────────────────────
 
 function PlatformCard({
@@ -569,29 +682,34 @@ export default function IntegrationsPage() {
 
       {/* Section — Billing */}
       <div className="mb-8">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-stone">
-              Billing platforms
-            </p>
-            <p className="text-xs text-stone/70 mt-0.5">
-              Verdix pushes approved subscriptions to these systems.
-            </p>
-          </div>
-          {connectedBilling && (
-            <span className="text-xs text-forest font-medium">1 connected</span>
-          )}
+        <div className="mb-4">
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-stone">Billing platforms</p>
+          <p className="text-xs text-stone/70 mt-0.5">Verdix pushes approved subscriptions to these systems.</p>
         </div>
+        {/* Connected platform — featured full-width at top */}
+        {activeBilling && (() => {
+          const p = BILLING_PLATFORMS.find(pl => pl.id === activeBilling)
+          return p ? (
+            <FeaturedCard
+              platform={p}
+              orgId={orgId}
+              configKeys={integrations.find(i => i.connector_name === activeBilling)?.config_keys ?? []}
+              isAdmin={isAdmin}
+              onDisconnect={handleDisconnect}
+            />
+          ) : null
+        })()}
+        {/* Non-connected platforms in 2-col grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {BILLING_PLATFORMS.map(p => (
+          {BILLING_PLATFORMS.filter(p => p.id !== activeBilling).map(p => (
             <PlatformCard
               key={p.id}
               platform={p}
-              connected={isConnected(p.id)}
+              connected={false}
               activeOfType={activeBilling}
               isAdmin={isAdmin}
               orgId={orgId}
-              configKeys={integrations.find(i => i.connector_name === p.id)?.config_keys ?? []}
+              configKeys={[]}
               onConnect={handleConnect}
               onDisconnect={handleDisconnect}
             />
@@ -601,29 +719,34 @@ export default function IntegrationsPage() {
 
       {/* Section — CRM */}
       <div className="mb-8">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-stone">
-              CRM systems
-            </p>
-            <p className="text-xs text-stone/70 mt-0.5">
-              Verdix pulls deals and writes subscription IDs back when billing is configured.
-            </p>
-          </div>
-          {connectedCrm && (
-            <span className="text-xs text-forest font-medium">1 connected</span>
-          )}
+        <div className="mb-4">
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-stone">CRM systems</p>
+          <p className="text-xs text-stone/70 mt-0.5">Verdix pulls deals and writes subscription IDs back when billing is configured.</p>
         </div>
+        {/* Connected CRM — featured full-width at top */}
+        {activeCrm && (() => {
+          const p = CRM_PLATFORMS.find(pl => pl.id === activeCrm)
+          return p ? (
+            <FeaturedCard
+              platform={p}
+              orgId={orgId}
+              configKeys={integrations.find(i => i.connector_name === activeCrm)?.config_keys ?? []}
+              isAdmin={isAdmin}
+              onDisconnect={handleDisconnect}
+            />
+          ) : null
+        })()}
+        {/* Non-connected CRMs in 2-col grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {CRM_PLATFORMS.map(p => (
+          {CRM_PLATFORMS.filter(p => p.id !== activeCrm).map(p => (
             <PlatformCard
               key={p.id}
               platform={p}
-              connected={isConnected(p.id)}
+              connected={false}
               activeOfType={activeCrm}
               isAdmin={isAdmin}
               orgId={orgId}
-              configKeys={integrations.find(i => i.connector_name === p.id)?.config_keys ?? []}
+              configKeys={[]}
               onConnect={handleConnect}
               onDisconnect={handleDisconnect}
             />
