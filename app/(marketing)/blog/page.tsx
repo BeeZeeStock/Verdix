@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'metronome-vs-verdix-real-time-monetisation-or-agreement-led-automation',
+    title: 'Metronome vs Verdix: real-time monetisation or agreement-led automation?',
+    excerpt: 'Compare Metronome and Verdix across usage metering, enterprise contracts, pricing, invoicing, implementation and partner reconciliation.',
+    category: 'Finance operations · Product',
+    date: 'August 2026',
+    readTime: '8 min read',
+  },
+  {
     slug: 'kong-openmeter-vs-verdix-real-time-api-monetisation-or-agreement-operations',
     title: 'Kong OpenMeter vs Verdix: real-time API monetisation or agreement operations?',
     excerpt: 'Compare Kong OpenMeter and Verdix across real-time metering, entitlements, bespoke contracts, usage integration, invoicing and partner reconciliation.',
