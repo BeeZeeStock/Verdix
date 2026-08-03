@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'kong-openmeter-vs-verdix-real-time-api-monetisation-or-agreement-operations',
+    title: 'Kong OpenMeter vs Verdix: real-time API monetisation or agreement operations?',
+    excerpt: 'Compare Kong OpenMeter and Verdix across real-time metering, entitlements, bespoke contracts, usage integration, invoicing and partner reconciliation.',
+    category: 'Finance operations · Product',
+    date: 'August 2026',
+    readTime: '8 min read',
+  },
+  {
     slug: 'lago-vs-verdix-billing-infrastructure-or-agreement-led-automation',
     title: 'Lago vs Verdix: billing infrastructure or agreement-led automation?',
     excerpt: 'Compare Lago and Verdix across usage metering, bespoke contracts, invoicing, deployment, implementation and partner reconciliation.',
