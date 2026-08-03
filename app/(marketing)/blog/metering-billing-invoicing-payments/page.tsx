@@ -85,7 +85,7 @@ const STACK_LAYERS = [
   { id: 'ops',       label: 'Agreement operations',   desc: 'How the contract becomes a working billing process',           verdix: true  },
   { id: 'metering',  label: 'Metering',               desc: 'How much the customer used',                                   verdix: false },
   { id: 'rating',    label: 'Rating',                 desc: 'What that usage is worth',                                     verdix: true  },
-  { id: 'billing',   label: 'Billing',                desc: 'What should be charged and when',                             verdix: false },
+  { id: 'billing',   label: 'Billing',                desc: 'What should be charged and when',                             verdix: true  },
   { id: 'invoicing', label: 'Invoicing',              desc: 'How the charge is presented',                                  verdix: false },
   { id: 'payments',  label: 'Payments',               desc: 'How the money is collected',                                   verdix: false },
   { id: 'accounting',label: 'Accounting',             desc: 'How the result is recorded',                                   verdix: false },
