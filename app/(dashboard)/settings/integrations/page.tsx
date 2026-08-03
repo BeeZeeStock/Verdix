@@ -334,9 +334,7 @@ function PlatformCard({
   }
 
   return (
-    <div className={`bg-white rounded-xl overflow-hidden transition-all${open ? ' md:col-span-2' : ''}`}
-      style={{ boxShadow: connected ? '0 0 0 1.5px rgba(74,124,89,0.22)' : '0 0 0 1px rgba(26,61,43,0.07)' }}
-    >
+    <div className={`bg-white rounded-xl overflow-hidden transition-all${open ? ' md:col-span-2' : ''}`}>
       {/* Card header */}
       <div className="flex items-center gap-4 px-5 py-4">
         {/* Logo tile */}
@@ -558,7 +556,7 @@ export default function IntegrationsPage() {
   }
 
   return (
-    <div className="p-4 md:p-8 max-w-5xl mx-auto">
+    <div className="p-4 md:p-8 max-w-5xl">
 
       {/* Header */}
       <div className="mb-8">

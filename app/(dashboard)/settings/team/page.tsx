@@ -119,7 +119,7 @@ export default function TeamSettingsPage() {
   if (!org) return null
 
   return (
-    <div className="p-4 md:p-8 max-w-4xl mx-auto">
+    <div className="p-4 md:p-8 max-w-4xl">
       <div className="mb-8">
         <h1 className="font-display font-light text-ink text-2xl mb-1">Team</h1>
         <p className="text-stone text-sm">Manage members of <strong>{org.orgName}</strong></p>
