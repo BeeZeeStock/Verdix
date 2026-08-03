@@ -8,6 +8,14 @@ export const metadata = {
 
 const posts = [
   {
+    slug: 'do-you-need-a-metering-engine-or-an-agreement-operations-layer',
+    title: 'Do you need a metering engine—or an agreement-operations layer?',
+    excerpt: 'Metering engines capture what happened. Agreement-operations layers determine what should be billed. Most B2B billing complexity comes from the second problem, not the first.',
+    category: 'Finance operations · Product',
+    date: 'August 2026',
+    readTime: '9 min read',
+  },
+  {
     slug: 'push-pull-or-upload-how-should-usage-reach-your-billing-workflow',
     title: 'Push, pull or upload: how should usage reach your billing workflow?',
     excerpt: 'Compare event streaming, API-based usage retrieval and file uploads for usage billing — and learn which approach fits your product, contracts and finance stack.',
