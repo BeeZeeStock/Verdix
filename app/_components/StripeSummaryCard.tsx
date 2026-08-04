@@ -117,9 +117,10 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
   onHasSchedule?: (has: boolean) => void
   onParkedInvoices?: (invoices: ParkedInvoiceSummary[]) => void
 }) {
-  const [summary, setSummary] = useState<Summary | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError]     = useState<string | null>(null)
+  const [summary, setSummary]   = useState<Summary | null>(null)
+  const [loading, setLoading]   = useState(true)
+  const [error, setError]       = useState<string | null>(null)
+  const [parking, setParking]   = useState<Set<string>>(new Set())
 
   useEffect(() => {
     let cancelled = false
@@ -355,12 +356,27 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
           return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
         }
 
+        const moveToParked = async (entryId: string) => {
+          setParking(prev => new Set(prev).add(entryId))
+          try {
+            await fetch(`/api/jobs/${jobId}/parked-invoices`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ planned_invoice_id: entryId }),
+            })
+            await handleRefresh()
+          } finally {
+            setParking(prev => { const s = new Set(prev); s.delete(entryId); return s })
+          }
+        }
+
         const renderEntry = (e: TLEntry, isPast: boolean) => {
           // Verdix terminology: contract date is the gate.
           // Past date + Stripe open/paid = Issued (sent to customer, awaiting payment)
           // Past date + Stripe paid      = Paid
           // Future date                  = Draft (not yet issued, regardless of Stripe status)
           const effectiveStatus = isPast ? e.status : 'draft'
+          const canPark = !isPast && e.kind === 'one-time'
           return (
           <div key={e.id} className="flex gap-4 group">
             {/* Icon */}
@@ -393,6 +409,19 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
                       </a>
                     )}
                   </div>
+                  {canPark && (
+                    <button
+                      onClick={() => moveToParked(e.id)}
+                      disabled={parking.has(e.id)}
+                      className="text-[10px] text-amber-600 hover:text-amber-700 flex items-center gap-1 disabled:opacity-40 transition-colors"
+                      title="Move to Parked Invoices — requires manual delivery confirmation before sending"
+                    >
+                      {parking.has(e.id)
+                        ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 10 }} /> Parking…</>
+                        : <><i className="ti ti-clock-pause" style={{ fontSize: 10 }} /> Move to parked</>
+                      }
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

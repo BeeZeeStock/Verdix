@@ -135,3 +135,75 @@ export async function POST(
     return NextResponse.json({ error: msg }, { status: 502 })
   }
 }
+
+/**
+ * PATCH /api/jobs/[id]/parked-invoices
+ *   Moves an existing planned_invoice row (scheduled or sent) to parked status.
+ *   If a Stripe invoice exists and is still voidable (draft/open), it is voided first.
+ *   Body: { planned_invoice_id: string }
+ */
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  let org
+  try { org = await requireOrg('admin') } catch (res) { return res as Response }
+
+  const { id: jobId } = await params
+  const { planned_invoice_id } = await req.json() as { planned_invoice_id: string }
+
+  if (!planned_invoice_id) {
+    return NextResponse.json({ error: 'planned_invoice_id required' }, { status: 400 })
+  }
+
+  // Fetch the row and confirm it belongs to this job/org
+  const { data: row } = await supabaseServer
+    .from('planned_invoices')
+    .select('id, stripe_invoice_id, job_id, org_id')
+    .eq('id', planned_invoice_id)
+    .eq('job_id', jobId)
+    .eq('org_id', org.orgId)
+    .maybeSingle()
+
+  if (!row) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
+
+  // Void the Stripe invoice if one exists and is still voidable
+  if (row.stripe_invoice_id) {
+    const { data: integration } = await supabaseServer
+      .from('org_integrations')
+      .select('config')
+      .eq('org_id', org.orgId)
+      .eq('connector_name', 'stripe')
+      .eq('is_active', true)
+      .maybeSingle()
+
+    const stripeKey = (integration?.config as Record<string, string>)?.secret_key ?? process.env.STRIPE_SECRET_KEY!
+    const { default: Stripe } = await import('stripe')
+    const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+
+    try {
+      const stripeInv = await stripe.invoices.retrieve(row.stripe_invoice_id as string)
+      if (stripeInv.status === 'draft' || stripeInv.status === 'open') {
+        await stripe.invoices.voidInvoice(row.stripe_invoice_id as string)
+      }
+    } catch (err) {
+      // Log but don't fail — row can still be parked even if Stripe void fails
+      console.error('[parked-invoices] void failed', err)
+    }
+  }
+
+  // Flip the row to parked and clear Stripe references
+  const { error } = await supabaseServer
+    .from('planned_invoices')
+    .update({
+      status:             'parked',
+      stripe_invoice_id:  null,
+      stripe_invoice_url: null,
+      sent_at:            null,
+    })
+    .eq('id', planned_invoice_id)
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  return NextResponse.json({ ok: true })
+}
