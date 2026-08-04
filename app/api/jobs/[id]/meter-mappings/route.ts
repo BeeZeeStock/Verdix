@@ -161,6 +161,18 @@ export async function POST(
   const session = await import('@/lib/auth').then(m => m.auth())
   const confirmedBy = session?.user?.email ?? 'unknown'
 
+  // Sanitise tier unit thresholds — Postgres bigint rejects decimals.
+  // AI extraction can produce floats (e.g. 4999999.01) for "unlimited" ceilings.
+  type RawTier = { from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number }
+  function sanitiseTiers(tiers: unknown): RawTier[] {
+    if (!Array.isArray(tiers)) return []
+    return tiers.map((t: RawTier) => ({
+      ...t,
+      from_unit: t.from_unit != null ? Math.round(t.from_unit) : null,
+      to_unit:   t.to_unit   != null ? Math.round(t.to_unit)   : null,
+    }))
+  }
+
   // Upsert all mappings
   const rows = mappings.map(m => ({
     job_id:             jobId,
@@ -170,8 +182,8 @@ export async function POST(
     confirmed:          m.confirmed,
     confirmed_by:       m.confirmed ? confirmedBy : null,
     confirmed_at:       m.confirmed ? new Date().toISOString() : null,
-    included_units:     m.included_units,
-    overage_tiers:      m.overage_tiers,
+    included_units:     Math.round(m.included_units ?? 0),
+    overage_tiers:      sanitiseTiers(m.overage_tiers),
     billing_cycle:      m.billing_cycle,
   }))
 
@@ -194,8 +206,8 @@ export async function POST(
       const configRows = mappings.map(m => ({
         org_id:         job.org_id,
         meter_key:      m.meter_key,
-        included_units: m.included_units,
-        overage_tiers:  m.overage_tiers,
+        included_units: Math.round(m.included_units ?? 0),
+        overage_tiers:  sanitiseTiers(m.overage_tiers),
         billing_cycle:  m.billing_cycle,
         source:         'agreement',
         job_id:         jobId,
