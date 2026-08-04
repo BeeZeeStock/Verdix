@@ -14,15 +14,20 @@ interface BillingPeriod {
 }
 
 function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
-  const termMonths = terms.contract_term_months ?? 0
+  const cs = terms.contract_start_date
+    ? new Date(terms.contract_start_date + 'T00:00:00')
+    : new Date()
+
+  // Prefer explicit term months; fall back to computing from start/end dates.
+  let termMonths = terms.contract_term_months ?? 0
+  if (!termMonths && terms.contract_end_date) {
+    const ce = new Date(terms.contract_end_date + 'T00:00:00')
+    termMonths = (ce.getFullYear() - cs.getFullYear()) * 12 + (ce.getMonth() - cs.getMonth()) + 1
+  }
   if (!termMonths) return []
 
   const { interval, intervalCount } = billingInterval(terms.billing_frequency)
   const monthsPerPeriod = interval === 'year' ? 12 * intervalCount : intervalCount
-
-  const cs = terms.contract_start_date
-    ? new Date(terms.contract_start_date + 'T00:00:00')
-    : new Date()
 
   const yearPricing  = terms.year_pricing
   const rampSchedule = terms.ramp_schedule?.length ? terms.ramp_schedule : null

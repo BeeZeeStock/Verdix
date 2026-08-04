@@ -1563,6 +1563,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [calcExpanded,   setCalcExpanded]   = useState(false)
   const [currencyEditing, setCurrencyEditing] = useState(false)
   const [currencyDraft,   setCurrencyDraft]   = useState('')
+  const [rebuilding,      setRebuilding]      = useState(false)
+  const [rebuildError,    setRebuildError]    = useState<string | null>(null)
+  const [rebuildDone,     setRebuildDone]     = useState(false)
 
   const terms: Terms | undefined = job?.contract_terms?.[0]
   const cur = terms?.currency ?? job?.currency ?? 'EUR'
@@ -2565,9 +2568,47 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               )}
             </div>
 
-            {/* ── 8. Billing Setup (live Stripe pull) — only when subscription exists ── */}
-            {isConfigured && billingPlatform === 'stripe' && !!subId && (
-              <StripeSummaryCard jobId={id} />
+            {/* ── 8. Billing Setup ── */}
+            {isConfigured && billingPlatform === 'stripe' && (!!subId || !!job.billing_customer_id) && (
+              <>
+                <StripeSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : 'initial'} />
+                {/* Rebuild banner — shown when customer exists but no planned schedule yet */}
+                {!subId && !rebuildDone && (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 flex items-start gap-3">
+                    <i className="ti ti-calendar-x flex-shrink-0 mt-0.5" style={{ fontSize: 16, color: '#D97706' }} />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-amber-900 mb-0.5">Billing schedule not built</p>
+                      <p className="text-xs text-amber-800 mb-3">
+                        The billing schedule was not generated when this contract was approved — likely because start/end dates were missing at that time. Build it now to create Stripe invoices for all billing periods.
+                      </p>
+                      {rebuildError && <p className="text-xs text-red-600 mb-2">{rebuildError}</p>}
+                      <button
+                        onClick={async () => {
+                          setRebuilding(true)
+                          setRebuildError(null)
+                          try {
+                            const res = await fetch(`/api/jobs/${id}/rebuild-schedule`, { method: 'POST' })
+                            const data = await res.json()
+                            if (!res.ok) setRebuildError(data.error ?? 'Rebuild failed')
+                            else setRebuildDone(true)
+                          } catch {
+                            setRebuildError('Network error — please try again')
+                          } finally {
+                            setRebuilding(false)
+                          }
+                        }}
+                        disabled={rebuilding}
+                        className="inline-flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-xl transition-colors disabled:opacity-40"
+                        style={{ background: '#1A3D2B', color: '#fff' }}
+                      >
+                        {rebuilding
+                          ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 11 }} /> Building…</>
+                          : <><i className="ti ti-calendar-plus" style={{ fontSize: 11 }} /> Build billing schedule</>}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
             {/* ── Warning: missing dates ── */}
