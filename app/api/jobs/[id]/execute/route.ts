@@ -225,11 +225,12 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
     })
   }
 
-  for (const fee of terms.one_time_fees ?? []) {
+  for (const fee of (terms.one_time_fees ?? []) as Array<typeof terms.one_time_fees[0] & { manual_trigger?: boolean; rate_per_unit?: number | null; metric_name?: string | null }>) {
+    const isParked = fee.manual_trigger && fee.amount === 0
     items.push({
       product_name: fee.fee_label,
-      quantity: 1,
-      unit_price: fee.amount,
+      quantity: isParked ? 0 : 1,
+      unit_price: isParked ? (fee.rate_per_unit ?? 0) : fee.amount,
       billing_period: 'one_time',
       total_amount: fee.amount,
       currency: cur,

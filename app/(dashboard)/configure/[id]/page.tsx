@@ -2554,9 +2554,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             </td>
                             <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{item.quantity}</td>
                             <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                              {classifyItem(item) === 'escalator'
-                                ? <span>{item.unit_price != null ? `${item.unit_price}%` : '—'}</span>
-                                : fmtUnit(item.unit_price, cur)}
+                              {(() => {
+                                if (classifyItem(item) === 'escalator') return <span>{item.unit_price != null ? `${item.unit_price}%` : '—'}</span>
+                                if (classifyItem(item) === 'one_time' && item.unit_price === 0) {
+                                  const termFee = allFees.find(f => f.fee_label === item.product_name)
+                                  if (termFee?.manual_trigger && termFee.rate_per_unit) {
+                                    return <span>{fmt(termFee.rate_per_unit, cur)}<span className="text-stone/60">/{termFee.metric_name ?? 'unit'}</span></span>
+                                  }
+                                }
+                                return fmtUnit(item.unit_price, cur)
+                              })()}
                             </td>
                             <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
                               {classifyItem(item) === 'escalator'
