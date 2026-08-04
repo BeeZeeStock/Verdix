@@ -120,7 +120,7 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
   return periods
 }
 
-export type BillingPlatform = 'stripe' | 'chargebee'
+export type BillingPlatform = 'stripe' | 'chargebee' | 'remembill'
 
 async function getOrgConfig(orgId: string, connector: string): Promise<Record<string, string> | null> {
   const { data } = await supabaseServer
@@ -143,6 +143,7 @@ async function detectOrgPlatform(orgId: string): Promise<BillingPlatform> {
     .limit(1)
     .single()
   if (data?.connector_name === 'chargebee') return 'chargebee'
+  if (data?.connector_name === 'remembill') return 'remembill'
   return 'stripe'
 }
 
@@ -172,7 +173,8 @@ export async function configureBilling(
   orgId?: string
 ): Promise<ConfigureResult> {
   const resolved = platform ?? (orgId ? await detectOrgPlatform(orgId) : detectPlatform())
-  if (resolved === 'chargebee') return configureChargebee(terms, lineItems, jobId, orgId)
+  if (resolved === 'chargebee')  return configureChargebee(terms, lineItems, jobId, orgId)
+  if (resolved === 'remembill')  return configureRememhill(terms, lineItems, jobId, orgId)
   return configureStripe(terms, lineItems, jobId, orgId)
 }
 
@@ -417,6 +419,193 @@ async function configureStripe(
   }
 }
 
+// ── Remembill ──────────────────────────────────────────────────────────────────
+// Remembill is an invoice-based billing platform (no subscriptions).
+// Flow: create customer → for each due period create a draft invoice, add one
+// row, deliver via email. Future periods are stored as 'scheduled' planned rows
+// and pushed by the daily invoice-scheduler cron.
+// Taxes are handled by Remembill automatically — we send net amounts.
+const REMEMBILL_BASE = 'https://api.remembill.com/v1'
+
+function remembillHeaders(apiKey: string): Record<string, string> {
+  return {
+    'Authorization': `Bearer ${apiKey}`,
+    'Content-Type':  'application/json',
+    'Accept':        'application/json',
+  }
+}
+
+async function configureRememhill(
+  terms: ContractTerms,
+  lineItems: LineItemInput[],
+  jobId?: string,
+  orgId?: string,
+): Promise<ConfigureResult> {
+  const orgConfig = orgId ? await getOrgConfig(orgId, 'remembill') : null
+  const apiKey = orgConfig?.api_key ?? process.env.REMEMBILL_API_KEY
+  if (!apiKey) throw new Error('Remembill API key not configured')
+
+  const h      = remembillHeaders(apiKey)
+  const cur    = (terms.currency ?? 'SEK').toUpperCase()
+  const now    = new Date()
+  const netDays = terms.payment_terms_days ?? 30
+
+  const fmtDate  = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const fmtLabel = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
+  const addDays  = (d: Date, n: number) => new Date(d.getTime() + n * 86_400_000)
+
+  // ── 1. Create customer ──────────────────────────────────────────────────────
+  const emailInContact = terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
+  const billingEmail   = emailInContact
+    ?? `billing@${(terms.customer_name ?? 'customer').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}.com`
+
+  const custRes = await fetch(`${REMEMBILL_BASE}/customers`, {
+    method: 'POST', headers: h,
+    body: JSON.stringify({ type: 'business', name: terms.customer_name ?? 'Unknown', email: billingEmail }),
+  })
+  if (!custRes.ok) {
+    const e = await custRes.json().catch(() => ({} as { error?: { message?: string } })) as { error?: { message?: string } }
+    throw new Error(`Remembill customer creation failed: ${e.error?.message ?? custRes.status}`)
+  }
+  const customerId = ((await custRes.json()) as { id: string }).id
+
+  // ── 2. Helper: draft invoice → add row → send via email ────────────────────
+  async function pushInvoice(
+    description: string,
+    amountMinorUnits: number,
+    issueDate: Date,
+    idempotencyKey: string,
+  ): Promise<{ id: string; url: string | null }> {
+    const dueDate = addDays(issueDate, netDays)
+
+    const invRes = await fetch(`${REMEMBILL_BASE}/invoices`, {
+      method: 'POST', headers: { ...h, 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({
+        customer_id:   customerId,
+        currency:      cur,
+        issue_date:    fmtDate(issueDate),
+        due_date:      fmtDate(dueDate),
+        payment_terms: `Net ${netDays}`,
+      }),
+    })
+    if (!invRes.ok) {
+      const e = await invRes.json().catch(() => ({} as { error?: { message?: string } })) as { error?: { message?: string } }
+      throw new Error(`Remembill invoice creation failed: ${e.error?.message ?? invRes.status}`)
+    }
+    const invoiceId = ((await invRes.json()) as { id: string }).id
+
+    // Add the single line item row (Remembill handles VAT/tax)
+    const rowRes = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
+      method: 'POST', headers: h,
+      body: JSON.stringify({ description, quantity: 1, unit_price: amountMinorUnits }),
+    })
+    if (!rowRes.ok) {
+      const e = await rowRes.json().catch(() => ({} as { error?: { message?: string } })) as { error?: { message?: string } }
+      console.error(`[billing-writer/remembill] row creation failed: ${e.error?.message ?? rowRes.status}`)
+    }
+
+    // Deliver via email — returns 202 Accepted when queued
+    await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/email`, {
+      method: 'POST', headers: h, body: JSON.stringify({}),
+    }).catch(err => console.error('[billing-writer/remembill] email delivery failed', err))
+
+    return { id: invoiceId, url: `https://app.remembill.com/invoices/${invoiceId}` }
+  }
+
+  // ── 3. Billing schedule ─────────────────────────────────────────────────────
+  const periods = computeBillingSchedule(terms)
+
+  type PlannedRow = {
+    job_id?: string; org_id?: string
+    year_num: number | null; period_start: string; period_end: string
+    base_amount: number; currency: string; fee_label: string | null
+    invoice_type: string; status: string
+    stripe_invoice_id: string | null; stripe_invoice_url: string | null
+    sent_at: string | null
+  }
+  const plannedRows: PlannedRow[] = []
+
+  // ── 4. Period invoices ──────────────────────────────────────────────────────
+  for (const period of periods) {
+    const description = `Base subscription — Year ${period.yearNum} (${fmtLabel(period.periodStart)} – ${fmtLabel(period.periodEnd)})`
+
+    if (period.periodStart <= now && period.baseAmount > 0) {
+      const key = `verdix-${jobId ?? 'unknown'}-period-${period.yearNum}-${period.periodIndex}`
+      const { id, url } = await pushInvoice(description, Math.round(period.baseAmount * 100), now, key)
+      plannedRows.push({
+        year_num: period.yearNum, period_start: fmtDate(period.periodStart), period_end: fmtDate(period.periodEnd),
+        base_amount: period.baseAmount, currency: terms.currency ?? 'SEK', fee_label: null,
+        invoice_type: 'period', status: 'sent',
+        stripe_invoice_id: id, stripe_invoice_url: url, sent_at: new Date().toISOString(),
+      })
+    } else {
+      plannedRows.push({
+        year_num: period.yearNum, period_start: fmtDate(period.periodStart), period_end: fmtDate(period.periodEnd),
+        base_amount: period.baseAmount, currency: terms.currency ?? 'SEK', fee_label: null,
+        invoice_type: 'period', status: 'scheduled',
+        stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
+      })
+    }
+  }
+
+  // ── 5. One-time fees ────────────────────────────────────────────────────────
+  type OneTimeFeeInput = {
+    fee_label: string; amount: number; due_date?: string | null
+    manual_trigger?: boolean; metric_name?: string | null; rate_per_unit?: number | null
+  }
+  const oneTimeFees = (terms.one_time_fees ?? []) as OneTimeFeeInput[]
+
+  for (const fee of oneTimeFees.filter(f => f.manual_trigger)) {
+    plannedRows.push({
+      year_num: null, period_start: fee.due_date ?? fmtDate(now), period_end: fee.due_date ?? fmtDate(now),
+      base_amount: fee.amount ?? 0, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
+      invoice_type: 'one_time', status: 'parked',
+      stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
+    })
+  }
+
+  for (const fee of oneTimeFees.filter(f => !f.manual_trigger && f.amount > 0)) {
+    const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
+    const isDue      = !feeDueDate || feeDueDate <= now
+    const dueDateStr = fmtDate(feeDueDate ?? now)
+
+    if (isDue) {
+      const key = `verdix-${jobId ?? 'unknown'}-onetime-${fee.fee_label.replace(/\s+/g, '-').toLowerCase()}`
+      const { id, url } = await pushInvoice(fee.fee_label, Math.round(fee.amount * 100), feeDueDate ?? now, key)
+      plannedRows.push({
+        year_num: null, period_start: dueDateStr, period_end: dueDateStr,
+        base_amount: fee.amount, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
+        invoice_type: 'one_time', status: 'sent',
+        stripe_invoice_id: id, stripe_invoice_url: url, sent_at: new Date().toISOString(),
+      })
+    } else {
+      plannedRows.push({
+        year_num: null, period_start: dueDateStr, period_end: dueDateStr,
+        base_amount: fee.amount, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
+        invoice_type: 'one_time', status: 'scheduled',
+        stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
+      })
+    }
+  }
+
+  // ── 6. Persist planned rows ─────────────────────────────────────────────────
+  if (jobId && plannedRows.length > 0) {
+    const { error } = await supabaseServer
+      .from('planned_invoices')
+      .insert(plannedRows.map(r => ({ ...r, job_id: jobId, org_id: orgId })))
+    if (error) console.error('[billing-writer/remembill] planned_invoices insert failed', error)
+  }
+
+  return {
+    platform:       'remembill',
+    subscriptionId: null,
+    customerId,
+    lineItemCount:  periods.length + oneTimeFees.filter(f => f.amount > 0).length,
+    dashboardUrl:   `https://app.remembill.com/customers/${customerId}`,
+  }
+}
+
 async function configureChargebee(
   terms: ContractTerms,
   lineItems: LineItemInput[],
@@ -471,9 +660,10 @@ async function configureChargebee(
 
 function detectPlatform(): BillingPlatform {
   if (process.env.CHARGEBEE_API_KEY) return 'chargebee'
+  if (process.env.REMEMBILL_API_KEY) return 'remembill'
   return 'stripe'
 }
 
 // Re-export computeBillingSchedule for use by the invoice scheduler
-export { computeBillingSchedule }
+export { computeBillingSchedule, REMEMBILL_BASE, remembillHeaders }
 export type { BillingPeriod }

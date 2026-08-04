@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
+import { REMEMBILL_BASE, remembillHeaders } from '@/lib/billing-writer'
 
 export async function POST(
   req: NextRequest,
@@ -38,70 +39,120 @@ export async function POST(
   // Fetch job + billing config
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('org_id, billing_customer_id, contract_terms(currency, payment_terms_days)')
+    .select('org_id, billing_customer_id, billing_platform, contract_terms(currency, payment_terms_days)')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .single()
 
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
-  if (!job.billing_customer_id) return NextResponse.json({ error: 'No Stripe customer on this job' }, { status: 400 })
+  if (!job.billing_customer_id) return NextResponse.json({ error: 'No billing customer on this job' }, { status: 400 })
 
-  const termsArr = job.contract_terms as unknown as Array<{ currency?: string; payment_terms_days?: number | null }>
-  const terms    = termsArr?.[0] ?? {}
-  const cur      = (body.currency ?? terms.currency ?? 'EUR').toLowerCase()
-  const netDays  = terms.payment_terms_days ?? 30
-
-  // Load Stripe key
-  const { data: integration } = await supabaseServer
-    .from('org_integrations')
-    .select('config')
-    .eq('org_id', org.orgId)
-    .eq('connector_name', 'stripe')
-    .eq('is_active', true)
-    .maybeSingle()
-
-  const stripeKey = (integration?.config as Record<string, string>)?.secret_key ?? process.env.STRIPE_SECRET_KEY!
-  const { default: Stripe } = await import('stripe')
-  const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+  const termsArr        = job.contract_terms as unknown as Array<{ currency?: string; payment_terms_days?: number | null }>
+  const terms           = termsArr?.[0] ?? {}
+  const cur             = (body.currency ?? terms.currency ?? 'EUR').toUpperCase()
+  const netDays         = terms.payment_terms_days ?? 30
+  const billingPlatform = (job.billing_platform as string | null) ?? 'stripe'
 
   const today    = new Date()
   const todayStr = today.toISOString().slice(0, 10)
-
   const lineDesc = description
-    ?? `${fee_label} — ${quantity} ${metric_name} @ ${cur.toUpperCase()} ${rate_per_unit}/${metric_name}`
+    ?? `${fee_label} — ${quantity} ${metric_name} @ ${cur} ${rate_per_unit}/${metric_name}`
+
+  const fmtDate = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
   try {
-    const inv = await stripe.invoices.create({
-      customer:                       job.billing_customer_id as string,
-      collection_method:              'send_invoice',
-      days_until_due:                 netDays,
-      pending_invoice_items_behavior: 'exclude',
-      metadata: {
-        verdix_job:      jobId,
-        fee_type:        'parked_service',
-        fee_label,
-        invoice_type:    'one_time',
-        scheduled_date:  todayStr,
-        metric_name,
-        quantity:        String(quantity),
-        rate_per_unit:   String(rate_per_unit),
-      },
-    })
+    let invoiceId:  string
+    let hostedUrl:  string | null
 
-    await stripe.invoiceItems.create({
-      customer:    job.billing_customer_id as string,
-      invoice:     inv.id,
-      amount:      Math.round(amount * 100),
-      currency:    cur,
-      description: lineDesc,
-    })
+    // ── Remembill ──────────────────────────────────────────────────────────
+    if (billingPlatform === 'remembill') {
+      const { data: rbIntegration } = await supabaseServer
+        .from('org_integrations')
+        .select('config')
+        .eq('org_id', org.orgId)
+        .eq('connector_name', 'remembill')
+        .eq('is_active', true)
+        .maybeSingle()
 
-    const finalized = await stripe.invoices.finalizeInvoice(inv.id).catch(err => {
-      console.error('[parked-invoices] finalizeInvoice failed', err)
-      return inv
-    })
+      const rbKey = (rbIntegration?.config as Record<string, string>)?.api_key ?? process.env.REMEMBILL_API_KEY!
+      const rbH   = remembillHeaders(rbKey)
+      const dueDate = new Date(today.getTime() + netDays * 86_400_000)
 
-    // Insert a new planned_invoice row for this delivery (template row stays as 'parked')
+      const invRes = await fetch(`${REMEMBILL_BASE}/invoices`, {
+        method: 'POST',
+        headers: { ...rbH, 'Idempotency-Key': `verdix-parked-${jobId}-${fee_label.replace(/\s+/g, '-')}-${todayStr}` },
+        body: JSON.stringify({
+          customer_id:   job.billing_customer_id,
+          currency:      cur,
+          issue_date:    todayStr,
+          due_date:      fmtDate(dueDate),
+          payment_terms: `Net ${netDays}`,
+        }),
+      })
+      if (!invRes.ok) {
+        const e = await invRes.json().catch(() => ({} as { error?: { message?: string } })) as { error?: { message?: string } }
+        throw new Error(`Remembill invoice creation failed: ${e.error?.message ?? invRes.status}`)
+      }
+      invoiceId = ((await invRes.json()) as { id: string }).id
+
+      // Add line item row (amount in minor units)
+      await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
+        method: 'POST', headers: rbH,
+        body: JSON.stringify({ description: lineDesc, quantity, unit_price: Math.round(rate_per_unit * 100) }),
+      })
+
+      // Deliver via email
+      await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/email`, {
+        method: 'POST', headers: rbH, body: JSON.stringify({}),
+      }).catch(err => console.error('[parked-invoices/remembill] email delivery failed', err))
+
+      hostedUrl = `https://app.remembill.com/invoices/${invoiceId}`
+
+    // ── Stripe (default) ───────────────────────────────────────────────────
+    } else {
+      const { data: integration } = await supabaseServer
+        .from('org_integrations')
+        .select('config')
+        .eq('org_id', org.orgId)
+        .eq('connector_name', 'stripe')
+        .eq('is_active', true)
+        .maybeSingle()
+
+      const stripeKey = (integration?.config as Record<string, string>)?.secret_key ?? process.env.STRIPE_SECRET_KEY!
+      const { default: Stripe } = await import('stripe')
+      const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+
+      const inv = await stripe.invoices.create({
+        customer:                       job.billing_customer_id as string,
+        collection_method:              'send_invoice',
+        days_until_due:                 netDays,
+        pending_invoice_items_behavior: 'exclude',
+        metadata: {
+          verdix_job: jobId, fee_type: 'parked_service', fee_label,
+          invoice_type: 'one_time', scheduled_date: todayStr,
+          metric_name, quantity: String(quantity), rate_per_unit: String(rate_per_unit),
+        },
+      })
+
+      await stripe.invoiceItems.create({
+        customer:    job.billing_customer_id as string,
+        invoice:     inv.id,
+        amount:      Math.round(amount * 100),
+        currency:    cur.toLowerCase(),
+        description: lineDesc,
+      })
+
+      const finalized = await stripe.invoices.finalizeInvoice(inv.id).catch(err => {
+        console.error('[parked-invoices] finalizeInvoice failed', err)
+        return inv
+      })
+
+      invoiceId = inv.id
+      hostedUrl = finalized.hosted_invoice_url ?? null
+    }
+
+    // Insert a new planned_invoice row for this delivery (template stays as 'parked')
     const { error } = await supabaseServer
       .from('planned_invoices')
       .insert({
@@ -111,25 +162,18 @@ export async function POST(
         period_start:       todayStr,
         period_end:         todayStr,
         base_amount:        amount,
-        currency:           cur.toUpperCase(),
+        currency:           cur,
         fee_label,
         invoice_type:       'one_time',
         status:             'sent',
-        stripe_invoice_id:  inv.id,
-        stripe_invoice_url: finalized.hosted_invoice_url ?? null,
+        stripe_invoice_id:  invoiceId,
+        stripe_invoice_url: hostedUrl,
         sent_at:            new Date().toISOString(),
       })
 
-    if (error) {
-      console.error('[parked-invoices] planned_invoices insert failed', error)
-    }
+    if (error) console.error('[parked-invoices] planned_invoices insert failed', error)
 
-    return NextResponse.json({
-      ok:         true,
-      invoiceId:  inv.id,
-      amount,
-      hostedUrl:  finalized.hosted_invoice_url ?? null,
-    })
+    return NextResponse.json({ ok: true, invoiceId, amount, hostedUrl })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return NextResponse.json({ error: msg }, { status: 502 })
@@ -167,28 +211,53 @@ export async function PATCH(
 
   if (!row) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 })
 
-  // Void the Stripe invoice if one exists and is still voidable
+  // Void the external invoice if one exists and is still voidable
   if (row.stripe_invoice_id) {
-    const { data: integration } = await supabaseServer
-      .from('org_integrations')
-      .select('config')
-      .eq('org_id', org.orgId)
-      .eq('connector_name', 'stripe')
-      .eq('is_active', true)
+    // Detect billing platform from the job
+    const { data: jobRow } = await supabaseServer
+      .from('jobs')
+      .select('billing_platform')
+      .eq('id', jobId)
       .maybeSingle()
+    const billingPlatform = (jobRow?.billing_platform as string | null) ?? 'stripe'
 
-    const stripeKey = (integration?.config as Record<string, string>)?.secret_key ?? process.env.STRIPE_SECRET_KEY!
-    const { default: Stripe } = await import('stripe')
-    const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+    if (billingPlatform === 'remembill') {
+      // Remembill: DELETE the draft invoice (only drafts can be deleted)
+      const { data: rbIntegration } = await supabaseServer
+        .from('org_integrations')
+        .select('config')
+        .eq('org_id', org.orgId)
+        .eq('connector_name', 'remembill')
+        .eq('is_active', true)
+        .maybeSingle()
 
-    try {
-      const stripeInv = await stripe.invoices.retrieve(row.stripe_invoice_id as string)
-      if (stripeInv.status === 'draft' || stripeInv.status === 'open') {
-        await stripe.invoices.voidInvoice(row.stripe_invoice_id as string)
+      const rbKey = (rbIntegration?.config as Record<string, string>)?.api_key ?? process.env.REMEMBILL_API_KEY!
+      await fetch(`${REMEMBILL_BASE}/invoices/${row.stripe_invoice_id}`, {
+        method: 'DELETE', headers: remembillHeaders(rbKey),
+      }).catch(err => console.error('[parked-invoices/remembill] delete failed', err))
+
+    } else {
+      // Stripe: void if draft or open
+      const { data: integration } = await supabaseServer
+        .from('org_integrations')
+        .select('config')
+        .eq('org_id', org.orgId)
+        .eq('connector_name', 'stripe')
+        .eq('is_active', true)
+        .maybeSingle()
+
+      const stripeKey = (integration?.config as Record<string, string>)?.secret_key ?? process.env.STRIPE_SECRET_KEY!
+      const { default: Stripe } = await import('stripe')
+      const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+
+      try {
+        const stripeInv = await stripe.invoices.retrieve(row.stripe_invoice_id as string)
+        if (stripeInv.status === 'draft' || stripeInv.status === 'open') {
+          await stripe.invoices.voidInvoice(row.stripe_invoice_id as string)
+        }
+      } catch (err) {
+        console.error('[parked-invoices] stripe void failed', err)
       }
-    } catch (err) {
-      // Log but don't fail — row can still be parked even if Stripe void fails
-      console.error('[parked-invoices] void failed', err)
     }
   }
 
