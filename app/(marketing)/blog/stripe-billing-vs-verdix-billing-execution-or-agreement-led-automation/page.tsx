@@ -42,8 +42,8 @@ function ComparisonTable() {
         <div style={{ padding: '10px 14px', background: '#F5F3EE', borderBottom: '0.5px solid rgba(26,61,43,0.1)', borderRight: '0.5px solid rgba(26,61,43,0.08)' }}>
           <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#9A9490' }}>Area</span>
         </div>
-        <div style={{ padding: '10px 14px', background: '#3530A0', borderBottom: '0.5px solid rgba(255,255,255,0.06)', borderRight: '0.5px solid rgba(255,255,255,0.05)' }}>
-          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#B0ADFF' }}>Stripe Billing</span>
+        <div style={{ padding: '10px 14px', background: '#5752D8', borderBottom: '0.5px solid rgba(255,255,255,0.06)', borderRight: '0.5px solid rgba(255,255,255,0.05)' }}>
+          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#D8D6FF' }}>Stripe Billing</span>
         </div>
         <div style={{ padding: '10px 14px', background: '#1A3D2B', borderBottom: '0.5px solid rgba(255,255,255,0.1)' }}>
           <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#B8E0CC' }}>Verdix</span>
@@ -61,8 +61,8 @@ function ComparisonTable() {
               <div style={{ padding: '9px 14px', background: even ? '#FAFAF8' : '#fff', borderBottom: rowBorderLight, borderRight: '0.5px solid rgba(26,61,43,0.07)', display: 'flex', alignItems: 'center' }}>
                 <span style={{ fontSize: 11, fontWeight: 600, color: '#6B6660' }}>{r.area}</span>
               </div>
-              <div style={{ padding: '9px 14px', background: even ? '#4046B8' : '#3530A0', borderBottom: rowBorderDark, borderRight: '0.5px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center' }}>
-                <span style={{ fontSize: 11.5, color: '#C0BDFF', lineHeight: 1.4 }}>{r.stripe}</span>
+              <div style={{ padding: '9px 14px', background: even ? '#6460DC' : '#5752D8', borderBottom: rowBorderDark, borderRight: '0.5px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center' }}>
+                <span style={{ fontSize: 11.5, color: '#D8D6FF', lineHeight: 1.4 }}>{r.stripe}</span>
               </div>
               <div style={{ padding: '9px 14px', background: even ? '#E8F5EC' : '#F0FAF3', borderBottom: rowBorderGreen, display: 'flex', alignItems: 'center' }}>
                 <span style={{ fontSize: 11.5, color: '#1A3D2B', fontWeight: r.verdixStrong ? 600 : 400, lineHeight: 1.4 }}>{r.verdix}</span>
@@ -78,11 +78,11 @@ function ComparisonTable() {
 // ── Diagram 2: Architectural flow comparison ───────────────────────────────────
 
 const STRIPE_CHAIN = [
-  { label: 'Usage events',       bg: '#3530A0', text: '#C0BDFF' },
-  { label: 'Meter aggregation',  bg: '#4B47B5', text: '#D0CDFF' },
-  { label: 'Configured price',   bg: '#6560C8', text: '#E8E6FF' },
-  { label: 'Invoice',            bg: '#8580D8', text: '#fff'    },
-  { label: 'Payment collected',  bg: '#B0ADEC', text: '#1A1860' },
+  { label: 'Usage events',       bg: '#4B47CC', text: '#C8C6FF' },
+  { label: 'Meter aggregation',  bg: '#5752D8', text: '#D8D6FF' },
+  { label: 'Configured price',   bg: '#6560E0', text: '#E8E6FF' },
+  { label: 'Invoice',            bg: '#7E7AE8', text: '#fff'    },
+  { label: 'Payment collected',  bg: '#B8B5F5', text: '#1A1860' },
 ]
 
 const VERDIX_CHAIN = [
@@ -138,11 +138,11 @@ const DECISION_COLS = [
   {
     condition: 'Standard plans, usage events into Stripe, invoicing and payment collection within one ecosystem',
     result:    'Stripe alone',
-    resultBg:  '#3530A0',
-    resultText:'#C0BDFF',
-    condBg:    '#F2F2FB',
+    resultBg:  '#5752D8',
+    resultText:'#E8E6FF',
+    condBg:    '#F0F0FD',
     condText:  '#3A3530',
-    arrowCol:  'rgba(53,48,160,0.35)',
+    arrowCol:  'rgba(87,82,216,0.4)',
     verdix:    false,
   },
   {
@@ -520,8 +520,8 @@ export default function BlogPost() {
           .decision-grid > :nth-child(4) { order: 1; }
           .decision-grid > :nth-child(5) { order: 4; }
           .decision-grid > :nth-child(6) { order: 7; }
-          .decision-grid > :nth-child(7) { order: 2; }
-          .decision-grid > :nth-child(8) { order: 5; }
+          .decision-grid > :nth-child(7) { order: 2; margin-bottom: 20px; }
+          .decision-grid > :nth-child(8) { order: 5; margin-bottom: 20px; }
           .decision-grid > :nth-child(9) { order: 8; }
         }
       `}</style>

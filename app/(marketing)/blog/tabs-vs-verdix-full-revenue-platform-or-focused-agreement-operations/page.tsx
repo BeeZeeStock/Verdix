@@ -473,8 +473,8 @@ export default function BlogPost() {
           .decision-grid > :nth-child(4) { order: 1; }
           .decision-grid > :nth-child(5) { order: 4; }
           .decision-grid > :nth-child(6) { order: 7; }
-          .decision-grid > :nth-child(7) { order: 2; }
-          .decision-grid > :nth-child(8) { order: 5; }
+          .decision-grid > :nth-child(7) { order: 2; margin-bottom: 20px; }
+          .decision-grid > :nth-child(8) { order: 5; margin-bottom: 20px; }
           .decision-grid > :nth-child(9) { order: 8; }
         }
       `}</style>

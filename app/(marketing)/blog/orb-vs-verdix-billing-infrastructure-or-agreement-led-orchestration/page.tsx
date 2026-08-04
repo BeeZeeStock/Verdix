@@ -43,8 +43,8 @@ function ComparisonTable() {
         <div style={{ padding: '10px 14px', background: '#F5F3EE', borderBottom: '0.5px solid rgba(26,61,43,0.1)', borderRight: '0.5px solid rgba(26,61,43,0.08)' }}>
           <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#9A9490' }}>Area</span>
         </div>
-        <div style={{ padding: '10px 14px', background: '#1E3352', borderBottom: '0.5px solid rgba(255,255,255,0.06)', borderRight: '0.5px solid rgba(255,255,255,0.05)' }}>
-          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#6A90B8' }}>Orb</span>
+        <div style={{ padding: '10px 14px', background: '#0E3020', borderBottom: '0.5px solid rgba(255,255,255,0.06)', borderRight: '0.5px solid rgba(255,255,255,0.05)' }}>
+          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#7AC8A0' }}>Orb</span>
         </div>
         <div style={{ padding: '10px 14px', background: '#1A3D2B', borderBottom: '0.5px solid rgba(255,255,255,0.1)' }}>
           <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#B8E0CC' }}>Verdix</span>
@@ -62,8 +62,8 @@ function ComparisonTable() {
               <div style={{ padding: '9px 14px', background: even ? '#FAFAF8' : '#fff', borderBottom: rowBorderLight, borderRight: '0.5px solid rgba(26,61,43,0.07)', display: 'flex', alignItems: 'center' }}>
                 <span style={{ fontSize: 11, fontWeight: 600, color: '#6B6660' }}>{r.area}</span>
               </div>
-              <div style={{ padding: '9px 14px', background: even ? '#223A5A' : '#1E3352', borderBottom: rowBorderDark, borderRight: '0.5px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center' }}>
-                <span style={{ fontSize: 11.5, color: '#8AAEC8', lineHeight: 1.4 }}>{r.orb}</span>
+              <div style={{ padding: '9px 14px', background: even ? '#1A5438' : '#0E3020', borderBottom: rowBorderDark, borderRight: '0.5px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center' }}>
+                <span style={{ fontSize: 11.5, color: '#90D8B0', lineHeight: 1.4 }}>{r.orb}</span>
               </div>
               <div style={{ padding: '9px 14px', background: even ? '#E8F5EC' : '#F0FAF3', borderBottom: rowBorderGreen, display: 'flex', alignItems: 'center' }}>
                 <span style={{ fontSize: 11.5, color: '#1A3D2B', fontWeight: r.verdixStrong ? 600 : 400, lineHeight: 1.4 }}>{r.verdix}</span>
@@ -79,11 +79,11 @@ function ComparisonTable() {
 // ── Diagram 2: Usage data flow comparison ─────────────────────────────────────
 
 const ORB_CHAIN = [
-  { label: 'App sends events',  bg: '#1E3352', text: '#A8C4E0' },
-  { label: 'Event ingestion',   bg: '#2B4A73', text: '#A8C4E0' },
-  { label: 'Billable metrics',  bg: '#3B6A9E', text: '#D0E4F5' },
-  { label: 'Pricing applied',   bg: '#5A8ABE', text: '#fff'    },
-  { label: 'Orb invoice',       bg: '#7AAAD0', text: '#fff'    },
+  { label: 'App sends events',  bg: '#081C14', text: '#7AC8A0' },
+  { label: 'Event ingestion',   bg: '#0E3020', text: '#90D8B0' },
+  { label: 'Billable metrics',  bg: '#1A5438', text: '#B0E8CC' },
+  { label: 'Pricing applied',   bg: '#267848', text: '#D0F0DC' },
+  { label: 'Orb invoice',       bg: '#5AA878', text: '#fff'    },
 ]
 
 const VERDIX_CHAIN = [
@@ -138,11 +138,11 @@ const DECISION_COLS = [
   {
     condition: 'High-volume event metering, real-time usage, complex rating and native invoicing at scale',
     result:    'Choose Orb',
-    resultBg:  '#1E3352',
-    resultText:'#A8C4E0',
-    condBg:    '#F0F3F6',
+    resultBg:  '#0E3020',
+    resultText:'#90D8B0',
+    condBg:    '#EEF5F1',
     condText:  '#3A3530',
-    arrowCol:  'rgba(30,51,82,0.35)',
+    arrowCol:  'rgba(14,48,32,0.4)',
     verdix:    false,
   },
   {
@@ -485,8 +485,8 @@ export default function BlogPost() {
           .decision-grid > :nth-child(4) { order: 1; }
           .decision-grid > :nth-child(5) { order: 4; }
           .decision-grid > :nth-child(6) { order: 7; }
-          .decision-grid > :nth-child(7) { order: 2; }
-          .decision-grid > :nth-child(8) { order: 5; }
+          .decision-grid > :nth-child(7) { order: 2; margin-bottom: 20px; }
+          .decision-grid > :nth-child(8) { order: 5; margin-bottom: 20px; }
           .decision-grid > :nth-child(9) { order: 8; }
         }
       `}</style>

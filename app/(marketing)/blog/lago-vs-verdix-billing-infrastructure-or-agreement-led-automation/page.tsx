@@ -42,8 +42,8 @@ function ComparisonTable() {
         <div style={{ padding: '10px 14px', background: '#F5F3EE', borderBottom: '0.5px solid rgba(26,61,43,0.1)', borderRight: '0.5px solid rgba(26,61,43,0.08)' }}>
           <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#9A9490' }}>Area</span>
         </div>
-        <div style={{ padding: '10px 14px', background: '#3B2A6E', borderBottom: '0.5px solid rgba(255,255,255,0.06)', borderRight: '0.5px solid rgba(255,255,255,0.05)' }}>
-          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#A899D8' }}>Lago</span>
+        <div style={{ padding: '10px 14px', background: '#3D30A0', borderBottom: '0.5px solid rgba(255,255,255,0.06)', borderRight: '0.5px solid rgba(255,255,255,0.05)' }}>
+          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#C8C2FF' }}>Lago</span>
         </div>
         <div style={{ padding: '10px 14px', background: '#1A3D2B', borderBottom: '0.5px solid rgba(255,255,255,0.1)' }}>
           <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#B8E0CC' }}>Verdix</span>
@@ -61,8 +61,8 @@ function ComparisonTable() {
               <div style={{ padding: '9px 14px', background: even ? '#FAFAF8' : '#fff', borderBottom: rowBorderLight, borderRight: '0.5px solid rgba(26,61,43,0.07)', display: 'flex', alignItems: 'center' }}>
                 <span style={{ fontSize: 11, fontWeight: 600, color: '#6B6660' }}>{r.area}</span>
               </div>
-              <div style={{ padding: '9px 14px', background: even ? '#47337E' : '#3B2A6E', borderBottom: rowBorderDark, borderRight: '0.5px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center' }}>
-                <span style={{ fontSize: 11.5, color: '#B8ACDF', lineHeight: 1.4 }}>{r.lago}</span>
+              <div style={{ padding: '9px 14px', background: even ? '#4E40B8' : '#3D30A0', borderBottom: rowBorderDark, borderRight: '0.5px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center' }}>
+                <span style={{ fontSize: 11.5, color: '#C8C2FF', lineHeight: 1.4 }}>{r.lago}</span>
               </div>
               <div style={{ padding: '9px 14px', background: even ? '#E8F5EC' : '#F0FAF3', borderBottom: rowBorderGreen, display: 'flex', alignItems: 'center' }}>
                 <span style={{ fontSize: 11.5, color: '#1A3D2B', fontWeight: r.verdixStrong ? 600 : 400, lineHeight: 1.4 }}>{r.verdix}</span>
@@ -78,10 +78,10 @@ function ComparisonTable() {
 // ── Diagram 2: Architectural flow comparison ───────────────────────────────────
 
 const LAGO_CHAIN = [
-  { label: 'Product events',   bg: '#3B2A6E', text: '#C4BAF0' },
-  { label: 'Billable metrics', bg: '#4E3B8A', text: '#C4BAF0' },
-  { label: 'Pricing plan',     bg: '#6352A8', text: '#E4E0F8' },
-  { label: 'Invoice',          bg: '#8878C4', text: '#fff'    },
+  { label: 'Product events',   bg: '#2A1E70', text: '#B8B0FF' },
+  { label: 'Billable metrics', bg: '#3D30A0', text: '#C8C2FF' },
+  { label: 'Pricing plan',     bg: '#5B50E8', text: '#E8E6FF' },
+  { label: 'Invoice',          bg: '#8880F0', text: '#fff'    },
 ]
 
 const VERDIX_CHAIN = [
@@ -137,11 +137,11 @@ const DECISION_COLS = [
   {
     condition: 'Continuous event metering, real-time usage, flexible aggregation or open-source infrastructure control',
     result:    'Choose Lago',
-    resultBg:  '#3B2A6E',
-    resultText:'#C4BAF0',
-    condBg:    '#F3F1F9',
+    resultBg:  '#3D30A0',
+    resultText:'#C8C2FF',
+    condBg:    '#F0EFF9',
     condText:  '#3A3530',
-    arrowCol:  'rgba(59,42,110,0.35)',
+    arrowCol:  'rgba(61,48,160,0.4)',
     verdix:    false,
   },
   {
@@ -500,8 +500,8 @@ export default function BlogPost() {
           .decision-grid > :nth-child(4) { order: 1; }
           .decision-grid > :nth-child(5) { order: 4; }
           .decision-grid > :nth-child(6) { order: 7; }
-          .decision-grid > :nth-child(7) { order: 2; }
-          .decision-grid > :nth-child(8) { order: 5; }
+          .decision-grid > :nth-child(7) { order: 2; margin-bottom: 20px; }
+          .decision-grid > :nth-child(8) { order: 5; margin-bottom: 20px; }
           .decision-grid > :nth-child(9) { order: 8; }
         }
       `}</style>

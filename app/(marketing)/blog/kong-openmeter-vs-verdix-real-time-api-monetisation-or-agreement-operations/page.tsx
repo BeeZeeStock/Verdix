@@ -42,8 +42,8 @@ function ComparisonTable() {
         <div style={{ padding: '10px 14px', background: '#F5F3EE', borderBottom: '0.5px solid rgba(26,61,43,0.1)', borderRight: '0.5px solid rgba(26,61,43,0.08)' }}>
           <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#9A9490' }}>Area</span>
         </div>
-        <div style={{ padding: '10px 14px', background: '#0C4A5E', borderBottom: '0.5px solid rgba(255,255,255,0.06)', borderRight: '0.5px solid rgba(255,255,255,0.05)' }}>
-          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#6AC8E0' }}>Kong OpenMeter</span>
+        <div style={{ padding: '10px 14px', background: '#003A6A', borderBottom: '0.5px solid rgba(255,255,255,0.06)', borderRight: '0.5px solid rgba(255,255,255,0.05)' }}>
+          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#80B8F0' }}>Kong OpenMeter</span>
         </div>
         <div style={{ padding: '10px 14px', background: '#1A3D2B', borderBottom: '0.5px solid rgba(255,255,255,0.1)' }}>
           <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#B8E0CC' }}>Verdix</span>
@@ -61,8 +61,8 @@ function ComparisonTable() {
               <div style={{ padding: '9px 14px', background: even ? '#FAFAF8' : '#fff', borderBottom: rowBorderLight, borderRight: '0.5px solid rgba(26,61,43,0.07)', display: 'flex', alignItems: 'center' }}>
                 <span style={{ fontSize: 11, fontWeight: 600, color: '#6B6660' }}>{r.area}</span>
               </div>
-              <div style={{ padding: '9px 14px', background: even ? '#0E5568' : '#0C4A5E', borderBottom: rowBorderDark, borderRight: '0.5px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center' }}>
-                <span style={{ fontSize: 11.5, color: '#7DD3E8', lineHeight: 1.4 }}>{r.kong}</span>
+              <div style={{ padding: '9px 14px', background: even ? '#004E8A' : '#003A6A', borderBottom: rowBorderDark, borderRight: '0.5px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center' }}>
+                <span style={{ fontSize: 11.5, color: '#A0C8F0', lineHeight: 1.4 }}>{r.kong}</span>
               </div>
               <div style={{ padding: '9px 14px', background: even ? '#E8F5EC' : '#F0FAF3', borderBottom: rowBorderGreen, display: 'flex', alignItems: 'center' }}>
                 <span style={{ fontSize: 11.5, color: '#1A3D2B', fontWeight: r.verdixStrong ? 600 : 400, lineHeight: 1.4 }}>{r.verdix}</span>
@@ -78,10 +78,10 @@ function ComparisonTable() {
 // ── Diagram 2: Architectural flow comparison ───────────────────────────────────
 
 const KONG_CHAIN = [
-  { label: 'Product events',           bg: '#0C4A5E', text: '#7DD3E8' },
-  { label: 'Meter',                    bg: '#0E5F78', text: '#A0E0F0' },
-  { label: 'Rate card & plan',         bg: '#1A7A96', text: '#D0F0FA' },
-  { label: 'Entitlement or invoice',   bg: '#2A9AB8', text: '#fff'    },
+  { label: 'Product events',           bg: '#002444', text: '#80B4E0' },
+  { label: 'Meter',                    bg: '#003A6A', text: '#A0C8F0' },
+  { label: 'Rate card & plan',         bg: '#005098', text: '#C0DCF8' },
+  { label: 'Entitlement or invoice',   bg: '#2070C0', text: '#fff'    },
 ]
 
 const VERDIX_CHAIN = [
@@ -137,11 +137,11 @@ const DECISION_COLS = [
   {
     condition: 'Real-time API or AI metering, entitlement enforcement, product packaging or usage balances tied to the product experience',
     result:    'Choose Kong OpenMeter',
-    resultBg:  '#0C4A5E',
-    resultText:'#7DD3E8',
-    condBg:    '#EEF7FA',
+    resultBg:  '#003A6A',
+    resultText:'#A0C8F0',
+    condBg:    '#EDF3FA',
     condText:  '#3A3530',
-    arrowCol:  'rgba(12,74,94,0.35)',
+    arrowCol:  'rgba(0,58,106,0.4)',
     verdix:    false,
   },
   {
@@ -488,8 +488,8 @@ export default function BlogPost() {
           .decision-grid > :nth-child(4) { order: 1; }
           .decision-grid > :nth-child(5) { order: 4; }
           .decision-grid > :nth-child(6) { order: 7; }
-          .decision-grid > :nth-child(7) { order: 2; }
-          .decision-grid > :nth-child(8) { order: 5; }
+          .decision-grid > :nth-child(7) { order: 2; margin-bottom: 20px; }
+          .decision-grid > :nth-child(8) { order: 5; margin-bottom: 20px; }
           .decision-grid > :nth-child(9) { order: 8; }
         }
       `}</style>

@@ -42,8 +42,8 @@ function ComparisonTable() {
         <div style={{ padding: '10px 14px', background: '#F5F3EE', borderBottom: '0.5px solid rgba(26,61,43,0.1)', borderRight: '0.5px solid rgba(26,61,43,0.08)' }}>
           <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#9A9490' }}>Area</span>
         </div>
-        <div style={{ padding: '10px 14px', background: '#5C1A2E', borderBottom: '0.5px solid rgba(255,255,255,0.06)', borderRight: '0.5px solid rgba(255,255,255,0.05)' }}>
-          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#E8A0B0' }}>Metronome</span>
+        <div style={{ padding: '10px 14px', background: '#1B44B0', borderBottom: '0.5px solid rgba(255,255,255,0.06)', borderRight: '0.5px solid rgba(255,255,255,0.05)' }}>
+          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#A8C0FF' }}>Metronome</span>
         </div>
         <div style={{ padding: '10px 14px', background: '#1A3D2B', borderBottom: '0.5px solid rgba(255,255,255,0.1)' }}>
           <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#B8E0CC' }}>Verdix</span>
@@ -61,8 +61,8 @@ function ComparisonTable() {
               <div style={{ padding: '9px 14px', background: even ? '#FAFAF8' : '#fff', borderBottom: rowBorderLight, borderRight: '0.5px solid rgba(26,61,43,0.07)', display: 'flex', alignItems: 'center' }}>
                 <span style={{ fontSize: 11, fontWeight: 600, color: '#6B6660' }}>{r.area}</span>
               </div>
-              <div style={{ padding: '9px 14px', background: even ? '#6B2038' : '#5C1A2E', borderBottom: rowBorderDark, borderRight: '0.5px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center' }}>
-                <span style={{ fontSize: 11.5, color: '#E8A0B0', lineHeight: 1.4 }}>{r.metro}</span>
+              <div style={{ padding: '9px 14px', background: even ? '#2A5CC8' : '#1B44B0', borderBottom: rowBorderDark, borderRight: '0.5px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center' }}>
+                <span style={{ fontSize: 11.5, color: '#C0D4FF', lineHeight: 1.4 }}>{r.metro}</span>
               </div>
               <div style={{ padding: '9px 14px', background: even ? '#E8F5EC' : '#F0FAF3', borderBottom: rowBorderGreen, display: 'flex', alignItems: 'center' }}>
                 <span style={{ fontSize: 11.5, color: '#1A3D2B', fontWeight: r.verdixStrong ? 600 : 400, lineHeight: 1.4 }}>{r.verdix}</span>
@@ -78,11 +78,11 @@ function ComparisonTable() {
 // ── Diagram 2: Architectural flow comparison ───────────────────────────────────
 
 const METRO_CHAIN = [
-  { label: 'Usage events',      bg: '#5C1A2E', text: '#E8A0B0' },
-  { label: 'Billable metrics',  bg: '#7A2840', text: '#F0B8C4' },
-  { label: 'Rate card',         bg: '#963354', text: '#F8D0D8' },
-  { label: 'Customer contract', bg: '#B24468', text: '#fff'    },
-  { label: 'Invoice',           bg: '#CE6080', text: '#fff'    },
+  { label: 'Usage events',      bg: '#102C80', text: '#A8C0FF' },
+  { label: 'Billable metrics',  bg: '#1B44B0', text: '#C0D4FF' },
+  { label: 'Rate card',         bg: '#2A5CC8', text: '#D8E8FF' },
+  { label: 'Customer contract', bg: '#4A7CE0', text: '#fff'    },
+  { label: 'Invoice',           bg: '#8AB0F0', text: '#0A1E5A' },
 ]
 
 const VERDIX_CHAIN = [
@@ -138,11 +138,11 @@ const DECISION_COLS = [
   {
     condition: 'Real-time metering, customer spend dashboards, flexible pricing, usage alerts or high-volume event monetisation',
     result:    'Choose Metronome',
-    resultBg:  '#5C1A2E',
-    resultText:'#F0B8C4',
-    condBg:    '#FBF1F3',
+    resultBg:  '#1B44B0',
+    resultText:'#C0D4FF',
+    condBg:    '#EEF2FB',
     condText:  '#3A3530',
-    arrowCol:  'rgba(92,26,46,0.35)',
+    arrowCol:  'rgba(27,68,176,0.4)',
     verdix:    false,
   },
   {
@@ -490,8 +490,8 @@ export default function BlogPost() {
           .decision-grid > :nth-child(4) { order: 1; }
           .decision-grid > :nth-child(5) { order: 4; }
           .decision-grid > :nth-child(6) { order: 7; }
-          .decision-grid > :nth-child(7) { order: 2; }
-          .decision-grid > :nth-child(8) { order: 5; }
+          .decision-grid > :nth-child(7) { order: 2; margin-bottom: 20px; }
+          .decision-grid > :nth-child(8) { order: 5; margin-bottom: 20px; }
           .decision-grid > :nth-child(9) { order: 8; }
         }
       `}</style>
