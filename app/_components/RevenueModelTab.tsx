@@ -1532,15 +1532,19 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
           })
           .reduce((s, inv) => s + inv.amount, 0)
 
-        // Annual draft invoices (Year 2/3): gate on payment-schedule periodStart
-        const actualAnnualDraftBilled = (billingData?.annualDraftInvoices ?? [])
-          .filter(inv => {
-            if (!isStripeIssued(inv.status)) return false
-            const ps = billingData?.paymentSchedule?.find(p => p.year === inv.yearNum)
-            const planned = ps?.periodStart ? parseLocalDate(ps.periodStart) : cStart
-            return planned ? planned.getTime() <= todayMs : true
-          })
-          .reduce((s, inv) => s + inv.amount, 0)
+        // Annual draft invoices: only count for annual billing — for monthly contracts
+        // these are year-aggregate views of the same period rows already in actualSubBilled,
+        // so including them would double-count the full year against one month billed.
+        const actualAnnualDraftBilled = subInterval === 'year'
+          ? (billingData?.annualDraftInvoices ?? [])
+              .filter(inv => {
+                if (!isStripeIssued(inv.status)) return false
+                const ps = billingData?.paymentSchedule?.find(p => p.year === inv.yearNum)
+                const planned = ps?.periodStart ? parseLocalDate(ps.periodStart) : cStart
+                return planned ? planned.getTime() <= todayMs : true
+              })
+              .reduce((s, inv) => s + inv.amount, 0)
+          : 0
 
         // One-time invoices: gate on the contract fee's due_date
         const actualOneTimeBilled = (billingData?.oneTimeInvoices ?? [])
