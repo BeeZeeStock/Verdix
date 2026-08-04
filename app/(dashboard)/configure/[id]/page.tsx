@@ -17,7 +17,7 @@ type Escalator = { escalator_pct?: number; escalator_type?: string; effective_da
 type Discount   = { discount_pct?: number; discount_amount?: number; discount_type?: string; start_date?: string; end_date?: string; duration_months?: number; applies_to?: string; description?: string }
 type Tier       = { tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string }
 
-type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null; description?: string | null }
+type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null; description?: string | null; manual_trigger?: boolean; metric_name?: string | null; rate_per_unit?: number | null }
 type AdditionalRecurringFee = { fee_label: string; amount: number; description?: string | null }
 
 type Terms = {
@@ -2444,8 +2444,14 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             {f.fee_label}
                             {f.description && <span className="text-stone text-[10px] block">{f.description}</span>}
                           </td>
-                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(f.amount, cur)}</td>
-                          <td className="py-2.5 text-[11px] text-stone text-right">Services</td>
+                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            {f.manual_trigger && f.rate_per_unit
+                              ? <span>{fmt(f.rate_per_unit, cur)}<span className="text-stone font-normal">/{f.metric_name ?? 'unit'}</span></span>
+                              : fmt(f.amount, cur)}
+                          </td>
+                          <td className="py-2.5 text-[11px] text-stone text-right">
+                            {f.manual_trigger ? <span className="text-amber-600">On delivery</span> : 'Services'}
+                          </td>
                         </tr>
                       ))}
                       {hardwareFees.map((f, i) => (
@@ -2454,8 +2460,14 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             {f.fee_label}
                             {f.description && <span className="text-stone text-[10px] block">{f.description}</span>}
                           </td>
-                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(f.amount, cur)}</td>
-                          <td className="py-2.5 text-[11px] text-stone text-right">Hardware</td>
+                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            {f.manual_trigger && f.rate_per_unit
+                              ? <span>{fmt(f.rate_per_unit, cur)}<span className="text-stone font-normal">/{f.metric_name ?? 'unit'}</span></span>
+                              : fmt(f.amount, cur)}
+                          </td>
+                          <td className="py-2.5 text-[11px] text-stone text-right">
+                            {f.manual_trigger ? <span className="text-amber-600">On delivery</span> : 'Hardware'}
+                          </td>
                         </tr>
                       ))}
                       {otherPosFees.map((f, i) => (
@@ -2464,8 +2476,14 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             {f.fee_label}
                             {f.description && <span className="text-stone text-[10px] block">{f.description}</span>}
                           </td>
-                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(f.amount, cur)}</td>
-                          <td className="py-2.5 text-[11px] text-stone text-right">One-time</td>
+                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            {f.manual_trigger && f.rate_per_unit
+                              ? <span>{fmt(f.rate_per_unit, cur)}<span className="text-stone font-normal">/{f.metric_name ?? 'unit'}</span></span>
+                              : fmt(f.amount, cur)}
+                          </td>
+                          <td className="py-2.5 text-[11px] text-stone text-right">
+                            {f.manual_trigger ? <span className="text-amber-600">On delivery</span> : 'One-time'}
+                          </td>
                         </tr>
                       ))}
                       {creditFees.map((f, i) => (
@@ -2543,7 +2561,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
                               {classifyItem(item) === 'escalator'
                                 ? <span>{item.total_amount != null ? `${item.total_amount}%` : '—'}</span>
-                                : fmt(item.total_amount, cur)}
+                                : classifyItem(item) === 'one_time' && item.total_amount === 0
+                                  ? <span className="text-amber-600 font-normal text-[11px]">Variable — on delivery</span>
+                                  : fmt(item.total_amount, cur)}
                             </td>
                             <td className="py-2.5 text-[11px] text-stone text-right capitalize">{item.billing_period}</td>
                           </tr>
