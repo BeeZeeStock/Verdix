@@ -1260,8 +1260,10 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         const rawEvents: BillingEvent[] = []
 
         // Resolve contract-planned issue date for a given year (1-indexed).
-        // Falls back through scheduledDate → contractStart → created.
+        // scheduledDate (= first period_start of the year group) is the most accurate
+        // source; paymentSchedule only exists when year_pricing tiers are configured.
         const scheduleDate = (yearNum: number | null | undefined, inv: BillingInv): Date => {
+          if (inv.scheduledDate) return parseLocalDate(inv.scheduledDate)
           const ps = billingData.paymentSchedule?.find(p => p.year === yearNum)
           if (ps?.periodStart) return parseLocalDate(ps.periodStart)
           if (billingData.contractStart) return parseLocalDate(billingData.contractStart)
