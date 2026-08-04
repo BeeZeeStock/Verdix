@@ -2578,8 +2578,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   const missingForRebuild: string[] = []
                   if (!terms?.contract_start_date) missingForRebuild.push('start date')
                   if (!terms?.contract_term_months && !terms?.contract_end_date) missingForRebuild.push('end date or term length')
-                  if (!terms?.billing_frequency) missingForRebuild.push('billing frequency')
-                  if (!terms?.base_monthly_fee && !terms?.base_annual_fee) missingForRebuild.push('base fee')
                   return (
                   <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 flex items-start gap-3">
                     <i className="ti ti-calendar-x flex-shrink-0 mt-0.5" style={{ fontSize: 16, color: '#D97706' }} />
@@ -2673,12 +2671,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
                 {/* Right: approve action (only shown before billing is configured) */}
                 {!isConfigured && (() => {
-                  // Compute what's missing for the billing schedule to be buildable
+                  // Only block when computeBillingSchedule would return [] —
+                  // missing term length is the sole hard blocker.
+                  // billing_frequency defaults to monthly; base fee defaults to 0.
                   const scheduleBlockers: string[] = []
                   if (!terms?.contract_start_date) scheduleBlockers.push('contract start date')
                   if (!terms?.contract_term_months && !terms?.contract_end_date) scheduleBlockers.push('contract end date or term length')
-                  if (!terms?.billing_frequency) scheduleBlockers.push('billing frequency')
-                  if (!terms?.base_monthly_fee && !terms?.base_annual_fee) scheduleBlockers.push('base fee amount')
                   const blocked = approving || needsReview > 0 || (tiers.length > 0 && !meterMappingsConfirmed) || scheduleBlockers.length > 0
                   return (
                   <div className="flex flex-col items-end gap-2 flex-shrink-0">
