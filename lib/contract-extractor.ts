@@ -46,6 +46,7 @@ Rules:
   CRITICAL: when number_format is "comma", "0,0500" means 0.05 (fifty thousandths) NOT 500. Always output rates as dot-decimal floats in JSON regardless of source notation.
 - extraction_confidence: "high" if all core commercial terms are clear, "medium" if some ambiguity, "low" if significant gaps
 - extraction_notes: brief note on what could not be determined
+- LANGUAGE RULE: All extracted text fields must be written in British English, even if the source contract is in another language (Swedish, Danish, Norwegian, German, French, etc.). Specifically: payment_terms_text, tier_label, unit_type, description fields, extraction_notes must all be in English. Proper nouns (company names, addresses, person names), identifiers (contract IDs), and currency codes must be preserved verbatim from the source. Example: Swedish "Betalning ska ske senast trettio (30) dagar efter fakturadatum" → payment_terms_text: "Payment due within thirty (30) days of invoice date".
 - CRITICAL DATE RULE: contract_end_date must be AFTER contract_start_date. For a multi-year contract, the end year will be start_year + contract_term_years. Example: 36-month contract starting Aug 1 2026 → contract_end_date = "2029-07-31", NOT "2026-07-31". Always verify: if contract_term_months is set, end_date ≈ start_date + contract_term_months. If the document's stated end date contradicts the term length, trust the term length and compute the correct end date.`
 
 const FEW_SHOT_EXAMPLE = `<example>

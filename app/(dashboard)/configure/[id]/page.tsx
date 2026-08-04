@@ -62,15 +62,21 @@ function fmt(n: number | null | undefined, cur = 'EUR') {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
 }
 
+// Maps ISO currency codes to their conventional display symbols.
+// For currencies without a unique symbol, falls back to the code + space.
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  EUR: '€', GBP: '£', USD: '$', SEK: 'kr ', NOK: 'kr ', DKK: 'kr ',
+  CHF: 'Fr ', JPY: '¥', CAD: 'CA$', AUD: 'A$', PLN: 'zł ', CZK: 'Kč ',
+  HUF: 'Ft ', MXN: 'MX$', BRL: 'R$', INR: '₹', CNY: '¥', SGD: 'S$', HKD: 'HK$',
+}
+function currencySymbol(cur: string) { return CURRENCY_SYMBOLS[cur.toUpperCase()] ?? (cur + ' ') }
+
 // For per-unit rates which are often fractional (e.g. €0.05, €0.035).
 // fmt() uses maximumFractionDigits:0 which rounds 0.05 → €0, so we need
 // a rate-aware formatter that keeps up to 4 decimal places for values < 1.
 function fmtUnit(n: number | null | undefined, cur = 'EUR') {
   if (n == null) return '—'
-  if (n > 0 && n < 1) {
-    const sym = cur === 'EUR' ? '€' : cur === 'GBP' ? '£' : cur === 'USD' ? '$' : cur + ' '
-    return `${sym}${n.toFixed(4).replace(/\.?0+$/, '')}`
-  }
+  if (n > 0 && n < 1) return `${currencySymbol(cur)}${n.toFixed(4).replace(/\.?0+$/, '')}`
   return fmt(n, cur)
 }
 
@@ -1467,6 +1473,23 @@ function ReviewPanel({
 
 // ── Processing messages ────────────────────────────────────────────────────
 
+const COMMON_CURRENCIES = [
+  { code: 'EUR', name: 'Euro' },
+  { code: 'GBP', name: 'British Pound' },
+  { code: 'USD', name: 'US Dollar' },
+  { code: 'SEK', name: 'Swedish Krona' },
+  { code: 'NOK', name: 'Norwegian Krone' },
+  { code: 'DKK', name: 'Danish Krone' },
+  { code: 'CHF', name: 'Swiss Franc' },
+  { code: 'JPY', name: 'Japanese Yen' },
+  { code: 'CAD', name: 'Canadian Dollar' },
+  { code: 'AUD', name: 'Australian Dollar' },
+  { code: 'PLN', name: 'Polish Złoty' },
+  { code: 'CZK', name: 'Czech Koruna' },
+  { code: 'SGD', name: 'Singapore Dollar' },
+  { code: 'HKD', name: 'Hong Kong Dollar' },
+]
+
 const PROCESSING_MESSAGES = [
   'Downloading signed contract...',
   'Identifying financial pages...',
@@ -1538,6 +1561,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [dateEditing,    setDateEditing]    = useState<'start' | 'end' | null>(null)
   const [dateSaving,     setDateSaving]     = useState(false)
   const [calcExpanded,   setCalcExpanded]   = useState(false)
+  const [currencyEditing, setCurrencyEditing] = useState(false)
+  const [currencyDraft,   setCurrencyDraft]   = useState('')
 
   const terms: Terms | undefined = job?.contract_terms?.[0]
   const cur = terms?.currency ?? job?.currency ?? 'EUR'
@@ -1966,7 +1991,46 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   value={terms?.customer_address ?? null}
                   onSave={v => saveField('customer_address', v)}
                 />
-                <Stat label="Currency" value={cur} />
+                {/* Currency — editable dropdown */}
+                <div className="group">
+                  <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Currency</p>
+                  {currencyEditing ? (
+                    <div className="flex items-center gap-1.5">
+                      <select
+                        autoFocus
+                        value={currencyDraft}
+                        onChange={e => setCurrencyDraft(e.target.value)}
+                        className="text-sm font-medium text-ink border border-forest/30 rounded-lg px-2 py-1 outline-none focus:border-forest bg-white"
+                      >
+                        {COMMON_CURRENCIES.map(c => (
+                          <option key={c.code} value={c.code}>{c.code} — {c.name}</option>
+                        ))}
+                      </select>
+                      <button onClick={() => setCurrencyEditing(false)} className="text-stone/50 hover:text-ink p-1 transition-colors flex-shrink-0" title="Cancel">
+                        <i className="ti ti-x" style={{ fontSize: 13 }} />
+                      </button>
+                      <button
+                        onClick={async () => { await saveField('currency', currencyDraft); setCurrencyEditing(false) }}
+                        className="flex items-center justify-center w-7 h-7 rounded-lg text-white flex-shrink-0 transition-colors"
+                        style={{ background: '#1A3D2B' }}
+                        title="Save"
+                      >
+                        <i className="ti ti-check" style={{ fontSize: 12 }} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-1">
+                      <p className="text-[15px] font-medium text-ink leading-snug">{cur}</p>
+                      <button
+                        onClick={() => { setCurrencyDraft(cur); setCurrencyEditing(true) }}
+                        title="Change currency"
+                        className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 p-1 rounded hover:bg-forest/5 mt-0.5"
+                      >
+                        <i className="ti ti-pencil-minus" style={{ fontSize: 11, color: '#9CA3AF' }} />
+                      </button>
+                    </div>
+                  )}
+                </div>
 
                 {/* Contract term — start and end date each independently editable */}
                 <div className="group">
@@ -1992,8 +2056,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       </div>
                     ) : (
                       <button onClick={() => { setDateDraftStart(terms?.contract_start_date ?? ''); setDateEditing('start') }}
-                        className="text-[11px] text-stone hover:text-forest hover:underline transition-colors" title="Edit start date">
-                        {fmtDate(terms?.contract_start_date)}
+                        className={`text-[11px] hover:underline transition-colors ${terms?.contract_start_date ? 'text-stone hover:text-forest' : 'text-amber-600 hover:text-amber-700 font-medium'}`}
+                        title="Edit start date">
+                        {terms?.contract_start_date ? fmtDate(terms.contract_start_date) : 'Add start date'}
                       </button>
                     )}
                     <span className="text-[11px] text-stone/40">–</span>
@@ -2101,7 +2166,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           {tierList.map(({ tier: t, origIdx }) => {
                             const isEditingTier = tierEditing === origIdx
                             const fmtRate = (r: number) => r > 0 && r < 1
-                              ? `${cur === 'EUR' ? '€' : '$'}${r.toFixed(4).replace(/\.?0+$/, '')}`
+                              ? `${currencySymbol(cur)}${r.toFixed(4).replace(/\.?0+$/, '')}`
                               : fmt(r, cur)
                             const note = t.from_unit != null
                               ? `From unit ${t.from_unit.toLocaleString()}${t.to_unit != null ? ` to ${t.to_unit.toLocaleString()}` : '+'}`
@@ -2500,8 +2565,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               )}
             </div>
 
-            {/* ── 8. Billing Setup (live Stripe pull) ── */}
-            {isConfigured && billingPlatform === 'stripe' && (
+            {/* ── 8. Billing Setup (live Stripe pull) — only when subscription exists ── */}
+            {isConfigured && billingPlatform === 'stripe' && !!subId && (
               <StripeSummaryCard jobId={id} />
             )}
 

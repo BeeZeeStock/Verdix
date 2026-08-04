@@ -178,11 +178,16 @@ export function detectPII(text: string): PIIDetectionResult {
   const maskedForNLP = applyTokenMap(text, tokenMap)
   const doc = nlp(maskedForNLP)
 
+  // Swedish/Danish/Norwegian common words that NLP misclassifies as person names
+  // when contract text is in a Nordic language.
+  const NLP_PERSON_BLOCKLIST = /^(från|till|med|för|och|eller|men|att|som|vid|hos|mot|per|via|utan|samt|dels|denna|detta|dessa|varje|ingen|inget|alla|vilken|vilket|vilka|sådan|sådant|från|af|fra|til|med|och|eller|att|som|för|för|ska|skall|senast|trettio|fyrtio|femtio|sextio|sjuttio|åttio|nittio|från|denna|detta|dessa|betalning|faktura|avtal|dokument|villkor|period)$/i
+
   for (const name of (doc.people().out('array') as string[])) {
-    if (name.length > 3 && !name.startsWith('[')) addEntity('PERSON', name, 80, 'nlp')
+    if (name.length > 3 && !name.startsWith('[') && !NLP_PERSON_BLOCKLIST.test(name.trim())) addEntity('PERSON', name, 80, 'nlp')
   }
-  // Generic service/admin terms that compromise.js misclassifies as organisations
-  const NLP_ORG_BLOCKLIST = /\b(administration|configuration|implementation|training|support|services|onboarding|setup|migration|master|software|service|agreement)\b/i
+  // Generic service/admin terms that compromise.js misclassifies as organisations.
+  // Includes common Swedish/Danish/Norwegian contract words that cause false positives.
+  const NLP_ORG_BLOCKLIST = /\b(administration|configuration|implementation|training|support|services|onboarding|setup|migration|master|software|service|agreement|betalning|faktura|avtal|avtalet|villkor|leverantör|kund|tjänst|månadsavgift|årsavgift|abonnemang|licens|produkt|datum|period|betaling|aftale|kontrakt|leverandør|tjeneste|lisens|betaling|avgift|kostnad|pris|rabatt)\b/i
 
   for (const org of (doc.organizations().out('array') as string[])) {
     const wordCount = org.trim().split(/\s+/).length
