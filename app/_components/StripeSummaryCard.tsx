@@ -264,20 +264,23 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         }
 
         // Annual base-fee draft invoices — commitment view, one entry per year.
-        // For new-model contracts these come from planned_invoices aggregated by year.
-        // For legacy contracts these are pre-created Stripe drafts.
-        for (const inv of annualDraftInvoices) {
-          const planned = inv.scheduledDate
-            ? new Date(inv.scheduledDate + 'T00:00:00')
-            : contractDate(paymentSchedule?.find(p => p.year === inv.yearNum)?.periodStart)
-              ?? contractDate(contractStart)
-              ?? new Date(inv.created)
-          entries.push({
-            id: inv.id, label: `Year ${inv.yearNum ?? '?'} commitment`,
-            dateLabel: dateLabel(planned), date: planned,
-            amount: inv.amount, currency: inv.currency,
-            status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'subscription',
-          })
+        // Only add to the timeline when billing is annual: for monthly contracts the
+        // individual period rows above already give the right per-invoice granularity,
+        // and the year aggregate would appear as a confusing extra lump-sum entry.
+        if (sub.interval === 'year' || invoices.length === 0) {
+          for (const inv of annualDraftInvoices) {
+            const planned = inv.scheduledDate
+              ? new Date(inv.scheduledDate + 'T00:00:00')
+              : contractDate(paymentSchedule?.find(p => p.year === inv.yearNum)?.periodStart)
+                ?? contractDate(contractStart)
+                ?? new Date(inv.created)
+            entries.push({
+              id: inv.id, label: `Year ${inv.yearNum ?? '?'} commitment`,
+              dateLabel: dateLabel(planned), date: planned,
+              amount: inv.amount, currency: inv.currency,
+              status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'subscription',
+            })
+          }
         }
 
         // One-time fee invoices — date from scheduledDate (new model) or contract fee's due_date.
