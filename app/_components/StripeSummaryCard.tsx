@@ -101,7 +101,7 @@ function StatusBadge({ status }: { status: string | null }) {
   )
 }
 
-export function StripeSummaryCard({ jobId }: { jobId: string }) {
+export function StripeSummaryCard({ jobId, onHasSchedule }: { jobId: string; onHasSchedule?: (has: boolean) => void }) {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState<string | null>(null)
@@ -115,8 +115,11 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         if (!res.ok) {
           const d = await res.json().catch(() => ({}))
           setError(d.error ?? `Error ${res.status}`)
+          onHasSchedule?.(false)
         } else {
-          setSummary(await res.json())
+          const data = await res.json()
+          setSummary(data)
+          onHasSchedule?.(Array.isArray(data.invoices) && data.invoices.length > 0)
         }
       } catch {
         if (!cancelled) setError('Network error')
@@ -126,7 +129,7 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
     }
     doLoad()
     return () => { cancelled = true }
-  }, [jobId])
+  }, [jobId, onHasSchedule])
 
   const handleRefresh = useCallback(async () => {
     setLoading(true)
@@ -137,14 +140,16 @@ export function StripeSummaryCard({ jobId }: { jobId: string }) {
         const d = await res.json().catch(() => ({}))
         setError(d.error ?? `Error ${res.status}`)
       } else {
-        setSummary(await res.json())
+        const data = await res.json()
+        setSummary(data)
+        onHasSchedule?.(Array.isArray(data.invoices) && data.invoices.length > 0)
       }
     } catch {
       setError('Network error')
     } finally {
       setLoading(false)
     }
-  }, [jobId])
+  }, [jobId, onHasSchedule])
 
   if (loading) return (
     <div className="bg-white rounded-2xl border border-forest/10 p-6 flex items-center gap-3">

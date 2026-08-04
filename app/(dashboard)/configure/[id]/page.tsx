@@ -1566,6 +1566,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [rebuilding,      setRebuilding]      = useState(false)
   const [rebuildError,    setRebuildError]    = useState<string | null>(null)
   const [rebuildDone,     setRebuildDone]     = useState(false)
+  const [scheduleExists,  setScheduleExists]  = useState(false)
 
   const terms: Terms | undefined = job?.contract_terms?.[0]
   const cur = terms?.currency ?? job?.currency ?? 'EUR'
@@ -2571,16 +2572,28 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             {/* ── 8. Billing Setup ── */}
             {isConfigured && billingPlatform === 'stripe' && (!!subId || !!job.billing_customer_id) && (
               <>
-                <StripeSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : 'initial'} />
+                <StripeSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : 'initial'} onHasSchedule={setScheduleExists} />
                 {/* Rebuild banner — shown when customer exists but no planned schedule yet */}
-                {!subId && !rebuildDone && (
+                {!subId && !rebuildDone && !scheduleExists && (() => {
+                  const missingForRebuild: string[] = []
+                  if (!terms?.contract_start_date) missingForRebuild.push('start date')
+                  if (!terms?.contract_term_months && !terms?.contract_end_date) missingForRebuild.push('end date or term length')
+                  if (!terms?.billing_frequency) missingForRebuild.push('billing frequency')
+                  if (!terms?.base_monthly_fee && !terms?.base_annual_fee) missingForRebuild.push('base fee')
+                  return (
                   <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 flex items-start gap-3">
                     <i className="ti ti-calendar-x flex-shrink-0 mt-0.5" style={{ fontSize: 16, color: '#D97706' }} />
                     <div className="flex-1">
                       <p className="text-sm font-medium text-amber-900 mb-0.5">Billing schedule not built</p>
-                      <p className="text-xs text-amber-800 mb-3">
-                        The billing schedule was not generated when this contract was approved — likely because start/end dates were missing at that time. Build it now to create Stripe invoices for all billing periods.
-                      </p>
+                      {missingForRebuild.length > 0 ? (
+                        <p className="text-xs text-amber-800 mb-3">
+                          Cannot generate the billing schedule — the following information is missing: <strong>{missingForRebuild.join(', ')}</strong>. Add these in the contract details above, then click &ldquo;Generate billing schedule&rdquo;.
+                        </p>
+                      ) : (
+                        <p className="text-xs text-amber-800 mb-3">
+                          The billing schedule was not generated when this contract was approved. Click below to create Stripe invoices for all billing periods.
+                        </p>
+                      )}
                       {rebuildError && <p className="text-xs text-red-600 mb-2">{rebuildError}</p>}
                       <button
                         onClick={async () => {
@@ -2597,17 +2610,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             setRebuilding(false)
                           }
                         }}
-                        disabled={rebuilding}
+                        disabled={rebuilding || missingForRebuild.length > 0}
                         className="inline-flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-xl transition-colors disabled:opacity-40"
                         style={{ background: '#1A3D2B', color: '#fff' }}
                       >
                         {rebuilding
-                          ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 11 }} /> Building…</>
-                          : <><i className="ti ti-calendar-plus" style={{ fontSize: 11 }} /> Build billing schedule</>}
+                          ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 11 }} /> Generating…</>
+                          : <><i className="ti ti-calendar-plus" style={{ fontSize: 11 }} /> Generate billing schedule</>}
                       </button>
                     </div>
                   </div>
-                )}
+                  )
+                })()}
               </>
             )}
 
@@ -2658,29 +2672,43 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 </div>
 
                 {/* Right: approve action (only shown before billing is configured) */}
-                {!isConfigured && (
+                {!isConfigured && (() => {
+                  // Compute what's missing for the billing schedule to be buildable
+                  const scheduleBlockers: string[] = []
+                  if (!terms?.contract_start_date) scheduleBlockers.push('contract start date')
+                  if (!terms?.contract_term_months && !terms?.contract_end_date) scheduleBlockers.push('contract end date or term length')
+                  if (!terms?.billing_frequency) scheduleBlockers.push('billing frequency')
+                  if (!terms?.base_monthly_fee && !terms?.base_annual_fee) scheduleBlockers.push('base fee amount')
+                  const blocked = approving || needsReview > 0 || (tiers.length > 0 && !meterMappingsConfirmed) || scheduleBlockers.length > 0
+                  return (
                   <div className="flex flex-col items-end gap-2 flex-shrink-0">
                     <button
                       onClick={handleApprove}
-                      disabled={approving || needsReview > 0 || (tiers.length > 0 && !meterMappingsConfirmed)}
+                      disabled={blocked}
                       className="inline-flex items-center gap-2 font-semibold text-[13px] px-6 py-2.5 rounded-xl transition-all disabled:opacity-40 bg-forest text-white hover:bg-sage">
                       {approving
                         ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> Pushing to Stripe…</>
                         : <>Approve &amp; push to Stripe <i className="ti ti-arrow-up-right" style={{ fontSize: 13 }} /></>}
                     </button>
+                    {scheduleBlockers.length > 0 && needsReview === 0 && (
+                      <p className="text-[10px] text-amber-600 text-right max-w-[220px]">
+                        Billing schedule needs: {scheduleBlockers.join(', ')}
+                      </p>
+                    )}
                     {needsReview > 0 && (
                       <p className="text-[10px] text-stone/50">
                         Review {needsReview} flagged item{needsReview > 1 ? 's' : ''} above first
                       </p>
                     )}
-                    {tiers.length > 0 && !meterMappingsConfirmed && needsReview === 0 && (
+                    {tiers.length > 0 && !meterMappingsConfirmed && needsReview === 0 && scheduleBlockers.length === 0 && (
                       <p className="text-[10px] text-amber-600">
                         Confirm billing meter mappings above first
                       </p>
                     )}
                     {approveError && <p className="text-[10px] text-red-500 max-w-xs">{approveError}</p>}
                   </div>
-                )}
+                  )
+                })()}
             </div>
 
           </div>{/* end terms column */}
