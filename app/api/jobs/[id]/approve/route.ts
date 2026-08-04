@@ -13,7 +13,7 @@ export async function POST(
 
   const { id } = await params
   const body = await req.json()
-  const { modifiedLineItems } = body
+  const { modifiedLineItems, billing_platform: billingPlatformOverride } = body
 
   const { data: job, error } = await supabaseServer
     .from('jobs')
@@ -32,7 +32,7 @@ export async function POST(
   }>
 
   try {
-    const result = await configureBilling(terms, lineItems, undefined, id, org.orgId)
+    const result = await configureBilling(terms, lineItems, billingPlatformOverride ?? undefined, id, org.orgId)
 
     await supabaseServer.from('jobs').update({
       execute_status: 'COMPLETED',

@@ -1569,7 +1569,22 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [rebuildDone,     setRebuildDone]     = useState(false)
   const [scheduleExists,  setScheduleExists]  = useState<boolean | null>(null)
   const [parkedInvoices,  setParkedInvoices]  = useState<Array<{ id: string; feeLabel: string | null; currency: string; baseAmount: number; metricName: string | null; ratePerUnit: number | null; description: string | null }>>([])
+  const [connectedBillingPlatforms, setConnectedBillingPlatforms] = useState<string[]>([])
+  const [selectedBillingPlatform,   setSelectedBillingPlatform]   = useState<string | null>(null)
 
+  useEffect(() => {
+    fetch('/api/org/integrations')
+      .then(r => r.json())
+      .then(data => {
+        const billingPlatformIds = ['stripe', 'chargebee', 'remembill', 'zuora', 'maxio', 'recurly', 'quickbooks', 'xero']
+        const active = (data.integrations ?? [])
+          .filter((i: { connector_name: string; is_active: boolean }) => i.is_active && billingPlatformIds.includes(i.connector_name))
+          .map((i: { connector_name: string }) => i.connector_name)
+        setConnectedBillingPlatforms(active)
+        if (active.length === 1) setSelectedBillingPlatform(active[0])
+      })
+      .catch(() => {})
+  }, [])
 
   const terms: Terms | undefined = job?.contract_terms?.[0]
   const cur = terms?.currency ?? job?.currency ?? 'EUR'
@@ -1779,7 +1794,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       const res  = await fetch(`/api/jobs/${id}/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modifiedLineItems: modifiedItems }),
+        body: JSON.stringify({
+          modifiedLineItems: modifiedItems,
+          ...(selectedBillingPlatform ? { billing_platform: selectedBillingPlatform } : {}),
+        }),
       })
       const data = await res.json()
       if (data.success) {
@@ -2717,17 +2735,46 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   const scheduleBlockers: string[] = []
                   if (!terms?.contract_start_date) scheduleBlockers.push('contract start date')
                   if (!terms?.contract_term_months && !terms?.contract_end_date) scheduleBlockers.push('contract end date or term length')
-                  const blocked = approving || needsReview > 0 || (tiers.length > 0 && !meterMappingsConfirmed) || scheduleBlockers.length > 0
+                  const needsPlatformChoice = connectedBillingPlatforms.length > 1 && !selectedBillingPlatform
+                  const blocked = approving || needsReview > 0 || (tiers.length > 0 && !meterMappingsConfirmed) || scheduleBlockers.length > 0 || needsPlatformChoice
+                  const platformLabel = selectedBillingPlatform
+                    ? selectedBillingPlatform.charAt(0).toUpperCase() + selectedBillingPlatform.slice(1)
+                    : connectedBillingPlatforms.length === 1
+                      ? connectedBillingPlatforms[0].charAt(0).toUpperCase() + connectedBillingPlatforms[0].slice(1)
+                      : 'billing platform'
                   return (
                   <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                    {/* Platform selector — only shown when multiple billing platforms connected */}
+                    {connectedBillingPlatforms.length > 1 && (
+                      <div className="flex flex-col items-end gap-1">
+                        <label className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone">
+                          Push to
+                        </label>
+                        <select
+                          value={selectedBillingPlatform ?? ''}
+                          onChange={e => setSelectedBillingPlatform(e.target.value || null)}
+                          className="text-xs font-medium border border-forest/20 rounded-lg px-3 py-1.5 bg-white text-ink focus:outline-none focus:ring-2 focus:ring-forest/20"
+                        >
+                          <option value="">Select platform…</option>
+                          {connectedBillingPlatforms.map(p => (
+                            <option key={p} value={p}>
+                              {p.charAt(0).toUpperCase() + p.slice(1)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                     <button
                       onClick={handleApprove}
                       disabled={blocked}
                       className="inline-flex items-center gap-2 font-semibold text-[13px] px-6 py-2.5 rounded-xl transition-all disabled:opacity-40 bg-forest text-white hover:bg-sage">
                       {approving
-                        ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> Pushing to Stripe…</>
-                        : <>Approve &amp; push to Stripe <i className="ti ti-arrow-up-right" style={{ fontSize: 13 }} /></>}
+                        ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> Pushing to {platformLabel}…</>
+                        : <>Approve &amp; push to {platformLabel} <i className="ti ti-arrow-up-right" style={{ fontSize: 13 }} /></>}
                     </button>
+                    {needsPlatformChoice && (
+                      <p className="text-[10px] text-amber-600">Select a billing platform above</p>
+                    )}
                     {scheduleBlockers.length > 0 && needsReview === 0 && (
                       <p className="text-[10px] text-amber-600 text-right max-w-[220px]">
                         Billing schedule needs: {scheduleBlockers.join(', ')}

@@ -3,15 +3,19 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 
 const ALLOWED_CONNECTORS = new Set([
-  'stripe', 'chargebee', 'zuora', 'maxio', 'recurly', 'quickbooks', 'xero',
+  'stripe', 'chargebee', 'remembill', 'zuora', 'maxio', 'recurly', 'quickbooks', 'xero',
   'hubspot', 'salesforce', 'pipedrive', 'attio',
 ])
 
 const CONNECTOR_TYPES: Record<string, 'billing' | 'crm'> = {
-  stripe: 'billing', chargebee: 'billing', zuora: 'billing',
+  stripe: 'billing', chargebee: 'billing', remembill: 'billing', zuora: 'billing',
   maxio: 'billing', recurly: 'billing', quickbooks: 'billing', xero: 'billing',
   hubspot: 'crm', salesforce: 'crm', pipedrive: 'crm', attio: 'crm',
 }
+
+// Billing platforms that can coexist — users may connect multiple to test
+// in sandbox before switching, or run different contracts on different platforms.
+const MULTI_ALLOWED_TYPES = new Set<string>(['billing'])
 
 // GET /api/org/integrations — list connected integrations (omits config values)
 export async function GET() {
@@ -52,17 +56,19 @@ export async function POST(req: NextRequest) {
 
   const connectorType = CONNECTOR_TYPES[connector_name]
 
-  // Deactivate any existing active connector of the same type (billing or crm)
-  // so only one can be active at a time.
-  const { error: deactivateError } = await supabaseServer
-    .from('org_integrations')
-    .update({ is_active: false, updated_at: new Date().toISOString() })
-    .eq('org_id', org.orgId)
-    .eq('connector_type', connectorType)
-    .eq('is_active', true)
-    .neq('connector_name', connector_name)
-
-  if (deactivateError) return NextResponse.json({ error: deactivateError.message }, { status: 500 })
+  // CRM connectors remain exclusive (only one active at a time).
+  // Billing connectors allow multiple simultaneously — admins connect several
+  // to test in sandbox before going live, or different contracts use different platforms.
+  if (!MULTI_ALLOWED_TYPES.has(connectorType)) {
+    const { error: deactivateError } = await supabaseServer
+      .from('org_integrations')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('org_id', org.orgId)
+      .eq('connector_type', connectorType)
+      .eq('is_active', true)
+      .neq('connector_name', connector_name)
+    if (deactivateError) return NextResponse.json({ error: deactivateError.message }, { status: 500 })
+  }
 
   const { error } = await supabaseServer
     .from('org_integrations')

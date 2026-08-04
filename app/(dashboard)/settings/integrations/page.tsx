@@ -125,9 +125,28 @@ function LogoAttio() {
   )
 }
 
+function LogoRememhill() {
+  return (
+    <svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
+      <rect width="40" height="40" rx="9" fill="#0F4C75" />
+      {/* Document / invoice shape */}
+      <rect x="11" y="8" width="18" height="22" rx="2" fill="white" opacity="0.15" />
+      <rect x="11" y="8" width="18" height="22" rx="2" fill="none" stroke="white" strokeWidth="1.5" opacity="0.6" />
+      {/* Bill lines */}
+      <rect x="14.5" y="13" width="11" height="1.5" rx="0.75" fill="white" />
+      <rect x="14.5" y="17" width="8"  height="1.5" rx="0.75" fill="white" opacity="0.75" />
+      <rect x="14.5" y="21" width="9"  height="1.5" rx="0.75" fill="white" opacity="0.75" />
+      {/* Refresh/remember arc — top-right corner */}
+      <path d="M26 6 A5 5 0 0 1 31 11" stroke="white" strokeWidth="2" fill="none" strokeLinecap="round" />
+      <polygon points="30,7.5 32.5,11 28,10.5" fill="white" />
+    </svg>
+  )
+}
+
 const LOGOS: Record<string, () => React.ReactElement> = {
   stripe:      LogoStripe,
   chargebee:   LogoChargebee,
+  remembill:   LogoRememhill,
   hubspot:     LogoHubSpot,
   salesforce:  LogoSalesforce,
   zuora:       LogoZuora,
@@ -183,6 +202,17 @@ const BILLING_PLATFORMS: Platform[] = [
     fields: [
       { key: 'site',    label: 'Site name',  placeholder: 'yoursite  (becomes yoursite.chargebee.com)' },
       { key: 'api_key', label: 'API key',    placeholder: 'test_…', secret: true },
+    ],
+  },
+  {
+    id:          'remembill',
+    name:        'Remembill',
+    type:        'billing',
+    description: 'Nordic invoicing and billing platform. Push approved contracts as invoices with automatic recurring billing and payment tracking.',
+    status:      'live',
+    fields: [
+      { key: 'api_key', label: 'API key', placeholder: 'remembill_…', secret: true,
+        hint: 'Found in your Remembill account under Settings → API keys. Requires invoices:write and customer:write scopes.' },
     ],
   },
   {
@@ -626,9 +656,10 @@ export default function IntegrationsPage() {
   const isConnected = (id: string) =>
     integrations.some(i => i.connector_name === id && i.is_active)
 
-  const activeBilling = integrations.find(i =>
-    i.is_active && BILLING_PLATFORMS.some(p => p.id === i.connector_name)
-  )?.connector_name ?? null
+  // Billing allows multiple active connections simultaneously
+  const activeBillingIds = integrations
+    .filter(i => i.is_active && BILLING_PLATFORMS.some(p => p.id === i.connector_name))
+    .map(i => i.connector_name)
 
   const activeCrm = integrations.find(i =>
     i.is_active && CRM_PLATFORMS.some(p => p.id === i.connector_name)
@@ -656,9 +687,6 @@ export default function IntegrationsPage() {
   }
 
 
-  const connectedBilling = activeBilling !== null
-  const connectedCrm     = activeCrm !== null
-
   if (loading) {
     return (
       <div className="p-8 flex items-center gap-2 text-stone text-sm">
@@ -684,29 +712,32 @@ export default function IntegrationsPage() {
       <div className="mb-8">
         <div className="mb-4">
           <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-stone">Billing platforms</p>
-          <p className="text-xs text-stone/70 mt-0.5">Verdix pushes approved subscriptions to these systems.</p>
+          <p className="text-xs text-stone/70 mt-0.5">
+            Multiple billing platforms can be active simultaneously. Choose which one to push to at contract approval time.
+          </p>
         </div>
-        {/* Connected platform — featured full-width at top */}
-        {activeBilling && (() => {
-          const p = BILLING_PLATFORMS.find(pl => pl.id === activeBilling)
+        {/* All connected platforms — featured full-width, one per connected platform */}
+        {activeBillingIds.map(id => {
+          const p = BILLING_PLATFORMS.find(pl => pl.id === id)
           return p ? (
             <FeaturedCard
+              key={id}
               platform={p}
               orgId={orgId}
-              configKeys={integrations.find(i => i.connector_name === activeBilling)?.config_keys ?? []}
+              configKeys={integrations.find(i => i.connector_name === id)?.config_keys ?? []}
               isAdmin={isAdmin}
               onDisconnect={handleDisconnect}
             />
           ) : null
-        })()}
+        })}
         {/* Non-connected platforms in 2-col grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {BILLING_PLATFORMS.filter(p => p.id !== activeBilling).map(p => (
+          {BILLING_PLATFORMS.filter(p => !activeBillingIds.includes(p.id)).map(p => (
             <PlatformCard
               key={p.id}
               platform={p}
               connected={false}
-              activeOfType={activeBilling}
+              activeOfType={null}
               isAdmin={isAdmin}
               orgId={orgId}
               configKeys={[]}
