@@ -255,7 +255,9 @@ async function handlePlannedInvoicesPath({
   }
 
   const periodRows  = rows.filter(r => r.invoice_type === 'period')
-  const oneTimeRows = rows.filter(r => r.invoice_type === 'one_time')
+  // Parked rows are one_time fees awaiting manual delivery confirmation
+  const parkedRows  = rows.filter(r => r.invoice_type === 'one_time' && r.status === 'parked')
+  const oneTimeRows = rows.filter(r => r.invoice_type === 'one_time' && r.status !== 'parked')
 
   // ── invoices: individual period entries (shown in billing timeline per period) ──
   const invoices = periodRows.map(mapPlanned)
@@ -307,6 +309,22 @@ async function handlePlannedInvoicesPath({
   // ── oneTimeInvoices: one-time fees ─────────────────────────────────────────
   const oneTimeInvoices = oneTimeRows.map(mapPlanned)
 
+  // ── parkedInvoices: service fees awaiting manual trigger ───────────────────
+  type AnyFee = { fee_label: string; metric_name?: string | null; rate_per_unit?: number | null; description?: string | null }
+  const termsFees = (terms?.one_time_fees ?? []) as AnyFee[]
+  const parkedInvoices = parkedRows.map(row => {
+    const termFee = termsFees.find(f => f.fee_label === row.fee_label)
+    return {
+      id:          row.id,
+      feeLabel:    row.fee_label,
+      currency:    (row.currency ?? 'EUR').toUpperCase(),
+      baseAmount:  Number(row.base_amount),
+      metricName:  termFee?.metric_name  ?? null,
+      ratePerUnit: termFee?.rate_per_unit ?? null,
+      description: termFee?.description  ?? null,
+    }
+  })
+
   // ── Synthetic subscription object from contract terms + planned state ───────
   const { interval, intervalCount } = billingInterval(terms?.billing_frequency)
   const sentPeriods    = periodRows.filter(r => r.status === 'sent' || r.status === 'paid')
@@ -331,6 +349,7 @@ async function handlePlannedInvoicesPath({
     invoices,
     annualDraftInvoices,
     oneTimeInvoices,
+    parkedInvoices,
     paymentSchedule,
     oneTimeFees:      terms?.one_time_fees ?? [],
     contractStart:    terms?.contract_start_date ?? null,

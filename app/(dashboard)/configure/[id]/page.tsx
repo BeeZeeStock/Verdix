@@ -7,6 +7,7 @@ import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
 import { InvoicesTab } from '@/app/_components/InvoicesTab'
 import { StripeSummaryCard } from '@/app/_components/StripeSummaryCard'
 import { MeterMappingPanel } from '@/app/_components/MeterMappingPanel'
+import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
@@ -1567,6 +1568,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [rebuildError,    setRebuildError]    = useState<string | null>(null)
   const [rebuildDone,     setRebuildDone]     = useState(false)
   const [scheduleExists,  setScheduleExists]  = useState<boolean | null>(null)
+  const [parkedInvoices,  setParkedInvoices]  = useState<Array<{ id: string; feeLabel: string | null; currency: string; baseAmount: number; metricName: string | null; ratePerUnit: number | null; description: string | null }>>([])
+
 
   const terms: Terms | undefined = job?.contract_terms?.[0]
   const cur = terms?.currency ?? job?.currency ?? 'EUR'
@@ -2572,7 +2575,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             {/* ── 8. Billing Setup ── */}
             {isConfigured && billingPlatform === 'stripe' && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (
               <>
-                <StripeSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial'} onHasSchedule={setScheduleExists} />
+                {parkedInvoices.length > 0 && (
+                  <ParkedInvoicesCard jobId={id} parkedInvoices={parkedInvoices} />
+                )}
+                <StripeSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial'} onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} />
                 {/* Rebuild banner — shown when customer exists but no planned schedule yet */}
                 {!subId && !rebuildDone && scheduleExists === false && (() => {
                   const missingForRebuild: string[] = []

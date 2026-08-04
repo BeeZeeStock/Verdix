@@ -300,10 +300,34 @@ async function configureStripe(
   }
 
   // ── 4. One-time fees: immediately-due → Stripe now; future → planned row ─────
-  type OneTimeFeeInput = { fee_label: string; amount: number; due_date?: string | null }
+  type OneTimeFeeInput = {
+    fee_label: string
+    amount: number
+    due_date?: string | null
+    manual_trigger?: boolean
+    metric_name?: string | null
+    rate_per_unit?: number | null
+  }
   const oneTimeFees = (terms.one_time_fees ?? []) as OneTimeFeeInput[]
 
-  for (const fee of oneTimeFees.filter(f => f.amount > 0)) {
+  // Park manual-trigger service fees — they need human confirmation before invoicing
+  for (const fee of oneTimeFees.filter(f => f.manual_trigger)) {
+    plannedRows.push({
+      year_num:           null,
+      period_start:       fee.due_date ?? formatDate(now),
+      period_end:         fee.due_date ?? formatDate(now),
+      base_amount:        fee.amount ?? 0,
+      currency:           terms.currency ?? 'EUR',
+      fee_label:          fee.fee_label,
+      invoice_type:       'one_time',
+      status:             'parked',
+      stripe_invoice_id:  null,
+      stripe_invoice_url: null,
+      sent_at:            null,
+    })
+  }
+
+  for (const fee of oneTimeFees.filter(f => !f.manual_trigger && f.amount > 0)) {
     const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
     const isDue      = !feeDueDate || feeDueDate <= now
 

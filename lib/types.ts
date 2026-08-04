@@ -31,6 +31,12 @@ export interface OneTimeFee {
   amount: number
   due_date: string | null
   description: string | null
+  /** True when the fee requires manual delivery confirmation before invoicing (e.g. professional services charged per hour) */
+  manual_trigger?: boolean
+  /** Unit of the delivery metric, e.g. "hours", "days", "sessions" */
+  metric_name?: string | null
+  /** Rate per metric unit — used to calculate the invoice amount at trigger time */
+  rate_per_unit?: number | null
 }
 
 export interface AdditionalRecurringFee {

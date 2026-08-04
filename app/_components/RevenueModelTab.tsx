@@ -1526,7 +1526,11 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
         const actualSubBilled = sortedSubInvs
           .filter((inv, i) => {
             if (!isStripeIssued(inv.status)) return false
+            // Invoice already in Stripe (has a hosted URL) — count it regardless of planned date
+            if (inv.hostedUrl) return true
             if (!cStart) return true
+            // Use scheduledDate from planned_invoices when available (most accurate)
+            if (inv.scheduledDate) return parseLocalDate(inv.scheduledDate).getTime() <= todayMs
             const planned = new Date(cStart)
             if (subInterval === 'year') planned.setFullYear(planned.getFullYear() + i * subIntervalCount)
             else                        planned.setMonth(planned.getMonth() + i * subIntervalCount)
@@ -1548,10 +1552,12 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
               .reduce((s, inv) => s + inv.amount, 0)
           : 0
 
-        // One-time invoices: gate on the contract fee's due_date
+        // One-time invoices: if already in Stripe count immediately; otherwise gate on due_date
         const actualOneTimeBilled = (billingData?.oneTimeInvoices ?? [])
           .filter(inv => {
             if (!isStripeIssued(inv.status)) return false
+            // Already pushed to Stripe — count it regardless of the planned date
+            if (inv.hostedUrl) return true
             const fee = (billingData?.oneTimeFees ?? []).find(f => f.fee_label === inv.feeLabel)
             const planned = fee?.due_date ? parseLocalDate(fee.due_date) : cStart
             return planned ? planned.getTime() <= todayMs : true

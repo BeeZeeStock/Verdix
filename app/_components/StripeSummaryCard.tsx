@@ -45,11 +45,22 @@ type OneTimeFee = {
   description?: string | null
 }
 
+type ParkedInvoiceSummary = {
+  id:          string
+  feeLabel:    string | null
+  currency:    string
+  baseAmount:  number
+  metricName:  string | null
+  ratePerUnit: number | null
+  description: string | null
+}
+
 type Summary = {
   subscription: SubscriptionInfo
   invoices: InvoiceInfo[]
   annualDraftInvoices: InvoiceInfo[]
   oneTimeInvoices: InvoiceInfo[]
+  parkedInvoices?: ParkedInvoiceSummary[]
   paymentSchedule: YearPayment[] | null
   oneTimeFees: OneTimeFee[]
   contractStart: string | null
@@ -101,7 +112,11 @@ function StatusBadge({ status }: { status: string | null }) {
   )
 }
 
-export function StripeSummaryCard({ jobId, onHasSchedule }: { jobId: string; onHasSchedule?: (has: boolean) => void }) {
+export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
+  jobId: string
+  onHasSchedule?: (has: boolean) => void
+  onParkedInvoices?: (invoices: ParkedInvoiceSummary[]) => void
+}) {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState<string | null>(null)
@@ -120,6 +135,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule }: { jobId: string; onH
           const data = await res.json()
           setSummary(data)
           onHasSchedule?.(Array.isArray(data.invoices) && data.invoices.length > 0)
+          onParkedInvoices?.(data.parkedInvoices ?? [])
         }
       } catch {
         if (!cancelled) setError('Network error')
@@ -129,7 +145,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule }: { jobId: string; onH
     }
     doLoad()
     return () => { cancelled = true }
-  }, [jobId, onHasSchedule])
+  }, [jobId, onHasSchedule, onParkedInvoices])
 
   const handleRefresh = useCallback(async () => {
     setLoading(true)
@@ -143,13 +159,14 @@ export function StripeSummaryCard({ jobId, onHasSchedule }: { jobId: string; onH
         const data = await res.json()
         setSummary(data)
         onHasSchedule?.(Array.isArray(data.invoices) && data.invoices.length > 0)
+        onParkedInvoices?.(data.parkedInvoices ?? [])
       }
     } catch {
       setError('Network error')
     } finally {
       setLoading(false)
     }
-  }, [jobId, onHasSchedule])
+  }, [jobId, onHasSchedule, onParkedInvoices])
 
   if (loading) return (
     <div className="bg-white rounded-2xl border border-forest/10 p-6 flex items-center gap-3">
