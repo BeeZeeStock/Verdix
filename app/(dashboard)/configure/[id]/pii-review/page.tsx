@@ -135,7 +135,7 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
   const pendingCount  = occurrences.filter(o => !o.pii_entity.approved).length
 
   return (
-    <div className="p-8 max-w-3xl mx-auto">
+    <div className="p-8 max-w-5xl mx-auto">
       <div className="mb-8">
         <Link href="/configure" className="text-sm text-stone hover:text-forest flex items-center gap-1 mb-4">
           <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> Back to contracts
@@ -205,6 +205,7 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
             <p className="text-sm text-stone">No personal or sensitive data was found in this contract.</p>
           </div>
         ) : (
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-forest/8">
@@ -255,7 +256,7 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
                         <button
                           onClick={() => ignore(occ.id, e.id)}
                           className="text-xs text-stone hover:text-red-600 transition-colors"
-                          title="Never flag this value again"
+                          title="Never flag this value again for your organisation"
                         >
                           <i className="ti ti-ban" style={{ fontSize: 13 }} />
                         </button>
@@ -266,6 +267,7 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

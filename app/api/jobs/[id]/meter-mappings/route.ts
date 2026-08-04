@@ -31,6 +31,58 @@ function autoMap(unitType: string): { meter_key: string; confidence: number } {
   return { meter_key: 'sync', confidence: 0.25 }
 }
 
+// AI-powered meter matching — uses Claude to semantically match a contract unit
+// type against the org's actual available meters when rule-based matching yields
+// low confidence or the suggested meter doesn't exist.
+async function aiMatch(
+  unitType: string,
+  tiers: Array<{ from_unit: number | null; to_unit: number | null; rate_per_unit: number }>,
+  availableMeters: Array<{ meter_key: string; display_name: string; unit_label: string | null }>,
+): Promise<{ meter_key: string; confidence: number }> {
+  if (availableMeters.length === 0) return { meter_key: 'sync', confidence: 0.1 }
+
+  const meterList = availableMeters.map(m =>
+    `- key: "${m.meter_key}", name: "${m.display_name}", unit: "${m.unit_label ?? m.meter_key}"`
+  ).join('\n')
+
+  const tierSummary = tiers.length > 0
+    ? `Overage tiers: ${tiers.map(t => `${t.from_unit ?? 0}–${t.to_unit ?? '∞'} @ ${t.rate_per_unit}`).join(', ')}`
+    : 'No tiers defined'
+
+  try {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default
+    const client = new Anthropic()
+    const resp = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: `Match this contract usage metric to the best available billing meter.
+
+Contract metric: "${unitType}"
+${tierSummary}
+
+Available meters:
+${meterList}
+
+Reply with ONLY a JSON object: {"meter_key": "<key>", "confidence": <0.0-1.0>}
+Choose the meter whose purpose best matches the contract metric. If none match well, set confidence below 0.4.`,
+      }],
+    })
+    const text = (resp.content[0] as { type: string; text: string }).text.trim()
+    const match = text.match(/\{[^}]+\}/)
+    if (match) {
+      const parsed = JSON.parse(match[0]) as { meter_key?: string; confidence?: number }
+      const key = parsed.meter_key ?? availableMeters[0].meter_key
+      const conf = typeof parsed.confidence === 'number' ? Math.min(1, Math.max(0, parsed.confidence)) : 0.3
+      if (availableMeters.some(m => m.meter_key === key)) return { meter_key: key, confidence: conf }
+    }
+  } catch {
+    // Fall through to default
+  }
+  return { meter_key: availableMeters[0].meter_key, confidence: 0.2 }
+}
+
 // ── Billing cycle normaliser ──────────────────────────────────────────────────
 function normaliseCycle(freq: string | null | undefined): string {
   if (!freq) return 'monthly'
@@ -104,27 +156,50 @@ export async function GET(
     ? meterQuery.or(`org_id.is.null,org_id.eq.${job.org_id}`)
     : meterQuery.eq('org_id', job.org_id))
 
-  // Build suggestions
-  const suggestions = Array.from(unitGroups.entries()).map(([unitType, tiers]) => {
-    const db = existingMap.get(unitType)
-    const auto = autoMap(unitType)
+  // Build suggestions — use AI matching when rule-based result doesn't exist in this org
+  const availableMeters = (meters ?? []) as Array<{ meter_key: string; display_name: string; unit_label: string | null }>
+  const suggestions = await Promise.all(
+    Array.from(unitGroups.entries()).map(async ([unitType, tiers]) => {
+      const db = existingMap.get(unitType)
 
-    // Included units: first tier's from_unit - 1 (or 0 if first tier starts at 0/1)
-    const sortedTiers = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
-    const includedUnits = sortedTiers.length > 0
-      ? Math.max(0, (sortedTiers[0].from_unit ?? 1) - 1)
-      : (terms.included_units ?? 0)
+      const sortedTiers = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
+      const includedUnits = sortedTiers.length > 0
+        ? Math.max(0, (sortedTiers[0].from_unit ?? 1) - 1)
+        : (terms.included_units ?? 0)
 
-    return {
-      contract_unit_type: unitType,
-      meter_key:          db ? (db.meter_key as string) : auto.meter_key,
-      confidence:         db ? (db.confidence as number) : auto.confidence,
-      confirmed:          db ? Boolean(db.confirmed)  : false,
-      included_units:     db ? (db.included_units as number) : includedUnits,
-      overage_tiers:      db ? (db.overage_tiers as unknown) : sortedTiers,
-      billing_cycle:      db ? (db.billing_cycle as string) : billingCycle,
-    }
-  })
+      let meter_key: string
+      let confidence: number
+
+      if (db) {
+        meter_key  = db.meter_key  as string
+        confidence = db.confidence as number
+      } else {
+        const auto = autoMap(unitType)
+        const ruleMatchExists = availableMeters.some(m => m.meter_key === auto.meter_key)
+
+        if (ruleMatchExists && auto.confidence >= 0.5) {
+          // Rule matched and the meter exists in this org — trust it
+          meter_key  = auto.meter_key
+          confidence = auto.confidence
+        } else {
+          // Rule match is ambiguous or the meter doesn't exist — use AI
+          const ai = await aiMatch(unitType, sortedTiers, availableMeters)
+          meter_key  = ai.meter_key
+          confidence = ai.confidence
+        }
+      }
+
+      return {
+        contract_unit_type: unitType,
+        meter_key,
+        confidence,
+        confirmed:      db ? Boolean(db.confirmed) : false,
+        included_units: db ? (db.included_units as number) : includedUnits,
+        overage_tiers:  db ? (db.overage_tiers as unknown) : sortedTiers,
+        billing_cycle:  db ? (db.billing_cycle as string) : billingCycle,
+      }
+    })
+  )
 
   return NextResponse.json({
     suggestions,

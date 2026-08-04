@@ -1566,7 +1566,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [rebuilding,      setRebuilding]      = useState(false)
   const [rebuildError,    setRebuildError]    = useState<string | null>(null)
   const [rebuildDone,     setRebuildDone]     = useState(false)
-  const [scheduleExists,  setScheduleExists]  = useState(false)
+  const [scheduleExists,  setScheduleExists]  = useState<boolean | null>(null)
 
   const terms: Terms | undefined = job?.contract_terms?.[0]
   const cur = terms?.currency ?? job?.currency ?? 'EUR'
@@ -2574,7 +2574,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               <>
                 <StripeSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial'} onHasSchedule={setScheduleExists} />
                 {/* Rebuild banner — shown when customer exists but no planned schedule yet */}
-                {!subId && !rebuildDone && !scheduleExists && (() => {
+                {!subId && !rebuildDone && scheduleExists === false && (() => {
                   const missingForRebuild: string[] = []
                   if (!terms?.contract_start_date) missingForRebuild.push('start date')
                   if (!terms?.contract_term_months && !terms?.contract_end_date) missingForRebuild.push('end date or term length')
