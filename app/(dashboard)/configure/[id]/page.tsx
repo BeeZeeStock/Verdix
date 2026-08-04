@@ -1507,7 +1507,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [corrections, setCorrections] = useState<Record<string, { value: string; remember: boolean }>>({})
   const [approving, setApproving]     = useState(false)
   const [approveError, setApproveError] = useState<string | null>(null)
-  const [approved, setApproved]       = useState<{ stripeSubscriptionId: string; dashboardUrl?: string } | null>(null)
+  const [approved, setApproved]       = useState<{ stripeSubscriptionId: string; dashboardUrl?: string; customerId?: string } | null>(null)
   const [meterMappingsConfirmed, setMeterMappingsConfirmed] = useState(false)
   const [drawer, setDrawer]   = useState<{ open: boolean; section?: string }>({ open: false })
   const [pdfUrl, setPdfUrl]   = useState<string | null>(null)
@@ -1780,7 +1780,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       })
       const data = await res.json()
       if (data.success) {
-        setApproved({ stripeSubscriptionId: data.stripeSubscriptionId, dashboardUrl: data.dashboardUrl })
+        setApproved({ stripeSubscriptionId: data.stripeSubscriptionId, dashboardUrl: data.dashboardUrl, customerId: data.customerId })
       } else {
         setApproveError(data.error ?? 'Billing configuration failed. Please try again.')
       }
@@ -2114,7 +2114,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   sub={terms?.renewal_notice_days ? `${terms.renewal_notice_days} days notice required` : undefined}
                   onSave={v => saveField('auto_renews', v)}
                 />
-                <Stat label="Total contract value" value={tcv > 0 ? fmt(tcv, cur) : '—'} />
+                <Stat label="Total contract value" value={tcv > 0 ? fmt(tcv, cur) : billingModel === 'consumption' ? 'Usage-based' : '—'} />
               </div>
             </div>
 
@@ -2570,9 +2570,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             </div>
 
             {/* ── 8. Billing Setup ── */}
-            {isConfigured && billingPlatform === 'stripe' && (!!subId || !!job.billing_customer_id) && (
+            {isConfigured && billingPlatform === 'stripe' && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (
               <>
-                <StripeSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : 'initial'} onHasSchedule={setScheduleExists} />
+                <StripeSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial'} onHasSchedule={setScheduleExists} />
                 {/* Rebuild banner — shown when customer exists but no planned schedule yet */}
                 {!subId && !rebuildDone && !scheduleExists && (() => {
                   const missingForRebuild: string[] = []
@@ -2658,13 +2658,20 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     Total contract value
                   </p>
                   <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
-                    {tcv > 0 ? fmt(tcv, cur) : <span className="text-stone/30">—</span>}
+                    {tcv > 0
+                      ? fmt(tcv, cur)
+                      : billingModel === 'consumption'
+                        ? <span className="text-[22px] text-stone/60">Usage-based</span>
+                        : <span className="text-stone/30">—</span>}
                   </p>
-                  {tcv === 0 && terms?.contract_start_date && terms?.contract_end_date &&
+                  {tcv === 0 && billingModel === 'consumption' && terms?.contract_start_date && terms?.contract_end_date && (
+                    <p className="text-[10px] text-stone/40 mt-2">TCV depends on usage volume</p>
+                  )}
+                  {tcv === 0 && billingModel !== 'consumption' && terms?.contract_start_date && terms?.contract_end_date &&
                     parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date) && (
                     <p className="text-[10px] text-amber-600 mt-2">End date is before start date — correct it above</p>
                   )}
-                  {tcv === 0 && (!terms?.contract_start_date || !terms?.contract_end_date) && (
+                  {tcv === 0 && billingModel !== 'consumption' && (!terms?.contract_start_date || !terms?.contract_end_date) && (
                     <p className="text-[10px] text-stone/40 mt-2">Add contract dates above to calculate</p>
                   )}
                 </div>
