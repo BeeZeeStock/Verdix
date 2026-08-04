@@ -45,11 +45,8 @@ function ComparisonTable() {
         <div style={{ padding: '10px 14px', background: '#3A3530', borderBottom: '0.5px solid rgba(255,255,255,0.06)', borderRight: '0.5px solid rgba(255,255,255,0.05)' }}>
           <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#9A9490' }}>Tabs</span>
         </div>
-        <div style={{ padding: '10px 14px', background: '#27AE60', borderBottom: '0.5px solid rgba(255,255,255,0.15)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#EAF3DE' }}>Verdix</span>
-            <span style={{ fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.05em', background: '#C4E0B2', color: '#1A3D2B', padding: '2px 5px', borderRadius: 4 }}>Verdix</span>
-          </div>
+        <div style={{ padding: '10px 14px', background: '#1A3D2B', borderBottom: '0.5px solid rgba(255,255,255,0.1)' }}>
+          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#B8E0CC' }}>Verdix</span>
         </div>
 
         {/* Data rows */}
@@ -175,7 +172,7 @@ function DecisionGuide() {
       <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '.1em', color: '#4A7C59', marginBottom: 12 }}>
         Decision guide
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gridTemplateRows: 'auto auto auto', columnGap: 10 }} className="approach-grid">
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gridTemplateRows: 'auto auto auto', columnGap: 10 }} className="decision-grid">
         {DECISION_COLS.map((col, i) => (
           <div key={`cond-${i}`} style={{ padding: '13px 14px', background: col.condBg, borderRadius: '10px 10px 0 0', border: col.verdix ? '1.5px solid #C0DD97' : '0.5px solid rgba(26,61,43,0.1)', borderBottom: 'none', display: 'flex', alignItems: 'center' }}>
             <span style={{ fontSize: 12, color: col.condText, lineHeight: 1.5 }}>{col.condition}</span>
@@ -467,6 +464,18 @@ export default function BlogPost() {
           .trace-chain {
             grid-template-columns: repeat(3, 1fr) !important;
           }
+          .decision-grid {
+            grid-template-columns: 1fr !important;
+          }
+          .decision-grid > :nth-child(1) { order: 0; }
+          .decision-grid > :nth-child(2) { order: 3; }
+          .decision-grid > :nth-child(3) { order: 6; }
+          .decision-grid > :nth-child(4) { order: 1; }
+          .decision-grid > :nth-child(5) { order: 4; }
+          .decision-grid > :nth-child(6) { order: 7; }
+          .decision-grid > :nth-child(7) { order: 2; }
+          .decision-grid > :nth-child(8) { order: 5; }
+          .decision-grid > :nth-child(9) { order: 8; }
         }
       `}</style>
 
