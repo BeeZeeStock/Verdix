@@ -128,17 +128,21 @@ function LogoAttio() {
 function LogoRememhill() {
   return (
     <svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
-      <rect width="40" height="40" rx="9" fill="#0F4C75" />
-      {/* Document / invoice shape */}
-      <rect x="11" y="8" width="18" height="22" rx="2" fill="white" opacity="0.15" />
-      <rect x="11" y="8" width="18" height="22" rx="2" fill="none" stroke="white" strokeWidth="1.5" opacity="0.6" />
-      {/* Bill lines */}
-      <rect x="14.5" y="13" width="11" height="1.5" rx="0.75" fill="white" />
-      <rect x="14.5" y="17" width="8"  height="1.5" rx="0.75" fill="white" opacity="0.75" />
-      <rect x="14.5" y="21" width="9"  height="1.5" rx="0.75" fill="white" opacity="0.75" />
-      {/* Refresh/remember arc — top-right corner */}
-      <path d="M26 6 A5 5 0 0 1 31 11" stroke="white" strokeWidth="2" fill="none" strokeLinecap="round" />
-      <polygon points="30,7.5 32.5,11 28,10.5" fill="white" />
+      <rect width="40" height="40" rx="9" fill="#122847" />
+      {/* Top-left bracket */}
+      <rect x="5" y="5" width="11" height="4.5" fill="white" />
+      <rect x="5" y="5" width="4.5" height="11" fill="white" />
+      {/* Top-right bracket */}
+      <rect x="24" y="5" width="11" height="4.5" fill="white" />
+      <rect x="30.5" y="5" width="4.5" height="11" fill="white" />
+      {/* Bottom-left bracket */}
+      <rect x="5" y="30.5" width="11" height="4.5" fill="white" />
+      <rect x="5" y="24" width="4.5" height="11" fill="white" />
+      {/* Bottom-right bracket */}
+      <rect x="24" y="30.5" width="11" height="4.5" fill="white" />
+      <rect x="30.5" y="24" width="4.5" height="11" fill="white" />
+      {/* Center horizontal bar */}
+      <rect x="5" y="17.75" width="30" height="4.5" fill="white" />
     </svg>
   )
 }
