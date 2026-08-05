@@ -4,6 +4,10 @@ export interface OverageTier {
   to_unit: number | null
   rate_per_unit: number
   unit_type: string
+  /** How often usage is accumulated and billed. May differ from the contract's main billing_frequency. */
+  measurement_period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
+  /** Minimum payment per measurement period regardless of actual usage (a consumption floor). */
+  minimum_period_amount?: number | null
 }
 
 export interface PriceEscalator {
@@ -41,8 +45,10 @@ export interface OneTimeFee {
 
 export interface AdditionalRecurringFee {
   fee_label: string
-  amount: number          // amount per billing period (same cadence as base_monthly_fee)
+  amount: number          // amount per billing period
   description: string | null
+  /** Billing cadence for this fee when it differs from the contract's main billing_frequency. */
+  billing_frequency?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
 }
 
 export interface RampStep {
@@ -66,6 +72,8 @@ export interface ContractTerms {
   contract_term_months: number | null
   auto_renews: boolean | null
   renewal_notice_days: number | null
+  /** Length of each successive renewal period in months. Often differs from the initial term. */
+  renewal_term_months?: number | null
   currency: string
   base_monthly_fee: number | null
   base_annual_fee: number | null

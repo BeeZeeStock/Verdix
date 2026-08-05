@@ -12,7 +12,8 @@ Output a single JSON object. All numeric fields must be numbers (not strings). D
 
 Rules:
 - base_monthly_fee: the PRIMARY recurring monthly fee component — the platform/base access fee only. When a contract has multiple SEPARATE named recurring fees (e.g. "Platform Fee: €4,500/mo" AND "Dedicated Support: €1,200/mo"), set base_monthly_fee to the platform/access fee ONLY (€4,500) and put the remaining components in additional_recurring_fees. NEVER sum distinct named fees into base_monthly_fee.
-- additional_recurring_fees: array of secondary recurring fee components that exist alongside base_monthly_fee. Each entry: { "fee_label": "<name>", "amount": <number>, "description": "<brief note or null>" }. Use this when the contract explicitly lists multiple SEPARATE recurring line items with distinct names and amounts. Example: if a contract has "Base Access: €4,500/mo" and "Premium Support: €1,200/mo", then base_monthly_fee=4500 and additional_recurring_fees=[{"fee_label":"Dedicated Premium Support - 2hr SLA Window","amount":1200,"description":"..."}]. Leave as [] when there is only one recurring fee.
+  QUARTERLY FEE RULE: If the primary recurring fee is stated as a quarterly amount (e.g. "SEK 75,000 per quarter", "invoiced quarterly in advance"), convert to monthly: base_monthly_fee = quarterly_amount / 3, and set billing_frequency = 'quarterly'. The system stores monthly equivalents internally regardless of invoicing cadence. Example: SEK 75,000/quarter → base_monthly_fee = 25000, billing_frequency = 'quarterly'. Similarly, a semi-annual fee of SEK 60,000 → base_monthly_fee = 10000, billing_frequency = 'semi-annual'.
+- additional_recurring_fees: array of secondary recurring fee components that exist alongside base_monthly_fee. Each entry: { "fee_label": "<name>", "amount": <number>, "description": "<brief note or null>", "billing_frequency": "<cadence or null>" }. Use this when the contract explicitly lists multiple SEPARATE recurring line items with distinct names and amounts. The "amount" is the fee per billing period (whatever cadence the fee uses). Set "billing_frequency" on the entry when this fee bills at a different cadence than the main billing_frequency (e.g. main contract bills quarterly but this fee bills monthly). Example: if a contract has "Base Access: €4,500/mo" and "Premium Support: €1,200/mo", then base_monthly_fee=4500 and additional_recurring_fees=[{"fee_label":"Dedicated Premium Support - 2hr SLA Window","amount":1200,"description":"...","billing_frequency":null}]. Leave as [] when there is only one recurring fee.
   CRITICAL RULE for "base price × users" language: SaaS contracts commonly state additional user fees separately (e.g. "base platform fee: €456,987/yr + additional users at €2,500/user/yr"). In this pattern, base_monthly_fee or base_annual_fee = the platform fee alone (€456,987), and the user fees go into overage_tiers or a separate line. NEVER multiply the platform fee by the user count — that would be double-counting. The only time you multiply a rate by users is when the contract EXPLICITLY states a per-seat price (e.g. "€500/user/month for 10 users = €5,000/month total") where the stated per-seat figure is small and clearly a unit rate. A base annual platform fee in the hundreds of thousands is never a per-seat rate.
 - base_annual_fee: annual fee if billed annually
 - year_pricing: year-by-year fee schedule as {"year1": 50000, "year2": 55000, ...}. Each value is the INVOICE AMOUNT DUE IN THAT YEAR ONLY — never cumulative totals.
@@ -26,16 +27,22 @@ Rules:
 - billing_contact: billing contact email or name from the contract
 - vendor_address: full mailing address of the vendor/supplier
 - payment_terms_text: exact payment terms string e.g. "Net 30 days from invoice date"
+- renewal_notice_days: the number of calendar days' notice required to prevent auto-renewal
+- renewal_term_months: the LENGTH of each successive renewal period in months. This is OFTEN DIFFERENT from the initial contract term. Example: a 12-month contract that "automatically renews for successive six-month periods" → contract_term_months = 12, renewal_term_months = 6. Set to null only when the renewal period is not specified or explicitly equals the initial term.
 - escalators: automatic price increases (CPI clauses, fixed % increases, etc.)
+  CPI ESCALATOR RULE: For CPI-linked, inflation-linked, or index-linked price adjustments where the exact future rate is unknown at signing: set escalator_pct = null (the actual CPI rate cannot be known at contract time), set escalator_type = 'CPI_cap' when there is a maximum cap, set cap_pct = the stated maximum percentage cap, and set description = the complete escalation formula in plain English (e.g. 'CPI change + 2 percentage points, maximum 6% per 12-month period'). NEVER set escalator_pct = 0 for CPI clauses — a 0% rate means no price change, which misrepresents the contract. Use null to indicate the rate is variable and unknown at signing.
 - discounts: introductory or volume discounts with explicit start/end dates
 - overage_tiers: usage-based charges above included units. Each tier must have:
   - from_unit: the first unit in this tier's range (the cumulative usage count, NOT a billing-block denominator). E.g. for graduated API tiers priced per 1,000 calls: Tier 1 = from_unit:1, to_unit:10000; Tier 2 = from_unit:10001, to_unit:100000; Tier 3 = from_unit:100001, to_unit:null.
   - to_unit: last unit in range, null if open-ended
   - rate_per_unit: price PER SINGLE unit (e.g. price per 1 API call, or price per 1 seat). If the contract says "€2.40 per 1,000 calls", rate_per_unit = 0.0024 (divide by 1000). EXCEPTION: if unit_type explicitly contains "1,000" or "per block", keep the rate as stated and set unit_type accordingly.
   - unit_type: the measurable quantity, e.g. "API call", "user seat", "GB storage"
+  - measurement_period: how often usage is accumulated and billed for this metric. Set to 'monthly', 'quarterly', 'semi-annual', or 'annual'. CRITICAL: this often DIFFERS from the contract's main billing_frequency. Examples: a contract may measure API usage monthly and invoice monthly, but measure validated invoice lines half-yearly and invoice half-yearly; or measure active-contract counts monthly but invoice quarterly in arrears. Always read the measurement/invoicing period stated for each specific metric. Set to null only when not separately stated (fall back to main billing_frequency).
+  - minimum_period_amount: if the contract states a guaranteed minimum payment per measurement period for this metric (a consumption floor), set this to the minimum amount per period. Example: "minimum SEK 30,000 per half-year for validated invoice lines" → minimum_period_amount: 30000 (with measurement_period: 'semi-annual'). This is a floor payment separate from the per-unit rate — the customer pays at least this amount even if usage is below the floor.
   - For graduated/incremental tiers: each call falls into exactly one bracket and is billed at that bracket's rate. Encode as distinct non-overlapping from_unit/to_unit ranges.
   - For volume tiers (all-or-nothing): if the contract specifies a single rate that applies to the entire volume once a threshold is hit, set from_unit to the threshold and to_unit:null for each tier.
-  - CRITICAL — rate_per_unit decimal parsing: rates written as "€0.0500", "€0.035", "€0.02" are NOT zero. They are decimal fractions: 0.0500 = 0.05, 0.035, 0.02. Extract the full numeric value including leading-zero decimals. NEVER set rate_per_unit to 0 when a non-zero rate is stated in the contract. Also: tier_label must be the DESCRIPTIVE NAME (e.g. "Tier 2 (Overage Step 1)"), never the rate value itself.
+  - CRITICAL — rate_per_unit decimal parsing: rates written as "€0.0500", "€0.035", "€0.02" are NOT zero. They are decimal fractions: 0.0500 = 0.05, 0.035, 0.02. Extract the full numeric value including leading-zero decimals. NEVER set rate_per_unit to 0 when a non-zero rate is stated in the contract.
+  - TIER LABEL RULE: tier_label must describe the volume range. NEVER label a paid tier "Base Allowance" or "Included Units" — these phrases imply the tier is free. Use descriptive range labels like "Lines 1–50,000", "Up to 50,000", "50,001–250,000". Only use "Base Allowance" or "Included" language when those units are genuinely charged at zero (free). If the first tier has a non-zero rate, all tiers are paid — label them accordingly.
 - one_time_fees: non-recurring charges paid once (e.g. onboarding, implementation, setup, migration, professional services). Each entry: fee_label (short name), amount (number), due_date (ISO date or null), description (brief note or null), manual_trigger (boolean), metric_name (string or null), rate_per_unit (number or null).
   - Set manual_trigger=true when the fee cannot be invoiced until the service is delivered and confirmed (e.g. "professional services at €150/hour", "implementation services — billed on delivery", "training sessions"). These fees need human confirmation and a metric entry (hours, days, sessions) before the invoice is issued.
   - When manual_trigger=true, set metric_name to the unit of work (e.g. "hours", "days", "sessions", "units") and rate_per_unit to the per-unit rate. Set amount=0 when the total is variable/unknown at contract time.
@@ -74,6 +81,7 @@ Output:
   "contract_term_months": 36,
   "auto_renews": true,
   "renewal_notice_days": 90,
+  "renewal_term_months": null,
   "currency": "USD",
   "base_monthly_fee": 4200,
   "base_annual_fee": 50400,
@@ -86,10 +94,11 @@ Output:
   "escalators": [{"escalator_pct": 5, "escalator_type": "fixed_pct", "applies_from_year": 2, "effective_date": "2025-02-01", "cap_pct": null, "description": "5% fixed annual price increase"}],
   "discounts": [{"discount_pct": 20, "discount_amount": null, "discount_type": "introductory", "start_date": "2024-02-01", "end_date": "2024-07-31", "duration_months": 6, "applies_to": "base subscription", "description": "20% introductory discount months 1-6"}],
   "overage_tiers": [
-    {"tier_label": "API Tier 1", "from_unit": 1, "to_unit": 10000, "rate_per_unit": 0.02, "unit_type": "API call"},
-    {"tier_label": "API Tier 2", "from_unit": 10001, "to_unit": 100000, "rate_per_unit": 0.015, "unit_type": "API call"},
-    {"tier_label": "API Tier 3", "from_unit": 100001, "to_unit": null, "rate_per_unit": 0.01, "unit_type": "API call"}
+    {"tier_label": "Calls 1–10,000", "from_unit": 1, "to_unit": 10000, "rate_per_unit": 0.02, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null},
+    {"tier_label": "Calls 10,001–100,000", "from_unit": 10001, "to_unit": 100000, "rate_per_unit": 0.015, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null},
+    {"tier_label": "Calls 100,001+", "from_unit": 100001, "to_unit": null, "rate_per_unit": 0.01, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null}
   ],
+  "additional_recurring_fees": [],
   "one_time_fees": [{"fee_label": "Onboarding fee", "amount": 5000, "due_date": "2024-02-01", "description": "One-time onboarding and implementation fee due at contract start"}],
   "field_sources": {
     "base_monthly_fee": "1.1 Base Platform Fee",

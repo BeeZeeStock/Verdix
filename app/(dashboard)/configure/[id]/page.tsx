@@ -15,10 +15,10 @@ const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: fa
 
 type Escalator = { escalator_pct?: number; escalator_type?: string; effective_date?: string; description?: string; cap_pct?: number }
 type Discount   = { discount_pct?: number; discount_amount?: number; discount_type?: string; start_date?: string; end_date?: string; duration_months?: number; applies_to?: string; description?: string }
-type Tier       = { tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string }
+type Tier       = { tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string; measurement_period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null; minimum_period_amount?: number | null }
 
 type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null; description?: string | null; manual_trigger?: boolean; metric_name?: string | null; rate_per_unit?: number | null }
-type AdditionalRecurringFee = { fee_label: string; amount: number; description?: string | null }
+type AdditionalRecurringFee = { fee_label: string; amount: number; description?: string | null; billing_frequency?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null }
 
 type Terms = {
   id?: string
@@ -27,7 +27,7 @@ type Terms = {
   customer_name?: string; customer_address?: string; billing_contact?: string
   vendor_name?: string;   vendor_address?: string
   contract_start_date?: string; contract_end_date?: string; contract_term_months?: number
-  auto_renews?: boolean; renewal_notice_days?: number
+  auto_renews?: boolean; renewal_notice_days?: number; renewal_term_months?: number | null
   currency?: string
   base_monthly_fee?: number; base_annual_fee?: number
   billing_frequency?: string; payment_terms_days?: number; payment_terms_text?: string
@@ -117,8 +117,20 @@ function computeContractTCV(terms: Terms | undefined, lineItems: LineItem[]): nu
   const escalators   = terms.escalators  ?? []
   const yearPricing  = terms.year_pricing
   const rampSchedule = terms.ramp_schedule && terms.ramp_schedule.length > 0 ? terms.ramp_schedule : null
-  const baseMonthly       = terms.base_monthly_fee ?? (terms.base_annual_fee ? terms.base_annual_fee / 12 : 0)
-  const additionalMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => s + Number(f.amount ?? 0), 0)
+  const baseMonthly = terms.base_monthly_fee ?? (terms.base_annual_fee ? terms.base_annual_fee / 12 : 0)
+
+  // Convert each additional fee to its monthly equivalent using its own billing cadence.
+  // A quarterly fee of 75,000 is 25,000/month in the TCV; a monthly fee is taken as-is.
+  function feeToMonthly(f: AdditionalRecurringFee): number {
+    const amt = Number(f.amount ?? 0)
+    switch (f.billing_frequency) {
+      case 'quarterly':   return amt / 3
+      case 'semi-annual': return amt / 6
+      case 'annual':      return amt / 12
+      default:            return amt  // monthly or null → treat as monthly
+    }
+  }
+  const additionalMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => s + feeToMonthly(f), 0)
 
   function monthlyBaseFor(monthIdx: number, date: Date): number {
     if (rampSchedule) {
@@ -170,6 +182,19 @@ function computeContractTCV(terms: Terms | undefined, lineItems: LineItem[]): nu
     loopIdx++
   }
 
+  // Add minimum consumption commitments for overage tiers that carry a floor payment.
+  // Each tier's minimum_period_amount is owed once per measurement_period regardless of usage.
+  const termMonths = loopIdx  // total months iterated above
+  for (const tier of (terms.overage_tiers ?? [])) {
+    if (!tier.minimum_period_amount) continue
+    const periodsPerYear = tier.measurement_period === 'quarterly' ? 4
+      : tier.measurement_period === 'semi-annual' ? 2
+      : tier.measurement_period === 'annual'      ? 1
+      : 12  // monthly or unspecified
+    const periodsInTerm = termMonths / (12 / periodsPerYear)
+    total += tier.minimum_period_amount * periodsInTerm
+  }
+
   return total + oneTimeFees
 }
 
@@ -199,7 +224,13 @@ function buildContractSummary(
       ? `${fmt(vals[0], cur)}/year subscription`
       : `multi-year pricing (${vals.map(v => fmt(v, cur)).join(' → ')}/yr)`
   } else if (terms.base_monthly_fee) {
-    const addlMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => s + Number(f.amount ?? 0), 0)
+    const addlMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => {
+      const amt = Number(f.amount ?? 0)
+      if (f.billing_frequency === 'quarterly')   return s + amt / 3
+      if (f.billing_frequency === 'semi-annual') return s + amt / 6
+      if (f.billing_frequency === 'annual')      return s + amt / 12
+      return s + amt
+    }, 0)
     const totalMonthly = terms.base_monthly_fee + addlMonthly
     pricing = addlMonthly > 0
       ? `combined ${fmt(totalMonthly, cur)}/month subscription`
