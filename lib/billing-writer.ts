@@ -512,6 +512,12 @@ async function configureRememhill(
   if (!cur) {
     throw new Error('Remembill: currency is missing from contract terms — set it in the contract details and try again.')
   }
+  if (cur !== 'SEK') {
+    throw new Error(
+      `Remembill only supports invoicing in SEK. This contract is in ${cur}. ` +
+      'Please use Stripe for non-SEK contracts, or update the contract currency to SEK.',
+    )
+  }
   console.log('[billing-writer/remembill] customerId:', customerId, '| currency:', cur)
 
   // ── 2. Helper: draft invoice → add row → send via email ────────────────────
