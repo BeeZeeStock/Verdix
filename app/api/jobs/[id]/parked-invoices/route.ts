@@ -9,7 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
-import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl } from '@/lib/billing-writer'
+import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl, safeHeaderValue } from '@/lib/billing-writer'
 
 export async function POST(
   req: NextRequest,
@@ -81,7 +81,7 @@ export async function POST(
 
       const invRes = await fetch(`${REMEMBILL_BASE}/invoices`, {
         method: 'POST',
-        headers: { ...rbH, 'Idempotency-Key': `verdix-parked-${jobId}-${fee_label.replace(/\s+/g, '-')}-${todayStr}` },
+        headers: { ...rbH, 'Idempotency-Key': safeHeaderValue(`verdix-parked-${jobId}-${fee_label}-${todayStr}`) },
         body: JSON.stringify({
           customer_id:   job.billing_customer_id,
           currency:      cur,

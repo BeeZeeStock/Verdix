@@ -427,6 +427,18 @@ async function configureStripe(
 // Taxes are handled by Remembill automatically — we send net amounts.
 const REMEMBILL_BASE = 'https://api.remembill.com/v1'
 
+// HTTP header values must be printable ASCII. Strip any non-ASCII character
+// (em dashes, curly quotes, etc.) and collapse runs of non-alphanumeric to a
+// single hyphen so idempotency keys remain readable and safe.
+export function safeHeaderValue(s: string): string {
+  return s
+    .replace(/[^\x20-\x7E]/g, '-')   // non-printable-ASCII → hyphen
+    .replace(/[^a-zA-Z0-9_\-]/g, '-') // remaining specials → hyphen
+    .replace(/-{2,}/g, '-')            // collapse repeated hyphens
+    .replace(/^-|-$/g, '')             // trim leading/trailing hyphens
+    .slice(0, 255)
+}
+
 // Builds an app.remembill.com URL that respects the org path segment.
 // Set REMEMBILL_ORG_SLUG in Vercel to the slug that appears after /org/ in
 // your Remembill dashboard URL (e.g. "acme" if the URL is app.remembill.com/org/acme/...).
@@ -594,7 +606,7 @@ async function configureRememhill(
     const description = `Base subscription — Year ${period.yearNum} (${fmtLabel(period.periodStart)} – ${fmtLabel(period.periodEnd)})`
 
     if (period.periodStart <= now && period.baseAmount > 0) {
-      const key = `verdix-${jobId ?? 'unknown'}-period-${period.yearNum}-${period.periodIndex}`
+      const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-period-${period.yearNum}-${period.periodIndex}`)
       const { id, url } = await pushInvoice(description, Math.round(period.baseAmount * 100), now, key, customerId, cur)
       plannedRows.push({
         year_num: period.yearNum, period_start: fmtDate(period.periodStart), period_end: fmtDate(period.periodEnd),
@@ -634,7 +646,7 @@ async function configureRememhill(
     const dueDateStr = fmtDate(feeDueDate ?? now)
 
     if (isDue) {
-      const key = `verdix-${jobId ?? 'unknown'}-onetime-${fee.fee_label.replace(/\s+/g, '-').toLowerCase()}`
+      const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-onetime-${fee.fee_label}`)
       const { id, url } = await pushInvoice(fee.fee_label, Math.round(fee.amount * 100), feeDueDate ?? now, key, customerId, cur)
       plannedRows.push({
         year_num: null, period_start: dueDateStr, period_end: dueDateStr,
