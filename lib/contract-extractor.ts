@@ -24,6 +24,8 @@ Rules:
   Example: contract says "Year 1: €436,288 | Year 2: Year 1 fee (€436,288) + base (€456,987) + 10 users × €2,500 | Year 3: Year 1 + Year 2 + base + 20 users × €2,500". Correct extraction: year1=436288, year2=481987, year3=506987. WRONG extraction: year1=436288, year2=918275, year3=1425262.
 - ramp_schedule: use when the contract defines a step-up fee schedule tied to specific calendar date ranges (e.g. Month 1-6, Month 7-12, etc.). Each entry: { "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "monthly_fee": <number>, "label": "<optional short label>" }. When ramp_schedule is populated, set year_pricing to null and base_monthly_fee/base_annual_fee to null. Escalators are already baked into the ramp rates — do not also populate escalators.
 - customer_address: full mailing address of the customer (street, city, country)
+- customer_email: billing or invoice email address for the customer (e.g. "invoices@customer.com"). Extract from billing contact fields, "invoice address", "e-faktura" address, or any email address associated with the customer. Set to null if not stated.
+- customer_org_number: company registration number / organisationsnummer / VAT number / CVR for the customer (e.g. "559999-9999" in Sweden, "123456789" in UK). Look for "org.nr", "organisationsnummer", "CVR-nr", "VAT reg.", "company number". Set to null if not found.
 - billing_contact: billing contact email or name from the contract
 - vendor_address: full mailing address of the vendor/supplier
 - payment_terms_text: exact payment terms string e.g. "Net 30 days from invoice date"
@@ -72,6 +74,8 @@ Output:
   "contract_id": "CLR-2024-0001",
   "customer_name": "Acme Inc",
   "customer_address": "14 Innovation Drive, Stockholm, Sweden",
+  "customer_email": null,
+  "customer_org_number": null,
   "billing_contact": "finance@acme.com",
   "vendor_name": "Verdix Corp",
   "vendor_address": "123 Main St, Oslo, Norway",

@@ -465,26 +465,31 @@ async function configureRememhill(
   const addDays  = (d: Date, n: number) => new Date(d.getTime() + n * 86_400_000)
 
   // ── 1. Create customer ──────────────────────────────────────────────────────
-  // Only send email when we have a real address extracted from the contract.
-  // Sending a generated/fake domain causes Remembill's validator to reject the request.
-  const emailInContact = terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
-    ?? terms.vendor_address?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
+  // Remembill requires: name, type, org_number, and at least one of email or phone.
+  const realEmail = terms.customer_email
+    ?? terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
+    ?? null
 
   const customerBody: Record<string, string> = {
     type: 'business',
     name: terms.customer_name ?? 'Unknown',
   }
-  if (emailInContact) {
-    customerBody.email = emailInContact
+  if (realEmail) {
+    customerBody.email = realEmail
   } else {
-    // Remembill requires email or phone. Without a real email in the contract,
-    // use a deterministic placeholder that at least passes format validation.
+    // No real email in the contract — use a placeholder so the request passes validation.
     // The user can update it in the Remembill dashboard after creation.
     const slug = (terms.customer_name ?? 'customer')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '')  // strip all non-alphanumeric (no hyphens)
-      .slice(0, 30) || 'customer'
+      .toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 30) || 'customer'
     customerBody.email = `billing+${slug}@verdix-noreply.com`
+  }
+  if (terms.customer_org_number) {
+    customerBody.org_number = terms.customer_org_number
+  } else {
+    throw new Error(
+      'Remembill requires a company registration number (org number). ' +
+      'Please add it in the contract details under "Customer org / reg number" and try again.',
+    )
   }
 
   const custRes = await fetch(`${REMEMBILL_BASE}/customers`, {

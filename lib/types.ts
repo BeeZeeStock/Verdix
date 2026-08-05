@@ -72,6 +72,8 @@ export interface ContractTerms {
   contract_term_months: number | null
   auto_renews: boolean | null
   renewal_notice_days: number | null
+  customer_email?: string | null
+  customer_org_number?: string | null
   /** Length of each successive renewal period in months. Often differs from the initial term. */
   renewal_term_months?: number | null
   currency: string

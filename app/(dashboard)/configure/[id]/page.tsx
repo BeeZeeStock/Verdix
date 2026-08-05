@@ -24,7 +24,7 @@ type Terms = {
   id?: string
   contract_id?: string
   crm_id?: string
-  customer_name?: string; customer_address?: string; billing_contact?: string
+  customer_name?: string; customer_address?: string; customer_email?: string | null; customer_org_number?: string | null; billing_contact?: string
   vendor_name?: string;   vendor_address?: string
   contract_start_date?: string; contract_end_date?: string; contract_term_months?: number
   auto_renews?: boolean; renewal_notice_days?: number; renewal_term_months?: number | null
@@ -2046,6 +2046,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   label="Customer billing address"
                   value={terms?.customer_address ?? null}
                   onSave={v => saveField('customer_address', v)}
+                />
+                <EditableStat
+                  label="Customer invoice email"
+                  value={terms?.customer_email ?? null}
+                  onSave={v => saveField('customer_email', v)}
+                />
+                <EditableStat
+                  label="Customer org / reg number"
+                  value={terms?.customer_org_number ?? null}
+                  onSave={v => saveField('customer_org_number', v)}
                 />
                 {/* Currency — editable dropdown */}
                 <div className="group">
