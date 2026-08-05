@@ -509,19 +509,26 @@ async function configureRememhill(
   if (!customerId) {
     throw new Error(`Remembill customer creation: could not extract id from response: ${custRawBody}`)
   }
+  if (!cur) {
+    throw new Error('Remembill: currency is missing from contract terms — set it in the contract details and try again.')
+  }
+  console.log('[billing-writer/remembill] customerId:', customerId, '| currency:', cur)
 
   // ── 2. Helper: draft invoice → add row → send via email ────────────────────
+  // Parameters are passed explicitly (not closed over) so values are unambiguous.
   async function pushInvoice(
     description: string,
     amountMinorUnits: number,
     issueDate: Date,
     idempotencyKey: string,
+    invoiceCustomerId: string,
+    invoiceCurrency: string,
   ): Promise<{ id: string; url: string | null }> {
     const dueDate = addDays(issueDate, netDays)
 
     const invoiceBody = {
-      customer_id:   customerId,
-      currency:      cur,
+      customer_id:   invoiceCustomerId,
+      currency:      invoiceCurrency,
       issue_date:    fmtDate(issueDate),
       due_date:      fmtDate(dueDate),
       payment_terms: `Net ${netDays}`,
@@ -582,7 +589,7 @@ async function configureRememhill(
 
     if (period.periodStart <= now && period.baseAmount > 0) {
       const key = `verdix-${jobId ?? 'unknown'}-period-${period.yearNum}-${period.periodIndex}`
-      const { id, url } = await pushInvoice(description, Math.round(period.baseAmount * 100), now, key)
+      const { id, url } = await pushInvoice(description, Math.round(period.baseAmount * 100), now, key, customerId, cur)
       plannedRows.push({
         year_num: period.yearNum, period_start: fmtDate(period.periodStart), period_end: fmtDate(period.periodEnd),
         base_amount: period.baseAmount, currency: terms.currency ?? 'SEK', fee_label: null,
@@ -622,7 +629,7 @@ async function configureRememhill(
 
     if (isDue) {
       const key = `verdix-${jobId ?? 'unknown'}-onetime-${fee.fee_label.replace(/\s+/g, '-').toLowerCase()}`
-      const { id, url } = await pushInvoice(fee.fee_label, Math.round(fee.amount * 100), feeDueDate ?? now, key)
+      const { id, url } = await pushInvoice(fee.fee_label, Math.round(fee.amount * 100), feeDueDate ?? now, key, customerId, cur)
       plannedRows.push({
         year_num: null, period_start: dueDateStr, period_end: dueDateStr,
         base_amount: fee.amount, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
