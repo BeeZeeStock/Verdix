@@ -481,7 +481,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
             {/* One-time fee pending-setup notice */}
             {oneTimeInvoices.length === 0 && oneTimeFees.length > 0 && (
               <div className="rounded-xl px-4 py-3 text-[12px] text-amber-800 mb-4" style={{ background: '#FFFBEB', border: '1px solid #FCD34D' }}>
-                {oneTimeFees.length} one-time fee{oneTimeFees.length > 1 ? 's' : ''} ({oneTimeFees.map(f => f.fee_label).join(', ')}) — invoices will be created in Stripe when you re-push this contract.
+                {oneTimeFees.length} one-time fee{oneTimeFees.length > 1 ? 's' : ''} ({oneTimeFees.map(f => f.fee_label).join(', ')}) — invoices will be created in {isRememhill ? 'Remembill' : 'Stripe'} when you re-push this contract.
               </div>
             )}
 
@@ -516,7 +516,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
         <p className="text-[10px] text-stone/50 font-mono">{sub.id}</p>
         <a href={sub.dashboardUrl} target="_blank" rel="noreferrer"
           className="text-[11px] font-semibold text-forest hover:text-sage transition-colors flex items-center gap-1">
-          Open in Stripe <i className="ti ti-external-link" style={{ fontSize: 10 }} />
+          Open in {isRememhill ? 'Remembill' : 'Stripe'} <i className="ti ti-external-link" style={{ fontSize: 10 }} />
         </a>
       </div>
     </div>

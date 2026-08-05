@@ -585,7 +585,7 @@ async function configureRememhill(
       method: 'POST', headers: h, body: JSON.stringify({}),
     }).catch(err => console.error('[billing-writer/remembill] email delivery failed', err))
 
-    return { id: invoiceId, url: remembillAppUrl(`/invoices/${invoiceId}`) }
+    return { id: invoiceId, url: remembillAppUrl('/invoices') }
   }
 
   // ── 3. Billing schedule ─────────────────────────────────────────────────────
@@ -677,7 +677,7 @@ async function configureRememhill(
     subscriptionId: null,
     customerId,
     lineItemCount:  periods.length + oneTimeFees.filter(f => f.amount > 0).length,
-    dashboardUrl:   remembillAppUrl(`/customers/${customerId}`),
+    dashboardUrl:   remembillAppUrl('/invoices'),
   }
 }
 

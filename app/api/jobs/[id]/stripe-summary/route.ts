@@ -379,7 +379,7 @@ async function handlePlannedInvoicesPath({
 
   const isTest       = billingPlatform !== 'remembill' && stripeKey.includes('sk_test_')
   const dashboardUrl = billingPlatform === 'remembill'
-    ? remembillAppUrl(`/customers/${customerId ?? ''}`)
+    ? remembillAppUrl('/invoices')
     : `https://dashboard.stripe.com/${isTest ? 'test/' : ''}customers/${customerId ?? ''}`
 
   return NextResponse.json({

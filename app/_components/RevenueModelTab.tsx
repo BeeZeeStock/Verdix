@@ -36,6 +36,7 @@ type StripeBillingData = {
   paymentSchedule: { year: number; amount: number; currency: string; periodStart: string | null; periodEnd: string | null }[] | null
   oneTimeFees: { fee_label: string; amount: number; due_date?: string | null }[]
   contractStart: string | null
+  billingPlatform?: string
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1434,7 +1435,20 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
             <div className="mt-4 pt-4 border-t border-forest/[0.07] flex items-center justify-between gap-6">
               <div className="flex items-center gap-8">
                 <div>
-                  <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Configured in Stripe</p>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50">Configured in</p>
+                    {billingData.billingPlatform === 'remembill' ? (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wide" style={{ background: '#E8F4FD', color: '#0077B6' }}>
+                        <svg width="9" height="9" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="10" fill="#0077B6"/><text x="10" y="14" textAnchor="middle" fontSize="11" fontWeight="bold" fill="white" fontFamily="sans-serif">R</text></svg>
+                        Remembill
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wide" style={{ background: '#F0EFFF', color: '#635BFF' }}>
+                        <svg width="9" height="9" viewBox="0 0 20 20" fill="none"><rect width="20" height="20" rx="4" fill="#635BFF"/><path d="M10.3 7.2c1.1 0 2 .4 2.6 1.1l1.5-1.5C13.3 5.6 11.9 5 10.3 5 7.4 5 5 7.4 5 10.3s2.4 5.3 5.3 5.3c1.6 0 3-.6 4-1.7v-3.6H10v1.7h3.2c-.5 1.1-1.6 1.9-2.9 1.9-1.9 0-3.5-1.6-3.5-3.6s1.6-3.1 3.5-3.1z" fill="white"/></svg>
+                        Stripe
+                      </span>
+                    )}
+                  </div>
                   <p className="text-[20px] font-semibold text-ink leading-none" style={{ fontVariantNumeric: 'tabular-nums' }}>
                     {fmt(configuredTotal, cur)}
                   </p>
