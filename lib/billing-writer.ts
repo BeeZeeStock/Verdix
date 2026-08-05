@@ -519,15 +519,18 @@ async function configureRememhill(
   ): Promise<{ id: string; url: string | null }> {
     const dueDate = addDays(issueDate, netDays)
 
+    const invoiceBody = {
+      customer_id:   customerId,
+      currency:      cur,
+      issue_date:    fmtDate(issueDate),
+      due_date:      fmtDate(dueDate),
+      payment_terms: `Net ${netDays}`,
+    }
+    console.log('[billing-writer/remembill] invoice request body:', JSON.stringify(invoiceBody))
+
     const invRes = await fetch(`${REMEMBILL_BASE}/invoices`, {
       method: 'POST', headers: { ...h, 'Idempotency-Key': idempotencyKey },
-      body: JSON.stringify({
-        customer_id:   customerId,
-        currency:      cur,
-        issue_date:    fmtDate(issueDate),
-        due_date:      fmtDate(dueDate),
-        payment_terms: `Net ${netDays}`,
-      }),
+      body: JSON.stringify(invoiceBody),
     })
     const invRawBody = await invRes.text()
     if (!invRes.ok) {
