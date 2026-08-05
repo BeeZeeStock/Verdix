@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { billingInterval } from '@/lib/stripe-meter'
+import { remembillAppUrl } from '@/lib/billing-writer'
 import type { ContractTerms } from '@/lib/types'
 
 export async function GET(
@@ -30,6 +31,53 @@ export async function GET(
     return NextResponse.json({ error: 'Chargebee not supported here' }, { status: 400 })
   }
 
+  const subId      = job.billing_subscription_id as string | null
+  const customerId = job.billing_customer_id     as string | null
+  const terms      = (job.contract_terms as unknown as ContractTerms[])?.[0]
+
+  // ── Remembill path: no Stripe client needed ───────────────────────────────
+  if (job.billing_platform === 'remembill') {
+    const { data: planned } = await supabaseServer
+      .from('planned_invoices')
+      .select('*')
+      .eq('job_id', id)
+      .order('period_start', { ascending: true })
+
+    if (!planned?.length) {
+      return NextResponse.json({ error: 'No billing schedule found' }, { status: 404 })
+    }
+
+    const paymentSchedule = terms?.year_pricing
+      ? Object.entries(terms.year_pricing).map(([key, amount]) => {
+          const yearNum = parseInt(key.replace('year', ''), 10)
+          const contractStart = terms?.contract_start_date ? new Date(terms.contract_start_date) : null
+          let periodStart: string | null = null
+          let periodEnd:   string | null = null
+          if (contractStart) {
+            const ys = new Date(contractStart)
+            ys.setFullYear(ys.getFullYear() + yearNum - 1)
+            const ye = new Date(ys)
+            ye.setFullYear(ye.getFullYear() + 1)
+            ye.setDate(ye.getDate() - 1)
+            periodStart = ys.toISOString().slice(0, 10)
+            periodEnd   = ye.toISOString().slice(0, 10)
+          }
+          return { year: yearNum, amount, currency: terms?.currency ?? 'EUR', periodStart, periodEnd }
+        })
+      : null
+
+    return handlePlannedInvoicesPath({
+      stripe:          null,
+      customerId,
+      id,
+      terms,
+      planned,
+      paymentSchedule,
+      stripeKey:       '',
+      billingPlatform: 'remembill',
+    })
+  }
+
   const { data: integration } = await supabaseServer
     .from('org_integrations')
     .select('config')
@@ -42,11 +90,6 @@ export async function GET(
 
   const { default: Stripe } = await import('stripe')
   const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
-
-  const subId      = job.billing_subscription_id as string | null
-  const customerId = job.billing_customer_id     as string | null
-
-  const terms = (job.contract_terms as unknown as ContractTerms[])?.[0]
 
   // Build per-year payment schedule from contract terms (shared by both paths)
   const paymentSchedule = terms?.year_pricing
@@ -190,19 +233,21 @@ export async function GET(
 // ── New planned_invoices path ─────────────────────────────────────────────────
 
 async function handlePlannedInvoicesPath({
-  stripe, customerId, id, terms, planned, paymentSchedule, stripeKey,
+  stripe, customerId, id, terms, planned, paymentSchedule, stripeKey, billingPlatform,
 }: {
-  stripe:          import('stripe').Stripe
+  stripe:          import('stripe').Stripe | null
   customerId:      string | null
   id:              string
   terms:           ContractTerms | undefined
   planned:         Record<string, unknown>[]
   paymentSchedule: { year: number; amount: number; currency: string; periodStart: string | null; periodEnd: string | null }[] | null
   stripeKey:       string
+  billingPlatform?: string
 }): Promise<NextResponse> {
 
-  // Fetch all customer Stripe invoices so we can enrich sent rows with live status
-  const allCustomerInvoices = customerId
+  // For Stripe: enrich rows with live invoice status from the Stripe API.
+  // For other platforms (Remembill etc.): skip — status comes from planned_invoices.status directly.
+  const allCustomerInvoices = (stripe && customerId && billingPlatform !== 'remembill')
     ? await stripe.invoices.list({ customer: customerId, limit: 100 }).catch(() => ({ data: [] }))
     : { data: [] }
 
@@ -230,11 +275,12 @@ async function handlePlannedInvoicesPath({
   const mapPlanned = (row: PlannedRow) => {
     const stripeInv = row.stripe_invoice_id ? stripeInvMap.get(row.stripe_invoice_id) : null
     const liveStatus = stripeInv?.status ?? null
-    // Derive display status from live Stripe status when available
+    // For Stripe: derive display status from live API status.
+    // For Remembill: use planned_invoices.status directly (no live API lookup).
     const status = row.status === 'paid' ? 'paid'
       : liveStatus === 'paid' ? 'paid'
       : liveStatus === 'open' ? 'open'
-      : row.status === 'sent' ? 'open'
+      : row.status === 'sent' ? (billingPlatform === 'remembill' ? 'sent' : 'open')
       : 'draft'
 
     return {
@@ -331,8 +377,10 @@ async function handlePlannedInvoicesPath({
   const mostRecentSent = sentPeriods[sentPeriods.length - 1]
   const anyActive      = sentPeriods.length > 0
 
-  const isTest       = stripeKey.includes('sk_test_')
-  const dashboardUrl = `https://dashboard.stripe.com/${isTest ? 'test/' : ''}customers/${customerId ?? ''}`
+  const isTest       = billingPlatform !== 'remembill' && stripeKey.includes('sk_test_')
+  const dashboardUrl = billingPlatform === 'remembill'
+    ? remembillAppUrl(`/customers/${customerId ?? ''}`)
+    : `https://dashboard.stripe.com/${isTest ? 'test/' : ''}customers/${customerId ?? ''}`
 
   return NextResponse.json({
     subscription: {
@@ -356,5 +404,6 @@ async function handlePlannedInvoicesPath({
     currency:         terms?.currency      ?? 'EUR',
     paymentTermsDays: terms?.payment_terms_days  ?? null,
     computedInvoices: [],
+    billingPlatform:  billingPlatform ?? 'stripe',
   })
 }

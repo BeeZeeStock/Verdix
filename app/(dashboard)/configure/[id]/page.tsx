@@ -2649,7 +2649,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             </div>
 
             {/* ── 8. Billing Setup ── */}
-            {isConfigured && billingPlatform === 'stripe' && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (
+            {isConfigured && (billingPlatform === 'stripe' || billingPlatform === 'remembill') && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (
               <>
                 {parkedInvoices.length > 0 && (
                   <ParkedInvoicesCard jobId={id} parkedInvoices={parkedInvoices} />

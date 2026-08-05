@@ -7,6 +7,10 @@
     {
       "path": "/api/admin/invoice-scheduler",
       "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/admin/remembill-payment-sync",
+      "schedule": "0 8 * * *"
     }
   ]
 }

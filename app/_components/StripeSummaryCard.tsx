@@ -67,6 +67,7 @@ type Summary = {
   currency: string
   paymentTermsDays: number | null
   computedInvoices: { external_invoice_id: string; status: string; total_amount: number; period_start: string }[]
+  billingPlatform?: string
 }
 
 function fmt(n: number, cur = 'EUR') {
@@ -117,10 +118,12 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
   onHasSchedule?: (has: boolean) => void
   onParkedInvoices?: (invoices: ParkedInvoiceSummary[]) => void
 }) {
-  const [summary, setSummary]   = useState<Summary | null>(null)
-  const [loading, setLoading]   = useState(true)
-  const [error, setError]       = useState<string | null>(null)
-  const [parking, setParking]   = useState<Set<string>>(new Set())
+  const [summary, setSummary]         = useState<Summary | null>(null)
+  const [loading, setLoading]         = useState(true)
+  const [error, setError]             = useState<string | null>(null)
+  const [parking, setParking]         = useState<Set<string>>(new Set())
+  const [syncing, setSyncing]         = useState(false)
+  const [syncResult, setSyncResult]   = useState<{ checked: number; paid: number } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -169,10 +172,32 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
     }
   }, [jobId, onHasSchedule, onParkedInvoices])
 
+  const handleSyncPayments = useCallback(async () => {
+    setSyncing(true)
+    setSyncResult(null)
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/sync-payment-status`, { method: 'POST' })
+      const data = await res.json() as { checked: number; paid: number; error?: string }
+      if (!res.ok) {
+        setSyncResult(null)
+      } else {
+        setSyncResult(data)
+        if (data.paid > 0) await handleRefresh()
+      }
+    } catch {
+      // silent — UI stays as-is
+    } finally {
+      setSyncing(false)
+    }
+  }, [jobId, handleRefresh])
+
+  const isRememhill = summary?.billingPlatform === 'remembill'
+  const hasSentInvoices = (summary?.invoices ?? []).some(i => i.status === 'sent')
+
   if (loading) return (
     <div className="bg-white rounded-2xl border border-forest/10 p-6 flex items-center gap-3">
       <div className="w-4 h-4 border-2 border-forest border-t-transparent rounded-full animate-spin" />
-      <span className="text-[12px] text-stone">Loading Stripe configuration…</span>
+      <span className="text-[12px] text-stone">Loading billing configuration…</span>
     </div>
   )
 
@@ -201,7 +226,9 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
       <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
         <div>
           <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Billing setup</h2>
-          <p className="text-[11px] text-stone mt-1">Live configuration pulled from your Stripe account</p>
+          <p className="text-[11px] text-stone mt-1">
+            {isRememhill ? 'Invoice schedule managed via Remembill' : 'Live configuration pulled from your Stripe account'}
+          </p>
         </div>
         <div className="flex items-center gap-4">
           <StatusBadge status={sub.status} />
@@ -209,6 +236,24 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
             <span className="inline-flex items-center gap-1 text-[11px] font-medium" style={{ color: '#6366F1' }}>
               <i className="ti ti-test-pipe" style={{ fontSize: 13 }} /> Test mode
             </span>
+          )}
+          {isRememhill && hasSentInvoices && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSyncPayments}
+                disabled={syncing}
+                className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-xl transition-colors disabled:opacity-50"
+                style={{ background: '#EEF9F2', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.25)' }}
+              >
+                <i className={`ti ti-refresh ${syncing ? 'animate-spin' : ''}`} style={{ fontSize: 11 }} />
+                {syncing ? 'Checking…' : 'Refresh payments'}
+              </button>
+              {syncResult && (
+                <span className="text-[11px]" style={{ color: syncResult.paid > 0 ? '#0B5C36' : '#6B7280' }}>
+                  {syncResult.paid > 0 ? `${syncResult.paid} marked paid` : 'No new payments'}
+                </span>
+              )}
+            </div>
           )}
           <button
             onClick={handleRefresh}
