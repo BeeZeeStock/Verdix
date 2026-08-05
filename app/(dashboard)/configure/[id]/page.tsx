@@ -1953,7 +1953,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           </div>
           {isConfigured ? (
             <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: '#4A7C59' }}>
-              <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> Configured in Stripe
+              <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> Configured in {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
             </span>
           ) : needsReview === 0 ? (
             <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: '#4A7C59' }}>
@@ -2577,7 +2577,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     <span className="text-xs font-semibold px-3 py-2 rounded-xl flex items-center gap-1.5"
                       style={{ background: '#D4EAD9', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.3)' }}>
                       <i className="ti ti-circle-check" style={{ fontSize: 12 }} />
-                      Configured in {billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
+                      Configured in {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
                     </span>
                   )}
                 </div>
