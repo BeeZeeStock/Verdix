@@ -143,8 +143,9 @@ export async function GET(req: NextRequest) {
           }),
         })
         if (!invRes.ok) {
-          const e = await invRes.json().catch(() => ({} as { error?: { message?: string } })) as { error?: { message?: string } }
-          throw new Error(`Remembill invoice creation failed: ${e.error?.message ?? invRes.status}`)
+          const rawBody = await invRes.text()
+          console.error('[invoice-scheduler/remembill] invoice creation failed', invRes.status, rawBody)
+          throw new Error(`Remembill invoice creation failed (${invRes.status}): ${rawBody}`)
         }
         const invoiceId = ((await invRes.json()) as { id: string }).id
 

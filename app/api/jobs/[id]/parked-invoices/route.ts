@@ -91,8 +91,9 @@ export async function POST(
         }),
       })
       if (!invRes.ok) {
-        const e = await invRes.json().catch(() => ({} as { error?: { message?: string } })) as { error?: { message?: string } }
-        throw new Error(`Remembill invoice creation failed: ${e.error?.message ?? invRes.status}`)
+        const rawBody = await invRes.text()
+        console.error('[parked-invoices/remembill] invoice creation failed', invRes.status, rawBody)
+        throw new Error(`Remembill invoice creation failed (${invRes.status}): ${rawBody}`)
       }
       invoiceId = ((await invRes.json()) as { id: string }).id
 

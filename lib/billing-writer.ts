@@ -465,17 +465,38 @@ async function configureRememhill(
   const addDays  = (d: Date, n: number) => new Date(d.getTime() + n * 86_400_000)
 
   // ── 1. Create customer ──────────────────────────────────────────────────────
+  // Only send email when we have a real address extracted from the contract.
+  // Sending a generated/fake domain causes Remembill's validator to reject the request.
   const emailInContact = terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
-  const billingEmail   = emailInContact
-    ?? `billing@${(terms.customer_name ?? 'customer').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}.com`
+    ?? terms.vendor_address?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
+
+  const customerBody: Record<string, string> = {
+    type: 'business',
+    name: terms.customer_name ?? 'Unknown',
+  }
+  if (emailInContact) {
+    customerBody.email = emailInContact
+  } else {
+    // Remembill requires email or phone. Without a real email in the contract,
+    // use a deterministic placeholder that at least passes format validation.
+    // The user can update it in the Remembill dashboard after creation.
+    const slug = (terms.customer_name ?? 'customer')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '')  // strip all non-alphanumeric (no hyphens)
+      .slice(0, 30) || 'customer'
+    customerBody.email = `billing+${slug}@verdix-noreply.com`
+  }
 
   const custRes = await fetch(`${REMEMBILL_BASE}/customers`, {
     method: 'POST', headers: h,
-    body: JSON.stringify({ type: 'business', name: terms.customer_name ?? 'Unknown', email: billingEmail }),
+    body: JSON.stringify(customerBody),
   })
   if (!custRes.ok) {
-    const e = await custRes.json().catch(() => ({} as { error?: { message?: string } })) as { error?: { message?: string } }
-    throw new Error(`Remembill customer creation failed: ${e.error?.message ?? custRes.status}`)
+    const rawBody = await custRes.text()
+    console.error('[billing-writer/remembill] customer creation failed', custRes.status, rawBody)
+    let detail = rawBody
+    try { detail = JSON.stringify(JSON.parse(rawBody)) } catch { /* keep raw */ }
+    throw new Error(`Remembill customer creation failed (${custRes.status}): ${detail}`)
   }
   const customerId = ((await custRes.json()) as { id: string }).id
 
@@ -499,8 +520,11 @@ async function configureRememhill(
       }),
     })
     if (!invRes.ok) {
-      const e = await invRes.json().catch(() => ({} as { error?: { message?: string } })) as { error?: { message?: string } }
-      throw new Error(`Remembill invoice creation failed: ${e.error?.message ?? invRes.status}`)
+      const rawBody = await invRes.text()
+      console.error('[billing-writer/remembill] invoice creation failed', invRes.status, rawBody)
+      let detail = rawBody
+      try { detail = JSON.stringify(JSON.parse(rawBody)) } catch { /* keep raw */ }
+      throw new Error(`Remembill invoice creation failed (${invRes.status}): ${detail}`)
     }
     const invoiceId = ((await invRes.json()) as { id: string }).id
 
@@ -510,8 +534,8 @@ async function configureRememhill(
       body: JSON.stringify({ description, quantity: 1, unit_price: amountMinorUnits }),
     })
     if (!rowRes.ok) {
-      const e = await rowRes.json().catch(() => ({} as { error?: { message?: string } })) as { error?: { message?: string } }
-      console.error(`[billing-writer/remembill] row creation failed: ${e.error?.message ?? rowRes.status}`)
+      const rawErr = await rowRes.text()
+      console.error(`[billing-writer/remembill] row creation failed (${rowRes.status}):`, rawErr)
     }
 
     // Deliver via email — returns 202 Accepted when queued
