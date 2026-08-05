@@ -1,7 +1,10 @@
 /**
- * POST /api/jobs/[id]/remembill-probe
- * Diagnostic endpoint — remove after confirming correct row format.
- * Now tests "name" (not "description") as the required label field.
+ * POST /api/jobs/[id]/remembill-probe  — remove after use.
+ * Tests three strategies for getting rows onto a Remembill invoice:
+ *   A) rows[] included in the invoice creation body
+ *   B) PUT /invoices/:id with rows[]
+ *   C) POST /invoices/:id/rows (existing approach, now with name field)
+ * Also surfaces the raw URL and body sent so we can confirm what's going out.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
@@ -20,70 +23,113 @@ export async function POST(
   const { data: job } = await supabaseServer
     .from('jobs')
     .select('org_id, billing_customer_id, contract_terms(currency)')
-    .eq('id', jobId)
-    .eq('org_id', org.orgId)
-    .single()
+    .eq('id', jobId).eq('org_id', org.orgId).single()
 
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
-  if (!job.billing_customer_id) return NextResponse.json({ error: 'No billing_customer_id on this job' }, { status: 400 })
+  if (!job.billing_customer_id) return NextResponse.json({ error: 'No billing_customer_id' }, { status: 400 })
 
-  const { data: rbIntegration } = await supabaseServer
+  const { data: rbInt } = await supabaseServer
     .from('org_integrations').select('config')
     .eq('org_id', org.orgId).eq('connector_name', 'remembill').eq('is_active', true).maybeSingle()
 
-  const rbKey = (rbIntegration?.config as Record<string, string>)?.api_key ?? process.env.REMEMBILL_API_KEY!
+  const rbKey = (rbInt?.config as Record<string, string>)?.api_key ?? process.env.REMEMBILL_API_KEY!
   const h = remembillHeaders(rbKey)
-
   const termsArr = job.contract_terms as unknown as Array<{ currency?: string }>
   const cur = ((termsArr?.[0]?.currency) ?? 'SEK').toUpperCase()
-  const today = new Date().toISOString().slice(0, 10)
-  const due   = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10)
+  // Use tomorrow as issue date to avoid any idempotency collision with previous probe runs
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+  const due      = new Date(Date.now() + 31 * 86_400_000).toISOString().slice(0, 10)
 
-  // Create a fresh draft invoice for the test
-  const invRes  = await fetch(`${REMEMBILL_BASE}/invoices`, {
-    method: 'POST', headers: h,
-    body: JSON.stringify({ customer_id: job.billing_customer_id, currency: cur, issue_date: today, due_date: due, payment_terms: 'Net 30' }),
-  })
-  const invBody = await invRes.text()
-  if (!invRes.ok) return NextResponse.json({ step: 'invoice_create_failed', status: invRes.status, body: invBody }, { status: 502 })
+  const row1 = { name: 'Base subscription', quantity: 1, unit_price: 10000, vat_rate: 0 }
+  const row2 = { name: 'Base subscription', quantity: 1, price: 10000,      vat_rate: 0 }
 
-  const invJson  = JSON.parse(invBody) as Record<string, unknown>
-  const invoiceId = ((invJson.invoice ?? invJson.data ?? invJson) as Record<string, unknown>).id as string
-  if (!invoiceId) return NextResponse.json({ step: 'no_id', body: invBody }, { status: 502 })
-
-  // All candidates now use "name" — vary the amount field and units
-  const ORE    = 10000     // 100.00 SEK in öre
-  const KRONOR = 100.00    // 100.00 SEK in kronor
-
-  const candidates = [
-    { label: 'name + unit_price öre',    body: { name: 'Probe row', quantity: 1, unit_price: ORE,    vat_rate: 0 } },
-    { label: 'name + unit_price kronor', body: { name: 'Probe row', quantity: 1, unit_price: KRONOR, vat_rate: 0 } },
-    { label: 'name + price öre',         body: { name: 'Probe row', quantity: 1, price: ORE,         vat_rate: 0 } },
-    { label: 'name + price kronor',      body: { name: 'Probe row', quantity: 1, price: KRONOR,      vat_rate: 0 } },
-    { label: 'name + amount öre',        body: { name: 'Probe row', amount: ORE } },
-    { label: 'name + amount kronor',     body: { name: 'Probe row', amount: KRONOR } },
-    { label: 'name only (no amount)',    body: { name: 'Probe row', quantity: 1 } },
-  ]
-
-  const results: Array<{ label: string; reqBody: unknown; status: number; resBody: string; ok: boolean }> = []
-  for (const c of candidates) {
-    const r  = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, { method: 'POST', headers: h, body: JSON.stringify(c.body) })
-    const rb = await r.text()
-    results.push({ label: c.label, reqBody: c.body, status: r.status, resBody: rb, ok: r.ok })
-    if (r.ok) break
+  // ── Strategy A: create invoice WITH rows in the body ───────────────────────
+  const bodyA = { customer_id: job.billing_customer_id, currency: cur, issue_date: tomorrow, due_date: due, payment_terms: 'Net 30', rows: [row1] }
+  const resA  = await fetch(`${REMEMBILL_BASE}/invoices`, { method: 'POST', headers: h, body: JSON.stringify(bodyA) })
+  const rawA  = await resA.text()
+  let invoiceA_id: string | null = null
+  if (resA.ok) {
+    const j = JSON.parse(rawA) as Record<string, unknown>
+    invoiceA_id = ((j.invoice ?? j.data ?? j) as Record<string, unknown>).id as string ?? null
   }
 
-  const getBody = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}`, { headers: h }).then(r => r.text())
-  await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}`, { method: 'DELETE', headers: h })
+  // ── Strategy B: create plain invoice then PUT with rows ────────────────────
+  const bodyB0 = { customer_id: job.billing_customer_id, currency: cur, issue_date: tomorrow, due_date: due, payment_terms: 'Net 30' }
+  const resB0  = await fetch(`${REMEMBILL_BASE}/invoices`, { method: 'POST', headers: h, body: JSON.stringify(bodyB0) })
+  const rawB0  = await resB0.text()
+  let stratB: { putStatus?: number; putBody?: string } = {}
+  if (resB0.ok) {
+    const j = JSON.parse(rawB0) as Record<string, unknown>
+    const id = ((j.invoice ?? j.data ?? j) as Record<string, unknown>).id as string
+    if (id) {
+      const putBody = { rows: [row1] }
+      const resB1  = await fetch(`${REMEMBILL_BASE}/invoices/${id}`, { method: 'PUT', headers: h, body: JSON.stringify(putBody) })
+      stratB = { putStatus: resB1.status, putBody: await resB1.text() }
+      await fetch(`${REMEMBILL_BASE}/invoices/${id}`, { method: 'DELETE', headers: h })
+    }
+  }
 
-  const winner = results.find(r => r.ok)
-  const loser  = results.find(r => !r.ok)
+  // ── Strategy C: create plain invoice then POST /rows (both unit_price and price) ──
+  const bodyC = { customer_id: job.billing_customer_id, currency: cur, issue_date: tomorrow, due_date: due, payment_terms: 'Net 30' }
+  const resC  = await fetch(`${REMEMBILL_BASE}/invoices`, { method: 'POST', headers: h, body: JSON.stringify(bodyC) })
+  const rawC  = await resC.text()
+  const stratC: { url: string; sentBody: unknown; status: number; resBody: string }[] = []
+  if (resC.ok) {
+    const j = JSON.parse(rawC) as Record<string, unknown>
+    const id = ((j.invoice ?? j.data ?? j) as Record<string, unknown>).id as string
+    if (id) {
+      const url = `${REMEMBILL_BASE}/invoices/${id}/rows`
+      for (const body of [row1, row2]) {
+        const r  = await fetch(url, { method: 'POST', headers: h, body: JSON.stringify(body) })
+        const rb = await r.text()
+        stratC.push({ url, sentBody: body, status: r.status, resBody: rb })
+        if (r.ok) break
+      }
+      // GET to see rows on invoice
+      const getR = await fetch(`${REMEMBILL_BASE}/invoices/${id}`, { headers: h })
+      const getB = await getR.text()
+      stratC.push({ url: `GET ${REMEMBILL_BASE}/invoices/${id}`, sentBody: null, status: getR.status, resBody: getB })
+      await fetch(`${REMEMBILL_BASE}/invoices/${id}`, { method: 'DELETE', headers: h })
+    }
+  }
+
+  // ── Strategy D: discover articles catalog ────────────────────────────────
+  const resArticles = await fetch(`${REMEMBILL_BASE}/articles`, { headers: h })
+  const rawArticles = await resArticles.text()
+  // If articles exist, try creating a row with article_id
+  let stratD: { articlesStatus: number; articlesBody: string; rowWithArticleStatus?: number; rowWithArticleBody?: string } = {
+    articlesStatus: resArticles.status, articlesBody: rawArticles,
+  }
+  if (resArticles.ok) {
+    let articleId: string | null = null
+    try {
+      const aj = JSON.parse(rawArticles) as Record<string, unknown>
+      const list = (aj.data ?? aj.articles ?? aj) as Array<Record<string, unknown>>
+      articleId = Array.isArray(list) && list.length > 0 ? (list[0].id as string) : null
+    } catch { /* ignore */ }
+    if (articleId) {
+      const bodyD0 = { customer_id: job.billing_customer_id, currency: cur, issue_date: tomorrow, due_date: due, payment_terms: 'Net 30' }
+      const resD0  = await fetch(`${REMEMBILL_BASE}/invoices`, { method: 'POST', headers: h, body: JSON.stringify(bodyD0) })
+      if (resD0.ok) {
+        const dj = await resD0.json() as Record<string, unknown>
+        const did = ((dj.invoice ?? dj.data ?? dj) as Record<string, unknown>).id as string
+        if (did) {
+          const rowD = { article_id: articleId, quantity: 1, unit_price: 10000 }
+          const resD1 = await fetch(`${REMEMBILL_BASE}/invoices/${did}/rows`, { method: 'POST', headers: h, body: JSON.stringify(rowD) })
+          stratD = { ...stratD, rowWithArticleStatus: resD1.status, rowWithArticleBody: await resD1.text() }
+          await fetch(`${REMEMBILL_BASE}/invoices/${did}`, { method: 'DELETE', headers: h })
+        }
+      }
+    }
+  }
+
+  // Clean up invoice A
+  if (invoiceA_id) await fetch(`${REMEMBILL_BASE}/invoices/${invoiceA_id}`, { method: 'DELETE', headers: h })
 
   return NextResponse.json({
-    invoiceId,
-    winner: winner ? { label: winner.label, reqBody: winner.reqBody, resBody: winner.resBody } : null,
-    firstFailure: loser ? { label: loser.label, status: loser.status, resBody: loser.resBody } : null,
-    allStatuses: results.map(r => `${r.label} → HTTP ${r.status}${r.ok ? ' ✓' : ''}`),
-    invoiceAfterRows: getBody,
+    strategyA_createWithRows: { status: resA.status, reqBody: bodyA, resBody: rawA },
+    strategyB_putRows:        { invoiceCreateStatus: resB0.status, ...stratB },
+    strategyC_postRows:       stratC,
+    strategyD_articles:       stratD,
   })
 }
