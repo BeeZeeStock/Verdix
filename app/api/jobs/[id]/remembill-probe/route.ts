@@ -87,14 +87,15 @@ export async function POST(
       const rowVariants = [
         row1,
         row2,
-        // maybe the label field is title, label, or description
+        // wrapped in root key (some APIs expect {row:{...}})
+        { row: { name: 'Base subscription', quantity: 1, unit_price: 10000, vat_rate: 0 } } as unknown as typeof row1,
+        // different label field names
         { title: 'Base subscription',       quantity: 1, unit_price: 10000, vat_rate: 0 },
         { label: 'Base subscription',       quantity: 1, unit_price: 10000, vat_rate: 0 },
         { description: 'Base subscription', quantity: 1, unit_price: 10000, vat_rate: 0 },
         // article-based lookup
         { article_number: '001', quantity: 1, unit_price: 10000, vat_rate: 0 },
         { article_number: '001', name: 'Base subscription', quantity: 1, unit_price: 10000, vat_rate: 0 },
-        // name as plain text with raw JSON string to rule out serialisation issues
       ]
       for (const body of rowVariants) {
         const jsonStr = JSON.stringify(body)
@@ -110,6 +111,27 @@ export async function POST(
       await fetch(`${REMEMBILL_BASE}/invoices/${id}`, { method: 'DELETE', headers: h })
     }
   }
+
+  // ── Strategy E: top-level /rows resource (invoice_id in body) ────────────
+  const bodyE0 = { customer_id: job.billing_customer_id, currency: cur, issue_date: tomorrow, due_date: due, payment_terms: 'Net 30' }
+  const resE0  = await fetch(`${REMEMBILL_BASE}/invoices`, { method: 'POST', headers: h, body: JSON.stringify(bodyE0) })
+  const rawE0  = await resE0.text()
+  const stratE: { topLevelRowStatus?: number; topLevelRowBody?: string; numberSeriesStatus?: number; numberSeriesBody?: string } = {}
+  if (resE0.ok) {
+    const ej = JSON.parse(rawE0) as Record<string, unknown>
+    const eid = ((ej.invoice ?? ej.data ?? ej) as Record<string, unknown>).id as string
+    if (eid) {
+      const rowE = { invoice_id: eid, name: 'Base subscription', quantity: 1, unit_price: 10000, vat_rate: 0 }
+      const resE1 = await fetch(`${REMEMBILL_BASE}/rows`, { method: 'POST', headers: h, body: JSON.stringify(rowE) })
+      stratE.topLevelRowStatus = resE1.status
+      stratE.topLevelRowBody   = await resE1.text()
+      await fetch(`${REMEMBILL_BASE}/invoices/${eid}`, { method: 'DELETE', headers: h })
+    }
+  }
+  // check what number-series options exist
+  const resNS = await fetch(`${REMEMBILL_BASE}/number-series`, { headers: h })
+  stratE.numberSeriesStatus = resNS.status
+  stratE.numberSeriesBody   = await resNS.text()
 
   // ── Strategy D: discover articles catalog ────────────────────────────────
   const resArticles = await fetch(`${REMEMBILL_BASE}/articles`, { headers: h })
@@ -145,9 +167,10 @@ export async function POST(
   if (invoiceA_id) await fetch(`${REMEMBILL_BASE}/invoices/${invoiceA_id}`, { method: 'DELETE', headers: h })
 
   return NextResponse.json({
-    strategyA_createWithRows: { status: resA.status, reqBody: bodyA, createResBody: rawA, getResBody: invoiceA_get },
-    strategyB_putRows:        { invoiceCreateStatus: resB0.status, ...stratB },
-    strategyC_postRows:       stratC,
-    strategyD_articles:       stratD,
+    strategyA_createWithRows:   { status: resA.status, reqBody: bodyA, createResBody: rawA, getResBody: invoiceA_get },
+    strategyB_putRows:          { invoiceCreateStatus: resB0.status, ...stratB },
+    strategyC_postRows:         stratC,
+    strategyD_articles:         stratD,
+    strategyE_topLevelAndSeries: stratE,
   })
 }
