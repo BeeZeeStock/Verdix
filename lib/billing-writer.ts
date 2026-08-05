@@ -570,22 +570,26 @@ async function configureRememhill(
       throw new Error(`Remembill invoice creation: could not extract id from response: ${invRawBody}`)
     }
 
-    // Add the single line item row (Remembill handles VAT/tax)
+    // Add the single line item row (amount in minor units = öre)
+    const rowBody = { description, quantity: 1, unit_price: amountMinorUnits, vat_rate: 0 }
+    console.log('[billing-writer/remembill] row request body:', JSON.stringify(rowBody))
     const rowRes = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
       method: 'POST', headers: h,
-      body: JSON.stringify({ description, quantity: 1, unit_price: amountMinorUnits }),
+      body: JSON.stringify(rowBody),
     })
+    const rowRawBody = await rowRes.text()
     if (!rowRes.ok) {
-      const rawErr = await rowRes.text()
-      console.error(`[billing-writer/remembill] row creation failed (${rowRes.status}):`, rawErr)
+      console.error(`[billing-writer/remembill] row creation failed (${rowRes.status}):`, rowRawBody)
+      throw new Error(`Remembill invoice row creation failed (${rowRes.status}): ${rowRawBody}`)
     }
+    console.log('[billing-writer/remembill] row creation response:', rowRawBody)
 
     // Deliver via email — returns 202 Accepted when queued
     await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/email`, {
       method: 'POST', headers: h, body: JSON.stringify({}),
     }).catch(err => console.error('[billing-writer/remembill] email delivery failed', err))
 
-    return { id: invoiceId, url: remembillAppUrl('/invoices') }
+    return { id: invoiceId, url: remembillAppUrl('') }
   }
 
   // ── 3. Billing schedule ─────────────────────────────────────────────────────
@@ -677,7 +681,7 @@ async function configureRememhill(
     subscriptionId: null,
     customerId,
     lineItemCount:  periods.length + oneTimeFees.filter(f => f.amount > 0).length,
-    dashboardUrl:   remembillAppUrl('/invoices'),
+    dashboardUrl:   remembillAppUrl(''),
   }
 }
 

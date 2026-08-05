@@ -514,10 +514,15 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
       {/* Footer link */}
       <div className="px-6 py-3 flex items-center justify-between" style={{ background: 'rgba(26,61,43,0.03)', borderTop: '1px solid rgba(26,61,43,0.07)' }}>
         <p className="text-[10px] text-stone/50 font-mono">{sub.id}</p>
-        <a href={sub.dashboardUrl} target="_blank" rel="noreferrer"
-          className="text-[11px] font-semibold text-forest hover:text-sage transition-colors flex items-center gap-1">
-          Open in {isRememhill ? 'Remembill' : 'Stripe'} <i className="ti ti-external-link" style={{ fontSize: 10 }} />
-        </a>
+        <div className="flex flex-col items-end gap-0.5">
+          {isRememhill && (
+            <p className="text-[9px] text-stone/40">Log in to Remembill in your browser first</p>
+          )}
+          <a href={sub.dashboardUrl} target="_blank" rel="noreferrer"
+            className="text-[11px] font-semibold text-forest hover:text-sage transition-colors flex items-center gap-1">
+            Open in {isRememhill ? 'Remembill' : 'Stripe'} <i className="ti ti-external-link" style={{ fontSize: 10 }} />
+          </a>
+        </div>
       </div>
     </div>
   )

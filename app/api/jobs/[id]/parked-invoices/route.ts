@@ -108,7 +108,7 @@ export async function POST(
         method: 'POST', headers: rbH, body: JSON.stringify({}),
       }).catch(err => console.error('[parked-invoices/remembill] email delivery failed', err))
 
-      hostedUrl = remembillAppUrl('/invoices')
+      hostedUrl = remembillAppUrl('')
 
     // ── Stripe (default) ───────────────────────────────────────────────────
     } else {
