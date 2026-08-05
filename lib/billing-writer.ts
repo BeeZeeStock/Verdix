@@ -541,18 +541,16 @@ async function configureRememhill(
 
     // Persist the customer ID immediately so a re-push can reuse it if invoicing fails later.
     if (jobId) {
-      await supabaseServer.from('jobs').update({ billing_customer_id: customerId }).eq('id', jobId).catch(err =>
-        console.error('[billing-writer/remembill] failed to persist customer_id early', err)
-      )
+      const { error: saveErr } = await supabaseServer.from('jobs').update({ billing_customer_id: customerId }).eq('id', jobId)
+      if (saveErr) console.error('[billing-writer/remembill] failed to persist customer_id early', saveErr)
     }
   }
   console.log('[billing-writer/remembill] customerId:', customerId, '| currency:', cur)
 
   // ── 1b. Clean up any stale planned_invoices from a previous failed push ─────
   if (jobId) {
-    await supabaseServer.from('planned_invoices').delete().eq('job_id', jobId).catch(err =>
-      console.error('[billing-writer/remembill] stale planned_invoices cleanup failed', err)
-    )
+    const { error: cleanErr } = await supabaseServer.from('planned_invoices').delete().eq('job_id', jobId)
+    if (cleanErr) console.error('[billing-writer/remembill] stale planned_invoices cleanup failed', cleanErr)
   }
 
   // Per-push timestamp so idempotency keys are unique across retry attempts.
