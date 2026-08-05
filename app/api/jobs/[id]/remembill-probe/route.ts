@@ -43,14 +43,19 @@ export async function POST(
   const row1 = { name: 'Base subscription', quantity: 1, unit_price: 10000, vat_rate: 0 }
   const row2 = { name: 'Base subscription', quantity: 1, price: 10000,      vat_rate: 0 }
 
-  // ── Strategy A: create invoice WITH rows in the body ───────────────────────
+  // ── Strategy A: create invoice WITH rows in the body, then GET to confirm ──
   const bodyA = { customer_id: job.billing_customer_id, currency: cur, issue_date: tomorrow, due_date: due, payment_terms: 'Net 30', rows: [row1] }
   const resA  = await fetch(`${REMEMBILL_BASE}/invoices`, { method: 'POST', headers: h, body: JSON.stringify(bodyA) })
   const rawA  = await resA.text()
   let invoiceA_id: string | null = null
+  let invoiceA_get: string | null = null
   if (resA.ok) {
     const j = JSON.parse(rawA) as Record<string, unknown>
     invoiceA_id = ((j.invoice ?? j.data ?? j) as Record<string, unknown>).id as string ?? null
+    if (invoiceA_id) {
+      const getA = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceA_id}`, { headers: h })
+      invoiceA_get = await getA.text()
+    }
   }
 
   // ── Strategy B: create plain invoice then PUT with rows ────────────────────
@@ -69,7 +74,7 @@ export async function POST(
     }
   }
 
-  // ── Strategy C: create plain invoice then POST /rows (both unit_price and price) ──
+  // ── Strategy C: create plain invoice then POST /rows with many field variants ──
   const bodyC = { customer_id: job.billing_customer_id, currency: cur, issue_date: tomorrow, due_date: due, payment_terms: 'Net 30' }
   const resC  = await fetch(`${REMEMBILL_BASE}/invoices`, { method: 'POST', headers: h, body: JSON.stringify(bodyC) })
   const rawC  = await resC.text()
@@ -79,8 +84,21 @@ export async function POST(
     const id = ((j.invoice ?? j.data ?? j) as Record<string, unknown>).id as string
     if (id) {
       const url = `${REMEMBILL_BASE}/invoices/${id}/rows`
-      for (const body of [row1, row2]) {
-        const r  = await fetch(url, { method: 'POST', headers: h, body: JSON.stringify(body) })
+      const rowVariants = [
+        row1,
+        row2,
+        // maybe the label field is title, label, or description
+        { title: 'Base subscription',       quantity: 1, unit_price: 10000, vat_rate: 0 },
+        { label: 'Base subscription',       quantity: 1, unit_price: 10000, vat_rate: 0 },
+        { description: 'Base subscription', quantity: 1, unit_price: 10000, vat_rate: 0 },
+        // article-based lookup
+        { article_number: '001', quantity: 1, unit_price: 10000, vat_rate: 0 },
+        { article_number: '001', name: 'Base subscription', quantity: 1, unit_price: 10000, vat_rate: 0 },
+        // name as plain text with raw JSON string to rule out serialisation issues
+      ]
+      for (const body of rowVariants) {
+        const jsonStr = JSON.stringify(body)
+        const r  = await fetch(url, { method: 'POST', headers: h, body: jsonStr })
         const rb = await r.text()
         stratC.push({ url, sentBody: body, status: r.status, resBody: rb })
         if (r.ok) break
@@ -127,7 +145,7 @@ export async function POST(
   if (invoiceA_id) await fetch(`${REMEMBILL_BASE}/invoices/${invoiceA_id}`, { method: 'DELETE', headers: h })
 
   return NextResponse.json({
-    strategyA_createWithRows: { status: resA.status, reqBody: bodyA, resBody: rawA },
+    strategyA_createWithRows: { status: resA.status, reqBody: bodyA, createResBody: rawA, getResBody: invoiceA_get },
     strategyB_putRows:        { invoiceCreateStatus: resB0.status, ...stratB },
     strategyC_postRows:       stratC,
     strategyD_articles:       stratD,
