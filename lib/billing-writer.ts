@@ -455,7 +455,7 @@ async function configureRememhill(
   if (!apiKey) throw new Error('Remembill API key not configured')
 
   const h      = remembillHeaders(apiKey)
-  const cur    = (terms.currency ?? 'SEK').toUpperCase()
+  const cur    = (terms.currency || 'SEK').toUpperCase()   // || so empty string falls back too
   const now    = new Date()
   const netDays = terms.payment_terms_days ?? 30
 
@@ -496,14 +496,19 @@ async function configureRememhill(
     method: 'POST', headers: h,
     body: JSON.stringify(customerBody),
   })
+  const custRawBody = await custRes.text()
   if (!custRes.ok) {
-    const rawBody = await custRes.text()
-    console.error('[billing-writer/remembill] customer creation failed', custRes.status, rawBody)
-    let detail = rawBody
-    try { detail = JSON.stringify(JSON.parse(rawBody)) } catch { /* keep raw */ }
-    throw new Error(`Remembill customer creation failed (${custRes.status}): ${detail}`)
+    console.error('[billing-writer/remembill] customer creation failed', custRes.status, custRawBody)
+    throw new Error(`Remembill customer creation failed (${custRes.status}): ${custRawBody}`)
   }
-  const customerId = ((await custRes.json()) as { id: string }).id
+  console.log('[billing-writer/remembill] customer creation response:', custRawBody)
+  const custJson = JSON.parse(custRawBody) as Record<string, unknown>
+  // Remembill may nest the customer under a "customer" or "data" key
+  const custObj  = (custJson.customer ?? custJson.data ?? custJson) as Record<string, unknown>
+  const customerId = custObj.id as string | undefined
+  if (!customerId) {
+    throw new Error(`Remembill customer creation: could not extract id from response: ${custRawBody}`)
+  }
 
   // ── 2. Helper: draft invoice → add row → send via email ────────────────────
   async function pushInvoice(
@@ -524,14 +529,18 @@ async function configureRememhill(
         payment_terms: `Net ${netDays}`,
       }),
     })
+    const invRawBody = await invRes.text()
     if (!invRes.ok) {
-      const rawBody = await invRes.text()
-      console.error('[billing-writer/remembill] invoice creation failed', invRes.status, rawBody)
-      let detail = rawBody
-      try { detail = JSON.stringify(JSON.parse(rawBody)) } catch { /* keep raw */ }
-      throw new Error(`Remembill invoice creation failed (${invRes.status}): ${detail}`)
+      console.error('[billing-writer/remembill] invoice creation failed', invRes.status, invRawBody)
+      throw new Error(`Remembill invoice creation failed (${invRes.status}): ${invRawBody}`)
     }
-    const invoiceId = ((await invRes.json()) as { id: string }).id
+    console.log('[billing-writer/remembill] invoice creation response:', invRawBody)
+    const invJson  = JSON.parse(invRawBody) as Record<string, unknown>
+    const invObj   = (invJson.invoice ?? invJson.data ?? invJson) as Record<string, unknown>
+    const invoiceId = invObj.id as string | undefined
+    if (!invoiceId) {
+      throw new Error(`Remembill invoice creation: could not extract id from response: ${invRawBody}`)
+    }
 
     // Add the single line item row (Remembill handles VAT/tax)
     const rowRes = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
