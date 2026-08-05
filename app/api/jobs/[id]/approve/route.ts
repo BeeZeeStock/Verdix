@@ -17,7 +17,7 @@ export async function POST(
 
   const { data: job, error } = await supabaseServer
     .from('jobs')
-    .select('id, name, currency, contract_terms ( * ), line_items ( * )')
+    .select('id, name, currency, billing_customer_id, contract_terms ( * ), line_items ( * )')
     .eq('id', id)
     .eq('org_id', org.orgId)
     .single()
@@ -32,7 +32,8 @@ export async function POST(
   }>
 
   try {
-    const result = await configureBilling(terms, lineItems, billingPlatformOverride ?? undefined, id, org.orgId)
+    const existingCustomerId = (job as unknown as Record<string, unknown>).billing_customer_id as string | undefined
+    const result = await configureBilling(terms, lineItems, billingPlatformOverride ?? undefined, id, org.orgId, existingCustomerId ?? undefined)
 
     await supabaseServer.from('jobs').update({
       execute_status: 'COMPLETED',

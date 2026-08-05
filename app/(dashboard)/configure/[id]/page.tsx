@@ -1863,13 +1863,27 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     </div>
   )
 
-  if (job.execute_status === 'FAILED') return (
+  if (job.execute_status === 'FAILED' && !approved) return (
     <div className="p-8 flex items-center justify-center h-full">
       <div className="text-center max-w-sm">
         <i className="ti ti-alert-circle text-danger block mb-4" style={{ fontSize: 40 }} />
-        <h2 className="font-medium text-ink text-lg mb-2">Processing failed</h2>
-        <p className="text-stone text-sm mb-6">{job.error_message}</p>
-        <Link href="/configure/new" className="bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors">Try again</Link>
+        <h2 className="font-medium text-ink text-lg mb-2">Push failed</h2>
+        <p className="text-stone text-sm mb-6 leading-relaxed">{job.error_message}</p>
+        {approveError && (
+          <p className="text-red-700 text-sm mb-4 rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-left">{approveError}</p>
+        )}
+        <button
+          onClick={handleApprove}
+          disabled={approving}
+          className="w-full bg-forest text-white text-sm font-medium px-4 py-2.5 rounded-xl hover:bg-sage transition-colors disabled:opacity-50 mb-3 flex items-center justify-center gap-2"
+        >
+          {approving
+            ? <><span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Retrying…</>
+            : 'Retry push'}
+        </button>
+        <Link href="/configure/new" className="text-stone/60 text-sm hover:text-stone transition-colors">
+          Start new contract instead
+        </Link>
       </div>
     </div>
   )
@@ -1878,7 +1892,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const isConfigured = job.execute_status === 'COMPLETED' || !!approved
   const subId = approved?.stripeSubscriptionId ?? job.billing_subscription_id ?? null
   const billingPlatform = approved
-    ? (approved.dashboardUrl?.includes('chargebee') ? 'chargebee' : 'stripe')
+    ? (approved.dashboardUrl?.includes('chargebee') ? 'chargebee'
+      : approved.dashboardUrl?.includes('remembill') ? 'remembill'
+      : 'stripe')
     : (job.billing_platform ?? 'stripe')
   const dashboardUrl = approved?.dashboardUrl
     ?? (subId && billingPlatform === 'stripe'

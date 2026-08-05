@@ -170,11 +170,12 @@ export async function configureBilling(
   lineItems: LineItemInput[],
   platform?: BillingPlatform,
   jobId?: string,
-  orgId?: string
+  orgId?: string,
+  existingCustomerId?: string,
 ): Promise<ConfigureResult> {
   const resolved = platform ?? (orgId ? await detectOrgPlatform(orgId) : detectPlatform())
   if (resolved === 'chargebee')  return configureChargebee(terms, lineItems, jobId, orgId)
-  if (resolved === 'remembill')  return configureRememhill(terms, lineItems, jobId, orgId)
+  if (resolved === 'remembill')  return configureRememhill(terms, lineItems, jobId, orgId, existingCustomerId)
   return configureStripe(terms, lineItems, jobId, orgId)
 }
 
@@ -461,6 +462,7 @@ async function configureRememhill(
   lineItems: LineItemInput[],
   jobId?: string,
   orgId?: string,
+  existingCustomerId?: string,
 ): Promise<ConfigureResult> {
   const orgConfig = orgId ? await getOrgConfig(orgId, 'remembill') : null
   const apiKey = orgConfig?.api_key ?? process.env.REMEMBILL_API_KEY
@@ -476,51 +478,6 @@ async function configureRememhill(
   const fmtLabel = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
   const addDays  = (d: Date, n: number) => new Date(d.getTime() + n * 86_400_000)
 
-  // ── 1. Create customer ──────────────────────────────────────────────────────
-  // Remembill requires: name, type, org_number, and at least one of email or phone.
-  const realEmail = terms.customer_email
-    ?? terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
-    ?? null
-
-  const customerBody: Record<string, string> = {
-    type: 'business',
-    name: terms.customer_name ?? 'Unknown',
-  }
-  if (realEmail) {
-    customerBody.email = realEmail
-  } else {
-    // No real email in the contract — use a placeholder so the request passes validation.
-    // The user can update it in the Remembill dashboard after creation.
-    const slug = (terms.customer_name ?? 'customer')
-      .toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 30) || 'customer'
-    customerBody.email = `billing+${slug}@verdix-noreply.com`
-  }
-  if (terms.customer_org_number) {
-    customerBody.org_number = terms.customer_org_number
-  } else {
-    throw new Error(
-      'Remembill requires a company registration number (org number). ' +
-      'Please add it in the contract details under "Customer org / reg number" and try again.',
-    )
-  }
-
-  const custRes = await fetch(`${REMEMBILL_BASE}/customers`, {
-    method: 'POST', headers: h,
-    body: JSON.stringify(customerBody),
-  })
-  const custRawBody = await custRes.text()
-  if (!custRes.ok) {
-    console.error('[billing-writer/remembill] customer creation failed', custRes.status, custRawBody)
-    throw new Error(`Remembill customer creation failed (${custRes.status}): ${custRawBody}`)
-  }
-  console.log('[billing-writer/remembill] customer creation response:', custRawBody)
-  const custJson = JSON.parse(custRawBody) as Record<string, unknown>
-  // Remembill may nest the customer under a "customer" or "data" key
-  const custObj  = (custJson.customer ?? custJson.data ?? custJson) as Record<string, unknown>
-  const customerId = custObj.id as string | undefined
-  if (!customerId) {
-    throw new Error(`Remembill customer creation: could not extract id from response: ${custRawBody}`)
-  }
   if (!cur) {
     throw new Error('Remembill: currency is missing from contract terms — set it in the contract details and try again.')
   }
@@ -530,7 +487,76 @@ async function configureRememhill(
       'Please use Stripe for non-SEK contracts, or update the contract currency to SEK.',
     )
   }
+
+  // ── 1. Customer — reuse from a previous attempt or create fresh ─────────────
+  let customerId: string
+
+  if (existingCustomerId) {
+    // Re-push after a failed attempt: the customer already exists in Remembill.
+    customerId = existingCustomerId
+    console.log('[billing-writer/remembill] reusing existing customer:', customerId)
+  } else {
+    // Remembill requires: name, type, org_number, and at least one of email or phone.
+    const realEmail = terms.customer_email
+      ?? terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
+      ?? null
+
+    const customerBody: Record<string, string> = {
+      type: 'business',
+      name: terms.customer_name ?? 'Unknown',
+    }
+    if (realEmail) {
+      customerBody.email = realEmail
+    } else {
+      const slug = (terms.customer_name ?? 'customer')
+        .toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 30) || 'customer'
+      customerBody.email = `billing+${slug}@verdix-noreply.com`
+    }
+    if (terms.customer_org_number) {
+      customerBody.org_number = terms.customer_org_number
+    } else {
+      throw new Error(
+        'Remembill requires a company registration number (org number). ' +
+        'Please add it in the contract details under "Customer org / reg number" and try again.',
+      )
+    }
+
+    const custRes = await fetch(`${REMEMBILL_BASE}/customers`, {
+      method: 'POST', headers: h,
+      body: JSON.stringify(customerBody),
+    })
+    const custRawBody = await custRes.text()
+    if (!custRes.ok) {
+      console.error('[billing-writer/remembill] customer creation failed', custRes.status, custRawBody)
+      throw new Error(`Remembill customer creation failed (${custRes.status}): ${custRawBody}`)
+    }
+    console.log('[billing-writer/remembill] customer creation response:', custRawBody)
+    const custJson = JSON.parse(custRawBody) as Record<string, unknown>
+    const custObj  = (custJson.customer ?? custJson.data ?? custJson) as Record<string, unknown>
+    const newCustomerId = custObj.id as string | undefined
+    if (!newCustomerId) {
+      throw new Error(`Remembill customer creation: could not extract id from response: ${custRawBody}`)
+    }
+    customerId = newCustomerId
+
+    // Persist the customer ID immediately so a re-push can reuse it if invoicing fails later.
+    if (jobId) {
+      await supabaseServer.from('jobs').update({ billing_customer_id: customerId }).eq('id', jobId).catch(err =>
+        console.error('[billing-writer/remembill] failed to persist customer_id early', err)
+      )
+    }
+  }
   console.log('[billing-writer/remembill] customerId:', customerId, '| currency:', cur)
+
+  // ── 1b. Clean up any stale planned_invoices from a previous failed push ─────
+  if (jobId) {
+    await supabaseServer.from('planned_invoices').delete().eq('job_id', jobId).catch(err =>
+      console.error('[billing-writer/remembill] stale planned_invoices cleanup failed', err)
+    )
+  }
+
+  // Per-push timestamp so idempotency keys are unique across retry attempts.
+  const pushStamp = Date.now().toString(36)
 
   // ── 2. Helper: draft invoice → add row → send via email ────────────────────
   // Parameters are passed explicitly (not closed over) so values are unambiguous.
@@ -610,7 +636,7 @@ async function configureRememhill(
     const description = `Base subscription — Year ${period.yearNum} (${fmtLabel(period.periodStart)} – ${fmtLabel(period.periodEnd)})`
 
     if (period.periodStart <= now && period.baseAmount > 0) {
-      const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-period-${period.yearNum}-${period.periodIndex}`)
+      const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-${pushStamp}-period-${period.yearNum}-${period.periodIndex}`)
       const { id, url } = await pushInvoice(description, Math.round(period.baseAmount * 100), now, key, customerId, cur)
       plannedRows.push({
         year_num: period.yearNum, period_start: fmtDate(period.periodStart), period_end: fmtDate(period.periodEnd),
@@ -650,7 +676,7 @@ async function configureRememhill(
     const dueDateStr = fmtDate(feeDueDate ?? now)
 
     if (isDue) {
-      const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-onetime-${fee.fee_label}`)
+      const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-${pushStamp}-onetime-${fee.fee_label}`)
       const { id, url } = await pushInvoice(fee.fee_label, Math.round(fee.amount * 100), feeDueDate ?? now, key, customerId, cur)
       plannedRows.push({
         year_num: null, period_start: dueDateStr, period_end: dueDateStr,
