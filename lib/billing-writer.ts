@@ -594,8 +594,9 @@ async function configureRememhill(
       throw new Error(`Remembill invoice creation: could not extract id from response: ${invRawBody}`)
     }
 
-    // Add the single line item row (amount in minor units = öre)
-    const rowBody = { description, quantity: 1, unit_price: amountMinorUnits, vat_rate: 0 }
+    // Remembill uses "name" (not "description") as the required row label field.
+    // Amount is in minor units (öre). vat_rate 0 = no VAT.
+    const rowBody = { name: description, quantity: 1, unit_price: amountMinorUnits, vat_rate: 0 }
     console.log('[billing-writer/remembill] row request body:', JSON.stringify(rowBody))
     const rowRes = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
       method: 'POST', headers: h,

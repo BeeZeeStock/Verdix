@@ -100,7 +100,7 @@ export async function POST(
       // Add line item row (amount in minor units)
       await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
         method: 'POST', headers: rbH,
-        body: JSON.stringify({ description: lineDesc, quantity, unit_price: Math.round(rate_per_unit * 100) }),
+        body: JSON.stringify({ name: lineDesc, quantity, unit_price: Math.round(rate_per_unit * 100), vat_rate: 0 }),
       })
 
       // Deliver via email
