@@ -427,6 +427,15 @@ async function configureStripe(
 // Taxes are handled by Remembill automatically — we send net amounts.
 const REMEMBILL_BASE = 'https://api.remembill.com/v1'
 
+// Builds an app.remembill.com URL that respects the org path segment.
+// Set REMEMBILL_ORG_SLUG in Vercel to the slug that appears after /org/ in
+// your Remembill dashboard URL (e.g. "acme" if the URL is app.remembill.com/org/acme/...).
+function remembillAppUrl(path: string): string {
+  const slug = process.env.REMEMBILL_ORG_SLUG
+  const base = slug ? `https://app.remembill.com/org/${slug}` : 'https://app.remembill.com'
+  return `${base}${path}`
+}
+
 function remembillHeaders(apiKey: string): Record<string, string> {
   return {
     'Authorization': `Bearer ${apiKey}`,
@@ -510,7 +519,7 @@ async function configureRememhill(
       method: 'POST', headers: h, body: JSON.stringify({}),
     }).catch(err => console.error('[billing-writer/remembill] email delivery failed', err))
 
-    return { id: invoiceId, url: `https://app.remembill.com/invoices/${invoiceId}` }
+    return { id: invoiceId, url: remembillAppUrl(`/invoices/${invoiceId}`) }
   }
 
   // ── 3. Billing schedule ─────────────────────────────────────────────────────
@@ -602,7 +611,7 @@ async function configureRememhill(
     subscriptionId: null,
     customerId,
     lineItemCount:  periods.length + oneTimeFees.filter(f => f.amount > 0).length,
-    dashboardUrl:   `https://app.remembill.com/customers/${customerId}`,
+    dashboardUrl:   remembillAppUrl(`/customers/${customerId}`),
   }
 }
 
@@ -665,5 +674,5 @@ function detectPlatform(): BillingPlatform {
 }
 
 // Re-export computeBillingSchedule for use by the invoice scheduler
-export { computeBillingSchedule, REMEMBILL_BASE, remembillHeaders }
+export { computeBillingSchedule, REMEMBILL_BASE, remembillHeaders, remembillAppUrl }
 export type { BillingPeriod }

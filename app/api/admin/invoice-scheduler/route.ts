@@ -18,7 +18,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { computeMetricOverage } from '@/lib/tariff'
-import { REMEMBILL_BASE, remembillHeaders } from '@/lib/billing-writer'
+import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl } from '@/lib/billing-writer'
 import type { ContractTerms } from '@/lib/types'
 
 type MeterCfg = {
@@ -160,7 +160,7 @@ export async function GET(req: NextRequest) {
         }).catch(err => console.error('[invoice-scheduler/remembill] email delivery failed', err))
 
         sentInvoiceId  = invoiceId
-        sentInvoiceUrl = `https://app.remembill.com/invoices/${invoiceId}`
+        sentInvoiceUrl = remembillAppUrl(`/invoices/${invoiceId}`)
 
       // ── Stripe path (default) ─────────────────────────────────────────────
       } else {

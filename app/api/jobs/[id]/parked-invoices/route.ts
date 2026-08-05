@@ -9,7 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
-import { REMEMBILL_BASE, remembillHeaders } from '@/lib/billing-writer'
+import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl } from '@/lib/billing-writer'
 
 export async function POST(
   req: NextRequest,
@@ -107,7 +107,7 @@ export async function POST(
         method: 'POST', headers: rbH, body: JSON.stringify({}),
       }).catch(err => console.error('[parked-invoices/remembill] email delivery failed', err))
 
-      hostedUrl = `https://app.remembill.com/invoices/${invoiceId}`
+      hostedUrl = remembillAppUrl(`/invoices/${invoiceId}`)
 
     // ── Stripe (default) ───────────────────────────────────────────────────
     } else {
