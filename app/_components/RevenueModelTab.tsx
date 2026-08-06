@@ -534,22 +534,22 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   })
 
   // ── Waterfall bars ────────────────────────────────────────────────────────
-  type WBar = { label: string; sub?: string; amount: number; kind: 'onetime' | 'period' | 'total'; color: string; tooltip: string }
+  // Recurring-only: one-time fees are excluded, so the total is the sum of
+  // the per-year recurring buckets, not the contract's full TCV.
+  type WBar = { label: string; sub?: string; amount: number; kind: 'period' | 'total'; color: string; tooltip: string }
   const wfBars: WBar[] = []
-  if (oneTimeFees > 0) {
-    wfBars.push({ label: 'One-time', amount: oneTimeFees, kind: 'onetime', color: '#D9A35A', tooltip: `One-time fees: ${fmt(oneTimeFees, cur)}` })
-  }
   annualBuckets.forEach((b, i) => {
     const colors = ['#73C99B', '#27AE60', '#1F7A4A', '#0F2D1A']
     const creditNote = b.creditNetted < 0 ? ` incl. ${fmt(b.creditNetted, cur)} credit` : ''
     wfBars.push({ label: b.label, sub: b.dateRange, amount: b.total, kind: 'period', color: colors[Math.min(i, colors.length - 1)], tooltip: `${b.label} (${b.dateRange}): ${fmt(b.total, cur)}${creditNote}` })
   })
-  wfBars.push({ label: 'TCV', amount: totalTcv, kind: 'total', color: '#1A3D2B', tooltip: `Total contract value: ${fmt(totalTcv, cur)}` })
+  const totalRecurring = totalTcv - oneTimeFees
+  wfBars.push({ label: 'Total', amount: totalRecurring, kind: 'total', color: '#1A3D2B', tooltip: `Total recurring revenue: ${fmt(totalRecurring, cur)}` })
 
   let wfCum = 0
   const wfPositioned = wfBars.map(b => {
     const from = b.kind === 'total' ? 0 : wfCum
-    const to   = b.kind === 'total' ? totalTcv : wfCum + b.amount
+    const to   = b.kind === 'total' ? totalRecurring : wfCum + b.amount
     if (b.kind !== 'total') wfCum = to
     return { ...b, from, to }
   })
@@ -561,7 +561,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   const wGap   = 20
   const wBW    = Math.min(140, (ww - wGap * (wBarsN - 1)) / wBarsN)
   const wStartX = wx1 + (ww - (wBW * wBarsN + wGap * (wBarsN - 1))) / 2
-  const wScale   = totalTcv > 0 ? totalTcv : 1
+  const wScale   = totalRecurring > 0 ? totalRecurring : 1
   const wyOf     = (v: number) => wBottom - (v / wScale) * wPlotH
   const wGridSteps = [0, 0.5, 1].map(f => f * wScale)
 
@@ -1136,9 +1136,9 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
         </svg>
       </div>
 
-      {/* ── Waterfall: cumulative build-up to TCV ─────────────────────── */}
+      {/* ── Waterfall: yearly recurring revenue ──────────────────────── */}
       <div className="bg-white border border-forest/10 rounded-2xl p-6">
-        <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-4">Cumulative revenue build-up to TCV</h3>
+        <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-4">Yearly recurring revenue</h3>
         <svg viewBox={`0 0 ${WW} ${WH}`} className="w-full" style={{ height: 215 }}>
           {wGridSteps.map((v, i) => {
             const yy = wyOf(v)
@@ -1193,9 +1193,9 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
       {(() => {
         const kpiCards = [
           {
-            label: 'Base TCV',
-            value: totalSub + oneTimeFees,
-            sub: 'Contracted fees + one-time',
+            label: 'Base recurring revenue',
+            value: totalSub,
+            sub: 'Contracted recurring',
             color: '#1A3D2B',
           },
           ...(creditTotal < 0 ? [{
@@ -1224,8 +1224,8 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
             color: '#3DAA7F',
           }] : []),
           {
-            label: 'Total TCV',
-            value: totalTcv,
+            label: 'Actual Recurring revenue',
+            value: totalRecurring,
             sub: creditTotal < 0 ? 'Net after credits + overages' : 'Subscription + all overages',
             color: '#1A3D2B',
             bold: true,
