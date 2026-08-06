@@ -14,37 +14,85 @@ async function getJobs(orgId: string) {
   return data ?? []
 }
 
-type ContractSummary = { customer_name: string | null; tcv: number; currency: string }
+type ContractSummary = { customer_name: string | null; tcv: number; actualTcv: number; currency: string }
+
+function isEscalatorItem(productName: string, appliedRule: string | null): boolean {
+  const name = (productName ?? '').toLowerCase()
+  const rule = (appliedRule ?? '').toLowerCase()
+  return rule.includes('escalator') || name.includes('escalator') || name.includes('cpi') || name.includes('price escalator')
+}
+
+function periodsInTermFor(bp: string | null | undefined, termMonths: number): number {
+  if (!termMonths) return 1
+  if (bp === 'monthly')     return termMonths
+  if (bp === 'quarterly')   return termMonths / 3
+  if (bp === 'semi-annual') return termMonths / 6
+  if (bp === 'annual')      return termMonths / 12
+  return 1
+}
 
 async function getContractSummaries(jobIds: string[]): Promise<Record<string, ContractSummary>> {
   if (jobIds.length === 0) return {}
-  const { data } = await supabaseServer
-    .from('contract_terms')
-    .select('job_id, customer_name, currency, base_monthly_fee, base_annual_fee, contract_term_months, year_pricing, one_time_fees, additional_recurring_fees')
-    .in('job_id', jobIds)
+  const [{ data: termsData }, { data: lineItemsData }, { data: sentInvoicesData }] = await Promise.all([
+    supabaseServer
+      .from('contract_terms')
+      .select('job_id, customer_name, currency, contract_term_months, contract_start_date, contract_end_date')
+      .in('job_id', jobIds),
+    supabaseServer
+      .from('line_items')
+      .select('job_id, product_name, applied_rule, total_amount, billing_period')
+      .in('job_id', jobIds),
+    supabaseServer
+      .from('planned_invoices')
+      .select('job_id, fee_label, base_amount')
+      .in('job_id', jobIds)
+      .eq('status', 'sent')
+      .eq('invoice_type', 'one_time'),
+  ])
+
+  type LI = { product_name: string; applied_rule: string | null; total_amount: number | null; billing_period: string | null }
+  const lineItemsByJob: Record<string, LI[]> = {}
+  for (const li of lineItemsData ?? []) {
+    ;(lineItemsByJob[li.job_id] ??= []).push({
+      product_name:  li.product_name  as string,
+      applied_rule:  li.applied_rule  as string | null,
+      total_amount:  li.total_amount  as number | null,
+      billing_period: li.billing_period as string | null,
+    })
+  }
+
+  const sentByJob: Record<string, Array<{ fee_label: string | null; base_amount: number }>> = {}
+  for (const inv of sentInvoicesData ?? []) {
+    ;(sentByJob[inv.job_id] ??= []).push({
+      fee_label:   inv.fee_label   as string | null,
+      base_amount: (inv.base_amount as number | null) ?? 0,
+    })
+  }
 
   const map: Record<string, ContractSummary> = {}
-  for (const row of data ?? []) {
-    const months = (row.contract_term_months as number | null) ?? 0
-    const yp     = (row.year_pricing ?? {}) as Record<string, number>
-    const otf    = ((row.one_time_fees ?? []) as Array<{ amount?: number }>)
-      .reduce((s, f) => s + (f.amount ?? 0), 0)
-    const addl   = ((row.additional_recurring_fees ?? []) as Array<{ amount?: number }>)
-      .reduce((s, f) => s + (f.amount ?? 0), 0)
+  for (const row of termsData ?? []) {
+    const termMonths = (row.contract_term_months as number | null)
+      ?? (row.contract_start_date && row.contract_end_date
+        ? (new Date(row.contract_end_date as string).getFullYear() - new Date(row.contract_start_date as string).getFullYear()) * 12
+          + (new Date(row.contract_end_date as string).getMonth() - new Date(row.contract_start_date as string).getMonth()) + 1
+        : 0)
 
-    let tcv = 0
-    const yearKeys = Object.keys(yp)
-    if (yearKeys.length > 0) {
-      tcv = yearKeys.reduce((s, k) => s + (yp[k] ?? 0), 0) + otf + addl * months
-    } else {
-      const baseMonthly = (row.base_monthly_fee as number | null)
-        ?? ((row.base_annual_fee as number | null) ? (row.base_annual_fee as number) / 12 : 0)
-      tcv = baseMonthly * months + otf + addl * months
-    }
+    const jobItems = lineItemsByJob[row.job_id] ?? []
+    const tcv = jobItems.reduce((s, item) => {
+      if (isEscalatorItem(item.product_name, item.applied_rule)) return s
+      return s + (item.total_amount ?? 0) * periodsInTermFor(item.billing_period, termMonths)
+    }, 0)
+
+    const jobSent        = sentByJob[row.job_id] ?? []
+    const additionsTotal = jobSent.reduce((s, inv) => {
+      const matchingItem = jobItems.find(i => i.product_name === inv.fee_label)
+      return s + ((!matchingItem || (matchingItem.total_amount ?? 0) === 0) ? inv.base_amount : 0)
+    }, 0)
 
     map[row.job_id] = {
       customer_name: (row.customer_name as string | null) ?? null,
       tcv,
+      actualTcv: tcv + additionsTotal,
       currency: (row.currency as string | null) ?? 'EUR',
     }
   }
@@ -113,7 +161,7 @@ export default async function ConfigureListPage() {
         <table className="w-full">
           <thead>
             <tr className="border-b border-forest/8">
-              {['Contract name', 'Customer', 'TCV', 'Status', 'Billing', 'Date', '', ''].map(h => (
+              {['Contract name', 'Customer', 'Base TCV', 'Actual TCV', 'Status', 'Billing', 'Date', '', ''].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-[10px] font-semibold text-stone uppercase tracking-wider">{h}</th>
               ))}
             </tr>
@@ -121,7 +169,7 @@ export default async function ConfigureListPage() {
           <tbody>
             {jobs.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-6 py-12 text-center">
+                <td colSpan={9} className="px-6 py-12 text-center">
                   <div className="max-w-sm mx-auto">
                     <div className="w-12 h-12 rounded-2xl bg-blue-50 flex items-center justify-center mx-auto mb-4">
                       <i className="ti ti-bolt" style={{ fontSize: 22, color: '#2563EB' }} />
@@ -155,6 +203,9 @@ export default async function ConfigureListPage() {
                   </td>
                   <td className="px-4 py-3 font-mono text-sm font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
                     {summary ? fmtTcv(summary.tcv, summary.currency) : '—'}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-sm font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    {summary ? fmtTcv(summary.actualTcv, summary.currency) : '—'}
                   </td>
                   <td className="px-4 py-3">
                     <span className="text-xs font-medium" style={{ color: s.color }}>{s.label}</span>
