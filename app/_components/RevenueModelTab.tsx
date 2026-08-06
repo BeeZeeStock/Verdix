@@ -74,9 +74,10 @@ interface Props {
   cur: string
   jobId?: string
   onSaved?: () => void
+  onRepush?: () => Promise<void>
 }
 
-export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
+export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush }: Props) {
   const allTiers   = terms.overage_tiers ?? []
   const userTiers  = allTiers.filter(t => t.unit_type?.toLowerCase().includes('user'))
   const apiTiers   = allTiers.filter(t =>
@@ -183,6 +184,8 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
   const [billingData, setBillingData]         = useState<StripeBillingData | null>(null)
   const [billingLoading, setBillingLoading]   = useState(false)
   const [billingFetchDone, setBillingFetchDone] = useState(false)
+  const [repushLoading, setRepushLoading]     = useState(false)
+  const [repushError, setRepushError]         = useState<string | null>(null)
 
   useEffect(() => {
     if (!jobId) return
@@ -1432,6 +1435,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
               })}
             </svg>
 
+            {/* ── Totals footer ── */}
             <div className="mt-4 pt-4 border-t border-forest/[0.07] flex items-center justify-between gap-6">
               <div className="flex items-center gap-8">
                 <div>
@@ -1462,17 +1466,90 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved }: Props) {
                   </div>
                 )}
               </div>
-              {contractTcv > 0 && (
-                isMatch
-                  ? <div className="flex items-center gap-1.5 text-[11px] font-medium text-green-700 bg-green-50 px-3 py-1.5 rounded-lg">
-                      <i className="ti ti-circle-check-filled" style={{ fontSize: 13 }} /> Matches contract
-                    </div>
-                  : <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg">
-                      <i className="ti ti-alert-triangle-filled" style={{ fontSize: 13 }} />
-                      {tcvDelta > 0 ? '+' : ''}{(tcvDelta * 100).toFixed(1)}% vs contract
-                    </div>
+              {contractTcv > 0 && isMatch && (
+                <div className="flex items-center gap-1.5 text-[11px] font-medium text-green-700 bg-green-50 px-3 py-1.5 rounded-lg">
+                  <i className="ti ti-circle-check-filled" style={{ fontSize: 13 }} /> Matches contract
+                </div>
+              )}
+              {contractTcv > 0 && !isMatch && (
+                <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg">
+                  <i className="ti ti-alert-triangle-filled" style={{ fontSize: 13 }} />
+                  {tcvDelta > 0 ? '+' : ''}{(tcvDelta * 100).toFixed(1)}% vs contract
+                </div>
               )}
             </div>
+
+            {/* ── Mismatch explanation panel ── */}
+            {contractTcv > 0 && !isMatch && (() => {
+              const gap = Math.abs(contractTcv - configuredTotal)
+              const pushedFeeLabels = new Set(
+                (billingData.oneTimeInvoices ?? []).map(inv => inv.feeLabel).filter(Boolean)
+              )
+              const parkedFees = (billingData.oneTimeFees ?? []).filter(
+                f => !pushedFeeLabels.has(f.fee_label)
+              )
+              return (
+                <div className="mt-3 p-4 bg-amber-50 border border-amber-200/80 rounded-xl">
+                  <div className="flex items-start gap-3">
+                    <i className="ti ti-info-circle text-amber-600 flex-shrink-0 mt-0.5" style={{ fontSize: 15 }} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[12px] font-semibold text-amber-900 mb-2">
+                        {fmt(gap, cur)} {tcvDelta < 0 ? 'below' : 'above'} the contract TCV — here&apos;s why this can happen:
+                      </p>
+                      <ul className="space-y-1.5 mb-3">
+                        {parkedFees.length > 0 && (
+                          <li className="flex items-start gap-2 text-[11px] text-amber-800">
+                            <i className="ti ti-clock-pause flex-shrink-0 mt-0.5" style={{ fontSize: 12 }} />
+                            <span>
+                              <strong>{parkedFees.map(f => f.fee_label).join(', ')}</strong>
+                              {parkedFees.length === 1 ? ' is' : ' are'} set to manual delivery and {parkedFees.length === 1 ? 'was' : 'were'} not pushed automatically.
+                              Send {parkedFees.length === 1 ? 'it' : 'them'} individually from the <strong>Invoices</strong> tab when ready.
+                            </span>
+                          </li>
+                        )}
+                        <li className="flex items-start gap-2 text-[11px] text-amber-800">
+                          <i className="ti ti-calculator flex-shrink-0 mt-0.5" style={{ fontSize: 12 }} />
+                          <span>Discounts, escalators, or ramp pricing in the contract terms may calculate differently from what was pushed to the billing schedule.</span>
+                        </li>
+                        <li className="flex items-start gap-2 text-[11px] text-amber-800">
+                          <i className="ti ti-edit flex-shrink-0 mt-0.5" style={{ fontSize: 12 }} />
+                          <span>Contract terms may have been updated after the billing schedule was last pushed. Re-push below to sync the latest terms.</span>
+                        </li>
+                      </ul>
+                      {repushError && (
+                        <p className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">{repushError}</p>
+                      )}
+                      {onRepush && (
+                        <button
+                          disabled={repushLoading}
+                          onClick={async () => {
+                            setRepushLoading(true)
+                            setRepushError(null)
+                            try {
+                              await onRepush()
+                              if (jobId) {
+                                const data = await fetch(`/api/jobs/${jobId}/stripe-summary`).then(r => r.ok ? r.json() : null) as StripeBillingData | null
+                                if (data?.subscription) setBillingData(data)
+                              }
+                            } catch (err) {
+                              setRepushError(err instanceof Error ? err.message : String(err))
+                            } finally {
+                              setRepushLoading(false)
+                            }
+                          }}
+                          className="inline-flex items-center gap-1.5 text-[11px] font-semibold bg-amber-700 text-white px-3 py-1.5 rounded-lg hover:bg-amber-800 transition-colors disabled:opacity-50"
+                        >
+                          {repushLoading
+                            ? <><span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Re-pushing…</>
+                            : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Re-push billing schedule</>
+                          }
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
           </div>
         )
       })()}

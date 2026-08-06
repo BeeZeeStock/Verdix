@@ -17,12 +17,16 @@ export async function POST(
 
   const { data: job, error } = await supabaseServer
     .from('jobs')
-    .select('id, name, currency, billing_customer_id, contract_terms ( * ), line_items ( * )')
+    .select('id, name, currency, billing_customer_id, execute_status, contract_terms ( * ), line_items ( * )')
     .eq('id', id)
     .eq('org_id', org.orgId)
     .single()
 
   if (error || !job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+
+  // Capture status before we overwrite it — a re-push of an already-COMPLETED
+  // job should not generate a second sync event.
+  const wasAlreadyCompleted = (job as unknown as Record<string, unknown>).execute_status === 'COMPLETED'
 
   const termsArr = job.contract_terms as unknown as ContractTerms[]
   const terms = termsArr?.[0] ?? ({} as ContractTerms)
@@ -42,8 +46,13 @@ export async function POST(
       billing_customer_id: result.customerId,
     }).eq('id', id)
 
-    const { recordSync } = await import('@/lib/billing')
-    await recordSync(org.orgId, id, 'contract_configure').catch(err => console.error('[approve] recordSync failed', err))
+    // Only count a sync event on the first successful configuration.
+    // Re-pushing an already-configured contract to fix a mismatch does not
+    // consume an additional sync credit.
+    if (!wasAlreadyCompleted) {
+      const { recordSync } = await import('@/lib/billing')
+      await recordSync(org.orgId, id, 'contract_configure').catch(err => console.error('[approve] recordSync failed', err))
+    }
 
     return NextResponse.json({
       success: true,

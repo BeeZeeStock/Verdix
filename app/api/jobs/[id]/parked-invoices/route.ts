@@ -77,7 +77,10 @@ export async function POST(
 
       const rbKey = (rbIntegration?.config as Record<string, string>)?.api_key ?? process.env.REMEMBILL_API_KEY!
       const rbH   = remembillHeaders(rbKey)
-      const dueDate = new Date(today.getTime() + netDays * 86_400_000)
+      const dueDate    = new Date(today.getTime() + netDays * 86_400_000)
+      const unitPrice  = Math.round(rate_per_unit * 100) / 100
+      const rowTotal   = Math.round(quantity * unitPrice * 100) / 100
+      const invoiceSum = rowTotal
 
       const invRes = await fetch(`${REMEMBILL_BASE}/invoices`, {
         method: 'POST',
@@ -88,6 +91,7 @@ export async function POST(
           issue_date:    todayStr,
           due_date:      fmtDate(dueDate),
           payment_terms: `Net ${netDays}`,
+          sum:           invoiceSum,
         }),
       })
       if (!invRes.ok) {
@@ -97,10 +101,11 @@ export async function POST(
       }
       invoiceId = ((await invRes.json()) as { id: string }).id
 
-      // Add line item row (amount in minor units)
+      // Row carries name, quantity, unit price, and pre-calculated total.
+      // Remembill applies VAT/taxes on top and sends the invoice to the customer.
       await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
         method: 'POST', headers: rbH,
-        body: JSON.stringify({ name: lineDesc, quantity, unit_price: Math.round(rate_per_unit * 100), vat_rate: 0 }),
+        body: JSON.stringify({ name: lineDesc, quantity, unit_price: unitPrice, total: rowTotal }),
       })
 
       // Deliver via email

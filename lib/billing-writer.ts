@@ -560,7 +560,7 @@ async function configureRememhill(
   // Parameters are passed explicitly (not closed over) so values are unambiguous.
   async function pushInvoice(
     description: string,
-    amountMinorUnits: number,
+    unitPrice: number,
     issueDate: Date,
     idempotencyKey: string,
     invoiceCustomerId: string,
@@ -568,12 +568,14 @@ async function configureRememhill(
   ): Promise<{ id: string; url: string | null }> {
     const dueDate = addDays(issueDate, netDays)
 
+    const rowTotal    = Math.round(unitPrice * 100) / 100  // quantity is always 1 here
     const invoiceBody = {
       customer_id:   invoiceCustomerId,
       currency:      invoiceCurrency,
       issue_date:    fmtDate(issueDate),
       due_date:      fmtDate(dueDate),
       payment_terms: `Net ${netDays}`,
+      sum:           rowTotal,
     }
     console.log('[billing-writer/remembill] invoice request body:', JSON.stringify(invoiceBody))
 
@@ -594,9 +596,9 @@ async function configureRememhill(
       throw new Error(`Remembill invoice creation: could not extract id from response: ${invRawBody}`)
     }
 
-    // Remembill uses "name" (not "description") as the required row label field.
-    // Amount is in minor units (öre). vat_rate 0 = no VAT.
-    const rowBody = { name: description, quantity: 1, unit_price: amountMinorUnits, vat_rate: 0 }
+    // Row carries name, quantity, unit price, and the pre-calculated row total.
+    // Remembill applies VAT/taxes on top and sends the invoice to the customer.
+    const rowBody = { name: description, quantity: 1, unit_price: unitPrice, total: rowTotal }
     console.log('[billing-writer/remembill] row request body:', JSON.stringify(rowBody))
     const rowRes = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
       method: 'POST', headers: h,
@@ -636,7 +638,7 @@ async function configureRememhill(
 
     if (period.periodStart <= now && period.baseAmount > 0) {
       const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-${pushStamp}-period-${period.yearNum}-${period.periodIndex}`)
-      const { id, url } = await pushInvoice(description, Math.round(period.baseAmount * 100), now, key, customerId, cur)
+      const { id, url } = await pushInvoice(description, Math.round(period.baseAmount * 100) / 100, now, key, customerId, cur)
       plannedRows.push({
         year_num: period.yearNum, period_start: fmtDate(period.periodStart), period_end: fmtDate(period.periodEnd),
         base_amount: period.baseAmount, currency: terms.currency ?? 'SEK', fee_label: null,
@@ -676,7 +678,7 @@ async function configureRememhill(
 
     if (isDue) {
       const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-${pushStamp}-onetime-${fee.fee_label}`)
-      const { id, url } = await pushInvoice(fee.fee_label, Math.round(fee.amount * 100), feeDueDate ?? now, key, customerId, cur)
+      const { id, url } = await pushInvoice(fee.fee_label, Math.round(fee.amount * 100) / 100, feeDueDate ?? now, key, customerId, cur)
       plannedRows.push({
         year_num: null, period_start: dueDateStr, period_end: dueDateStr,
         base_amount: fee.amount, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
