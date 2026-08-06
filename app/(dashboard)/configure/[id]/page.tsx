@@ -2604,9 +2604,22 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
 
               {items.length > 0 && (() => {
+                const termMonths = terms?.contract_term_months
+                  ?? (terms?.contract_start_date && terms?.contract_end_date
+                    ? (new Date(terms.contract_end_date).getFullYear() - new Date(terms.contract_start_date).getFullYear()) * 12
+                      + (new Date(terms.contract_end_date).getMonth() - new Date(terms.contract_start_date).getMonth()) + 1
+                    : 0)
+                const periodsInTerm = (bp: string | null | undefined) => {
+                  if (!termMonths) return 1
+                  if (bp === 'monthly')     return termMonths
+                  if (bp === 'quarterly')   return termMonths / 3
+                  if (bp === 'semi-annual') return termMonths / 6
+                  if (bp === 'annual')      return termMonths / 12
+                  return 1  // one_time or unknown
+                }
                 const tcv = items.reduce((s, item) => {
                   if (classifyItem(item) === 'escalator') return s
-                  return s + (item.total_amount ?? 0)
+                  return s + (item.total_amount ?? 0) * periodsInTerm(item.billing_period)
                 }, 0)
                 const platformLabel = billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'
                 const periodOptions = ['monthly', 'quarterly', 'semi-annual', 'annual', 'one_time']
