@@ -119,18 +119,11 @@ function computeContractTCV(terms: Terms | undefined, lineItems: LineItem[]): nu
   const rampSchedule = terms.ramp_schedule && terms.ramp_schedule.length > 0 ? terms.ramp_schedule : null
   const baseMonthly = terms.base_monthly_fee ?? (terms.base_annual_fee ? terms.base_annual_fee / 12 : 0)
 
-  // Convert each additional fee to its monthly equivalent using its own billing cadence.
-  // A quarterly fee of 75,000 is 25,000/month in the TCV; a monthly fee is taken as-is.
-  function feeToMonthly(f: AdditionalRecurringFee): number {
-    const amt = Number(f.amount ?? 0)
-    switch (f.billing_frequency) {
-      case 'quarterly':   return amt / 3
-      case 'semi-annual': return amt / 6
-      case 'annual':      return amt / 12
-      default:            return amt  // monthly or null → treat as monthly
-    }
-  }
-  const additionalMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => s + feeToMonthly(f), 0)
+  // additional_recurring_fees amounts are stored as monthly equivalents regardless
+  // of billing_frequency (billing_frequency only affects how often invoices are raised,
+  // not the per-month rate). The Revenue Model tab and the UI display both treat
+  // amount as monthly — match that here so TCV stays consistent.
+  const additionalMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => s + Number(f.amount ?? 0), 0)
 
   function monthlyBaseFor(monthIdx: number, date: Date): number {
     if (rampSchedule) {
@@ -224,13 +217,7 @@ function buildContractSummary(
       ? `${fmt(vals[0], cur)}/year subscription`
       : `multi-year pricing (${vals.map(v => fmt(v, cur)).join(' → ')}/yr)`
   } else if (terms.base_monthly_fee) {
-    const addlMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => {
-      const amt = Number(f.amount ?? 0)
-      if (f.billing_frequency === 'quarterly')   return s + amt / 3
-      if (f.billing_frequency === 'semi-annual') return s + amt / 6
-      if (f.billing_frequency === 'annual')      return s + amt / 12
-      return s + amt
-    }, 0)
+    const addlMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => s + Number(f.amount ?? 0), 0)
     const totalMonthly = terms.base_monthly_fee + addlMonthly
     pricing = addlMonthly > 0
       ? `combined ${fmt(totalMonthly, cur)}/month subscription`
