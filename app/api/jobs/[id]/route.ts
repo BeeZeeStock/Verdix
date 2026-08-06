@@ -34,17 +34,23 @@ export async function DELETE(
 
   const platform = (job.billing_platform as string | null) ?? 'stripe'
 
-  // Fetch unsent planned_invoices that have an external invoice ID so we can
-  // void/delete them in the billing platform. Sent/paid invoices are left alone —
-  // the customer already received them.
-  const { data: unsentPlanned } = await supabaseServer
+  // For Stripe: only void/delete non-sent invoices — sent ones represent real
+  // payment obligations the customer has received.
+  // For Remembill: delete ALL invoices associated with this job. Remembill has no
+  // payment processing, and broken pushes (e.g. failed row creation) leave empty
+  // invoices marked 'sent' in our DB but still unsent in Remembill's UI.
+  const statusFilter = platform === 'remembill'
+    ? ['scheduled', 'draft', 'parked', 'processing', 'sent']
+    : ['scheduled', 'draft', 'parked', 'processing']
+
+  const { data: plannedToClean } = await supabaseServer
     .from('planned_invoices')
     .select('stripe_invoice_id, status')
     .eq('job_id', id)
-    .in('status', ['scheduled', 'draft', 'parked', 'processing'])
+    .in('status', statusFilter)
     .not('stripe_invoice_id', 'is', null)
 
-  const unsentExternalIds = (unsentPlanned ?? [])
+  const unsentExternalIds = (plannedToClean ?? [])
     .map(r => r.stripe_invoice_id as string)
     .filter(Boolean)
 
@@ -98,8 +104,8 @@ export async function DELETE(
   }
 
   // ── Remembill cleanup ───────────────────────────────────────────────────────
-  // Delete any draft/unsent invoices that exist in Remembill.
-  // Sent invoices are left untouched.
+  // Delete all Remembill invoices for this job (including 'sent' in our DB) —
+  // broken pushes leave empty invoices in Remembill that appear unsent there.
   if (platform === 'remembill' && unsentExternalIds.length > 0) {
     try {
       const { data: rbInt } = await supabaseServer
