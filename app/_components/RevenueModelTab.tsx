@@ -1302,16 +1302,16 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               }
               if (expected > 0) displayAmount = expected
             }
-            rawEvents.push({ label: `Year ${inv.yearNum}`, date: scheduleDate(inv.yearNum, inv), amount: displayAmount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
+            rawEvents.push({ label: `Year ${inv.yearNum} recurring`, date: scheduleDate(inv.yearNum, inv), amount: displayAmount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
           }
         } else {
           // Legacy (annual billing): Year 1 from first subscription invoice, Year 2+ from drafts
           const firstInv = billingData.invoices[0]
           if (firstInv) {
-            rawEvents.push({ label: 'Year 1', date: scheduleDate(1, firstInv), amount: firstInv.amount, currency: firstInv.currency, status: firstInv.status ?? 'unknown', hostedUrl: firstInv.hostedUrl })
+            rawEvents.push({ label: 'Year 1 recurring', date: scheduleDate(1, firstInv), amount: firstInv.amount, currency: firstInv.currency, status: firstInv.status ?? 'unknown', hostedUrl: firstInv.hostedUrl })
           }
           for (const inv of sortedDrafts) {
-            rawEvents.push({ label: `Year ${inv.yearNum}`, date: scheduleDate(inv.yearNum, inv), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
+            rawEvents.push({ label: `Year ${inv.yearNum} recurring`, date: scheduleDate(inv.yearNum, inv), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
           }
         }
 
@@ -1331,7 +1331,9 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
         // Sort chronologically
         const events = [...rawEvents].sort((a, b) => a.date.getTime() - b.date.getTime())
 
-        const truncate = (s: string, max = 14) => s.length > max ? s.slice(0, max - 1) + '…' : s
+        // max=20 comfortably fits "Year N recurring" (up to 2-digit years)
+        // without truncating mid-word, while still capping long fee names.
+        const truncate = (s: string, max = 20) => s.length > max ? s.slice(0, max - 1) + '…' : s
 
         // Each subscription-year bar's end date = the day before the next year's
         // start (or the contract end date for the final year) — shows the same
