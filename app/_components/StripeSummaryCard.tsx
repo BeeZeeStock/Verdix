@@ -113,23 +113,6 @@ function StatusBadge({ status }: { status: string | null }) {
   )
 }
 
-function RememhillCopyLink({ url }: { url: string }) {
-  const [copied, setCopied] = useState(false)
-  const copy = () => {
-    navigator.clipboard.writeText(url).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
-  }
-  return (
-    <div className="flex items-center gap-2 rounded-lg px-2 py-1.5" style={{ background: 'rgba(26,61,43,0.06)' }}>
-      <span className="text-[10px] text-stone/60 font-mono truncate flex-1 min-w-0">{url}</span>
-      <button onClick={copy} className="flex-shrink-0 text-[10px] font-semibold text-forest hover:text-sage transition-colors flex items-center gap-1">
-        {copied ? <><i className="ti ti-check" style={{ fontSize: 11 }} /> Copied</> : <><i className="ti ti-copy" style={{ fontSize: 11 }} /> Copy</>}
-      </button>
-    </div>
-  )
-}
 
 export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
   jobId: string
@@ -532,16 +515,11 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
       {/* Footer link */}
       <div className="px-6 py-3" style={{ background: 'rgba(26,61,43,0.03)', borderTop: '1px solid rgba(26,61,43,0.07)' }}>
         {isRememhill ? (
-          <div className="flex flex-col gap-1.5">
-            <p className="text-[10px] text-stone/50 leading-snug">
-              Remembill requires an active session. Go to{' '}
-              <a href="https://app.remembill.com" target="_blank" rel="noreferrer"
-                className="font-semibold text-forest hover:text-sage underline underline-offset-2">
-                app.remembill.com
-              </a>
-              {' '}and log in, then paste the link below into that tab.
-            </p>
-            <RememhillCopyLink url={sub.dashboardUrl} />
+          <div className="flex items-center justify-end">
+            <a href={sub.dashboardUrl} target="_blank" rel="noreferrer"
+              className="text-[11px] font-semibold text-forest hover:text-sage transition-colors flex items-center gap-1">
+              Open in Remembill <i className="ti ti-external-link" style={{ fontSize: 10 }} />
+            </a>
           </div>
         ) : (
           <div className="flex items-center justify-between">
