@@ -547,9 +547,31 @@ async function configureRememhill(
   }
   console.log('[billing-writer/remembill] customerId:', customerId, '| currency:', cur)
 
-  // ── 1b. Clean up any stale planned_invoices from a previous failed push ─────
+  // ── 1b. Preserve already-sent invoices; delete only unsent rows ─────────────
+  // Sent invoices have already been delivered to the customer — never create
+  // duplicates. Scheduled/parked rows are safe to delete and re-compute.
+  type ExistingSentRow = {
+    year_num: number | null
+    period_start: string; period_end: string
+    invoice_type: string; fee_label: string | null
+    stripe_invoice_id: string | null; stripe_invoice_url: string | null
+    base_amount: number; currency: string
+    sent_at: string | null; status: string
+  }
+  let sentRows: ExistingSentRow[] = []
   if (jobId) {
-    const { error: cleanErr } = await supabaseServer.from('planned_invoices').delete().eq('job_id', jobId)
+    const { data: sent } = await supabaseServer
+      .from('planned_invoices')
+      .select('year_num, period_start, period_end, invoice_type, fee_label, stripe_invoice_id, stripe_invoice_url, base_amount, currency, sent_at, status')
+      .eq('job_id', jobId)
+      .in('status', ['sent', 'paid'])
+    sentRows = (sent ?? []) as ExistingSentRow[]
+
+    const { error: cleanErr } = await supabaseServer
+      .from('planned_invoices')
+      .delete()
+      .eq('job_id', jobId)
+      .in('status', ['scheduled', 'parked', 'processing', 'draft'])
     if (cleanErr) console.error('[billing-writer/remembill] stale planned_invoices cleanup failed', cleanErr)
   }
 
@@ -634,20 +656,39 @@ async function configureRememhill(
 
   // ── 4. Period invoices ──────────────────────────────────────────────────────
   for (const period of periods) {
+    const periodStartStr = fmtDate(period.periodStart)
+    const periodEndStr   = fmtDate(period.periodEnd)
+
+    // If this period's invoice was already sent in a previous push, carry it
+    // forward unchanged — don't create a duplicate in Remembill.
+    const alreadySent = sentRows.find(
+      r => r.invoice_type === 'period' && r.year_num === period.yearNum && r.period_start === periodStartStr,
+    )
+    if (alreadySent) {
+      plannedRows.push({
+        year_num: alreadySent.year_num, period_start: alreadySent.period_start, period_end: alreadySent.period_end,
+        base_amount: alreadySent.base_amount, currency: alreadySent.currency, fee_label: null,
+        invoice_type: 'period', status: alreadySent.status,
+        stripe_invoice_id: alreadySent.stripe_invoice_id, stripe_invoice_url: alreadySent.stripe_invoice_url,
+        sent_at: alreadySent.sent_at,
+      })
+      continue
+    }
+
     const description = `Base subscription — Year ${period.yearNum} (${fmtLabel(period.periodStart)} – ${fmtLabel(period.periodEnd)})`
 
     if (period.periodStart <= now && period.baseAmount > 0) {
       const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-${pushStamp}-period-${period.yearNum}-${period.periodIndex}`)
       const { id, url } = await pushInvoice(description, Math.round(period.baseAmount * 100) / 100, now, key, customerId, cur)
       plannedRows.push({
-        year_num: period.yearNum, period_start: fmtDate(period.periodStart), period_end: fmtDate(period.periodEnd),
+        year_num: period.yearNum, period_start: periodStartStr, period_end: periodEndStr,
         base_amount: period.baseAmount, currency: terms.currency ?? 'SEK', fee_label: null,
         invoice_type: 'period', status: 'sent',
         stripe_invoice_id: id, stripe_invoice_url: url, sent_at: new Date().toISOString(),
       })
     } else {
       plannedRows.push({
-        year_num: period.yearNum, period_start: fmtDate(period.periodStart), period_end: fmtDate(period.periodEnd),
+        year_num: period.yearNum, period_start: periodStartStr, period_end: periodEndStr,
         base_amount: period.baseAmount, currency: terms.currency ?? 'SEK', fee_label: null,
         invoice_type: 'period', status: 'scheduled',
         stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
@@ -663,6 +704,11 @@ async function configureRememhill(
   const oneTimeFees = (terms.one_time_fees ?? []) as OneTimeFeeInput[]
 
   for (const fee of oneTimeFees.filter(f => f.manual_trigger)) {
+    const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
+    if (alreadySent) {
+      plannedRows.push({ ...alreadySent, invoice_type: 'one_time', fee_label: alreadySent.fee_label })
+      continue
+    }
     plannedRows.push({
       year_num: null, period_start: fee.due_date ?? fmtDate(now), period_end: fee.due_date ?? fmtDate(now),
       base_amount: fee.amount ?? 0, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
@@ -675,6 +721,13 @@ async function configureRememhill(
     const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
     const isDue      = !feeDueDate || feeDueDate <= now
     const dueDateStr = fmtDate(feeDueDate ?? now)
+
+    // Don't re-send an already-sent one-time fee
+    const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
+    if (alreadySent) {
+      plannedRows.push({ ...alreadySent, invoice_type: 'one_time', fee_label: alreadySent.fee_label })
+      continue
+    }
 
     if (isDue) {
       const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-${pushStamp}-onetime-${fee.fee_label}`)

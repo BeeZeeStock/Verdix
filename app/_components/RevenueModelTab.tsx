@@ -1604,7 +1604,8 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush }:
         // Verdix "Draft"  = contract date is in the future (regardless of Stripe status —
         //   Verdix pre-creates invoices in Stripe before their due date as billing setup).
         // This mirrors the exact same gate used in the billing timeline.
-        const isStripeIssued = (s: string | null | undefined) => s === 'open' || s === 'paid'
+        // 'sent' covers Remembill invoices delivered via email; 'open' covers Stripe
+        const isStripeIssued = (s: string | null | undefined) => s === 'open' || s === 'paid' || s === 'sent'
         const todayMs = today.getTime()
         const cStart  = billingData?.contractStart ? parseLocalDate(billingData.contractStart) : null
         const subInterval      = billingData?.subscription?.interval      ?? 'month'
