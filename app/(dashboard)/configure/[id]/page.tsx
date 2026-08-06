@@ -1820,8 +1820,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       const data = await res.json()
       if (data.success) {
         setApproved({ stripeSubscriptionId: data.stripeSubscriptionId, dashboardUrl: data.dashboardUrl, customerId: data.customerId })
+        fetchJob()
       } else {
         setApproveError(data.error ?? 'Billing configuration failed. Please try again.')
+        fetchJob()
       }
     } catch {
       setApproveError('Network error — please check your connection and try again.')
@@ -1850,30 +1852,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     </div>
   )
 
-  if (job.execute_status === 'FAILED' && !approved) return (
-    <div className="p-8 flex items-center justify-center h-full">
-      <div className="text-center max-w-sm">
-        <i className="ti ti-alert-circle text-danger block mb-4" style={{ fontSize: 40 }} />
-        <h2 className="font-medium text-ink text-lg mb-2">Push failed</h2>
-        <p className="text-stone text-sm mb-6 leading-relaxed">{job.error_message}</p>
-        {approveError && (
-          <p className="text-red-700 text-sm mb-4 rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-left">{approveError}</p>
-        )}
-        <button
-          onClick={handleApprove}
-          disabled={approving}
-          className="w-full bg-forest text-white text-sm font-medium px-4 py-2.5 rounded-xl hover:bg-sage transition-colors disabled:opacity-50 mb-3 flex items-center justify-center gap-2"
-        >
-          {approving
-            ? <><span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Retrying…</>
-            : 'Retry push'}
-        </button>
-        <Link href="/configure/new" className="text-stone/60 text-sm hover:text-stone transition-colors">
-          Start new contract instead
-        </Link>
-      </div>
-    </div>
-  )
+  const isFailed = job.execute_status === 'FAILED' && !approved
 
   // ── Main view ─────────────────────────────────────────────────────────────
   const isConfigured = job.execute_status === 'COMPLETED' || !!approved
@@ -1958,12 +1937,27 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: '#4A7C59' }}>
               <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> Configured in {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
             </span>
+          ) : isFailed ? (
+            <span className="text-xs font-medium flex items-center gap-1.5 text-red-500">
+              <i className="ti ti-alert-circle" style={{ fontSize: 13 }} /> Push failed — fix &amp; retry below
+            </span>
           ) : needsReview === 0 ? (
             <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: '#4A7C59' }}>
               <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> Ready to approve
             </span>
           ) : null}
         </div>
+
+        {/* Push-failed banner — stays visible so the user can fix data and retry */}
+        {isFailed && (
+          <div className="flex-shrink-0 mx-8 mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-3">
+            <i className="ti ti-alert-circle text-red-500 mt-0.5 flex-shrink-0" style={{ fontSize: 16 }} />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-red-700 mb-0.5">Last push failed — fix the issue below and retry</p>
+              <p className="text-xs text-red-600 leading-relaxed">{job.error_message}</p>
+            </div>
+          </div>
+        )}
 
         {/* Content row */}
         <div className="flex flex-1 overflow-hidden">
@@ -2814,7 +2808,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       className="inline-flex items-center gap-2 font-semibold text-[13px] px-6 py-2.5 rounded-xl transition-all disabled:opacity-40 bg-forest text-white hover:bg-sage">
                       {approving
                         ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> Pushing to {platformLabel}…</>
-                        : <>Approve &amp; push to {platformLabel} <i className="ti ti-arrow-up-right" style={{ fontSize: 13 }} /></>}
+                        : isFailed
+                          ? <>Retry push to {platformLabel} <i className="ti ti-refresh" style={{ fontSize: 13 }} /></>
+                          : <>Approve &amp; push to {platformLabel} <i className="ti ti-arrow-up-right" style={{ fontSize: 13 }} /></>}
                     </button>
                     {needsPlatformChoice && (
                       <p className="text-[10px] text-amber-600">Select a billing platform above</p>
