@@ -202,13 +202,24 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
     setRepairResult(null)
     try {
       const res  = await fetch(`/api/jobs/${jobId}/remembill-repair`, { method: 'POST' })
-      const data = await res.json() as { fixed?: { invoiceId: string; feeLabel: string | null; action: string; newId?: string }[]; message?: string; error?: string }
+      const data = await res.json() as { fixed?: Record<string, unknown>[]; repairedCount?: number; message?: string; error?: string }
+      console.log('[remembill-repair] full debug output:', JSON.stringify(data, null, 2))
       if (!res.ok) {
         setRepairResult(`Error: ${data.error ?? res.status}`)
+      } else if (data.message) {
+        setRepairResult(data.message)
       } else {
-        const fixed = (data.fixed ?? []).filter(r => r.action.includes('recreated'))
-        setRepairResult(fixed.length > 0 ? `${fixed.length} invoice${fixed.length > 1 ? 's' : ''} repaired` : (data.message ?? 'No missing rows found'))
-        if (fixed.length > 0) await handleRefresh()
+        const fixed = data.fixed ?? []
+        const hasRowsCount = fixed.filter(r => r.hasRows).length
+        const noRowsCount  = fixed.filter(r => r.hasRows === false).length
+        if (hasRowsCount > 0) {
+          setRepairResult(`${hasRowsCount} invoice${hasRowsCount > 1 ? 's' : ''} repaired ✓`)
+          await handleRefresh()
+        } else if (noRowsCount > 0) {
+          setRepairResult(`Invoice sent but rows still missing — check browser console for debug output`)
+        } else {
+          setRepairResult('No invoices processed')
+        }
       }
     } catch {
       setRepairResult('Network error')
