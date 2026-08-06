@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, use } from 'react'
+import { useState, useEffect, use } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
@@ -537,12 +537,11 @@ function SectionChip({ heading, onClick }: { heading?: string; onClick: () => vo
   return (
     <button
       onClick={onClick}
-      className="inline-flex items-center gap-1 text-forest/70 hover:text-forest hover:bg-mint/60 bg-mint/30 border border-sage/30 rounded-full transition-colors whitespace-nowrap"
-      style={{ fontSize: 10, fontWeight: 600, padding: '3px 10px 3px 8px' }}
+      className="hover:underline whitespace-nowrap transition-colors"
+      style={{ fontSize: 11, fontWeight: 600, color: '#1F7A4A', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
       title={`Open §${heading} in contract PDF`}
     >
-      <i className="ti ti-file-text" style={{ fontSize: 10 }} />
-      {num ? `§${num}` : heading}
+      §{num ?? heading}
     </button>
   )
 }
@@ -1532,27 +1531,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [drawer, setDrawer]   = useState<{ open: boolean; section?: string }>({ open: false })
   const [pdfUrl, setPdfUrl]   = useState<string | null>(null)
   const [pdfUrlError, setPdfUrlError] = useState(false)
-  const [pdfRenderKey, setPdfRenderKey] = useState(0)
-  const [panelWidth, setPanelWidth] = useState(60)   // % of viewport
-  const isDragging  = useRef(false)
-  const dragOrigin  = useRef({ x: 0, w: 0 })
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!isDragging.current) return
-      const delta = dragOrigin.current.x - e.clientX          // drag left → widen
-      const next  = dragOrigin.current.w + (delta / window.innerWidth) * 100
-      setPanelWidth(Math.min(85, Math.max(30, next)))
-    }
-    const onUp = () => {
-      if (isDragging.current) setPdfRenderKey(k => k + 1)  // re-render PDF at new panel width
-      isDragging.current = false
-      document.body.style.userSelect = ''
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup',   onUp)
-    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
-  }, [])
+  const PANEL_WIDTH_PCT = 60   // fixed % of viewport
 
   // Fetch a fresh signed URL whenever the PDF drawer opens (stored URL may be expired)
   useEffect(() => {
@@ -3011,20 +2990,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       {drawer.open && (
         <div className="fixed inset-0 z-40 flex justify-end">
           <div className="absolute inset-0 bg-black/35" onClick={() => closePDF()} />
-          <div className="relative h-full bg-white shadow-2xl flex flex-col" style={{ width: `${panelWidth}%` }}>
-            {/* ── Resize handle ── */}
-            <div
-              className="absolute left-0 top-0 h-full w-2 z-10 flex items-center justify-center group"
-              style={{ cursor: 'col-resize' }}
-              onMouseDown={e => {
-                isDragging.current = true
-                dragOrigin.current = { x: e.clientX, w: panelWidth }
-                document.body.style.userSelect = 'none'
-                e.preventDefault()
-              }}
-            >
-              <div className="w-0.5 h-16 rounded-full bg-forest/20 group-hover:bg-forest/50 transition-colors" />
-            </div>
+          <div className="relative h-full bg-white shadow-2xl flex flex-col" style={{ width: `${PANEL_WIDTH_PCT}%` }}>
             <div className="flex items-center justify-between px-5 py-3 border-b border-forest/10 bg-white">
               <div className="min-w-0 flex-1 mr-2 flex items-center overflow-hidden">
                 <span className="text-sm font-medium text-ink whitespace-nowrap">Signed contract</span>
@@ -3053,7 +3019,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       </div>
                     </div>
                   : pdfUrl
-                    ? <PDFViewer key={pdfRenderKey} url={pdfUrl} section={drawer.section} />
+                    ? <PDFViewer url={pdfUrl} section={drawer.section} />
                     : <div className="h-full flex items-center justify-center">
                         <div className="w-8 h-8 border-2 border-forest border-t-transparent rounded-full animate-spin" />
                       </div>
