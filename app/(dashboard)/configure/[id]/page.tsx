@@ -1526,6 +1526,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [corrections, setCorrections] = useState<Record<string, { value: string; remember: boolean }>>({})
   const [approving, setApproving]     = useState(false)
   const [approveError, setApproveError] = useState<string | null>(null)
+  const [billingEdit, setBillingEdit] = useState<{ itemId: string; field: 'quantity' | 'unit_price' | 'billing_period'; value: string } | null>(null)
   const [approved, setApproved]       = useState<{ stripeSubscriptionId: string; dashboardUrl?: string; customerId?: string } | null>(null)
   const [meterMappingsConfirmed, setMeterMappingsConfirmed] = useState(false)
   const [drawer, setDrawer]   = useState<{ open: boolean; section?: string }>({ open: false })
@@ -1783,6 +1784,28 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     setCorrections(c => ({ ...c, [itemId]: { value, remember: c[itemId]?.remember ?? true } }))
 
   const findItem = (keyword: string) => items.find(i => i.product_name.toLowerCase().includes(keyword.toLowerCase()))
+
+  const saveLineItemField = async (itemId: string, field: 'quantity' | 'unit_price' | 'billing_period', raw: string) => {
+    const item = items.find(i => i.id === itemId)
+    if (!item) return
+    const fields: Record<string, unknown> = {}
+    if (field === 'billing_period') {
+      fields.billing_period = raw
+    } else {
+      const num = parseFloat(raw.replace(/[^0-9.-]/g, ''))
+      if (isNaN(num)) return
+      fields[field] = num
+      const qty = field === 'quantity' ? num : item.quantity
+      const up  = field === 'unit_price' ? num : item.unit_price
+      fields.total_amount = Math.round(qty * up * 100) / 100
+    }
+    setItems(prev => prev.map(i => i.id === itemId ? { ...i, ...fields } : i))
+    await fetch(`/api/jobs/${id}/line-items`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ itemId, fields }),
+    })
+  }
 
   const handleApprove = async () => {
     setApproving(true)
@@ -2580,7 +2603,15 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 </div>
               </div>
 
-              {items.length > 0 && (
+              {items.length > 0 && (() => {
+                const tcv = items.reduce((s, item) => {
+                  if (classifyItem(item) === 'escalator') return s
+                  return s + (item.total_amount ?? 0)
+                }, 0)
+                const platformLabel = billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'
+                const periodOptions = ['monthly', 'quarterly', 'semi-annual', 'annual', 'one_time']
+                const editCellStyle = 'w-full text-right bg-transparent border-0 border-b border-forest/30 focus:outline-none focus:border-forest text-[12px] tabular-nums py-0 px-0'
+                return (
                 <div className="p-6">
                   <div className="overflow-x-auto">
                     <table className="w-full">
@@ -2595,8 +2626,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         </tr>
                       </thead>
                       <tbody>
-                        {items.map(item => (
+                        {items.map(item => {
+                          const isEscalator = classifyItem(item) === 'escalator'
+                          const isVariable  = classifyItem(item) === 'one_time' && item.total_amount === 0
+                          return (
                           <tr key={item.id} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                            {/* Product */}
                             <td className="py-2.5 pr-4 text-[12px] text-ink">
                               {item.confidence_score < 0.95 && !correction(item.id) && (
                                 <i className="ti ti-alert-triangle mr-1.5" style={{ fontSize: 11, color: '#D97706' }} />
@@ -2608,37 +2643,112 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                                 </button>
                               )}
                             </td>
-                            <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>{item.quantity}</td>
-                            <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                              {(() => {
-                                if (classifyItem(item) === 'escalator') return <span>{item.unit_price != null ? `${item.unit_price}%` : '—'}</span>
-                                if (classifyItem(item) === 'one_time' && item.unit_price === 0) {
-                                  const termFee = allFees.find(f => f.fee_label === item.product_name)
-                                  if (termFee?.manual_trigger && termFee.rate_per_unit) {
-                                    return <span>{fmt(termFee.rate_per_unit, cur)}<span className="text-stone/60">/{termFee.metric_name ?? 'unit'}</span></span>
-                                  }
-                                }
-                                return fmtUnit(item.unit_price, cur)
-                              })()}
+
+                            {/* Qty — editable */}
+                            <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums', minWidth: 48 }}>
+                              {!isEscalator && billingEdit?.itemId === item.id && billingEdit.field === 'quantity' ? (
+                                <input autoFocus type="number" min="0" step="1"
+                                  className={editCellStyle}
+                                  style={{ width: 56 }}
+                                  value={billingEdit.value}
+                                  onChange={e => setBillingEdit(b => b && ({ ...b, value: e.target.value }))}
+                                  onBlur={() => { saveLineItemField(item.id, 'quantity', billingEdit.value); setBillingEdit(null) }}
+                                  onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                                />
+                              ) : (
+                                <span
+                                  className={isEscalator ? '' : 'cursor-pointer hover:text-forest transition-colors'}
+                                  title={isEscalator ? undefined : 'Click to edit'}
+                                  onClick={() => !isEscalator && setBillingEdit({ itemId: item.id, field: 'quantity', value: String(item.quantity) })}
+                                >{item.quantity}</span>
+                              )}
                             </td>
+
+                            {/* Unit price — editable */}
+                            <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums', minWidth: 96 }}>
+                              {isEscalator ? (
+                                <span>{item.unit_price != null ? `${item.unit_price}%` : '—'}</span>
+                              ) : billingEdit?.itemId === item.id && billingEdit.field === 'unit_price' ? (
+                                <input autoFocus type="number" min="0" step="any"
+                                  className={editCellStyle}
+                                  style={{ width: 96 }}
+                                  value={billingEdit.value}
+                                  onChange={e => setBillingEdit(b => b && ({ ...b, value: e.target.value }))}
+                                  onBlur={() => { saveLineItemField(item.id, 'unit_price', billingEdit.value); setBillingEdit(null) }}
+                                  onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                                />
+                              ) : (
+                                <span
+                                  className="cursor-pointer hover:text-forest transition-colors"
+                                  title="Click to edit"
+                                  onClick={() => {
+                                    if (classifyItem(item) === 'one_time' && item.unit_price === 0) {
+                                      const termFee = allFees.find(f => f.fee_label === item.product_name)
+                                      if (termFee?.manual_trigger && termFee.rate_per_unit) {
+                                        setBillingEdit({ itemId: item.id, field: 'unit_price', value: String(termFee.rate_per_unit) })
+                                        return
+                                      }
+                                    }
+                                    setBillingEdit({ itemId: item.id, field: 'unit_price', value: String(item.unit_price) })
+                                  }}
+                                >
+                                  {classifyItem(item) === 'one_time' && item.unit_price === 0 ? (() => {
+                                    const termFee = allFees.find(f => f.fee_label === item.product_name)
+                                    if (termFee?.manual_trigger && termFee.rate_per_unit) {
+                                      return <span>{fmt(termFee.rate_per_unit, cur)}<span className="text-stone/60">/{termFee.metric_name ?? 'unit'}</span></span>
+                                    }
+                                    return fmtUnit(item.unit_price, cur)
+                                  })() : fmtUnit(item.unit_price, cur)}
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Total — calculated, read-only */}
                             <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                              {classifyItem(item) === 'escalator'
+                              {isEscalator
                                 ? <span>{item.total_amount != null ? `${item.total_amount}%` : '—'}</span>
-                                : classifyItem(item) === 'one_time' && item.total_amount === 0
+                                : isVariable
                                   ? <span className="text-amber-600 font-normal text-[11px]">Variable — on delivery</span>
                                   : fmt(item.total_amount, cur)}
                             </td>
-                            <td className="py-2.5 text-[11px] text-stone text-right capitalize">{item.billing_period}</td>
+
+                            {/* Period — editable via select */}
+                            <td className="py-2.5 text-[11px] text-stone text-right">
+                              {isEscalator ? (
+                                <span className="capitalize">{item.billing_period}</span>
+                              ) : (
+                                <select
+                                  value={item.billing_period ?? 'monthly'}
+                                  onChange={e => saveLineItemField(item.id, 'billing_period', e.target.value)}
+                                  className="bg-transparent border-0 text-[11px] text-stone text-right focus:outline-none cursor-pointer hover:text-forest transition-colors capitalize appearance-none"
+                                  style={{ direction: 'rtl' }}
+                                >
+                                  {periodOptions.map(p => (
+                                    <option key={p} value={p} style={{ direction: 'ltr' }}>{p.replace('_', ' ')}</option>
+                                  ))}
+                                </select>
+                              )}
+                            </td>
                           </tr>
-                        ))}
+                        )})}
                       </tbody>
+                      {/* TCV footer */}
+                      <tfoot>
+                        <tr style={{ borderTop: '2px solid rgba(26,61,43,0.10)' }}>
+                          <td colSpan={3} className="pt-3 text-[10px] font-bold text-stone uppercase tracking-[0.1em]">Total contract value</td>
+                          <td className="pt-3 text-[13px] font-semibold text-ink text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            {fmt(tcv, cur)}
+                          </td>
+                          <td />
+                        </tr>
+                      </tfoot>
                     </table>
                   </div>
                   <p className="text-[10px] text-stone/50 mt-4">
-                    Platform: <span className="font-medium text-stone/70">Stripe</span>
+                    Platform: <span className="font-medium text-stone/70">{platformLabel}</span>
                   </p>
                 </div>
-              )}
+              )})()}
 
               {isConfigured && billingPlatform === 'chargebee' && dashboardUrl && (
                 <div className="px-6 py-4 flex items-center justify-between" style={{ background: 'rgba(26,61,43,0.04)', borderTop: '1px solid rgba(26,61,43,0.07)' }}>
