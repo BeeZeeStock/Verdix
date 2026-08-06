@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import Stripe from 'stripe'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
+import { REMEMBILL_BASE, remembillHeaders } from '@/lib/billing-writer'
 
 async function getStripeKey(orgId: string): Promise<string> {
   const { data } = await supabaseServer
@@ -31,62 +32,99 @@ export async function DELETE(
   if (!job || job.org_id !== org.orgId)
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  // For Stripe: void any open/draft invoices and cancel the subscription.
-  if (job.billing_platform !== 'chargebee' && job.billing_subscription_id) {
+  const platform = (job.billing_platform as string | null) ?? 'stripe'
+
+  // Fetch unsent planned_invoices that have an external invoice ID so we can
+  // void/delete them in the billing platform. Sent/paid invoices are left alone —
+  // the customer already received them.
+  const { data: unsentPlanned } = await supabaseServer
+    .from('planned_invoices')
+    .select('stripe_invoice_id, status')
+    .eq('job_id', id)
+    .in('status', ['scheduled', 'draft', 'parked', 'processing'])
+    .not('stripe_invoice_id', 'is', null)
+
+  const unsentExternalIds = (unsentPlanned ?? [])
+    .map(r => r.stripe_invoice_id as string)
+    .filter(Boolean)
+
+  // ── Stripe cleanup ──────────────────────────────────────────────────────────
+  if (platform === 'stripe') {
     try {
       const stripeKey = await getStripeKey(org.orgId)
       const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
 
-      // Void/delete all Stripe invoices for this job:
-      //   • Subscription invoices tracked in computed_invoices
-      //   • Standalone one-time fee invoices identified by verdix_job metadata
+      // Void/delete unsent planned invoices tracked in planned_invoices.
+      // Also catch any subscription invoices in computed_invoices and
+      // standalone one-time invoices identified by verdix_job metadata.
       const customerId = job.billing_customer_id as string | null
+      const { data: computedInvoices } = await supabaseServer
+        .from('computed_invoices')
+        .select('external_invoice_id')
+        .eq('job_id', id)
+        .not('external_invoice_id', 'is', null)
 
-      const [{ data: computedInvoices }, customerInvoicesRes] = await Promise.all([
-        supabaseServer
-          .from('computed_invoices')
-          .select('external_invoice_id')
-          .eq('job_id', id)
-          .not('external_invoice_id', 'is', null),
-        customerId
-          ? stripe.invoices.list({ customer: customerId, limit: 100 })
-          : Promise.resolve({ data: [] }),
-      ])
+      const computedIds = (computedInvoices ?? []).map(r => r.external_invoice_id as string).filter(Boolean)
 
-      const subscriptionInvIds = new Set(
-        (computedInvoices ?? []).map(r => r.external_invoice_id).filter(Boolean)
-      )
-      const standaloneInvIds = customerInvoicesRes.data
-        .filter(inv => {
-          const meta = inv.metadata as Record<string, string> | null
-          return !subscriptionInvIds.has(inv.id) && meta?.verdix_job === id
+      let standaloneIds: string[] = []
+      if (customerId) {
+        const customerInvs = await stripe.invoices.list({ customer: customerId, limit: 100 }).catch(() => ({ data: [] }))
+        standaloneIds = customerInvs.data
+          .filter(inv => {
+            const meta = inv.metadata as Record<string, string> | null
+            return meta?.verdix_job === id
+          })
+          .map(inv => inv.id)
+      }
+
+      const allIds = [...new Set([...unsentExternalIds, ...computedIds, ...standaloneIds])]
+      await Promise.all(allIds.map(async (invId) => {
+        try {
+          const inv = await stripe.invoices.retrieve(invId)
+          if (inv.status === 'open') await stripe.invoices.voidInvoice(invId)
+          else if (inv.status === 'draft') await stripe.invoices.del(invId)
+        } catch { /* already voided/deleted */ }
+      }))
+
+      if (job.billing_subscription_id) {
+        await stripe.subscriptions.cancel(job.billing_subscription_id as string).catch((err: Error) => {
+          if (!err.message.includes('No such subscription')) throw err
         })
-        .map(inv => inv.id)
-
-      await Promise.all(
-        [...subscriptionInvIds, ...standaloneInvIds].map(async (invId) => {
-          try {
-            const inv = await stripe.invoices.retrieve(invId as string)
-            if (inv.status === 'open') await stripe.invoices.voidInvoice(invId as string)
-            else if (inv.status === 'draft') await stripe.invoices.del(invId as string)
-          } catch { /* already voided/deleted — ignore */ }
-        })
-      )
-
-      await stripe.subscriptions.cancel(job.billing_subscription_id).catch((err: Error) => {
-        if (!err.message.includes('No such subscription')) throw err
-      })
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      return NextResponse.json(
-        { error: `Failed to clean up Stripe billing: ${message}` },
-        { status: 502 }
-      )
+      return NextResponse.json({ error: `Failed to clean up Stripe billing: ${message}` }, { status: 502 })
     }
   }
 
-  // Cancel Chargebee subscription.
-  if (job.billing_platform === 'chargebee' && job.billing_subscription_id) {
+  // ── Remembill cleanup ───────────────────────────────────────────────────────
+  // Delete any draft/unsent invoices that exist in Remembill.
+  // Sent invoices are left untouched.
+  if (platform === 'remembill' && unsentExternalIds.length > 0) {
+    try {
+      const { data: rbInt } = await supabaseServer
+        .from('org_integrations')
+        .select('config')
+        .eq('org_id', org.orgId)
+        .eq('connector_name', 'remembill')
+        .eq('is_active', true)
+        .maybeSingle()
+      const rbKey = (rbInt?.config as Record<string, string>)?.api_key ?? process.env.REMEMBILL_API_KEY!
+      const h = remembillHeaders(rbKey)
+      await Promise.all(
+        unsentExternalIds.map(invId =>
+          fetch(`${REMEMBILL_BASE}/invoices/${invId}`, { method: 'DELETE', headers: h })
+            .catch(err => console.error('[delete/remembill] invoice delete failed', invId, err))
+        )
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return NextResponse.json({ error: `Failed to clean up Remembill billing: ${message}` }, { status: 502 })
+    }
+  }
+
+  // ── Chargebee cleanup ───────────────────────────────────────────────────────
+  if (platform === 'chargebee' && job.billing_subscription_id) {
     try {
       const { data: integration } = await supabaseServer
         .from('org_integrations')
@@ -110,14 +148,12 @@ export async function DELETE(
       )
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      return NextResponse.json(
-        { error: `Failed to cancel billing subscription: ${message}` },
-        { status: 502 }
-      )
+      return NextResponse.json({ error: `Failed to cancel Chargebee subscription: ${message}` }, { status: 502 })
     }
   }
 
   // Delete child rows first in case DB lacks cascade rules
+  await supabaseServer.from('planned_invoices').delete().eq('job_id', id)
   await supabaseServer.from('computed_invoices').delete().eq('job_id', id)
   await supabaseServer.from('partner_findings').delete().eq('job_id', id)
   await supabaseServer.from('partner_invoices').delete().eq('job_id', id)
