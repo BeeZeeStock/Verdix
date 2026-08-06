@@ -568,6 +568,14 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   // Dirty flag: user changed escPerYear[0] vs contract default
   const escIsDirty = escPerYear[0] !== contractEscPct && jobId
 
+  // Additions = sent one-time invoices for variable/parked fees (total_amount = 0 in billing config).
+  // Computed at component level so both the billing schedule section and actuals chart can use it.
+  const additionsTotal = (billingData?.oneTimeInvoices ?? []).reduce((s, inv) => {
+    const matchingItem = items.find(i => i.product_name === inv.feeLabel)
+    return s + ((!matchingItem || matchingItem.total_amount === 0) ? inv.amount : 0)
+  }, 0)
+  const actualTcv = (baseTcv ?? totalTcv) + additionsTotal
+
   return (
     <div className="flex-1 overflow-y-auto p-8 space-y-6">
 
@@ -1355,17 +1363,10 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
         const byOf    = (v: number) => bBottom - (v / bScale) * bPlotH
         const bGrid   = [0, 0.5, 1].map(f => f * bScale)
 
-        // baseTcv = billing config table formula (items × periodsInTerm) — single source of truth.
-        // Additions = one-time invoices pushed for variable/parked fees (total_amount = 0 in billing config).
-        // Actual TCV = Base + Additions (used for waterfall comparison).
+        // actualTcv = baseTcv + additions, computed at component level above the return.
         const contractTcv = baseTcv ?? totalTcv
-        const additionsTotal = (billingData.oneTimeInvoices ?? []).reduce((s, inv) => {
-          const matchingItem = items.find(i => i.product_name === inv.feeLabel)
-          return s + ((!matchingItem || matchingItem.total_amount === 0) ? inv.amount : 0)
-        }, 0)
-        const actualTcv  = contractTcv + additionsTotal
-        const tcvDelta   = actualTcv > 0 ? (configuredTotal - actualTcv) / actualTcv : 0
-        const isMatch    = Math.abs(tcvDelta) < 0.005
+        const tcvDelta    = actualTcv > 0 ? (configuredTotal - actualTcv) / actualTcv : 0
+        const isMatch     = Math.abs(tcvDelta) < 0.005
 
         return (
           <div className="bg-white border border-forest/10 rounded-2xl p-6">
@@ -1682,17 +1683,17 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
 
         const totalBilled = actualSubBilled + actualAnnualDraftBilled + actualOneTimeBilled
         const elapsedMonths = modelMonths.filter(m => m.isPast).length
-        const actualsRemaining = Math.max(0, totalTcv - totalBilled)
+        const actualsRemaining = Math.max(0, actualTcv - totalBilled)
         type ABar = { label: string; sub?: string; amount: number; kind: 'segment' | 'total'; color: string; dashed?: boolean }
         const aBars: ABar[] = [
           { label: 'Billed to date', sub: elapsedMonths > 0 ? `${elapsedMonths} mo elapsed` : undefined, amount: totalBilled, kind: 'segment', color: '#27AE60' },
           { label: 'Remaining', sub: 'contracted', amount: actualsRemaining, kind: 'segment', color: '#C8E6D4', dashed: true },
-          { label: 'TCV projected', amount: totalTcv, kind: 'total', color: '#1A3D2B' },
+          { label: 'Actual TCV', amount: actualTcv, kind: 'total', color: '#1A3D2B' },
         ]
         let cum = 0
         const aPos = aBars.map(b => {
           const from = b.kind === 'total' ? 0 : cum
-          const to   = b.kind === 'total' ? totalTcv : cum + b.amount
+          const to   = b.kind === 'total' ? actualTcv : cum + b.amount
           if (b.kind !== 'total') cum = to
           return { ...b, from, to }
         })
@@ -1704,7 +1705,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
         const aGap = 24
         const aBW  = Math.min(140, (aw - aGap * (aN - 1)) / aN)
         const aStartX = ax1 + (aw - (aBW * aN + aGap * (aN - 1))) / 2
-        const aScale  = totalTcv > 0 ? totalTcv : 1
+        const aScale  = actualTcv > 0 ? actualTcv : 1
         const ayOf    = (v: number) => aBot - (v / aScale) * aPlotH
         const aGrid   = [0, 0.5, 1].map(f => f * aScale)
 
@@ -1715,7 +1716,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               <div className="flex items-center gap-3 text-[10px] text-stone/60">
                 <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Billed to date</span>
                 <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm border border-dashed" style={{ background: '#C8E6D4', borderColor: '#4A7C59' }} /> Remaining</span>
-                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#1A3D2B' }} /> TCV projected</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#1A3D2B' }} /> Actual TCV</span>
               </div>
             </div>
 
