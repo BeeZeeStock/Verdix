@@ -94,9 +94,15 @@ export async function POST(
         console.error('[parked-invoices/remembill] invoice creation failed', invRes.status, rawBody)
         throw new Error(`Remembill invoice creation failed (${invRes.status}): ${rawBody}`)
       }
-      invoiceId = ((await invRes.json()) as { id: string }).id
+      // Handle both flat { id } and wrapped { invoice: { id } } response shapes
+      const invJson = await invRes.json() as Record<string, unknown>
+      const invObj  = (invJson.invoice ?? invJson.data ?? invJson) as Record<string, unknown>
+      invoiceId = invObj.id as string
+      if (!invoiceId) throw new Error(`Remembill invoice creation: could not extract id from response: ${JSON.stringify(invJson)}`)
 
       // price is in öre (minor units): 1 kr = 100 öre. vat is 0–100 percent.
+      // Row is also included in the creation body (billing-writer strategy A) as a belt-and-suspenders
+      // measure; here we follow up with POST /rows in case Remembill needs both.
       await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
         method: 'POST', headers: rbH,
         body: JSON.stringify({ name: lineDesc, quantity, price: Math.round(rate_per_unit * 100), vat: 0 }),
