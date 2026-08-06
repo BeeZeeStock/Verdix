@@ -1588,6 +1588,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [rebuildDone,     setRebuildDone]     = useState(false)
   const [scheduleExists,  setScheduleExists]  = useState<boolean | null>(null)
   const [parkedInvoices,  setParkedInvoices]  = useState<Array<{ id: string; feeLabel: string | null; currency: string; baseAmount: number; metricName: string | null; ratePerUnit: number | null; description: string | null }>>([])
+  const [sentOneTimeInvoices, setSentOneTimeInvoices] = useState<{ feeLabel: string | null; amount: number }[]>([])
   const [connectedBillingPlatforms, setConnectedBillingPlatforms] = useState<string[]>([])
   const [selectedBillingPlatform,   setSelectedBillingPlatform]   = useState<string | null>(null)
 
@@ -1937,6 +1938,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     if (classifyItem(item) === 'escalator') return s
     return s + (item.total_amount ?? 0) * periodsInTerm(item.billing_period)
   }, 0)
+
+  // Additions = sent one-time invoices for variable fees (total_amount = 0 in billing config)
+  const additionsTotal = sentOneTimeInvoices.reduce((s, inv) => {
+    const matchingItem = items.find(i => i.product_name === inv.feeLabel)
+    return s + ((!matchingItem || matchingItem.total_amount === 0) ? inv.amount : 0)
+  }, 0)
+  const actualTcv = tcv + additionsTotal
 
   const summaryLines = buildContractSummary(terms, cur, tcv, userTiers, apiTiers)
 
@@ -2787,7 +2795,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 {parkedInvoices.length > 0 && (
                   <ParkedInvoicesCard jobId={id} parkedInvoices={parkedInvoices} />
                 )}
-                <StripeSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial'} onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} />
+                <StripeSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial'} onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} onSentOneTimeInvoices={setSentOneTimeInvoices} />
                 {/* Rebuild banner — shown when customer exists but no planned schedule yet */}
                 {!subId && !rebuildDone && scheduleExists === false && (() => {
                   const missingForRebuild: string[] = []
@@ -2868,26 +2876,44 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             {/* ── TCV + Approve footer ── */}
             <div className="bg-white rounded-2xl border border-forest/10 px-7 py-5 flex items-center justify-between gap-8">
                 {/* Left: label + number */}
-                <div className="min-w-0">
-                  <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/50">
-                    Total contract value (Base)
-                  </p>
-                  <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
-                    {tcv > 0
-                      ? fmt(tcv, cur)
-                      : billingModel === 'consumption'
-                        ? <span className="text-[22px] text-stone/60">Usage-based</span>
-                        : <span className="text-stone/30">—</span>}
-                  </p>
-                  {tcv === 0 && billingModel === 'consumption' && terms?.contract_start_date && terms?.contract_end_date && (
-                    <p className="text-[10px] text-stone/40 mt-2">TCV depends on usage volume</p>
-                  )}
-                  {tcv === 0 && billingModel !== 'consumption' && terms?.contract_start_date && terms?.contract_end_date &&
-                    parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date) && (
-                    <p className="text-[10px] text-amber-600 mt-2">End date is before start date — correct it above</p>
-                  )}
-                  {tcv === 0 && billingModel !== 'consumption' && (!terms?.contract_start_date || !terms?.contract_end_date) && (
-                    <p className="text-[10px] text-stone/40 mt-2">Add contract dates above to calculate</p>
+                <div className="min-w-0 flex items-end gap-8">
+                  <div>
+                    <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/50">
+                      Total contract value (Base)
+                    </p>
+                    <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
+                      {tcv > 0
+                        ? fmt(tcv, cur)
+                        : billingModel === 'consumption'
+                          ? <span className="text-[22px] text-stone/60">Usage-based</span>
+                          : <span className="text-stone/30">—</span>}
+                    </p>
+                    {tcv === 0 && billingModel === 'consumption' && terms?.contract_start_date && terms?.contract_end_date && (
+                      <p className="text-[10px] text-stone/40 mt-2">TCV depends on usage volume</p>
+                    )}
+                    {tcv === 0 && billingModel !== 'consumption' && terms?.contract_start_date && terms?.contract_end_date &&
+                      parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date) && (
+                      <p className="text-[10px] text-amber-600 mt-2">End date is before start date — correct it above</p>
+                    )}
+                    {tcv === 0 && billingModel !== 'consumption' && (!terms?.contract_start_date || !terms?.contract_end_date) && (
+                      <p className="text-[10px] text-stone/40 mt-2">Add contract dates above to calculate</p>
+                    )}
+                  </div>
+                  {additionsTotal > 0 && (
+                    <>
+                      <div>
+                        <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/40">Additions</p>
+                        <p className="text-[24px] font-semibold leading-none text-stone/60" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
+                          +{fmt(additionsTotal, cur)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/50">Actual TCV</p>
+                        <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
+                          {fmt(actualTcv, cur)}
+                        </p>
+                      </div>
+                    </>
                   )}
                 </div>
 

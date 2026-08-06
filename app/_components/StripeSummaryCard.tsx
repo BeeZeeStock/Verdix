@@ -114,10 +114,11 @@ function StatusBadge({ status }: { status: string | null }) {
 }
 
 
-export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
+export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSentOneTimeInvoices }: {
   jobId: string
   onHasSchedule?: (has: boolean) => void
   onParkedInvoices?: (invoices: ParkedInvoiceSummary[]) => void
+  onSentOneTimeInvoices?: (invoices: { feeLabel: string | null; amount: number }[]) => void
 }) {
   const [summary, setSummary]         = useState<Summary | null>(null)
   const [loading, setLoading]         = useState(true)
@@ -141,6 +142,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
           setSummary(data)
           onHasSchedule?.(Array.isArray(data.invoices) && data.invoices.length > 0)
           onParkedInvoices?.(data.parkedInvoices ?? [])
+          onSentOneTimeInvoices?.(data.oneTimeInvoices ?? [])
         }
       } catch {
         if (!cancelled) setError('Network error')
@@ -150,7 +152,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
     }
     doLoad()
     return () => { cancelled = true }
-  }, [jobId, onHasSchedule, onParkedInvoices])
+  }, [jobId, onHasSchedule, onParkedInvoices, onSentOneTimeInvoices])
 
   const handleRefresh = useCallback(async () => {
     setLoading(true)
@@ -165,13 +167,14 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices }: {
         setSummary(data)
         onHasSchedule?.(Array.isArray(data.invoices) && data.invoices.length > 0)
         onParkedInvoices?.(data.parkedInvoices ?? [])
+        onSentOneTimeInvoices?.(data.oneTimeInvoices ?? [])
       }
     } catch {
       setError('Network error')
     } finally {
       setLoading(false)
     }
-  }, [jobId, onHasSchedule, onParkedInvoices])
+  }, [jobId, onHasSchedule, onParkedInvoices, onSentOneTimeInvoices])
 
   const handleSyncPayments = useCallback(async () => {
     setSyncing(true)
