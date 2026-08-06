@@ -126,6 +126,8 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
   const [parking, setParking]         = useState<Set<string>>(new Set())
   const [syncing, setSyncing]         = useState(false)
   const [syncResult, setSyncResult]   = useState<{ checked: number; paid: number } | null>(null)
+  const [repairing, setRepairing]     = useState(false)
+  const [repairResult, setRepairResult] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -195,6 +197,26 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
     }
   }, [jobId, handleRefresh])
 
+  const handleRepair = useCallback(async () => {
+    setRepairing(true)
+    setRepairResult(null)
+    try {
+      const res  = await fetch(`/api/jobs/${jobId}/remembill-repair`, { method: 'POST' })
+      const data = await res.json() as { fixed?: { invoiceId: string; feeLabel: string | null; action: string; newId?: string }[]; message?: string; error?: string }
+      if (!res.ok) {
+        setRepairResult(`Error: ${data.error ?? res.status}`)
+      } else {
+        const fixed = (data.fixed ?? []).filter(r => r.action.includes('recreated'))
+        setRepairResult(fixed.length > 0 ? `${fixed.length} invoice${fixed.length > 1 ? 's' : ''} repaired` : (data.message ?? 'No missing rows found'))
+        if (fixed.length > 0) await handleRefresh()
+      }
+    } catch {
+      setRepairResult('Network error')
+    } finally {
+      setRepairing(false)
+    }
+  }, [jobId, handleRefresh])
+
   const isRememhill = summary?.billingPlatform === 'remembill'
   const hasSentInvoices = (summary?.invoices ?? []).some(i => i.status === 'sent')
 
@@ -255,6 +277,25 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
               {syncResult && (
                 <span className="text-[11px]" style={{ color: syncResult.paid > 0 ? '#0B5C36' : '#6B7280' }}>
                   {syncResult.paid > 0 ? `${syncResult.paid} marked paid` : 'No new payments'}
+                </span>
+              )}
+            </div>
+          )}
+          {isRememhill && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleRepair}
+                disabled={repairing}
+                title="Find invoices missing line items and recreate them with the correct rows"
+                className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-xl transition-colors disabled:opacity-50"
+                style={{ background: '#FFF7ED', color: '#C2410C', border: '1px solid rgba(194,65,12,0.25)' }}
+              >
+                <i className={`ti ti-tools ${repairing ? 'animate-spin' : ''}`} style={{ fontSize: 11 }} />
+                {repairing ? 'Repairing…' : 'Repair rows'}
+              </button>
+              {repairResult && (
+                <span className="text-[11px]" style={{ color: repairResult.startsWith('Error') ? '#DC2626' : '#0B5C36' }}>
+                  {repairResult}
                 </span>
               )}
             </div>
