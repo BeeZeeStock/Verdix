@@ -75,9 +75,10 @@ interface Props {
   jobId?: string
   onSaved?: () => void
   onRepush?: () => Promise<void>
+  baseTcv?: number
 }
 
-export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush }: Props) {
+export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, baseTcv }: Props) {
   const allTiers   = terms.overage_tiers ?? []
   const userTiers  = allTiers.filter(t => t.unit_type?.toLowerCase().includes('user'))
   const apiTiers   = allTiers.filter(t =>
@@ -1354,12 +1355,17 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush }:
         const byOf    = (v: number) => bBottom - (v / bScale) * bPlotH
         const bGrid   = [0, 0.5, 1].map(f => f * bScale)
 
-        // contractTcv must come from contract terms, not from Stripe — the
-        // Stripe paymentSchedule only reflects what was queued at push time
-        // (often a single year's amount) and is not a reliable TCV figure.
-        const contractTcv = totalTcv
-        const tcvDelta = contractTcv > 0 ? (configuredTotal - contractTcv) / contractTcv : 0
-        const isMatch  = Math.abs(tcvDelta) < 0.005
+        // baseTcv = billing config table formula (items × periodsInTerm) — single source of truth.
+        // Additions = one-time invoices pushed for variable/parked fees (total_amount = 0 in billing config).
+        // Actual TCV = Base + Additions (used for waterfall comparison).
+        const contractTcv = baseTcv ?? totalTcv
+        const additionsTotal = (billingData.oneTimeInvoices ?? []).reduce((s, inv) => {
+          const matchingItem = items.find(i => i.product_name === inv.feeLabel)
+          return s + ((!matchingItem || matchingItem.total_amount === 0) ? inv.amount : 0)
+        }, 0)
+        const actualTcv  = contractTcv + additionsTotal
+        const tcvDelta   = actualTcv > 0 ? (configuredTotal - actualTcv) / actualTcv : 0
+        const isMatch    = Math.abs(tcvDelta) < 0.005
 
         return (
           <div className="bg-white border border-forest/10 rounded-2xl p-6">
@@ -1458,30 +1464,48 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush }:
                   </p>
                 </div>
                 {contractTcv > 0 && (
-                  <div>
-                    <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Contract TCV</p>
-                    <p className="text-[20px] font-semibold leading-none" style={{ color: '#9CA3AF', fontVariantNumeric: 'tabular-nums' }}>
-                      {fmt(contractTcv, cur)}
-                    </p>
+                  <div className="flex items-start gap-5">
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Base TCV</p>
+                      <p className="text-[20px] font-semibold leading-none" style={{ color: '#9CA3AF', fontVariantNumeric: 'tabular-nums' }}>
+                        {fmt(contractTcv, cur)}
+                      </p>
+                    </div>
+                    {additionsTotal > 0 && (
+                      <>
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Additions</p>
+                          <p className="text-[20px] font-semibold leading-none" style={{ color: '#9CA3AF', fontVariantNumeric: 'tabular-nums' }}>
+                            +{fmt(additionsTotal, cur)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Actual TCV</p>
+                          <p className="text-[20px] font-semibold leading-none" style={{ color: '#9CA3AF', fontVariantNumeric: 'tabular-nums' }}>
+                            {fmt(actualTcv, cur)}
+                          </p>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
-              {contractTcv > 0 && isMatch && (
+              {actualTcv > 0 && isMatch && (
                 <div className="flex items-center gap-1.5 text-[11px] font-medium text-green-700 bg-green-50 px-3 py-1.5 rounded-lg">
                   <i className="ti ti-circle-check-filled" style={{ fontSize: 13 }} /> Matches contract
                 </div>
               )}
-              {contractTcv > 0 && !isMatch && (
+              {actualTcv > 0 && !isMatch && (
                 <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg">
                   <i className="ti ti-alert-triangle-filled" style={{ fontSize: 13 }} />
-                  {tcvDelta > 0 ? '+' : ''}{(tcvDelta * 100).toFixed(1)}% vs contract
+                  {tcvDelta > 0 ? '+' : ''}{(tcvDelta * 100).toFixed(1)}% vs actual TCV
                 </div>
               )}
             </div>
 
             {/* ── Mismatch explanation panel ── */}
-            {contractTcv > 0 && !isMatch && (() => {
-              const gap = Math.abs(contractTcv - configuredTotal)
+            {actualTcv > 0 && !isMatch && (() => {
+              const gap = Math.abs(actualTcv - configuredTotal)
               const pushedFeeLabels = new Set(
                 (billingData.oneTimeInvoices ?? []).map(inv => inv.feeLabel).filter(Boolean)
               )
@@ -1494,7 +1518,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush }:
                     <i className="ti ti-info-circle text-amber-600 flex-shrink-0 mt-0.5" style={{ fontSize: 15 }} />
                     <div className="flex-1 min-w-0">
                       <p className="text-[12px] font-semibold text-amber-900 mb-2">
-                        {fmt(gap, cur)} {tcvDelta < 0 ? 'below' : 'above'} the contract TCV — here&apos;s why this can happen:
+                        {fmt(gap, cur)} {tcvDelta < 0 ? 'below' : 'above'} the actual TCV — here&apos;s why this can happen:
                       </p>
                       <ul className="space-y-1.5 mb-3">
                         {parkedFees.length > 0 && (

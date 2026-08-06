@@ -1917,7 +1917,27 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
   const billingModel = deriveBillingModel(terms)
   const src = terms?.field_sources ?? {}
-  const tcv = computeContractTCV(terms, items)
+
+  // Single-source TCV: billing config table formula (items × periodsInTerm)
+  // This is Base TCV — what the contract says at signing, before any overages
+  const termMonths = terms?.contract_term_months
+    ?? (terms?.contract_start_date && terms?.contract_end_date
+      ? (new Date(terms.contract_end_date).getFullYear() - new Date(terms.contract_start_date).getFullYear()) * 12
+        + (new Date(terms.contract_end_date).getMonth() - new Date(terms.contract_start_date).getMonth()) + 1
+      : 0)
+  const periodsInTerm = (bp: string | null | undefined): number => {
+    if (!termMonths) return 1
+    if (bp === 'monthly')     return termMonths
+    if (bp === 'quarterly')   return termMonths / 3
+    if (bp === 'semi-annual') return termMonths / 6
+    if (bp === 'annual')      return termMonths / 12
+    return 1
+  }
+  const tcv = items.reduce((s, item) => {
+    if (classifyItem(item) === 'escalator') return s
+    return s + (item.total_amount ?? 0) * periodsInTerm(item.billing_period)
+  }, 0)
+
   const summaryLines = buildContractSummary(terms, cur, tcv, userTiers, apiTiers)
 
   const baseItem = findItem('base subscription')
@@ -1987,7 +2007,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
           {/* ── Model tab: full screen ────────────────────────────────────── */}
           {activeTab === 'model' && terms && (
-            <RevenueModelTab terms={terms} items={items} cur={cur} jobId={id} onSaved={fetchJob} onRepush={handleApprove} />
+            <RevenueModelTab terms={terms} items={items} cur={cur} jobId={id} onSaved={fetchJob} onRepush={handleApprove} baseTcv={tcv} />
           )}
           {activeTab === 'model' && !terms && (
             <div className="flex-1 flex items-center justify-center text-stone text-sm">
@@ -2196,7 +2216,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   sub={terms?.renewal_notice_days ? `${terms.renewal_notice_days} days notice required` : undefined}
                   onSave={v => saveField('auto_renews', v)}
                 />
-                <Stat label="Total contract value" value={tcv > 0 ? fmt(tcv, cur) : billingModel === 'consumption' ? 'Usage-based' : '—'} />
+                <Stat label="Total contract value (Base)" value={tcv > 0 ? fmt(tcv, cur) : billingModel === 'consumption' ? 'Usage-based' : '—'} />
               </div>
             </div>
 
@@ -2604,23 +2624,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
 
               {items.length > 0 && (() => {
-                const termMonths = terms?.contract_term_months
-                  ?? (terms?.contract_start_date && terms?.contract_end_date
-                    ? (new Date(terms.contract_end_date).getFullYear() - new Date(terms.contract_start_date).getFullYear()) * 12
-                      + (new Date(terms.contract_end_date).getMonth() - new Date(terms.contract_start_date).getMonth()) + 1
-                    : 0)
-                const periodsInTerm = (bp: string | null | undefined) => {
-                  if (!termMonths) return 1
-                  if (bp === 'monthly')     return termMonths
-                  if (bp === 'quarterly')   return termMonths / 3
-                  if (bp === 'semi-annual') return termMonths / 6
-                  if (bp === 'annual')      return termMonths / 12
-                  return 1  // one_time or unknown
-                }
-                const tcv = items.reduce((s, item) => {
-                  if (classifyItem(item) === 'escalator') return s
-                  return s + (item.total_amount ?? 0) * periodsInTerm(item.billing_period)
-                }, 0)
                 const platformLabel = billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'
                 const periodOptions = ['monthly', 'quarterly', 'semi-annual', 'annual', 'one_time']
                 const editCellStyle = 'w-full text-right bg-transparent border-0 border-b border-forest/30 focus:outline-none focus:border-forest text-[12px] tabular-nums py-0 px-0'
@@ -2748,7 +2751,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       {/* TCV footer */}
                       <tfoot>
                         <tr style={{ borderTop: '2px solid rgba(26,61,43,0.10)' }}>
-                          <td colSpan={3} className="pt-3 text-[10px] font-bold text-stone uppercase tracking-[0.1em]">Total contract value</td>
+                          <td colSpan={3} className="pt-3 text-[10px] font-bold text-stone uppercase tracking-[0.1em]">Base TCV</td>
                           <td className="pt-3 text-[13px] font-semibold text-ink text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
                             {fmt(tcv, cur)}
                           </td>
@@ -2867,7 +2870,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 {/* Left: label + number */}
                 <div className="min-w-0">
                   <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/50">
-                    Total contract value
+                    Total contract value (Base)
                   </p>
                   <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
                     {tcv > 0
