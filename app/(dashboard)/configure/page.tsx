@@ -7,7 +7,7 @@ import { DeleteJobButton } from '@/components/dashboard/DeleteJobButton'
 async function getJobs(orgId: string) {
   const { data } = await supabaseServer
     .from('jobs')
-    .select('id, name, execute_status, currency, created_at, contract_terms_id')
+    .select('id, name, execute_status, currency, created_at, contract_terms_id, billing_platform')
     .eq('module', 'AUTO_CONFIGURE')
     .eq('org_id', orgId)
     .order('created_at', { ascending: false })
@@ -69,6 +69,12 @@ function timeAgo(iso: string) {
   return `${Math.floor(hrs / 24)}d ago`
 }
 
+const PLATFORM_STYLE: Record<string, { label: string; bg: string; color: string }> = {
+  stripe:    { label: 'Stripe',    bg: '#EEF2FF', color: '#4338CA' },
+  remembill: { label: 'Remembill', bg: '#ECFDF5', color: '#065F46' },
+  chargebee: { label: 'Chargebee', bg: '#FFF7ED', color: '#C2410C' },
+}
+
 const STATUS_STYLE: Record<string, { color: string; label: string }> = {
   COMPLETED:            { color: '#4A7C59', label: 'Configured' },
   READY_TO_APPROVE:     { color: '#4A7C59', label: 'Ready to approve' },
@@ -107,7 +113,7 @@ export default async function ConfigureListPage() {
         <table className="w-full">
           <thead>
             <tr className="border-b border-forest/8">
-              {['Contract name', 'Customer', 'TCV', 'Status', 'Date', '', ''].map(h => (
+              {['Contract name', 'Customer', 'TCV', 'Status', 'Billing', 'Date', '', ''].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-[10px] font-semibold text-stone uppercase tracking-wider">{h}</th>
               ))}
             </tr>
@@ -115,7 +121,7 @@ export default async function ConfigureListPage() {
           <tbody>
             {jobs.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-6 py-12 text-center">
+                <td colSpan={8} className="px-6 py-12 text-center">
                   <div className="max-w-sm mx-auto">
                     <div className="w-12 h-12 rounded-2xl bg-blue-50 flex items-center justify-center mx-auto mb-4">
                       <i className="ti ti-bolt" style={{ fontSize: 22, color: '#2563EB' }} />
@@ -152,6 +158,14 @@ export default async function ConfigureListPage() {
                   </td>
                   <td className="px-4 py-3">
                     <span className="text-xs font-medium" style={{ color: s.color }}>{s.label}</span>
+                  </td>
+                  <td className="px-4 py-3">
+                    {(() => {
+                      const p = PLATFORM_STYLE[(job.billing_platform as string | null) ?? '']
+                      return p
+                        ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ background: p.bg, color: p.color }}>{p.label}</span>
+                        : <span className="text-xs text-stone/40">—</span>
+                    })()}
                   </td>
                   <td className="px-4 py-3 text-xs text-stone">{timeAgo(job.created_at)}</td>
                   <td className="px-4 py-3">
