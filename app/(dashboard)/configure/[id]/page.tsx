@@ -1958,7 +1958,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     : { color: '#9CA3AF', borderBottomColor: 'transparent' }
                   }
                 >
-                  {tab === 'terms' ? 'Contract · Commercials' : tab === 'model' ? 'Revenue model' : 'Processed invoices'}
+                  {tab === 'terms' ? 'Contract · Commercials' : tab === 'model' ? 'Graphical view' : 'Processed invoices'}
                 </button>
               ))}
             </div>
