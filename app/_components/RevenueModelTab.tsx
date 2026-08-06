@@ -1333,6 +1333,22 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
 
         const truncate = (s: string, max = 14) => s.length > max ? s.slice(0, max - 1) + '…' : s
 
+        // Each subscription-year bar's end date = the day before the next year's
+        // start (or the contract end date for the final year) — shows the same
+        // start–end range per year that the projected waterfall above used to.
+        const yearEvents = events.filter(ev => !ev.isOneTime)
+        const yearEndFor = new Map<BillingEvent, Date | null>()
+        yearEvents.forEach((ev, i) => {
+          const next = yearEvents[i + 1]
+          if (next) {
+            const d = new Date(next.date)
+            d.setDate(d.getDate() - 1)
+            yearEndFor.set(ev, d)
+          } else {
+            yearEndFor.set(ev, end)
+          }
+        })
+
         // Build cumulative waterfall bars (each starts where previous ended)
         type WBar = { label: string; sub: string; from: number; to: number; amount: number; status: string; kind: 'segment' | 'total'; isOneTime?: boolean }
         let cum = 0
@@ -1340,9 +1356,12 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
           const from = cum
           const to   = cum + ev.amount
           cum = to
+          const yearEnd = !ev.isOneTime ? yearEndFor.get(ev) : null
           return {
             label:  truncate(ev.label),
-            sub:    ev.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' }),
+            sub:    yearEnd
+              ? `${shortMonthYear(ev.date)} – ${shortMonthYear(yearEnd)}`
+              : ev.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' }),
             from, to, amount: ev.amount, status: ev.status, kind: 'segment', isOneTime: ev.isOneTime,
           }
         })
