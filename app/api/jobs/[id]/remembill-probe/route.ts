@@ -40,8 +40,10 @@ export async function POST(
   const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
   const due      = new Date(Date.now() + 31 * 86_400_000).toISOString().slice(0, 10)
 
-  const row1 = { name: 'Base subscription', quantity: 1, unit_price: 10000, vat_rate: 0 }
-  const row2 = { name: 'Base subscription', quantity: 1, price: 10000,      vat_rate: 0 }
+  // Remembill row fields confirmed by their tech team:
+  // price = integer in minor units (öre), vat = 0–100 percent
+  const row1 = { name: 'Base subscription', quantity: 1, price: 1000000, vat: 0 }  // 10 000 kr in öre
+  const row2 = { name: 'Base subscription', quantity: 1, unit_price: 10000, vat_rate: 0 }  // old (wrong) format
 
   // ── Strategy A: create invoice WITH rows in the body, then GET to confirm ──
   const bodyA = { customer_id: job.billing_customer_id, currency: cur, issue_date: tomorrow, due_date: due, payment_terms: 'Net 30', rows: [row1] }

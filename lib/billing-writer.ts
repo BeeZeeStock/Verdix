@@ -590,14 +590,12 @@ async function configureRememhill(
   ): Promise<{ id: string; url: string | null }> {
     const dueDate = addDays(issueDate, netDays)
 
-    const rowTotal    = Math.round(unitPrice * 100) / 100  // quantity is always 1 here
     const invoiceBody = {
       customer_id:   invoiceCustomerId,
       currency:      invoiceCurrency,
       issue_date:    fmtDate(issueDate),
       due_date:      fmtDate(dueDate),
       payment_terms: `Net ${netDays}`,
-      sum:           rowTotal,
     }
     console.log('[billing-writer/remembill] invoice request body:', JSON.stringify(invoiceBody))
 
@@ -618,9 +616,8 @@ async function configureRememhill(
       throw new Error(`Remembill invoice creation: could not extract id from response: ${invRawBody}`)
     }
 
-    // Row carries name, quantity, unit price, and the pre-calculated row total.
-    // Remembill applies VAT/taxes on top and sends the invoice to the customer.
-    const rowBody = { name: description, quantity: 1, unit_price: unitPrice, total: rowTotal }
+    // price is in öre (minor units): 1 kr = 100 öre. vat is 0–100 percent.
+    const rowBody = { name: description, quantity: 1, price: Math.round(unitPrice * 100), vat: 0 }
     console.log('[billing-writer/remembill] row request body:', JSON.stringify(rowBody))
     const rowRes = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
       method: 'POST', headers: h,
