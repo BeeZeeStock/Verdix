@@ -1008,10 +1008,10 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
         </div>
       </div>
 
-      {/* ── Monthly revenue breakdown ──────────────────────────────────── */}
+      {/* ── Monthly recurring revenue breakdown ──────────────────────────── */}
       <div className="bg-white border border-forest/10 rounded-2xl p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Monthly revenue breakdown</h3>
+          <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Monthly recurring revenue breakdown</h3>
           <div className="flex items-center gap-5">
             {[
               { color: '#B8E0CC', label: 'Discounted' },
