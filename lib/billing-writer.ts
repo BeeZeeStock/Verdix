@@ -580,9 +580,8 @@ async function configureRememhill(
 
   // ── 2. Helper: draft invoice → add row → send via email ────────────────────
   // Parameters are passed explicitly (not closed over) so values are unambiguous.
-  // Strategy: include rows[] in the creation body (Strategy A) which is the most
-  // reliable approach. POST /invoices/:id/rows is kept as a fallback but has been
-  // observed to return 2xx without actually attaching the row.
+  // Confirmed via probe: Remembill ignores rows[] in the creation body and
+  // rejects PUT. The only working strategy is POST /invoices/:id/rows.
   async function pushInvoice(
     description: string,
     unitPrice: number,
@@ -593,19 +592,13 @@ async function configureRememhill(
   ): Promise<{ id: string; url: string | null }> {
     const dueDate = addDays(issueDate, netDays)
 
-    // price is in öre (minor units): 1 kr = 100 öre. vat is 0–100 percent.
-    const row = { name: description, quantity: 1, price: Math.round(unitPrice * 100), vat: 0 }
-
     const invoiceBody = {
       customer_id:   invoiceCustomerId,
       currency:      invoiceCurrency,
       issue_date:    fmtDate(issueDate),
       due_date:      fmtDate(dueDate),
       payment_terms: `Net ${netDays}`,
-      rows:          [row],
     }
-    console.log('[billing-writer/remembill] invoice request body:', JSON.stringify(invoiceBody))
-
     const invRes = await fetch(`${REMEMBILL_BASE}/invoices`, {
       method: 'POST', headers: { ...h, 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify(invoiceBody),
@@ -615,7 +608,6 @@ async function configureRememhill(
       console.error('[billing-writer/remembill] invoice creation failed', invRes.status, invRawBody)
       throw new Error(`Remembill invoice creation failed (${invRes.status}): ${invRawBody}`)
     }
-    console.log('[billing-writer/remembill] invoice creation response:', invRawBody)
     const invJson  = JSON.parse(invRawBody) as Record<string, unknown>
     const invObj   = (invJson.invoice ?? invJson.data ?? invJson) as Record<string, unknown>
     const invoiceId = invObj.id as string | undefined
@@ -623,30 +615,17 @@ async function configureRememhill(
       throw new Error(`Remembill invoice creation: could not extract id from response: ${invRawBody}`)
     }
 
-    // Verify the invoice has a non-zero amount (rows were attached at creation).
-    // If not, fall back to POST /invoices/:id/rows.
-    const getRes  = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}`, { headers: h })
-    const getBody = await getRes.text()
-    console.log('[billing-writer/remembill] invoice GET response:', getBody)
-    let hasRows = false
-    try {
-      const getJson = JSON.parse(getBody) as Record<string, unknown>
-      const inv = (getJson.invoice ?? getJson.data ?? getJson) as Record<string, unknown>
-      const invRows = (inv.rows ?? inv.line_items ?? []) as unknown[]
-      hasRows = Array.isArray(invRows) && invRows.length > 0
-    } catch { /* ignore */ }
-
-    if (!hasRows) {
-      console.log('[billing-writer/remembill] rows missing after creation, trying POST /rows fallback')
-      const rowRes = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
-        method: 'POST', headers: h,
-        body: JSON.stringify(row),
-      })
-      const rowRawBody = await rowRes.text()
-      console.log(`[billing-writer/remembill] POST /rows fallback (${rowRes.status}):`, rowRawBody)
-      if (!rowRes.ok) {
-        console.error(`[billing-writer/remembill] row fallback failed (${rowRes.status}):`, rowRawBody)
-      }
+    // price is in öre (minor units): 1 kr = 100 öre. vat is 0–100 percent.
+    // POST /invoices/:id/rows is the only endpoint that reliably attaches a row.
+    const rowBody = { name: description, quantity: 1, price: Math.round(unitPrice * 100), vat: 0 }
+    const rowRes  = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
+      method: 'POST', headers: h,
+      body: JSON.stringify(rowBody),
+    })
+    const rowRawBody = await rowRes.text()
+    if (!rowRes.ok) {
+      console.error(`[billing-writer/remembill] row creation failed (${rowRes.status}):`, rowRawBody)
+      throw new Error(`Remembill row creation failed (${rowRes.status}): ${rowRawBody}`)
     }
 
     // Deliver via email — returns 202 Accepted when queued
