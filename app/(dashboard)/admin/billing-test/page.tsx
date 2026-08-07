@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import { BillingTestSimulator } from '@/app/_components/BillingTestSimulator'
 
 type OrgRow = {
   org_id:                 string
@@ -41,16 +42,6 @@ type PreviewRow = {
   total_eur:      number
 }
 
-type SimRow = {
-  meter_key:   string
-  count:       number
-  included:    number
-  overage:     number
-  overage_eur: number
-  source:      string
-  tiers_count: number
-}
-
 const PLAN_COLORS: Record<string, string> = {
   trial:      '#9CA3AF',
   core:       '#2563EB',
@@ -69,39 +60,6 @@ function CounterBadges({ counters }: { counters: Record<string, number> }) {
         </span>
       ))}
     </span>
-  )
-}
-
-function DayBarChart({ byDay }: { byDay: Record<string, number> }) {
-  const entries = Object.entries(byDay).sort(([a], [b]) => a.localeCompare(b))
-  const maxVal  = Math.max(...entries.map(([, v]) => v), 1)
-  const showLabel = entries.length <= 31
-
-  return (
-    <div>
-      <div className="flex items-end gap-px h-14">
-        {entries.map(([day, count]) => (
-          <div key={day} className="flex flex-col items-center flex-1 min-w-0 relative group">
-            <div
-              className="w-full bg-forest/30 hover:bg-forest/60 transition-colors rounded-sm cursor-default"
-              style={{ height: `${Math.max(4, Math.round((count / maxVal) * 100))}%` }}
-            />
-            <div className="absolute bottom-full mb-1 hidden group-hover:flex flex-col items-center pointer-events-none z-10">
-              <div className="bg-ink text-white text-[9px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap">
-                {day.slice(5)}: {count}
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-      {showLabel && (
-        <div className="flex mt-1 text-[8px] text-stone/40 font-mono overflow-hidden">
-          <span>{entries[0]?.[0]?.slice(5)}</span>
-          <span className="flex-1" />
-          <span>{entries[entries.length - 1]?.[0]?.slice(5)}</span>
-        </div>
-      )}
-    </div>
   )
 }
 
@@ -146,21 +104,6 @@ export default function BillingTestPage() {
   const [billing,        setBilling]        = useState(false)
   const [billResult,     setBillResult]     = useState<BillingRunResult | null>(null)
   const [billError,      setBillError]      = useState<string | null>(null)
-
-  // Panel 5: Period simulation
-  const [simStart,       setSimStart]       = useState(() => defaultPeriod().start)
-  const [simEnd,         setSimEnd]         = useState(() => defaultPeriod().end)
-  const [simMeter,       setSimMeter]       = useState('sync')
-  const [simEvents,      setSimEvents]      = useState('100')
-  const [simDistrib,     setSimDistrib]     = useState<'even' | 'random' | 'front'>('even')
-  const [simSeeding,     setSimSeeding]     = useState(false)
-  const [simSeedMsg,     setSimSeedMsg]     = useState<{ ok: boolean; text: string } | null>(null)
-  const [simByDay,       setSimByDay]       = useState<Record<string, number> | null>(null)
-  const [simClearing,    setSimClearing]    = useState(false)
-  const [simClearMsg,    setSimClearMsg]    = useState<{ ok: boolean; text: string } | null>(null)
-  const [simRunning,     setSimRunning]     = useState(false)
-  const [simResult,      setSimResult]      = useState<SimRow[] | null>(null)
-  const [simResultTotal, setSimResultTotal] = useState(0)
 
   const applyData = useCallback((res: { orgs: OrgRow[]; jobs: JobRow[] }) => {
     setOrgs(res.orgs ?? [])
@@ -254,51 +197,6 @@ export default function BillingTestPage() {
     setPreviewing(false)
   }
 
-  // ── Panel 5: Period simulation ────────────────────────────────────────────────
-  const handleSeedPeriod = async () => {
-    if (!selectedOrg) return
-    setSimSeeding(true); setSimSeedMsg(null); setSimByDay(null)
-    const res  = await fetch('/api/admin/usage-test', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        action:       'seed_period',
-        org_id:       selectedOrg.org_id,
-        meter_key:    simMeter,
-        period_start: simStart,
-        period_end:   simEnd,
-        total_events: Number(simEvents),
-        distribution: simDistrib,
-      }),
-    })
-    const data = await res.json()
-    if (res.ok) {
-      setSimSeedMsg({ ok: true, text: `Seeded ${data.total} events ✓` })
-      setSimByDay(data.by_day ?? {})
-    } else {
-      setSimSeedMsg({ ok: false, text: data.error ?? 'Failed' })
-    }
-    setSimSeeding(false)
-  }
-
-  const handleClearSimulated = async () => {
-    if (!selectedOrg) return
-    setSimClearing(true); setSimClearMsg(null)
-    const res  = await fetch('/api/admin/usage-test', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'clear_simulated', org_id: selectedOrg.org_id }),
-    })
-    const data = await res.json()
-    if (res.ok) {
-      setSimClearMsg({ ok: true, text: `Cleared ${data.deleted} simulated entries ✓` })
-      setSimByDay(null); setSimResult(null)
-    } else {
-      setSimClearMsg({ ok: false, text: data.error ?? 'Failed' })
-    }
-    setSimClearing(false)
-  }
-
   // ── Panel 6: Bill now ────────────────────────────────────────────────────────
   const handleBillNow = async () => {
     if (!selectedOrg) return
@@ -321,27 +219,6 @@ export default function BillingTestPage() {
       setBillError(data.error ?? 'Unknown error')
     }
     setBilling(false)
-  }
-
-  const handleSimulateBilling = async () => {
-    if (!selectedOrg) return
-    setSimRunning(true); setSimResult(null)
-    const res  = await fetch('/api/admin/usage-test', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        action:       'simulate_billing',
-        org_id:       selectedOrg.org_id,
-        period_start: simStart,
-        period_end:   simEnd,
-      }),
-    })
-    const data = await res.json()
-    if (res.ok) {
-      setSimResult(data.breakdown ?? [])
-      setSimResultTotal(data.total_eur ?? 0)
-    }
-    setSimRunning(false)
   }
 
   if (loading) return <div className="p-8 text-stone text-sm">Loading…</div>
@@ -377,7 +254,6 @@ export default function BillingTestPage() {
                 onClick={() => {
                   setSelectedOrg(isActive ? null : org)
                   setPreview(null); setRecordJobId('')
-                  setSimResult(null); setSimByDay(null)
                   setBillResult(null); setBillError(null)
                   if (!isActive) {
                     setBillStart(org.current_period_start?.split('T')[0] ?? defaultPeriod().start)
@@ -585,175 +461,22 @@ export default function BillingTestPage() {
         </div>
       )}
 
-      {/* ── Panel 5: Period simulation ────────────────────────────────────────── */}
+      {/* ── Panel 5: Contract usage simulation ───────────────────────────────────── */}
       {selectedOrg && (
-        <div className="bg-white border border-indigo-100 rounded-2xl overflow-hidden" style={{ background: '#FAFAFE' }}>
-          <div className="px-6 py-4 border-b border-indigo-100/70">
+        <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-forest/8">
             <div className="text-sm font-medium text-ink flex items-center gap-2 mb-0.5">
-              <i className="ti ti-clock-play text-indigo-500" style={{ fontSize: 15 }} />
-              Period simulation
-              <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 border border-indigo-100">
-                TEST ONLY
-              </span>
+              <i className="ti ti-flask text-forest" style={{ fontSize: 15 }} />
+              Contract usage simulation
             </div>
             <p className="text-xs text-stone">
-              Seed timestamped usage events spread across a billing period, then run a billing simulation
-              using <code className="bg-cream px-1 rounded font-mono text-[10px]">org_billing_config</code> tiered pricing. Simulated entries are tagged and never affect real invoices.
+              Simulate a usage reading for one of this org&apos;s meters and preview the overage it would produce on
+              each confirmed contract — using the exact same math the real billing cron runs. Preview only; never
+              creates invoices or touches Stripe/Remembill.
             </p>
           </div>
-
-          <div className="p-6 space-y-5">
-            {/* Period + meter controls */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="col-span-2 md:col-span-1">
-                <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Period start</label>
-                <input type="date" value={simStart} onChange={e => setSimStart(e.target.value)}
-                  className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-indigo-400" />
-              </div>
-              <div className="col-span-2 md:col-span-1">
-                <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Period end</label>
-                <input type="date" value={simEnd} onChange={e => setSimEnd(e.target.value)}
-                  className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-indigo-400" />
-              </div>
-              <div>
-                <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Meter</label>
-                <input value={simMeter} onChange={e => setSimMeter(e.target.value)}
-                  className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-indigo-400 font-mono"
-                  placeholder="sync" />
-              </div>
-              <div>
-                <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Events</label>
-                <input type="number" min={1} max={5000} value={simEvents} onChange={e => setSimEvents(e.target.value)}
-                  className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-indigo-400"
-                  placeholder="100" />
-              </div>
-            </div>
-
-            {/* Distribution + actions */}
-            <div className="flex flex-wrap items-end gap-3">
-              <div>
-                <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Distribution</label>
-                <div className="flex gap-1.5">
-                  {(['even', 'front', 'random'] as const).map(d => (
-                    <button key={d} onClick={() => setSimDistrib(d)}
-                      className="text-xs px-3 py-1.5 rounded-lg border transition-colors capitalize"
-                      style={simDistrib === d
-                        ? { background: '#4F46E5', color: 'white', borderColor: '#4F46E5' }
-                        : { background: 'white', color: '#6B7280', borderColor: '#E5E7EB' }
-                      }>
-                      {d}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex items-center gap-2 pb-0.5">
-                <button onClick={handleSeedPeriod} disabled={simSeeding}
-                  className="text-sm font-medium px-4 py-2 rounded-xl transition-colors disabled:opacity-40 flex items-center gap-1.5"
-                  style={{ background: '#4F46E5', color: 'white' }}>
-                  <i className="ti ti-player-play" style={{ fontSize: 13 }} />
-                  {simSeeding ? 'Seeding…' : 'Seed events'}
-                </button>
-                <button onClick={handleClearSimulated} disabled={simClearing}
-                  className="text-xs px-3 py-2 rounded-xl border border-red-200 text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40">
-                  {simClearing ? 'Clearing…' : 'Clear simulated'}
-                </button>
-                {simSeedMsg && (
-                  <span className={`text-xs font-medium ${simSeedMsg.ok ? 'text-forest' : 'text-red-600'}`}>{simSeedMsg.text}</span>
-                )}
-                {simClearMsg && (
-                  <span className={`text-xs font-medium ${simClearMsg.ok ? 'text-forest' : 'text-red-600'}`}>{simClearMsg.text}</span>
-                )}
-              </div>
-            </div>
-
-            {/* Day bar chart */}
-            {simByDay && Object.keys(simByDay).length > 0 && (
-              <div className="bg-white border border-indigo-100 rounded-xl p-4">
-                <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-3">
-                  Usage distribution — {simMeter} — {Object.values(simByDay).reduce((s, v) => s + v, 0)} events
-                </div>
-                <DayBarChart byDay={simByDay} />
-              </div>
-            )}
-
-            {/* Simulate billing run */}
-            <div className="border-t border-indigo-100/70 pt-5">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <div className="text-sm font-medium text-ink mb-0.5">Simulate billing run</div>
-                  <p className="text-xs text-stone">
-                    Sums <code className="bg-cream px-1 rounded font-mono text-[10px]">usage_ledger</code> (real + simulated) for the period above,
-                    applies <code className="bg-cream px-1 rounded font-mono text-[10px]">org_billing_config</code> tiered pricing.
-                    Falls back to plan pricing if no billing config is set.
-                  </p>
-                </div>
-                <button onClick={handleSimulateBilling} disabled={simRunning}
-                  className="flex-shrink-0 text-sm font-semibold px-4 py-2 rounded-xl transition-colors disabled:opacity-40"
-                  style={{ background: '#1A3D2B', color: 'white' }}>
-                  {simRunning ? 'Running…' : 'Simulate billing'}
-                </button>
-              </div>
-
-              {simResult !== null && (
-                simResult.length === 0 ? (
-                  <div className="text-sm text-stone bg-white border border-forest/10 rounded-xl px-5 py-4">
-                    No usage found in this period — seed some events first, or widen the date range.
-                  </div>
-                ) : (
-                  <div className="bg-white border border-forest/10 rounded-xl overflow-hidden">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="text-left border-b border-forest/8">
-                            {['Meter', 'Count', 'Included', 'Overage', 'Tiers', 'Source', 'Overage (€)'].map(h => (
-                              <th key={h} className="text-[10px] font-semibold text-stone uppercase tracking-widest px-5 py-3 pr-4">{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-forest/5">
-                          {simResult.map(row => (
-                            <tr key={row.meter_key}>
-                              <td className="px-5 py-3 pr-4 font-mono text-ink text-xs">{row.meter_key}</td>
-                              <td className="px-5 py-3 pr-4 font-mono text-ink tabular-nums">{row.count.toLocaleString()}</td>
-                              <td className="px-5 py-3 pr-4 font-mono text-stone tabular-nums">{row.included.toLocaleString()}</td>
-                              <td className="px-5 py-3 pr-4 font-mono tabular-nums"
-                                style={{ color: row.overage > 0 ? '#C2410C' : '#6B6660' }}>
-                                {row.overage.toLocaleString()}
-                              </td>
-                              <td className="px-5 py-3 pr-4 text-stone text-xs">
-                                {row.tiers_count > 0
-                                  ? <span className="bg-indigo-50 text-indigo-600 text-[10px] font-medium px-1.5 py-0.5 rounded">{row.tiers_count} tier{row.tiers_count !== 1 ? 's' : ''}</span>
-                                  : <span className="text-stone/40 text-[10px]">flat</span>
-                                }
-                              </td>
-                              <td className="px-5 py-3 pr-4 text-xs">
-                                <span className="text-[10px] px-1.5 py-0.5 rounded font-medium"
-                                  style={row.source === 'agreement'
-                                    ? { background: '#D4EAD9', color: '#1A3D2B' }
-                                    : { background: '#EFF6FF', color: '#1D4ED8' }
-                                  }>
-                                  {row.source}
-                                </span>
-                              </td>
-                              <td className="px-5 py-3 font-mono font-semibold tabular-nums"
-                                style={{ color: row.overage_eur > 0 ? '#1A3D2B' : '#9CA3AF' }}>
-                                €{row.overage_eur.toFixed(2)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                        <tfoot>
-                          <tr className="border-t border-forest/15">
-                            <td colSpan={6} className="px-5 pt-3 pb-3 text-xs font-semibold text-ink">Total overage (simulation)</td>
-                            <td className="px-5 pt-3 pb-3 font-mono font-bold text-ink tabular-nums">€{simResultTotal.toFixed(2)}</td>
-                          </tr>
-                        </tfoot>
-                      </table>
-                    </div>
-                  </div>
-                )
-              )}
-            </div>
+          <div className="p-6">
+            <BillingTestSimulator orgId={selectedOrg.org_id} />
           </div>
         </div>
       )}

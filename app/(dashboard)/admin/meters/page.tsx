@@ -13,6 +13,8 @@ type Meter = {
   pull_endpoint_url:   string | null
   pull_param_name:     string
   pull_auth_token_set: boolean
+  mode:                'test' | 'live'
+  test_usage_value:    number | null
   created_at:          string
 }
 
@@ -87,6 +89,7 @@ export default function AdminMetersPage() {
   const [showAdd,  setShowAdd]  = useState(false)
   const [addForm,  setAddForm]  = useState<AddState>(EMPTY_ADD)
   const [adding,   setAdding]   = useState(false)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
 
   const setAdd = (k: keyof AddState) => (v: string) => setAddForm(f => ({ ...f, [k]: v }))
 
@@ -144,6 +147,19 @@ export default function AdminMetersPage() {
     if (ok) { setMsg({ ok: true, text: 'Saved ✓' }); setEditId(null); await load() }
     else      setMsg({ ok: false, text: data.error ?? 'Save failed' })
     setSaving(false)
+  }
+
+  const handleToggleMode = async (m: Meter) => {
+    const nextMode = m.mode === 'live' ? 'test' : 'live'
+    if (nextMode === 'live' && !m.pull_endpoint_url) {
+      setMsg({ ok: false, text: `'${m.meter_key}' needs a pull endpoint before it can go live` })
+      return
+    }
+    setTogglingId(m.id); setMsg(null)
+    const { ok, data } = await post({ action: 'update', id: m.id, mode: nextMode })
+    if (ok) { setMsg({ ok: true, text: `'${m.meter_key}' is now ${nextMode} ✓` }); await load() }
+    else      setMsg({ ok: false, text: data.error ?? 'Toggle failed' })
+    setTogglingId(null)
   }
 
   const handleDelete = async (id: string, key: string) => {
@@ -292,6 +308,18 @@ export default function AdminMetersPage() {
           )}
         </div>
         <div className="text-xs text-stone/60 font-mono w-16 flex-shrink-0">{m.unit_label}</div>
+        <button
+          onClick={() => handleToggleMode(m)}
+          disabled={togglingId === m.id}
+          title={m.mode === 'live' ? 'Live — pulls real usage at billing time' : 'Test — real billing skips this meter'}
+          className="flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-1 rounded-full flex-shrink-0 transition-colors disabled:opacity-40"
+          style={m.mode === 'live'
+            ? { background: '#EEF9F2', color: '#0B5C36', border: '1px solid rgba(11,92,54,0.25)' }
+            : { background: '#FFF7ED', color: '#C2410C', border: '1px solid rgba(194,65,12,0.25)' }}
+        >
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: m.mode === 'live' ? '#0B5C36' : '#C2410C' }} />
+          {togglingId === m.id ? '…' : m.mode === 'live' ? 'Live' : 'Test'}
+        </button>
         <div className="flex items-center gap-1 flex-shrink-0">
           <button onClick={() => startEdit(m)}
             className="text-xs px-2.5 py-1 rounded-lg border border-forest/20 text-stone hover:bg-forest/5 transition-colors">
@@ -314,6 +342,7 @@ export default function AdminMetersPage() {
           <p className="text-stone text-sm">
             Every meter — including Verdix&apos;s own — must have a pull endpoint registered.
             Verdix calls that endpoint at billing time to get usage counts. Same flow for platform meters and 3PP org meters.
+            New meters start in <span className="text-amber-600 font-medium">Test</span> mode — real billing skips them until switched to <span className="text-forest font-medium">Live</span>.
           </p>
         </div>
         {msg && (

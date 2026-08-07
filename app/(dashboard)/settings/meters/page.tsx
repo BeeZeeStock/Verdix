@@ -12,6 +12,8 @@ type Meter = {
   pull_endpoint_url:   string | null
   pull_param_name:     string
   pull_auth_token_set: boolean
+  mode:                'test' | 'live'
+  test_usage_value:    number | null
   created_at:          string
 }
 
@@ -81,6 +83,7 @@ export default function MetersSettingsPage() {
   const [expandedId,  setExpandedId]  = useState<string | null>(null)
   const [drafts,      setDrafts]      = useState<Record<string, EndpointDraft>>({})
   const [saving,      setSaving]      = useState<string | null>(null)
+  const [togglingId,  setTogglingId]  = useState<string | null>(null)
 
   const set = (k: keyof FormState) => (v: string) => setForm(f => ({ ...f, [k]: v }))
 
@@ -162,6 +165,20 @@ export default function MetersSettingsPage() {
     setAdding(false)
   }
 
+  const handleToggleMode = async (m: Meter) => {
+    const nextMode = m.mode === 'live' ? 'test' : 'live'
+    if (nextMode === 'live' && !m.pull_endpoint_url) {
+      setMsg({ ok: false, text: `'${m.meter_key}' needs a pull endpoint before it can go live` })
+      return
+    }
+    setTogglingId(m.id); setMsg(null)
+    const res  = await fetch('/api/meters', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: m.id, mode: nextMode }) })
+    const data = await res.json()
+    if (res.ok) { setMsg({ ok: true, text: `'${m.meter_key}' is now ${nextMode} ✓` }); await reload() }
+    else          setMsg({ ok: false, text: (data as { error: string }).error ?? 'Toggle failed' })
+    setTogglingId(null)
+  }
+
   const handleDelete = async (id: string, key: string) => {
     if (!confirm(`Remove meter '${key}'? This cannot be undone.`)) return
     setDeleting(id); setMsg(null)
@@ -183,7 +200,8 @@ export default function MetersSettingsPage() {
         <p className="text-stone text-sm leading-relaxed">
           Register each usage parameter you want Verdix to bill your customers. At the end of each billing cycle,
           Verdix calls your endpoint — passing the billing period and customer ID — and generates
-          invoices based on the totals you return.
+          invoices based on the totals you return. New meters start in <span className="text-amber-600 font-medium">Test</span> mode
+          — use the <a href="/settings/billing-test" className="text-forest underline hover:no-underline">Billing test</a> page to simulate usage before switching to <span className="text-forest font-medium">Live</span>.
         </p>
       </div>
 
@@ -430,6 +448,18 @@ Authorization: Bearer <your-auth-token>`}</pre>
                       </div>
                       <div className="text-xs text-stone/60 font-mono flex-shrink-0">{m.unit_label}</div>
                       <StatusBadge configured={Boolean(m.pull_endpoint_url)} />
+                      <button
+                        onClick={() => handleToggleMode(m)}
+                        disabled={togglingId === m.id}
+                        title={m.mode === 'live' ? 'Live — pulls real usage at billing time' : 'Test — real billing skips this meter until you go live'}
+                        className="flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-1 rounded-full flex-shrink-0 transition-colors disabled:opacity-40"
+                        style={m.mode === 'live'
+                          ? { background: '#EEF9F2', color: '#0B5C36', border: '1px solid rgba(11,92,54,0.25)' }
+                          : { background: '#FFF7ED', color: '#C2410C', border: '1px solid rgba(194,65,12,0.25)' }}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: m.mode === 'live' ? '#0B5C36' : '#C2410C' }} />
+                        {togglingId === m.id ? '…' : m.mode === 'live' ? 'Live' : 'Test'}
+                      </button>
                       <button
                         onClick={() => openEndpoint(m)}
                         className="text-xs font-medium px-2.5 py-1 rounded-lg border border-forest/20 text-stone hover:bg-forest/5 transition-colors flex-shrink-0 flex items-center gap-1"
