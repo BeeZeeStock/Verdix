@@ -57,14 +57,19 @@ export function BillingTestSimulator({ orgId }: { orgId?: string }) {
 
   const fetchMeters = useCallback(async () => {
     if (orgId) {
+      // Verdix-staff admin view: include platform meters (org_id null, e.g.
+      // the shared 'sync' meter used for Verdix's own billing of the org) —
+      // staff legitimately need to test those too.
       const res = await fetch('/api/admin/meters').then(r => r.json()).catch(() => null)
       const all = (res?.meters ?? []) as Meter[]
-      // Platform meters (org_id null, e.g. the shared 'sync' meter) apply to
-      // every org, not just orgs that registered their own — include both.
       return all.filter(m => m.org_id === orgId || m.org_id === null)
     }
+    // Org self-service view: only meters this org registered itself. Platform
+    // meters like 'sync' measure the org's own Verdix usage, not any of their
+    // customers' contracts — they don't belong in a customer's own billing
+    // test tool.
     const res = await fetch('/api/meters').then(r => r.json()).catch(() => null)
-    return [...((res?.platform_meters ?? []) as Meter[]), ...((res?.org_meters ?? []) as Meter[])]
+    return (res?.org_meters ?? []) as Meter[]
   }, [orgId])
 
   const fetchAgreements = useCallback(async () => {
