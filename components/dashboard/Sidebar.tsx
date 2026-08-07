@@ -12,7 +12,7 @@ const navSections = [
     items: [
       { href: '/dashboard', icon: 'ti-layout-dashboard', label: 'Dashboard' },
       { href: '/dashboard/trends', icon: 'ti-chart-line', label: 'Leakage trends' },
-      { href: '/dashboard/contract-trends', icon: 'ti-file-certificate', label: 'Contract ARR' },
+      { href: '/dashboard/contract-trends', icon: 'ti-file-certificate', label: 'Agreements' },
       { href: '/dashboard/partner-trends', icon: 'ti-chart-bar', label: 'Partner trends' },
     ],
   },

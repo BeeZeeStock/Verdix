@@ -64,7 +64,24 @@ async function getContractData(orgId: string) {
     }
   }
 
-  return { jobs: jobs ?? [], overageByJob, overageByJobMonth, ovgInvoicesByJob }
+  // Total revenue actually invoiced to date — any invoice_type (recurring
+  // periods + one-time fees), since both are real billed revenue. overage_total
+  // is 0 on one-time rows (folded into base_amount there) and separately
+  // tracked on period rows, so summing both never double-counts.
+  const { data: billedRows } = jobIds.length > 0
+    ? await supabaseServer
+        .from('planned_invoices')
+        .select('job_id, base_amount, overage_total')
+        .in('job_id', jobIds)
+        .in('status', ['sent', 'paid'])
+    : { data: [] }
+
+  const billedByJob: Record<string, number> = {}
+  for (const row of (billedRows ?? []) as { job_id: string; base_amount: number; overage_total: number | null }[]) {
+    billedByJob[row.job_id] = (billedByJob[row.job_id] ?? 0) + Number(row.base_amount) + Number(row.overage_total ?? 0)
+  }
+
+  return { jobs: jobs ?? [], overageByJob, overageByJobMonth, ovgInvoicesByJob, billedByJob }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -122,7 +139,9 @@ type ContractRow = {
   start: Date | null; end: Date | null; termMonths: number
   mrr: number; arr: number; tcv: number; currency: string
   confidence: string; isDuplicate: boolean
-  actualOverage: number  // total overage billed to date from planned_invoices (period rows)
+  actualOverage: number   // total overage billed to date from planned_invoices (period rows)
+  billedToDate: number    // total revenue actually invoiced to date (any invoice_type, sent/paid)
+  actualTcv: number       // contracted tcv + overage billed on top of it
 }
 
 type InvoiceDetail = {
@@ -149,6 +168,14 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
   const activeMRR    = active.reduce((s, c) => s + c.mrr, 0)
   const expiredMRR   = expired.reduce((s, c) => s + c.mrr, 0)
   const totalOverage = contracts.reduce((s, c) => s + c.actualOverage, 0)
+
+  // TCV lifecycle — active contracts only: what they're contracted for (Base
+  // TCV), what that becomes once billed overage is folded in (Actual TCV),
+  // and how much of that has actually been invoiced vs is still to come.
+  const baseTcv      = active.reduce((s, c) => s + c.tcv, 0)
+  const actualTcvAgg = active.reduce((s, c) => s + c.actualTcv, 0)
+  const billedToDate = active.reduce((s, c) => s + Math.min(c.billedToDate, c.actualTcv), 0)
+  const remaining    = active.reduce((s, c) => s + Math.max(0, c.actualTcv - c.billedToDate), 0)
 
   // MRR by month — active vs expired series
   const allStarts = contracts.filter(c => c.start).map(c => c.start!)
@@ -218,8 +245,24 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
         ))}
       </div>
 
-      {/* Four metric charts — 2×2 grid */}
-      <div className="grid grid-cols-2 gap-6">
+      {/* TCV lifecycle row — active contracts only */}
+      <div className="grid grid-cols-4 gap-4">
+        {[
+          { label: 'Base TCV',        value: fmtFull(baseTcv, cur),      sub: `${active.length} active contracts`,       color: '#1A3D2B' },
+          { label: 'Actual TCV',      value: fmtFull(actualTcvAgg, cur), sub: 'Contracted + overage billed',              color: '#0B5C36' },
+          { label: 'Billed to date',  value: fmtFull(billedToDate, cur), sub: 'Actually invoiced so far',                 color: '#27AE60' },
+          { label: 'Remaining',       value: fmtFull(remaining, cur),    sub: 'Contracted, not yet invoiced',             color: '#87B09A' },
+        ].map(k => (
+          <div key={k.label} className="bg-white border border-forest/10 rounded-2xl p-4">
+            <p className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-2">{k.label}</p>
+            <p className="text-xl font-semibold font-mono" style={{ color: k.color }}>{k.value}</p>
+            <p className="text-[10px] text-stone mt-1">{k.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Four metric charts — one per row for readability */}
+      <div className="grid grid-cols-1 gap-6">
         {[
           { title: 'Active ARR',  key: 'aARR' as const, color: ACTIVE_COLOR,  months: chartMonths, isARR: true  },
           { title: 'Expired ARR', key: 'eARR' as const, color: EXPIRED_COLOR, months: chartMonths, isARR: true  },
@@ -376,6 +419,99 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
         })}
       </div>
 
+      {/* Revenue actuals — billed to date, aggregated across active contracts */}
+      {actualTcvAgg > 0 && (() => {
+        type WBar = { label: string; sub?: string; amount: number; kind: 'segment' | 'total'; color: string; dashed?: boolean }
+        const wBars: WBar[] = [
+          { label: 'Billed to date', sub: `${active.length} active agreement${active.length !== 1 ? 's' : ''}`, amount: billedToDate, kind: 'segment', color: '#27AE60' },
+          { label: 'Remaining',      sub: 'contracted',                                                          amount: remaining,    kind: 'segment', color: '#C8E6D4', dashed: true },
+          { label: 'Actual TCV',     amount: actualTcvAgg, kind: 'total', color: '#1A3D2B' },
+        ]
+        let wCum = 0
+        const wPos = wBars.map(b => {
+          const from = b.kind === 'total' ? 0 : wCum
+          const to   = b.kind === 'total' ? actualTcvAgg : wCum + b.amount
+          if (b.kind !== 'total') wCum = to
+          return { ...b, from, to }
+        })
+
+        const WW = 1100, WH = 200
+        const wx1 = 70, wx2 = WW - 12, ww = wx2 - wx1
+        const wTop = 24, wBot = 148, wPlotH = wBot - wTop
+        const wN   = wPos.length
+        const wGap = 24
+        const wBW  = Math.min(140, (ww - wGap * (wN - 1)) / wN)
+        const wStartX = wx1 + (ww - (wBW * wN + wGap * (wN - 1))) / 2
+        const wScale  = actualTcvAgg > 0 ? actualTcvAgg : 1
+        const wyOf    = (v: number) => wBot - (v / wScale) * wPlotH
+        const wGrid   = [0, 0.5, 1].map(f => f * wScale)
+
+        return (
+          <div className="bg-white border border-forest/10 rounded-2xl p-6">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Revenue actuals — billed to date ({cur})</h3>
+              <div className="flex items-center gap-3 text-[10px] text-stone/60">
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Billed to date</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm border border-dashed" style={{ background: '#C8E6D4', borderColor: '#4A7C59' }} /> Remaining</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#1A3D2B' }} /> Actual TCV</span>
+              </div>
+            </div>
+
+            <svg viewBox={`0 0 ${WW} ${WH}`} className="w-full" style={{ height: 200 }}>
+              {wGrid.map((v, i) => {
+                const yy = wyOf(v)
+                return (
+                  <g key={i}>
+                    <line x1={wx1} y1={yy} x2={wx2} y2={yy}
+                      stroke={i === 0 ? '#D1D5DB' : '#F0F2EE'} strokeWidth={i === 0 ? 1 : 0.75} />
+                    <text x={wx1 - 6} y={yy + 4} textAnchor="end" fontSize={10} fill="#9CA3AF">
+                      {fmtAxis(v, cur)}
+                    </text>
+                  </g>
+                )
+              })}
+
+              {wPos.slice(0, -1).map((b, i) => {
+                const xR = wStartX + i * (wBW + wGap) + wBW
+                const xL = wStartX + (i + 1) * (wBW + wGap)
+                return <line key={i} x1={xR} y1={wyOf(b.to)} x2={xL} y2={wyOf(b.to)}
+                  stroke="#C9CCC6" strokeWidth={1} strokeDasharray="3 2" />
+              })}
+
+              {wPos.map((b, i) => {
+                const x    = wStartX + i * (wBW + wGap)
+                const yTop = wyOf(b.to)
+                const yBot = wyOf(b.from)
+                const h    = Math.max(2, yBot - yTop)
+                return (
+                  <g key={i}>
+                    <title>{`${b.label}: ${fmtFull(b.amount, cur)}`}</title>
+                    <rect x={x} y={yTop} width={wBW} height={h} rx={3} fill={b.color}
+                      opacity={b.dashed ? 0.5 : 1}
+                      stroke={b.dashed ? '#4A7C59' : 'none'} strokeWidth={b.dashed ? 1.5 : 0}
+                      strokeDasharray={b.dashed ? '5 3' : undefined} />
+                    <text x={x + wBW / 2} y={yTop - 7} textAnchor="middle" fontSize={11}
+                      fontWeight={b.kind === 'total' ? 700 : 600} fill="#3A3A38">
+                      {fmtFull(b.amount, cur)}
+                    </text>
+                    <text x={x + wBW / 2} y={wBot + 17} textAnchor="middle" fontSize={11}
+                      fill={b.kind === 'total' ? '#1A3D2B' : '#6B6660'}
+                      fontWeight={b.kind === 'total' ? 700 : 400}>
+                      {b.label}
+                    </text>
+                    {b.sub && (
+                      <text x={x + wBW / 2} y={wBot + 29} textAnchor="middle" fontSize={9} fill="#9CA3AF">
+                        {b.sub}
+                      </text>
+                    )}
+                  </g>
+                )
+              })}
+            </svg>
+          </div>
+        )
+      })()}
+
       {/* Overage detail cards — one per contract with actual billed overage */}
       {contracts.some(c => ovgInvoicesByJob[c.jobId]?.length > 0) && (
         <div className="bg-white border border-forest/10 rounded-2xl p-6">
@@ -481,7 +617,7 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
 export default async function ContractTrendsPage() {
   const org = await getActiveOrg()
   if (!org) redirect('/login')
-  const { jobs, overageByJob, overageByJobMonth, ovgInvoicesByJob } = await getContractData(org.orgId)
+  const { jobs, overageByJob, overageByJobMonth, ovgInvoicesByJob, billedByJob } = await getContractData(org.orgId)
 
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -517,6 +653,8 @@ export default async function ContractTrendsPage() {
       confidence: t.extraction_confidence ?? 'medium',
       isDuplicate: false, // filled below
       actualOverage: overageByJob[job.id] ?? 0,
+      billedToDate: billedByJob[job.id] ?? 0,
+      actualTcv: tcv + (overageByJob[job.id] ?? 0),
     })
   }
 
@@ -586,7 +724,7 @@ export default async function ContractTrendsPage() {
   return (
     <div className="p-8">
       <div className="mb-8">
-        <h1 className="font-display font-light text-ink text-2xl mb-1">Contract ARR</h1>
+        <h1 className="font-display font-light text-ink text-2xl mb-1">Agreements</h1>
         <p className="text-stone text-sm">
           Recurring revenue across all configured contracts
           {currencies.length > 1 && (
