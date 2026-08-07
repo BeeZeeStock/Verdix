@@ -197,8 +197,12 @@ export async function POST(
       sent_at:            new Date().toISOString(),
       quantity:           lineItems.length === 1 ? lineItems[0].quantity : null,
       unit_price:         lineItems.length === 1 ? lineItems[0].unitPrice : null,
+      // overage_line_items is kept for audit/reference only — base_amount
+      // (total) already includes the overage amount, so overage_total must
+      // stay 0 here or downstream code that does base_amount + overage_total
+      // (billing-summary's mapPlanned) double-counts it.
       overage_line_items: overageSnapshot ? [overageSnapshot] : [],
-      overage_total:      overageSnapshot?.amount ?? 0,
+      overage_total:      0,
     })
 
     return NextResponse.json({ ok: true, invoiceId, hostedUrl, total })

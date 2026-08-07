@@ -23,6 +23,13 @@ function fmt(n: number, cur = 'EUR') {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
 }
 
+// Per-unit rates are often sub-cent for high-volume metrics (e.g. 0.0012) —
+// formatting at a fixed 2 decimals rounds them to 0.00 and makes a real
+// price look unset. Show up to 6 decimals, trimmed of trailing zeros.
+function fmtRate(n: number, cur = 'EUR') {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 6 }).format(n)
+}
+
 function FeeSection({
   title, presets, enabled, setEnabled, label, setLabel, amount, setAmount,
 }: {
@@ -224,7 +231,7 @@ export function ManualInvoiceCard({ jobId }: { jobId: string }) {
                         <td className="px-3 py-1.5 text-ink">Tier {i + 1}</td>
                         <td className="px-3 py-1.5 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{t.from_unit?.toLocaleString() ?? '—'}</td>
                         <td className="px-3 py-1.5 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{t.to_unit?.toLocaleString() ?? '∞'}</td>
-                        <td className="px-3 py-1.5 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(t.rate_per_unit, currency)}</td>
+                        <td className="px-3 py-1.5 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtRate(t.rate_per_unit, currency)}</td>
                       </tr>
                     ))}
                   </tbody>

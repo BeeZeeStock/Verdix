@@ -93,6 +93,12 @@ function fmt(n: number, cur = 'EUR') {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
 }
 
+// Per-unit rates are often sub-cent for high-volume metrics — a fixed 2
+// decimals rounds them to 0.00 and makes a real price look unset.
+function fmtRate(n: number, cur = 'EUR') {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 6 }).format(n)
+}
+
 function fmtDate(iso: string | null | undefined, opts?: Intl.DateTimeFormatOptions) {
   if (!iso) return '—'
   return new Date(iso).toLocaleDateString('en-GB', opts ?? { day: 'numeric', month: 'short', year: 'numeric' })
@@ -556,7 +562,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
                                 <tr key={i} style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
                                   <td className="px-3 py-2 text-ink" title={item.description}>{item.meter_key} overage</td>
                                   <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{billable.toLocaleString()}</td>
-                                  <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(rate, item.currency)}</td>
+                                  <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtRate(rate, item.currency)}</td>
                                   <td className="px-3 py-2 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(item.amount, item.currency)}</td>
                                 </tr>
                               )
