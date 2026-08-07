@@ -25,6 +25,13 @@ export default function BillingTestPage() {
 
   const orgJobCount = (orgId: string) => jobs.filter(j => j.org_id === orgId).length
 
+  // Orgs with real agreements first — otherwise the alphabetically-sorted
+  // list buries them under a pile of empty test/auto-created orgs.
+  const sortedOrgs = [...orgs].sort((a, b) => {
+    const diff = orgJobCount(b.org_id) - orgJobCount(a.org_id)
+    return diff !== 0 ? diff : a.org_name.localeCompare(b.org_name)
+  })
+
   if (loading) return <div className="p-8 text-stone text-sm">Loading…</div>
 
   return (
@@ -72,7 +79,7 @@ export default function BillingTestPage() {
           {orgs.length === 0 && (
             <div className="px-6 py-4 text-sm text-stone">No organisations found.</div>
           )}
-          {orgs.map(org => {
+          {sortedOrgs.map(org => {
             const isActive = selectedOrg?.org_id === org.org_id
             const jobCount = orgJobCount(org.org_id)
             return (
