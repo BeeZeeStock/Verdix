@@ -243,8 +243,16 @@ export async function GET(req: NextRequest) {
       const periodEnd       = new Date(row.period_end   + 'T23:59:59')
       const fmtPeriod       = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
       const daysUntilDue    = terms.payment_terms_days ?? 30
-      const description     = row.fee_label
-        ?? `Base subscription — Year ${row.year_num ?? 1} (${fmtPeriod(periodStart)} – ${fmtPeriod(periodEnd)})`
+      // Real per-unit breakdown (from the approved line_items row, e.g. "4
+      // connectors @ 45,000"), when one was captured at push/parked-confirm
+      // time — null for period rows and one-time fees without a real quantity.
+      const rowQuantity  = row.quantity  != null ? Number(row.quantity)   : null
+      const rowUnitPrice = row.unit_price != null ? Number(row.unit_price) : null
+      const hasBreakdown = rowQuantity != null && rowUnitPrice != null && rowQuantity > 0 && rowUnitPrice > 0
+
+      const description = (row.fee_label
+        ?? `Base subscription — Year ${row.year_num ?? 1} (${fmtPeriod(periodStart)} – ${fmtPeriod(periodEnd)})`)
+        + (hasBreakdown ? ` — ${rowQuantity.toLocaleString()} × ${cur.toUpperCase()} ${rowUnitPrice.toLocaleString()}` : '')
       const periodStartUnix = Math.floor(periodStart.getTime() / 1000)
       const periodEndUnix   = Math.floor(periodEnd.getTime()   / 1000)
 
@@ -295,10 +303,14 @@ export async function GET(req: NextRequest) {
         }
         const invoiceId = ((await invRes.json()) as { id: string }).id
 
-        // Add line item row (amount in minor units, e.g. öre for SEK)
+        // Add line item row (amount in minor units, e.g. öre for SEK).
+        // Real quantity/unit_price when we have a per-unit breakdown, else
+        // the previous flat quantity=1/total-as-price behavior.
         await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
           method: 'POST', headers: rbH,
-          body: JSON.stringify({ description, quantity: 1, unit_price: Math.round(Number(row.base_amount) * 100) }),
+          body: JSON.stringify(hasBreakdown
+            ? { description, quantity: rowQuantity, unit_price: Math.round(rowUnitPrice * 100) }
+            : { description, quantity: 1, unit_price: Math.round(Number(row.base_amount) * 100) }),
         })
 
         // Overage rows — one per metered item with usage above its included allowance

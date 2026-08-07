@@ -283,6 +283,9 @@ async function handlePlannedInvoicesPath({
     created_at: string
     overage_line_items: OverageLineItem[] | null
     overage_total: number | null
+    line_item_id: string | null
+    quantity: number | null
+    unit_price: number | null
   }
 
   const rows = planned as PlannedRow[]
@@ -324,6 +327,11 @@ async function handlePlannedInvoicesPath({
       baseAmount:    Number(row.base_amount),
       overageLineItems: row.overage_line_items ?? [],
       overageTotal:     Number(row.overage_total ?? 0),
+      // Real per-unit breakdown from the approved line_items row (e.g. "4
+      // connectors @ 45,000") — null when the fee has no per-unit structure.
+      quantity:   row.quantity   != null ? Number(row.quantity)   : null,
+      unitPrice:  row.unit_price != null ? Number(row.unit_price) : null,
+      lineItemId: row.line_item_id,
     }
   }
 

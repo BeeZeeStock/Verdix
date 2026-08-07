@@ -43,6 +43,8 @@ type InvoiceInfo = {
   baseAmount?: number
   overageLineItems?: OverageLineItem[]
   overageTotal?: number
+  quantity?: number | null
+  unitPrice?: number | null
 }
 
 type YearPayment = {
@@ -363,6 +365,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
           id: string; label: string; dateLabel: string; date: Date; amount: number; currency: string
           status: string | null; hostedUrl?: string | null; pdfUrl?: string | null; kind: 'subscription' | 'one-time' | 'pending-setup'
           baseAmount: number; overageLineItems: OverageLineItem[]; overageTotal: number; description?: string | null
+          quantity?: number | null; unitPrice?: number | null
         }
         const entries: TLEntry[] = []
 
@@ -457,6 +460,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
             status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'one-time',
             baseAmount: inv.amount, overageLineItems: [], overageTotal: 0,
             description: matchingFee?.description ?? null,
+            quantity: inv.quantity ?? null, unitPrice: inv.unitPrice ?? null,
           })
         }
 
@@ -630,8 +634,12 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
                       ) : (
                         <tr>
                           <td className="px-3 py-2 text-ink">{e.description || e.label}</td>
-                          <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>1</td>
-                          <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.baseAmount, e.currency)}</td>
+                          <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            {e.quantity != null ? e.quantity.toLocaleString() : 1}
+                          </td>
+                          <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            {fmt(e.unitPrice ?? e.baseAmount, e.currency)}
+                          </td>
                           <td className="px-3 py-2 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.baseAmount, e.currency)}</td>
                         </tr>
                       )}

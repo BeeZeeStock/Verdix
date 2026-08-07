@@ -50,6 +50,16 @@ export async function POST(
   const termsArr        = job.contract_terms as unknown as Array<{ currency?: string; payment_terms_days?: number | null }>
   const terms           = termsArr?.[0] ?? {}
   const cur             = (body.currency ?? terms.currency ?? 'EUR').toUpperCase()
+
+  // Link back to the approved line_items row (for traceability — quantity
+  // itself is per-delivery human input, not read from here).
+  const { data: matchingLineItem } = await supabaseServer
+    .from('line_items')
+    .select('id')
+    .eq('job_id', jobId)
+    .eq('product_name', fee_label)
+    .eq('billing_period', 'one_time')
+    .maybeSingle()
   const netDays         = terms.payment_terms_days ?? 30
   const billingPlatform = (job.billing_platform as string | null) ?? 'stripe'
 
@@ -175,6 +185,9 @@ export async function POST(
         stripe_invoice_id:  invoiceId,
         stripe_invoice_url: hostedUrl,
         sent_at:            new Date().toISOString(),
+        line_item_id:       matchingLineItem?.id ?? null,
+        quantity,
+        unit_price:         rate_per_unit,
       })
 
     if (error) console.error('[parked-invoices] planned_invoices insert failed', error)

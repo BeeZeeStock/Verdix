@@ -156,6 +156,7 @@ async function detectOrgPlatform(orgId: string): Promise<BillingPlatform> {
 }
 
 export interface LineItemInput {
+  id?: string
   product_name: string
   quantity: number
   unit_price: number
@@ -163,6 +164,14 @@ export interface LineItemInput {
   total_amount: number
   currency: string
   source_section?: string
+}
+
+// One-time fees are matched to their approved line_items row by product_name
+// (buildLineItems sets product_name = fee_label for one-time fees). Falls
+// back to null (caller uses the raw contract-terms amount) when not found —
+// e.g. a fee added to the contract after line_items was last generated.
+function findOneTimeLineItem(lineItems: LineItemInput[], feeLabel: string): LineItemInput | null {
+  return lineItems.find(li => li.billing_period === 'one_time' && li.product_name === feeLabel) ?? null
 }
 
 export interface ConfigureResult {
@@ -243,6 +252,7 @@ async function configureStripe(
     invoice_type: string; status: string
     stripe_invoice_id: string | null; stripe_invoice_url: string | null
     sent_at: string | null
+    line_item_id?: string | null; quantity?: number | null; unit_price?: number | null
   }
   const plannedRows: PlannedRow[] = []
 
@@ -323,6 +333,7 @@ async function configureStripe(
 
   // Park manual-trigger service fees — they need human confirmation before invoicing
   for (const fee of oneTimeFees.filter(f => f.manual_trigger)) {
+    const li = findOneTimeLineItem(lineItems, fee.fee_label)
     plannedRows.push({
       year_num:           null,
       period_start:       fee.due_date ?? formatDate(now),
@@ -335,12 +346,25 @@ async function configureStripe(
       stripe_invoice_id:  null,
       stripe_invoice_url: null,
       sent_at:            null,
+      line_item_id: li?.id ?? null,
+      // Real quantity isn't known until a human confirms delivery (parked-invoices
+      // route) — only the rate can be pre-filled from the approved line item.
+      quantity: null, unit_price: li?.unit_price ?? fee.rate_per_unit ?? null,
     })
   }
 
   for (const fee of oneTimeFees.filter(f => !f.manual_trigger && f.amount > 0)) {
     const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
     const isDue      = !feeDueDate || feeDueDate <= now
+
+    // Prefer the approved line_items row (may carry a human-corrected
+    // quantity/unit_price/total) over the raw extracted contract amount.
+    const li          = findOneTimeLineItem(lineItems, fee.fee_label)
+    const amount      = li?.total_amount ?? fee.amount
+    const hasBreakdown = !!li && li.quantity > 0 && li.unit_price > 0
+    const description  = hasBreakdown
+      ? `${fee.fee_label} — ${li.quantity.toLocaleString()} × ${cur.toUpperCase()} ${li.unit_price.toLocaleString()}`
+      : fee.fee_label
 
     if (isDue) {
       const netDays         = terms.payment_terms_days ?? 30
@@ -364,12 +388,16 @@ async function configureStripe(
         },
       })
 
+      // Stripe invoice items only take a flat amount + quantity=1 here (real
+      // per-unit quantity/rate needs price_data.unit_amount, a Decimal type —
+      // not worth the added complexity when the description already carries
+      // the real breakdown). Remembill (below) gets true quantity/unit_price.
       await stripe.invoiceItems.create({
         customer:    customer.id,
         invoice:     oneTimeInv.id,
-        amount:      Math.round(fee.amount * 100),
+        amount:      Math.round(amount * 100),
         currency:    cur,
-        description: fee.fee_label,
+        description,
       })
 
       const finalized = await stripe.invoices.finalizeInvoice(oneTimeInv.id).catch(err => {
@@ -382,7 +410,7 @@ async function configureStripe(
         year_num:           null,
         period_start:       dueDateStr,
         period_end:         dueDateStr,
-        base_amount:        fee.amount,
+        base_amount:        amount,
         currency:           terms.currency ?? 'EUR',
         fee_label:          fee.fee_label,
         invoice_type:       'one_time',
@@ -390,6 +418,9 @@ async function configureStripe(
         stripe_invoice_id:  oneTimeInv.id,
         stripe_invoice_url: finalized.hosted_invoice_url ?? null,
         sent_at:            new Date().toISOString(),
+        line_item_id: li?.id ?? null,
+        quantity:     hasBreakdown ? li.quantity   : null,
+        unit_price:   hasBreakdown ? li.unit_price : null,
       })
     } else {
       const dueDateStr = formatDate(feeDueDate!)
@@ -397,7 +428,7 @@ async function configureStripe(
         year_num:           null,
         period_start:       dueDateStr,
         period_end:         dueDateStr,
-        base_amount:        fee.amount,
+        base_amount:        amount,
         currency:           terms.currency ?? 'EUR',
         fee_label:          fee.fee_label,
         invoice_type:       'one_time',
@@ -405,6 +436,9 @@ async function configureStripe(
         stripe_invoice_id:  null,
         stripe_invoice_url: null,
         sent_at:            null,
+        line_item_id: li?.id ?? null,
+        quantity:     hasBreakdown ? li.quantity   : null,
+        unit_price:   hasBreakdown ? li.unit_price : null,
       })
     }
   }
@@ -597,6 +631,7 @@ async function configureRememhill(
     idempotencyKey: string,
     invoiceCustomerId: string,
     invoiceCurrency: string,
+    quantity = 1,
   ): Promise<{ id: string; url: string | null }> {
     const dueDate = addDays(issueDate, netDays)
 
@@ -624,8 +659,11 @@ async function configureRememhill(
     }
 
     // price is in öre (minor units): 1 kr = 100 öre. vat is 0–100 percent.
+    // quantity defaults to 1 (period/flat fees); one-time fees with a real
+    // per-unit breakdown pass their actual quantity so Remembill's invoice
+    // shows e.g. "4 × 45,000" instead of a single lump-sum row.
     // POST /invoices/:id/rows is the only endpoint that reliably attaches a row.
-    const rowBody = { name: description, quantity: 1, price: Math.round(unitPrice * 100), vat: 0 }
+    const rowBody = { name: description, quantity, price: Math.round(unitPrice * 100), vat: 0 }
     const rowRes  = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
       method: 'POST', headers: h,
       body: JSON.stringify(rowBody),
@@ -654,6 +692,7 @@ async function configureRememhill(
     invoice_type: string; status: string
     stripe_invoice_id: string | null; stripe_invoice_url: string | null
     sent_at: string | null
+    line_item_id?: string | null; quantity?: number | null; unit_price?: number | null
   }
   const plannedRows: PlannedRow[] = []
 
@@ -712,11 +751,16 @@ async function configureRememhill(
       plannedRows.push({ ...alreadySent, invoice_type: 'one_time', fee_label: alreadySent.fee_label })
       continue
     }
+    const li = findOneTimeLineItem(lineItems, fee.fee_label)
     plannedRows.push({
       year_num: null, period_start: fee.due_date ?? fmtDate(now), period_end: fee.due_date ?? fmtDate(now),
       base_amount: fee.amount ?? 0, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
       invoice_type: 'one_time', status: 'parked',
       stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
+      line_item_id: li?.id ?? null,
+      // Real quantity isn't known until a human confirms delivery — only the
+      // rate can be pre-filled from the approved line item.
+      quantity: null, unit_price: li?.unit_price ?? fee.rate_per_unit ?? null,
     })
   }
 
@@ -732,21 +776,35 @@ async function configureRememhill(
       continue
     }
 
+    // Prefer the approved line_items row (may carry a human-corrected
+    // quantity/unit_price/total) over the raw extracted contract amount.
+    const li           = findOneTimeLineItem(lineItems, fee.fee_label)
+    const amount       = li?.total_amount ?? fee.amount
+    const hasBreakdown = !!li && li.quantity > 0 && li.unit_price > 0
+
     if (isDue) {
       const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-${pushStamp}-onetime-${fee.fee_label}`)
-      const { id, url } = await pushInvoice(fee.fee_label, Math.round(fee.amount * 100) / 100, feeDueDate ?? now, key, customerId, cur)
+      const { id, url } = hasBreakdown
+        ? await pushInvoice(fee.fee_label, li.unit_price, feeDueDate ?? now, key, customerId, cur, li.quantity)
+        : await pushInvoice(fee.fee_label, amount, feeDueDate ?? now, key, customerId, cur)
       plannedRows.push({
         year_num: null, period_start: dueDateStr, period_end: dueDateStr,
-        base_amount: fee.amount, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
+        base_amount: amount, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
         invoice_type: 'one_time', status: 'sent',
         stripe_invoice_id: id, stripe_invoice_url: url, sent_at: new Date().toISOString(),
+        line_item_id: li?.id ?? null,
+        quantity:     hasBreakdown ? li.quantity   : null,
+        unit_price:   hasBreakdown ? li.unit_price : null,
       })
     } else {
       plannedRows.push({
         year_num: null, period_start: dueDateStr, period_end: dueDateStr,
-        base_amount: fee.amount, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
+        base_amount: amount, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
         invoice_type: 'one_time', status: 'scheduled',
         stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
+        line_item_id: li?.id ?? null,
+        quantity:     hasBreakdown ? li.quantity   : null,
+        unit_price:   hasBreakdown ? li.unit_price : null,
       })
     }
   }
