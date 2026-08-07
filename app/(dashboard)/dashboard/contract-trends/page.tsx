@@ -23,21 +23,26 @@ async function getContractData(orgId: string) {
 
   const jobIds = (jobs ?? []).map(j => j.id)
 
+  // period rows only, same as /api/jobs/[id]/actual-overage — one-time/manual
+  // invoices aren't real recurring-cycle overage and would both pollute this
+  // dashboard and double-count (their base_amount already includes any
+  // overage, unlike a period row's, which keeps them separate by design).
   const { data: invoices } = jobIds.length > 0
     ? await supabaseServer
-        .from('computed_invoices')
-        .select('job_id, line_items, period_start, period_end, total_amount, currency')
+        .from('planned_invoices')
+        .select('job_id, overage_line_items, period_start, period_end, currency')
         .in('job_id', jobIds)
+        .eq('status', 'sent')
+        .eq('invoice_type', 'period')
         .order('period_start', { ascending: true })
     : { data: [] }
 
   type InvoiceRow = {
     job_id: string
-    line_items: { type: string; amount: number; description: string; currency: string }[]
+    overage_line_items: { amount: number; description: string; currency: string }[]
     period_start: string | null
     period_end: string | null
     currency: string
-    total_amount: number
   }
 
   const overageByJob: Record<string, number> = {}
@@ -46,8 +51,7 @@ async function getContractData(orgId: string) {
   const ovgInvoicesByJob: Record<string, InvoiceRow[]> = {}
 
   for (const inv of (invoices ?? []) as InvoiceRow[]) {
-    const ovg = (inv.line_items ?? [])
-      .filter(l => l.type === 'overage')
+    const ovg = (inv.overage_line_items ?? [])
       .reduce((s, l) => s + Number(l.amount), 0)
     if (ovg <= 0) continue
     overageByJob[inv.job_id] = (overageByJob[inv.job_id] ?? 0) + ovg
@@ -118,16 +122,15 @@ type ContractRow = {
   start: Date | null; end: Date | null; termMonths: number
   mrr: number; arr: number; tcv: number; currency: string
   confidence: string; isDuplicate: boolean
-  actualOverage: number  // total overage billed to date from computed_invoices
+  actualOverage: number  // total overage billed to date from planned_invoices (period rows)
 }
 
 type InvoiceDetail = {
   job_id: string
-  line_items: { type: string; amount: number; description: string; currency: string }[]
+  overage_line_items: { amount: number; description: string; currency: string }[]
   period_start: string | null
   period_end: string | null
   currency: string
-  total_amount: number
 }
 
 function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoicesByJob }: {
@@ -400,7 +403,7 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
                   {/* Invoice rows */}
                   <div className="divide-y divide-forest/6">
                     {invoices.map((inv, ii) => {
-                      const ovgLines = (inv.line_items ?? []).filter(l => l.type === 'overage')
+                      const ovgLines = inv.overage_line_items ?? []
                       const invOvgTotal = ovgLines.reduce((s, l) => s + l.amount, 0)
                       const pStart = inv.period_start ? new Date(inv.period_start) : null
                       const pEnd   = inv.period_end   ? new Date(inv.period_end)   : null
