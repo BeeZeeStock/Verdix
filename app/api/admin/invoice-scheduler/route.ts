@@ -40,6 +40,8 @@ type OverageLineItem = {
   meter_key: string
   total_units: number
   included_units: number
+  billable_units: number
+  rate_per_unit: number
   amount: number
   currency: string
   description: string
@@ -127,6 +129,7 @@ async function computeOverageForPeriod(params: {
       const overageDesc = buildOverageDescription(cfg.meter_key, totalUnits, tiers, includedUnits)
       items.push({
         meter_key: cfg.meter_key, total_units: totalUnits, included_units: includedUnits,
+        billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,
         amount: Math.round(overageEur * 100) / 100, currency: currency.toUpperCase(),
         description: overageDesc, metric_source: 'meter_pull',
       })
@@ -168,6 +171,7 @@ async function computeOverageForPeriod(params: {
   const overageDesc = buildOverageDescription('Usage', aggregateUnits, terms.overage_tiers ?? [], includedUnits)
   items.push({
     meter_key: 'usage', total_units: aggregateUnits, included_units: includedUnits,
+    billable_units: Math.max(0, aggregateUnits - includedUnits), rate_per_unit: terms.overage_tiers?.[0]?.rate_per_unit ?? 0,
     amount: overageAmount, currency: currency.toUpperCase(),
     description: overageDesc, metric_source: 'client_pull',
   })

@@ -18,6 +18,8 @@ type OverageLineItem = {
   meter_key: string
   total_units: number
   included_units: number
+  billable_units?: number
+  rate_per_unit?: number
   amount: number
   currency: string
   description: string
@@ -82,6 +84,7 @@ type Summary = {
   computedInvoices: { external_invoice_id: string; status: string; total_amount: number; period_start: string }[]
   billingPlatform?: string
   hasOverageTerms?: boolean
+  overageMeterTypes?: string[]
 }
 
 function fmt(n: number, cur = 'EUR') {
@@ -278,7 +281,8 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
 
   if (!summary) return null
 
-  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency, paymentTermsDays, contractStart, hasOverageTerms } = summary
+  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency, paymentTermsDays, contractStart, hasOverageTerms, overageMeterTypes } = summary
+  const meterTypes = overageMeterTypes ?? []
 
 
   return (
@@ -573,38 +577,74 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
               </div>
 
               {isOpen && (
-                <div className="mt-2 ml-[18px] rounded-xl px-3.5 py-3 text-[11px]" style={{ background: 'rgba(26,61,43,0.025)', border: '1px solid rgba(26,61,43,0.06)' }}>
-                  {e.kind === 'subscription' ? (
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-stone">Base subscription fee</span>
-                        <span className="font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.baseAmount, e.currency)}</span>
-                      </div>
-                      {e.overageLineItems.length > 0 ? (
+                <div className="mt-2 ml-[18px] rounded-xl overflow-hidden text-[11px]" style={{ border: '1px solid rgba(26,61,43,0.08)' }}>
+                  <table className="w-full" style={{ borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ background: 'rgba(26,61,43,0.03)' }}>
+                        <th className="text-left font-semibold text-stone px-3 py-2" style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Description</th>
+                        <th className="text-right font-semibold text-stone px-3 py-2" style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Qty</th>
+                        <th className="text-right font-semibold text-stone px-3 py-2" style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Unit price</th>
+                        <th className="text-right font-semibold text-stone px-3 py-2" style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {e.kind === 'subscription' ? (
                         <>
-                          <p className="text-[10px] font-semibold text-stone uppercase tracking-wide pt-1">Usage-based overage</p>
-                          {e.overageLineItems.map((item, i) => (
-                            <div key={i} className="flex items-center justify-between gap-3">
-                              <span className="text-stone/80 min-w-0 truncate" title={item.description}>
-                                {item.meter_key} — {item.total_units.toLocaleString()} used, {item.included_units.toLocaleString()} included
-                              </span>
-                              <span className="font-medium text-ink flex-shrink-0" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(item.amount, item.currency)}</span>
-                            </div>
-                          ))}
-                          <div className="flex items-center justify-between pt-1" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
-                            <span className="font-medium text-ink">Total invoiced</span>
-                            <span className="font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</span>
-                          </div>
+                          <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                            <td className="px-3 py-2 text-ink">{e.label}</td>
+                            <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>1</td>
+                            <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.baseAmount, e.currency)}</td>
+                            <td className="px-3 py-2 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.baseAmount, e.currency)}</td>
+                          </tr>
+                          {e.overageLineItems.length > 0 ? (
+                            e.overageLineItems.map((item, i) => {
+                              const billable = item.billable_units ?? Math.max(0, item.total_units - item.included_units)
+                              const rate     = item.rate_per_unit ?? (billable > 0 ? item.amount / billable : 0)
+                              return (
+                                <tr key={i} style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                                  <td className="px-3 py-2 text-ink" title={item.description}>{item.meter_key} overage</td>
+                                  <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{billable.toLocaleString()}</td>
+                                  <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(rate, item.currency)}</td>
+                                  <td className="px-3 py-2 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(item.amount, item.currency)}</td>
+                                </tr>
+                              )
+                            })
+                          ) : isPast ? (
+                            hasOverageTerms && meterTypes.map(mt => (
+                              <tr key={mt} style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                                <td className="px-3 py-2 text-ink">{mt} overage</td>
+                                <td className="px-3 py-2 text-right text-stone/40" colSpan={3}>No usage overage for this period</td>
+                              </tr>
+                            ))
+                          ) : hasOverageTerms ? (
+                            meterTypes.map(mt => (
+                              <tr key={mt} style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                                <td className="px-3 py-2 text-ink">{mt} overage</td>
+                                <td className="px-3 py-2 text-right text-stone/40">—</td>
+                                <td className="px-3 py-2 text-right text-stone/40">—</td>
+                                <td className="px-3 py-2 text-right text-stone/50 italic">Will be calculated at the end of the billing cycle</td>
+                              </tr>
+                            ))
+                          ) : null}
                         </>
-                      ) : isPast ? (
-                        hasOverageTerms && <p className="text-stone/60">No usage overage for this period.</p>
-                      ) : hasOverageTerms ? (
-                        <p className="text-stone/60 italic">Actual usage data will be pulled at the end of the billing cycle, as per the agreement.</p>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <p className="text-stone/70">{e.description || 'One-time fee — no additional usage detail.'}</p>
-                  )}
+                      ) : (
+                        <tr>
+                          <td className="px-3 py-2 text-ink">{e.description || e.label}</td>
+                          <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>1</td>
+                          <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.baseAmount, e.currency)}</td>
+                          <td className="px-3 py-2 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.baseAmount, e.currency)}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                    {e.kind === 'subscription' && (
+                      <tfoot>
+                        <tr style={{ borderTop: '1px solid rgba(26,61,43,0.1)', background: 'rgba(26,61,43,0.02)' }}>
+                          <td className="px-3 py-2 font-semibold text-ink" colSpan={3}>Total invoiced</td>
+                          <td className="px-3 py-2 text-right font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
                 </div>
               )}
             </div>

@@ -224,6 +224,7 @@ export async function GET(
       paymentTermsDays:     terms?.payment_terms_days ?? null,
       computedInvoices:     computedRes.data ?? [],
       hasOverageTerms:      (terms?.overage_tiers?.length ?? 0) > 0,
+      overageMeterTypes:    Array.from(new Set((terms?.overage_tiers ?? []).map(t => t.unit_type).filter(Boolean))),
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -258,6 +259,8 @@ async function handlePlannedInvoicesPath({
     meter_key: string
     total_units: number
     included_units: number
+    billable_units?: number
+    rate_per_unit?: number
     amount: number
     currency: string
     description: string
@@ -435,5 +438,6 @@ async function handlePlannedInvoicesPath({
     computedInvoices: [],
     billingPlatform:  billingPlatform ?? 'stripe',
     hasOverageTerms:  (terms?.overage_tiers?.length ?? 0) > 0,
+    overageMeterTypes: Array.from(new Set((terms?.overage_tiers ?? []).map(t => t.unit_type).filter(Boolean))),
   })
 }
