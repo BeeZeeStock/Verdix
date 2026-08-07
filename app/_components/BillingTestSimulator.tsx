@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import Link from 'next/link'
 
 type Meter = {
   id:                string
@@ -130,7 +131,12 @@ export function BillingTestSimulator({ orgId }: { orgId?: string }) {
     return (
       <div className="text-center py-8">
         <i className="ti ti-antenna text-forest/30 block mb-2" style={{ fontSize: 24 }} />
-        <p className="text-sm text-stone">No meters registered for this organisation yet.</p>
+        <p className="text-sm text-stone">
+          No registered meters —{' '}
+          <Link href={orgId ? '/admin/meters' : '/settings/meters'} className="text-forest underline hover:no-underline">
+            register here
+          </Link>
+        </p>
       </div>
     )
   }
