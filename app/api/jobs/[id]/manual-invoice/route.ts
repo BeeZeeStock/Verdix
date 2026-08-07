@@ -16,7 +16,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { createAdHocInvoice } from '@/lib/billing-writer'
-import { computeMetricOverage } from '@/lib/tariff'
+import { computeMetricOverage, describeTieredUsage } from '@/lib/tariff'
 import type { OverageTier } from '@/lib/types'
 
 async function loadJob(jobId: string, orgId: string) {
@@ -130,15 +130,19 @@ export async function POST(
       rate_per_unit: t.rate_per_unit ?? 0,
       unit_type:     body.meterKey!,
     }))
-    const amount   = tiers.length > 0 ? computeMetricOverage(body.usage, tiers, includedUnits) : 0
-    const billable = Math.max(0, body.usage - includedUnits)
-    const rate     = tiers[0]?.rate_per_unit ?? (billable > 0 ? amount / billable : 0)
-    const description = `${body.meterKey} overage — ${billable.toLocaleString()} excess units @ ${currency} ${rate}/unit (${body.usage.toLocaleString()} total, ${includedUnits.toLocaleString()} included)`
+    const rawAmount = tiers.length > 0 ? computeMetricOverage(body.usage, tiers, includedUnits) : 0
+    const amount    = Math.round(rawAmount * 100) / 100
+    const billable  = Math.max(0, body.usage - includedUnits)
+    const rate      = tiers[0]?.rate_per_unit ?? (billable > 0 ? amount / billable : 0)
+    const description = describeTieredUsage(body.meterKey, body.usage, tiers, includedUnits)
 
-    lineItems.push({ description, quantity: billable > 0 ? billable : 1, unitPrice: billable > 0 ? rate : amount })
+    // A single line item at quantity 1 — usage spanning multiple tiers has no
+    // single per-unit rate, so quantity × unitPrice must never be used here,
+    // or the pushed invoice amount would only reflect the first tier's rate.
+    lineItems.push({ description, quantity: 1, unitPrice: amount })
     overageSnapshot = {
       meter_key: body.meterKey, total_units: body.usage, included_units: includedUnits,
-      billable_units: billable, rate_per_unit: rate, amount: Math.round(amount * 100) / 100,
+      billable_units: billable, rate_per_unit: rate, amount,
       currency, description, metric_source: 'meter_pull',
     }
   }

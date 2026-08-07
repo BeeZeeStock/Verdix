@@ -20,7 +20,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { requireAdmin } from '@/lib/admin'
-import { computeMetricOverage } from '@/lib/tariff'
+import { computeMetricOverage, describeTieredUsage } from '@/lib/tariff'
 import type { OverageTier } from '@/lib/types'
 
 async function resolveOrgId(req: NextRequest, bodyOrgId: string | undefined): Promise<string | Response> {
@@ -34,12 +34,6 @@ async function resolveOrgId(req: NextRequest, bodyOrgId: string | undefined): Pr
   } catch (res) {
     return res as Response
   }
-}
-
-function buildDescription(meterLabel: string, quantity: number, tiers: OverageTier[], includedUnits: number): string {
-  const billable = Math.max(0, quantity - includedUnits)
-  const rate     = tiers[0]?.rate_per_unit ?? 0
-  return `${meterLabel} — ${billable.toLocaleString()} excess units @ ${rate}/unit (${quantity.toLocaleString()} total, ${includedUnits.toLocaleString()} included)`
 }
 
 export async function POST(req: NextRequest) {
@@ -103,7 +97,7 @@ export async function POST(req: NextRequest) {
       includedUnits,
       billableUnits: Math.max(0, testValue - includedUnits),
       amount:        Math.round(amount * 100) / 100,
-      description:   buildDescription(meter.display_name, testValue, tiers, includedUnits),
+      description:   describeTieredUsage(meter.display_name, testValue, tiers, includedUnits),
     }
   })
 
@@ -139,7 +133,7 @@ export async function POST(req: NextRequest) {
         includedUnits,
         billableUnits: Math.max(0, testValue - includedUnits),
         amount:        Math.round(amount * 100) / 100,
-        description:   buildDescription(meter.display_name, testValue, tiers, includedUnits),
+        description:   describeTieredUsage(meter.display_name, testValue, tiers, includedUnits),
       }
     }
   }

@@ -61,6 +61,38 @@ export function computeTransactionalOverage(
 }
 
 /**
+ * Human-readable breakdown of exactly which tiers a quantity consumed and at
+ * what rate — mirrors computeTransactionalOverage's tier-walk so the text
+ * shown to a user always matches the amount actually computed. A quantity
+ * spanning multiple tiers (the common case) must never be described as a
+ * single flat "@ rate/unit", or the total will look wrong even when it's
+ * correct.
+ */
+export function describeTieredUsage(
+  meterLabel: string,
+  quantity: number,
+  tiers: TierLike[],
+  includedUnits: number,
+): string {
+  const billable = Math.max(0, quantity - includedUnits)
+  const base = `${meterLabel} — ${quantity.toLocaleString()} total, ${includedUnits.toLocaleString()} included, ${billable.toLocaleString()} billable`
+  if (billable <= 0 || tiers.length === 0) return base
+
+  const sorted = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
+  const parts: string[] = []
+  let counted = 0
+  for (const t of sorted) {
+    if (counted >= billable) break
+    const tierStart = t.from_unit ?? 1
+    const tierCap   = t.to_unit != null ? (t.to_unit - tierStart + 1) : billable - counted
+    const here      = Math.min(billable - counted, tierCap)
+    if (here > 0) parts.push(`${here.toLocaleString()} @ ${t.rate_per_unit ?? 0}`)
+    counted += here
+  }
+  return parts.length > 1 ? `${base}: ${parts.join(' + ')}` : `${base} @ ${sorted[0]?.rate_per_unit ?? 0}/unit`
+}
+
+/**
  * Resolves the correct overage computation based on aggregation_type.
  * max_agg metrics (e.g. active user seats) use seat-style logic;
  * everything else uses transactional graduated tiers.

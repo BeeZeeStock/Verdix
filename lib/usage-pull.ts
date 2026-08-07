@@ -4,7 +4,7 @@
 // summary / billing-test simulator (preview only) alike, so they can never
 // silently diverge from each other.
 import { supabaseServer } from '@/lib/supabase'
-import { computeMetricOverage } from '@/lib/tariff'
+import { computeMetricOverage, describeTieredUsage } from '@/lib/tariff'
 import type { ContractTerms } from '@/lib/types'
 
 type MeterCfg = {
@@ -34,17 +34,6 @@ export type OverageLineItem = {
   currency: string
   description: string
   metric_source: 'meter_pull' | 'client_pull'
-}
-
-function buildOverageDescription(
-  unitType: string,
-  quantity: number,
-  tiers: { from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number }[],
-  includedUnits: number,
-): string {
-  const billable = Math.max(0, quantity - includedUnits)
-  const rate     = tiers[0]?.rate_per_unit ?? 0
-  return `${unitType} overage — ${billable.toLocaleString()} excess units @ €${rate}/unit (${quantity.toLocaleString()} total, ${includedUnits.toLocaleString()} included)`
 }
 
 export async function computeOverageForPeriod(params: {
@@ -136,7 +125,7 @@ export async function computeOverageForPeriod(params: {
       const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits) : 0
       if (overageEur <= 0) continue
 
-      const overageDesc = buildOverageDescription(cfg.meter_key, totalUnits, tiers, includedUnits)
+      const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits)
       items.push({
         meter_key: cfg.meter_key, total_units: totalUnits, included_units: includedUnits,
         billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,
@@ -178,7 +167,7 @@ export async function computeOverageForPeriod(params: {
   const overageAmount = Math.round(computeMetricOverage(aggregateUnits, terms.overage_tiers ?? [], includedUnits) * 100) / 100
   if (overageAmount <= 0) return items
 
-  const overageDesc = buildOverageDescription('Usage', aggregateUnits, terms.overage_tiers ?? [], includedUnits)
+  const overageDesc = describeTieredUsage('Usage', aggregateUnits, terms.overage_tiers ?? [], includedUnits)
   items.push({
     meter_key: 'usage', total_units: aggregateUnits, included_units: includedUnits,
     billable_units: Math.max(0, aggregateUnits - includedUnits), rate_per_unit: terms.overage_tiers?.[0]?.rate_per_unit ?? 0,
