@@ -225,7 +225,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
     if (!jobId) return
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setBillingLoading(true)
-    fetch(`/api/jobs/${jobId}/stripe-summary`)
+    fetch(`/api/jobs/${jobId}/billing-summary`)
       .then(r => r.ok ? r.json() : null)
       .then((data: StripeBillingData | null) => {
         if (data?.subscription) setBillingData(data)
@@ -1574,7 +1574,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                             try {
                               await onRepush()
                               if (jobId) {
-                                const data = await fetch(`/api/jobs/${jobId}/stripe-summary`).then(r => r.ok ? r.json() : null) as StripeBillingData | null
+                                const data = await fetch(`/api/jobs/${jobId}/billing-summary`).then(r => r.ok ? r.json() : null) as StripeBillingData | null
                                 if (data?.subscription) setBillingData(data)
                               }
                             } catch (err) {

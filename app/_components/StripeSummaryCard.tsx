@@ -133,7 +133,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
     let cancelled = false
     async function doLoad() {
       try {
-        const res = await fetch(`/api/jobs/${jobId}/stripe-summary`)
+        const res = await fetch(`/api/jobs/${jobId}/billing-summary`)
         if (cancelled) return
         if (!res.ok) {
           const d = await res.json().catch(() => ({}))
@@ -160,7 +160,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`/api/jobs/${jobId}/stripe-summary`)
+      const res = await fetch(`/api/jobs/${jobId}/billing-summary`)
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
         setError(d.error ?? `Error ${res.status}`)

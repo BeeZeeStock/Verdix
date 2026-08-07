@@ -253,6 +253,15 @@ async function handlePlannedInvoicesPath({
 
   const stripeInvMap = new Map(allCustomerInvoices.data.map(inv => [inv.id, inv]))
 
+  type OverageLineItem = {
+    meter_key: string
+    total_units: number
+    included_units: number
+    amount: number
+    currency: string
+    description: string
+    metric_source: 'meter_pull' | 'client_pull'
+  }
   type PlannedRow = {
     id: string
     year_num: number | null
@@ -268,6 +277,8 @@ async function handlePlannedInvoicesPath({
     sent_at: string | null
     paid_at: string | null
     created_at: string
+    overage_line_items: OverageLineItem[] | null
+    overage_total: number | null
   }
 
   const rows = planned as PlannedRow[]
@@ -283,11 +294,20 @@ async function handlePlannedInvoicesPath({
       : row.status === 'sent' ? (billingPlatform === 'remembill' ? 'sent' : 'open')
       : 'draft'
 
+    // When we have the live Stripe invoice object, amount_due is ground truth
+    // (already reflects base + overage as actually invoiced). Otherwise — every
+    // Remembill row, or a Stripe row whose invoice hasn't synced into stripeInvMap
+    // yet — fall back to base_amount + overage_total, which previously only
+    // included base_amount and silently dropped overage from the displayed total.
+    const amount = stripeInv
+      ? (stripeInv.amount_due ?? 0) / 100
+      : Number(row.base_amount) + Number(row.overage_total ?? 0)
+
     return {
       id:            row.id,
       number:        stripeInv?.number ?? null,
       status,
-      amount:        stripeInv ? (stripeInv.amount_due ?? 0) / 100 : Number(row.base_amount),
+      amount,
       currency:      (row.currency ?? 'EUR').toUpperCase(),
       dueDate:       stripeInv?.due_date ? new Date(stripeInv.due_date * 1000).toISOString() : null,
       created:       row.created_at,
@@ -297,6 +317,9 @@ async function handlePlannedInvoicesPath({
       feeLabel:      row.fee_label,
       yearNum:       row.year_num,
       scheduledDate: row.period_start,
+      baseAmount:    Number(row.base_amount),
+      overageLineItems: row.overage_line_items ?? [],
+      overageTotal:     Number(row.overage_total ?? 0),
     }
   }
 
