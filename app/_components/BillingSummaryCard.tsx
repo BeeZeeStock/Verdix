@@ -145,8 +145,6 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
   const [parking, setParking]         = useState<Set<string>>(new Set())
   const [syncing, setSyncing]         = useState(false)
   const [syncResult, setSyncResult]   = useState<{ checked: number; paid: number } | null>(null)
-  const [repairing, setRepairing]     = useState(false)
-  const [repairResult, setRepairResult] = useState<string | null>(null)
   const [expanded, setExpanded]       = useState<Set<string>>(new Set())
 
   const toggleExpanded = (entryId: string) => {
@@ -226,37 +224,6 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
     }
   }, [jobId, handleRefresh])
 
-  const handleRepair = useCallback(async () => {
-    setRepairing(true)
-    setRepairResult(null)
-    try {
-      const res  = await fetch(`/api/jobs/${jobId}/remembill-repair`, { method: 'POST' })
-      const data = await res.json() as { fixed?: Record<string, unknown>[]; repairedCount?: number; message?: string; error?: string }
-      console.log('[remembill-repair] full debug output:', JSON.stringify(data, null, 2))
-      if (!res.ok) {
-        setRepairResult(`Error: ${data.error ?? res.status}`)
-      } else if (data.message) {
-        setRepairResult(data.message)
-      } else {
-        const fixed = data.fixed ?? []
-        const hasRowsCount = fixed.filter(r => r.hasRows).length
-        const noRowsCount  = fixed.filter(r => r.hasRows === false).length
-        if (hasRowsCount > 0) {
-          setRepairResult(`${hasRowsCount} invoice${hasRowsCount > 1 ? 's' : ''} repaired ✓`)
-          await handleRefresh()
-        } else if (noRowsCount > 0) {
-          setRepairResult(`Invoice sent but rows still missing — check browser console for debug output`)
-        } else {
-          setRepairResult('No invoices processed')
-        }
-      }
-    } catch {
-      setRepairResult('Network error')
-    } finally {
-      setRepairing(false)
-    }
-  }, [jobId, handleRefresh])
-
   const isRememhill = summary?.billingPlatform === 'remembill'
   const hasSentInvoices = (summary?.invoices ?? []).some(i => i.status === 'sent')
 
@@ -318,25 +285,6 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
               {syncResult && (
                 <span className="text-[11px]" style={{ color: syncResult.paid > 0 ? '#0B5C36' : '#6B7280' }}>
                   {syncResult.paid > 0 ? `${syncResult.paid} marked paid` : 'No new payments'}
-                </span>
-              )}
-            </div>
-          )}
-          {isRememhill && (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleRepair}
-                disabled={repairing}
-                title="Find invoices missing line items and recreate them with the correct rows"
-                className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-xl transition-colors disabled:opacity-50"
-                style={{ background: '#FFF7ED', color: '#C2410C', border: '1px solid rgba(194,65,12,0.25)' }}
-              >
-                <i className={`ti ti-tools ${repairing ? 'animate-spin' : ''}`} style={{ fontSize: 11 }} />
-                {repairing ? 'Repairing…' : 'Repair rows'}
-              </button>
-              {repairResult && (
-                <span className="text-[11px]" style={{ color: repairResult.startsWith('Error') ? '#DC2626' : '#0B5C36' }}>
-                  {repairResult}
                 </span>
               )}
             </div>
