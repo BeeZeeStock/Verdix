@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
+import { requireAdmin } from '@/lib/admin'
 
 export async function POST(req: NextRequest) {
   const body = await req.json()
@@ -36,6 +37,11 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  // extraction_corrections has no org_id column — it's a cross-org, platform-
+  // wide learning log (job_id/customer_name only), so viewing it is a Verdix-
+  // staff concern, not something any customer org member should see.
+  try { await requireAdmin() } catch { return NextResponse.json({ error: 'Forbidden' }, { status: 403 }) }
+
   const url = new URL(req.url)
   const customer = url.searchParams.get('customer')
 

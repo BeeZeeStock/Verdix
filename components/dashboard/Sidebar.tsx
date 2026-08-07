@@ -47,7 +47,6 @@ const settingsItems = [
   { href: '/settings/meters',       icon: 'ti-antenna',         label: 'Billing meters', exact: false },
   { href: '/settings/billing-test', icon: 'ti-flask',           label: 'Billing test',   exact: false },
   { href: '/settings/team', icon: 'ti-users', label: 'Team', exact: false },
-  { href: '/settings/learned-rules', icon: 'ti-brain', label: 'Learned rules', exact: false },
 ]
 
 const ADMIN_EMAILS = ['bilal.zahoor@yahoo.com', 'bilal@lynoraai.com']
@@ -57,6 +56,7 @@ const adminItems = [
   { href: '/admin/customers', icon: 'ti-users-group', label: 'Customers', exact: false },
   { href: '/admin/design-partners', icon: 'ti-star', label: 'Design partners', exact: false },
   { href: '/admin/meters',       icon: 'ti-antenna',  label: 'Meters',       exact: false },
+  { href: '/settings/learned-rules', icon: 'ti-brain', label: 'Learned rules', exact: false },
   { href: '/admin/billing-test', icon: 'ti-flask',    label: 'Billing test', exact: false },
 ]
 

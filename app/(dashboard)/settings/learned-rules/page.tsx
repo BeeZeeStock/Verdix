@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useSession } from 'next-auth/react'
 
 type Correction = {
   id: string
@@ -13,17 +14,31 @@ type Correction = {
   created_at: string
 }
 
+// extraction_corrections has no org_id — it's a cross-org, platform-wide
+// learning log, so this page (and the API behind it) is Verdix-staff only.
+// This is a UX-level early exit; the actual boundary is requireAdmin() on
+// GET /api/corrections.
+const ADMIN_EMAILS = ['bilal.zahoor@yahoo.com', 'bilal@lynoraai.com']
+
 export default function LearnedRulesPage() {
+  const { data: session, status } = useSession()
   const [rules, setRules] = useState<Correction[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
 
+  const isAdmin = ADMIN_EMAILS.includes(session?.user?.email ?? '')
+
   useEffect(() => {
+    if (status !== 'authenticated' || !isAdmin) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLoading(false)
+      return
+    }
     fetch('/api/corrections')
       .then(r => r.json())
       .then(data => { setRules(data); setLoading(false) })
       .catch(() => setLoading(false))
-  }, [])
+  }, [status, isAdmin])
 
   const handleDelete = async (id: string) => {
     setRules(r => r.filter(x => x.id !== id))
@@ -35,6 +50,20 @@ export default function LearnedRulesPage() {
     r.corrected_value.toLowerCase().includes(search.toLowerCase()) ||
     r.customer_name?.toLowerCase().includes(search.toLowerCase())
   )
+
+  if (status === 'loading') return null
+
+  if (!isAdmin) {
+    return (
+      <div className="p-8">
+        <div className="bg-white border border-forest/10 rounded-2xl px-6 py-16 text-center max-w-md mx-auto">
+          <i className="ti ti-lock text-stone/25 block mb-4" style={{ fontSize: 32 }} />
+          <p className="text-sm font-medium text-ink mb-1">Verdix admins only</p>
+          <p className="text-sm text-stone">This page isn&apos;t available for your account.</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="p-8">
