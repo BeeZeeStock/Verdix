@@ -28,7 +28,7 @@ type BillingInv = {
   amount: number; currency: string; dueDate?: string | null; created: string
   hostedUrl?: string | null; feeLabel?: string | null; yearNum?: number | null; scheduledDate?: string | null
 }
-type StripeBillingData = {
+type BillingSummaryData = {
   subscription: { id: string; status: string; dashboardUrl: string; interval: string; intervalCount: number } | null
   invoices: BillingInv[]
   annualDraftInvoices: BillingInv[]
@@ -182,7 +182,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
     line_items: { type: string; amount: number; description: string; currency: string }[]
   }
   const [actualInvoices, setActualInvoices] = useState<ActualInvoice[]>([])
-  const [billingData, setBillingData]         = useState<StripeBillingData | null>(null)
+  const [billingData, setBillingData]         = useState<BillingSummaryData | null>(null)
   const [billingLoading, setBillingLoading]   = useState(false)
   const [billingFetchDone, setBillingFetchDone] = useState(false)
   const [repushLoading, setRepushLoading]     = useState(false)
@@ -227,7 +227,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
     setBillingLoading(true)
     fetch(`/api/jobs/${jobId}/billing-summary`)
       .then(r => r.ok ? r.json() : null)
-      .then((data: StripeBillingData | null) => {
+      .then((data: BillingSummaryData | null) => {
         if (data?.subscription) setBillingData(data)
       })
       .catch(() => {/* non-fatal */})
@@ -1574,7 +1574,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                             try {
                               await onRepush()
                               if (jobId) {
-                                const data = await fetch(`/api/jobs/${jobId}/billing-summary`).then(r => r.ok ? r.json() : null) as StripeBillingData | null
+                                const data = await fetch(`/api/jobs/${jobId}/billing-summary`).then(r => r.ok ? r.json() : null) as BillingSummaryData | null
                                 if (data?.subscription) setBillingData(data)
                               }
                             } catch (err) {
