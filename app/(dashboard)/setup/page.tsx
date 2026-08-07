@@ -37,68 +37,51 @@ function StepBadge({ type }: { type: BadgeType }) {
   return null
 }
 
-function TimelineStep({
-  n, title, done, badge, active, isLast, onToggle, doneText, children,
+function StepCircle({ n, done, isLast }: { n: number; done: boolean; isLast: boolean }) {
+  return (
+    <div className="flex flex-col items-center flex-shrink-0" style={{ width: 36 }}>
+      <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${
+        done ? 'bg-forest shadow-sm' : 'bg-transparent border-2 border-amber-500'
+      }`}>
+        {done
+          ? <i className="ti ti-check text-white" style={{ fontSize: 13 }} />
+          : <span className="text-sm font-semibold text-amber-600">{n}</span>
+        }
+      </div>
+      {!isLast && <div className="flex-1 w-px bg-stone/20 mt-1" style={{ minHeight: 24 }} />}
+    </div>
+  )
+}
+
+// A step whose only purpose is to send the user to its own dedicated page —
+// no inline form here, so the whole row is a real link, not an accordion.
+function LinkStep({
+  n, title, done, badge, note, href, doneText, todoText, isLast,
 }: {
   n: number
   title: string
   done: boolean
   badge?: BadgeType
-  active: boolean
-  isLast: boolean
-  onToggle: () => void
+  note?: string
+  href: string
   doneText: string
-  children?: React.ReactNode
+  todoText: string
+  isLast: boolean
 }) {
-  const showBody = active
-
   return (
     <div className="flex gap-5">
-      {/* Left column: circle + connector line */}
-      <div className="flex flex-col items-center flex-shrink-0" style={{ width: 36 }}>
-        <button
-          onClick={onToggle}
-          className={`w-9 h-9 rounded-full flex items-center justify-center transition-all flex-shrink-0 focus:outline-none ${
-            done
-              ? 'bg-forest shadow-sm'
-              : 'bg-transparent border-2 border-amber-500 hover:border-amber-600'
-          }`}
-        >
-          {done
-            ? <i className="ti ti-check text-white" style={{ fontSize: 13 }} />
-            : <span className="text-sm font-semibold text-amber-600">{n}</span>
-          }
-        </button>
-        {!isLast && (
-          <div className="flex-1 w-px bg-stone/20 mt-1" style={{ minHeight: 24 }} />
-        )}
-      </div>
-
-      {/* Right column: title + content */}
-      <div className={`flex-1 min-w-0 ${isLast ? 'pb-2' : 'pb-8'}`}>
-        {/* Title row */}
-        <button
-          onClick={onToggle}
-          className="flex items-center gap-2 mb-1 text-left w-full group"
-        >
-          <span className={`font-semibold text-sm leading-snug ${done ? 'text-stone' : 'text-ink'}`}>
+      <StepCircle n={n} done={done} isLast={isLast} />
+      <Link href={href} className={`flex-1 min-w-0 group ${isLast ? 'pb-2' : 'pb-8'}`}>
+        <div className="flex items-center gap-2 mb-1">
+          <span className={`font-semibold text-sm leading-snug transition-colors ${done ? 'text-stone' : 'text-ink'} group-hover:text-forest`}>
             {title}
           </span>
           {badge && <StepBadge type={badge} />}
-          {done && !showBody && (
-            <i className="ti ti-pencil text-stone/30 group-hover:text-stone/60 transition-colors ml-auto flex-shrink-0" style={{ fontSize: 12 }} />
-          )}
-        </button>
-
-        {/* Body */}
-        {showBody ? (
-          <div className="mt-3">
-            {children}
-          </div>
-        ) : (
-          <p className="text-sm text-stone/60">{doneText}</p>
-        )}
-      </div>
+          <i className="ti ti-arrow-right text-stone/30 group-hover:text-forest transition-colors ml-auto flex-shrink-0" style={{ fontSize: 13 }} />
+        </div>
+        {note && <p className="text-xs text-stone/50 mb-1">{note}</p>}
+        <p className="text-sm text-stone/60">{done ? doneText : todoText}</p>
+      </Link>
     </div>
   )
 }
@@ -109,27 +92,25 @@ export default function SetupPage() {
   const [org, setOrg]               = useState<OrgData | null>(null)
   const [hasJobs, setHasJobs]       = useState(false)
   const [hasBilling, setHasBilling] = useState(false)
+  const [hasMeters, setHasMeters]   = useState(false)
   const [loading, setLoading]       = useState(true)
-  const [activeStep, setActive]     = useState<number | null>(null)
+  const [nameExpanded, setNameExpanded] = useState(false)
 
   const [orgName, setOrgName]         = useState('')
   const [savingOrg, setSavingOrg]     = useState(false)
   const [orgMsg, setOrgMsg]           = useState<{ ok: boolean; text: string } | null>(null)
 
-  const [inviteEmail, setInviteEmail] = useState('')
-  const [inviteRole, setInviteRole]   = useState<'member' | 'admin'>('member')
-  const [inviting, setInviting]       = useState(false)
-  const [inviteMsg, setInviteMsg]     = useState<{ ok: boolean; text: string } | null>(null)
-
   async function load() {
-    const [orgRes, jobsRes, intRes] = await Promise.all([
+    const [orgRes, jobsRes, intRes, metersRes] = await Promise.all([
       fetch('/api/org'),
       fetch('/api/jobs'),
       fetch('/api/org/integrations'),
+      fetch('/api/meters'),
     ])
-    const orgData  = await orgRes.json()
-    const jobsData = await jobsRes.json()
-    const intData  = await intRes.json()
+    const orgData    = await orgRes.json()
+    const jobsData    = await jobsRes.json()
+    const intData     = await intRes.json()
+    const metersData  = await metersRes.json().catch(() => null)
 
     if (orgData.orgId) {
       setOrg(orgData)
@@ -142,25 +123,18 @@ export default function SetupPage() {
         i.connector_type === 'billing' && i.is_active
       )
     )
+    setHasMeters(Array.isArray(metersData?.org_meters) && metersData.org_meters.length > 0)
     setLoading(false)
   }
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load() }, [])
 
-  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!org) return
-    const step1Done = !isAutoGeneratedName(org.orgName)
-    const step2Done = org.members.length > 1
-    const step3Done = hasJobs
-    if (!step1Done) setActive(1)
-    else if (!step2Done) setActive(2)
-    else if (!step3Done) setActive(3)
-    else if (!hasBilling) setActive(4)
-    else setActive(null)
-  }, [org, hasJobs, hasBilling])
-  /* eslint-enable react-hooks/set-state-in-effect */
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setNameExpanded(isAutoGeneratedName(org.orgName))
+  }, [org])
 
   async function saveOrgName(e: React.FormEvent) {
     e.preventDefault()
@@ -182,30 +156,6 @@ export default function SetupPage() {
     setSavingOrg(false)
   }
 
-  async function sendInvite(e: React.FormEvent) {
-    e.preventDefault()
-    setInviting(true)
-    setInviteMsg(null)
-    const res = await fetch('/api/org/invite', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
-    })
-    const data = await res.json()
-    if (res.ok) {
-      setInviteMsg({ ok: true, text: `Invite sent to ${inviteEmail}` })
-      setInviteEmail('')
-      await load()
-    } else {
-      setInviteMsg({ ok: false, text: data.error ?? 'Failed to send invite.' })
-    }
-    setInviting(false)
-  }
-
-  function toggle(n: number) {
-    setActive(prev => prev === n ? null : n)
-  }
-
   if (loading) {
     return (
       <div className="p-8 flex items-center gap-2 text-stone text-sm">
@@ -217,13 +167,14 @@ export default function SetupPage() {
 
   if (!org) return null
 
-  const step1Done = !isAutoGeneratedName(org.orgName)
-  const step2Done = org.members.length > 1
-  const step3Done = hasJobs
-  const step4Done = hasBilling
-  const allDone   = step1Done && step2Done && step3Done
-  const doneCount = [step1Done, step2Done, step3Done, step4Done].filter(Boolean).length
-  const totalSteps = 4
+  const step1Done       = !isAutoGeneratedName(org.orgName)
+  const stepMetersDone  = hasMeters
+  const stepPaymentDone = hasBilling
+  const stepUploadDone  = hasJobs
+  const stepTeamDone    = org.members.length > 1
+  const allDone     = step1Done && stepMetersDone && stepPaymentDone && stepUploadDone && stepTeamDone
+  const doneCount   = [step1Done, stepMetersDone, stepPaymentDone, stepUploadDone, stepTeamDone].filter(Boolean).length
+  const totalSteps  = 5
 
   const canEdit = org.role === 'owner' || org.role === 'admin'
 
@@ -252,203 +203,101 @@ export default function SetupPage() {
       {/* Timeline */}
       <div>
 
-        <TimelineStep
-          n={1}
-          title="Name your workspace"
-          done={step1Done}
-          badge="existing"
-          active={activeStep === 1}
-          isLast={false}
-          onToggle={() => toggle(1)}
-          doneText={step1Done ? `"${org.orgName}" — no change needed.` : 'Give it your real company name.'}
-        >
-          <p className="text-sm text-stone mb-4">
-            Your workspace name was generated from your email domain. Give it your real company
-            name so your team knows where they are.
-          </p>
-          {canEdit ? (
-            <form onSubmit={saveOrgName} className="flex flex-col gap-3">
-              <input
-                value={orgName}
-                onChange={e => setOrgName(e.target.value)}
-                className={inputCls}
-                placeholder="Acme Corp"
-                required
-              />
-              <div className="flex items-center gap-3">
-                <button type="submit" disabled={savingOrg} className={btnPrimary}>
-                  {savingOrg ? 'Saving…' : 'Save name'}
-                </button>
-                {orgMsg && (
-                  <span className={`text-xs ${orgMsg.ok ? 'text-forest' : 'text-red-600'}`}>{orgMsg.text}</span>
+        {/* Step 1: Name your workspace — the one step with a real inline form,
+            so it keeps its accordion (expand-to-edit) behavior. */}
+        <div className="flex gap-5">
+          <StepCircle n={1} done={step1Done} isLast={false} />
+          <div className="flex-1 min-w-0 pb-8">
+            <button
+              onClick={() => setNameExpanded(v => !v)}
+              className="flex items-center gap-2 mb-1 text-left w-full group"
+            >
+              <span className={`font-semibold text-sm leading-snug ${step1Done ? 'text-stone' : 'text-ink'}`}>
+                Name your workspace
+              </span>
+              <StepBadge type="existing" />
+              {step1Done && !nameExpanded && (
+                <i className="ti ti-pencil text-stone/30 group-hover:text-stone/60 transition-colors ml-auto flex-shrink-0" style={{ fontSize: 12 }} />
+              )}
+            </button>
+            {nameExpanded ? (
+              <div className="mt-3">
+                <p className="text-sm text-stone mb-4">
+                  Your workspace name was generated from your email domain. Give it your real company
+                  name so your team knows where they are.
+                </p>
+                {canEdit ? (
+                  <form onSubmit={saveOrgName} className="flex flex-col gap-3">
+                    <input
+                      value={orgName}
+                      onChange={e => setOrgName(e.target.value)}
+                      className={inputCls}
+                      placeholder="Acme Corp"
+                      required
+                    />
+                    <div className="flex items-center gap-3">
+                      <button type="submit" disabled={savingOrg} className={btnPrimary}>
+                        {savingOrg ? 'Saving…' : 'Save name'}
+                      </button>
+                      {orgMsg && (
+                        <span className={`text-xs ${orgMsg.ok ? 'text-forest' : 'text-red-600'}`}>{orgMsg.text}</span>
+                      )}
+                    </div>
+                  </form>
+                ) : (
+                  <p className="text-sm text-stone">Only owners and admins can change the workspace name.</p>
                 )}
               </div>
-            </form>
-          ) : (
-            <p className="text-sm text-stone">Only owners and admins can change the workspace name.</p>
-          )}
-        </TimelineStep>
+            ) : (
+              <p className="text-sm text-stone/60">{step1Done ? `"${org.orgName}" — no change needed.` : 'Give it your real company name.'}</p>
+            )}
+          </div>
+        </div>
 
-        <TimelineStep
+        <LinkStep
           n={2}
-          title="Invite your team"
-          done={step2Done}
-          badge="existing"
-          active={activeStep === 2}
+          title="Set up your meters"
+          note="For consumption-based agreements"
+          badge="optional"
+          done={stepMetersDone}
+          href="/settings/meters"
+          doneText="Meters configured."
+          todoText="Register a usage meter if any of your agreements bill on consumption — skip this if all your billing is flat-fee."
           isLast={false}
-          onToggle={() => toggle(2)}
-          doneText={step2Done ? `${org.members.length} members — no change needed.` : 'Add colleagues to review contracts.'}
-        >
-          <p className="text-sm text-stone mb-4">
-            Add colleagues who will be reviewing contracts and approving billing configurations.
-          </p>
-          {canEdit ? (
-            <form onSubmit={sendInvite} className="flex flex-col gap-3">
-              <input
-                type="email"
-                placeholder="colleague@yourcompany.com"
-                value={inviteEmail}
-                onChange={e => setInviteEmail(e.target.value)}
-                required
-                className={inputCls}
-              />
-              <div className="flex items-center gap-3">
-                <select
-                  value={inviteRole}
-                  onChange={e => setInviteRole(e.target.value as 'member' | 'admin')}
-                  className="text-sm border border-forest/20 rounded-xl px-3 py-2.5 bg-white text-ink"
-                >
-                  <option value="member">Member — can view &amp; run jobs</option>
-                  <option value="admin">Admin — can invite &amp; manage</option>
-                </select>
-                <button type="submit" disabled={inviting} className={btnPrimary}>
-                  {inviting ? 'Sending…' : 'Invite'}
-                </button>
-              </div>
-              {inviteMsg && (
-                <p className={`text-xs ${inviteMsg.ok ? 'text-forest' : 'text-red-600'}`}>{inviteMsg.text}</p>
-              )}
-            </form>
-          ) : (
-            <p className="text-sm text-stone">Only owners and admins can invite team members.</p>
-          )}
-          {org.members.length > 1 && (
-            <div className="mt-4 pt-4 border-t border-forest/8">
-              <p className="text-[10px] font-semibold text-stone uppercase tracking-wider mb-2">Team so far</p>
-              <div className="flex flex-col gap-1.5">
-                {org.members.map(m => (
-                  <div key={m.user_email} className="flex items-center justify-between text-sm">
-                    <span className="text-ink">{m.user_email}</span>
-                    <span className="text-[11px] text-stone capitalize">
-                      {m.role}{m.status === 'invited' ? ' · invited' : ''}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          <Link href="/settings/team" className="inline-flex items-center gap-1 text-xs text-forest hover:underline mt-3">
-            Manage full team →
-          </Link>
-        </TimelineStep>
+        />
 
-        <TimelineStep
+        <LinkStep
           n={3}
-          title="Upload your first contract"
-          done={step3Done}
-          badge="existing"
-          active={activeStep === 3}
+          title="Connect a payment system"
+          badge="optional"
+          done={stepPaymentDone}
+          href="/settings/integrations"
+          doneText="Payment system connected — approved contracts push automatically."
+          todoText="Connect Stripe or Chargebee so approved contracts push as subscriptions automatically. Without this, billing push is disabled and users can only download a CSV."
           isLast={false}
-          onToggle={() => toggle(3)}
-          doneText="First contract uploaded — no change needed."
-        >
-          <p className="text-sm text-stone mb-4">
-            Upload a customer contract as a PDF. Verdix extracts billing terms automatically —
-            fees, overages, escalators, and payment schedule — ready for you to review.
-          </p>
-          <div className="flex flex-wrap gap-3">
-            <Link href="/configure/new" className={btnPrimary + ' inline-flex items-center gap-2'}>
-              <i className="ti ti-upload" style={{ fontSize: 14 }} />
-              Upload a contract
-            </Link>
-            <Link
-              href="/verify/new"
-              className="inline-flex items-center gap-2 text-sm font-medium px-5 py-2.5 rounded-xl border border-forest/20 text-forest hover:bg-cream transition-colors"
-            >
-              <i className="ti ti-file-check" style={{ fontSize: 14 }} />
-              Run a billing audit
-            </Link>
-          </div>
-          <p className="text-xs text-stone mt-3">
-            <strong>Upload a contract</strong> to configure billing,
-            or <strong>Run a billing audit</strong> to check an existing invoice.
-          </p>
-        </TimelineStep>
+        />
 
-        <TimelineStep
+        <LinkStep
           n={4}
-          title="Connect a billing platform"
-          done={step4Done}
-          badge="optional"
-          active={activeStep === 4}
+          title="Upload your first agreement"
+          badge="existing"
+          done={stepUploadDone}
+          href="/configure/new"
+          doneText="First agreement uploaded."
+          todoText="Upload a signed contract as a PDF — Verdix extracts billing terms automatically: fees, overages, escalators, and payment schedule."
           isLast={false}
-          onToggle={() => toggle(4)}
-          doneText="Billing platform connected — subscriptions will be pushed automatically."
-        >
-          <p className="text-sm text-stone mb-1">
-            Admin picks their billing system and enters API credentials. Verdix pushes approved
-            contracts as subscriptions directly to the platform. Without this step, billing push
-            is disabled and users can only download a CSV.
-          </p>
-          <div className="mt-3 flex flex-col gap-1.5 text-sm text-stone">
-            <p>
-              <strong className="text-ink">Stripe:</strong>{' '}
-              enter secret key → saved to org_integrations → replaces the hardwired dev key.
-            </p>
-            <p>
-              <strong className="text-ink">Chargebee:</strong>{' '}
-              enter site name + API key → same flow.
-            </p>
-            <p>
-              <strong className="text-ink">Others:</strong>{' '}
-              shown as &ldquo;coming soon&rdquo; with a one-click notification opt-in.
-            </p>
-          </div>
-          <Link href="/settings/integrations" className={btnPrimary + ' inline-flex items-center gap-2 mt-4 text-xs px-4 py-2'}>
-            <i className="ti ti-plug-connected" style={{ fontSize: 13 }} />
-            Set up billing integration
-          </Link>
-        </TimelineStep>
+        />
 
-        <TimelineStep
+        <LinkStep
           n={5}
-          title="Connect your CRM"
-          done={false}
-          badge="optional"
-          active={activeStep === 5}
+          title="Manage team"
+          badge="existing"
+          done={stepTeamDone}
+          href="/settings/team"
+          doneText={`${org.members.length} members.`}
+          todoText="Invite colleagues who will be reviewing contracts and approving billing configurations."
           isLast={true}
-          onToggle={() => toggle(5)}
-          doneText="CRM connected."
-        >
-          <p className="text-sm text-stone mb-1">
-            Admin picks their CRM (HubSpot, Salesforce, Pipedrive, Attio) and connects via
-            OAuth or API key.
-          </p>
-          <div className="mt-3 flex flex-col gap-1.5 text-sm text-stone">
-            <p>
-              <strong className="text-ink">Phase 1:</strong>{' '}
-              HubSpot and Salesforce shown with &ldquo;Notify me when available&rdquo; — OAuth flows built in Phase 2.
-            </p>
-            <p>
-              <strong className="text-ink">Phase 2:</strong>{' '}
-              OAuth flow: after connecting, Verdix listens for Closed Won deal webhooks and
-              auto-creates jobs. Optionally writes subscription ID back to deal.
-            </p>
-          </div>
-          <Link href="/settings/integrations" className="inline-flex items-center gap-1 text-xs text-forest hover:underline mt-4">
-            View CRM integrations →
-          </Link>
-        </TimelineStep>
+        />
 
       </div>
 
