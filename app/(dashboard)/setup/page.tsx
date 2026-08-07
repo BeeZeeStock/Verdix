@@ -273,7 +273,7 @@ export default function SetupPage() {
           done={stepPaymentDone}
           href="/settings/integrations"
           doneText="Payment system connected — approved contracts push automatically."
-          todoText="Connect Stripe or Chargebee so approved contracts push as subscriptions automatically. Without this, billing push is disabled and users can only download a CSV."
+          todoText="Connect to a payment system to automatically push invoices as per the billing cycle according to the agreement."
           isLast={false}
         />
 

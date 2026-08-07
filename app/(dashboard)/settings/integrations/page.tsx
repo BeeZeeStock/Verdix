@@ -715,7 +715,7 @@ export default function IntegrationsPage() {
       {/* Section — Billing */}
       <div className="mb-8">
         <div className="mb-4">
-          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-stone">Billing platforms</p>
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-stone">Payment platforms</p>
           <p className="text-xs text-stone/70 mt-0.5">
             Multiple billing platforms can be active simultaneously. Choose which one to push to at contract approval time.
           </p>
