@@ -1,7 +1,14 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import { useSession } from 'next-auth/react'
 import Link from 'next/link'
+
+// Verdix staff should always be able to test platform meters (e.g. the
+// shared 'sync' meter), even from their own org's self-service billing-test
+// page — this is about who's logged in, not which route was used to get
+// here. Real customers never see platform meters on their own page.
+const ADMIN_EMAILS = ['bilal.zahoor@yahoo.com', 'bilal@lynoraai.com']
 
 type Meter = {
   id:                string
@@ -46,6 +53,8 @@ function fmt(amount: number) {
 }
 
 export function BillingTestSimulator({ orgId }: { orgId?: string }) {
+  const { data: session } = useSession()
+  const isPlatformAdmin = ADMIN_EMAILS.includes(session?.user?.email ?? '')
   const [meters,   setMeters]   = useState<Meter[]>([])
   const [agreements, setAgreements] = useState<Agreement[]>([])
   const [loading,  setLoading]  = useState(true)
@@ -65,13 +74,13 @@ export function BillingTestSimulator({ orgId }: { orgId?: string }) {
       const all = (res?.meters ?? []) as Meter[]
       return all.filter(m => m.org_id === orgId || m.org_id === null)
     }
-    // Org self-service view: only meters this org registered itself. Platform
-    // meters like 'sync' measure the org's own Verdix usage, not any of their
-    // customers' contracts — they don't belong in a customer's own billing
-    // test tool.
+    // Org self-service view: only meters this org registered itself — unless
+    // the logged-in user is Verdix staff, who can always see the shared
+    // platform meter(s) regardless of which org's page they're on.
     const res = await fetch('/api/meters').then(r => r.json()).catch(() => null)
-    return (res?.org_meters ?? []) as Meter[]
-  }, [orgId])
+    const orgMeters = (res?.org_meters ?? []) as Meter[]
+    return isPlatformAdmin ? [...((res?.platform_meters ?? []) as Meter[]), ...orgMeters] : orgMeters
+  }, [orgId, isPlatformAdmin])
 
   const fetchAgreements = useCallback(async () => {
     const url = orgId ? `/api/billing-test/jobs?org_id=${orgId}` : '/api/billing-test/jobs'
