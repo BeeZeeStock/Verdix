@@ -14,6 +14,9 @@ async function getContractData(orgId: string) {
         contract_term_months, base_monthly_fee, base_annual_fee,
         billing_frequency, currency, contract_id, extraction_confidence,
         one_time_fees, year_pricing
+      ),
+      line_items (
+        product_name, total_amount, billing_period, applied_rule
       )
     `)
     .eq('module', 'AUTO_CONFIGURE')
@@ -64,27 +67,65 @@ async function getContractData(orgId: string) {
     }
   }
 
-  // Total revenue actually invoiced to date — any invoice_type (recurring
-  // periods + one-time fees), since both are real billed revenue. overage_total
-  // is 0 on one-time rows (folded into base_amount there) and separately
-  // tracked on period rows, so summing both never double-counts.
+  // Total base + one-time revenue actually invoiced to date — deliberately
+  // excludes overage_total, matching the per-job Graphical view's "Revenue
+  // actuals" waterfall exactly (its "Billed to date"/"Actual TCV" track base
+  // recurring + one-time fees only; metered overage is tracked separately,
+  // in overageByJob above).
   const { data: billedRows } = jobIds.length > 0
     ? await supabaseServer
         .from('planned_invoices')
-        .select('job_id, base_amount, overage_total')
+        .select('job_id, base_amount, invoice_type, fee_label')
         .in('job_id', jobIds)
         .in('status', ['sent', 'paid'])
     : { data: [] }
 
   const billedByJob: Record<string, number> = {}
-  for (const row of (billedRows ?? []) as { job_id: string; base_amount: number; overage_total: number | null }[]) {
-    billedByJob[row.job_id] = (billedByJob[row.job_id] ?? 0) + Number(row.base_amount) + Number(row.overage_total ?? 0)
+  const oneTimeSentByJob: Record<string, { feeLabel: string | null; amount: number }[]> = {}
+  for (const row of (billedRows ?? []) as { job_id: string; base_amount: number; invoice_type: string; fee_label: string | null }[]) {
+    billedByJob[row.job_id] = (billedByJob[row.job_id] ?? 0) + Number(row.base_amount)
+    if (row.invoice_type === 'one_time') {
+      if (!oneTimeSentByJob[row.job_id]) oneTimeSentByJob[row.job_id] = []
+      oneTimeSentByJob[row.job_id].push({ feeLabel: row.fee_label, amount: Number(row.base_amount) })
+    }
   }
 
-  return { jobs: jobs ?? [], overageByJob, overageByJobMonth, ovgInvoicesByJob, billedByJob }
+  return { jobs: jobs ?? [], overageByJob, overageByJobMonth, ovgInvoicesByJob, billedByJob, oneTimeSentByJob }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+// Mirrors classifyItem()/periodsInTerm() from the job Contract·Commercials
+// page — same source of truth for Base TCV (line_items × periods in term,
+// excluding escalators) so this dashboard's numbers match each contract's
+// own page exactly, just aggregated.
+type LineItem = { product_name: string; total_amount: number; billing_period: string; applied_rule?: string | null }
+
+function isEscalatorItem(item: LineItem): boolean {
+  const rule = (item.applied_rule ?? '').toLowerCase()
+  const name = item.product_name.toLowerCase()
+  return rule.includes('escalator') || name.includes('escalator') || name.includes('cpi') || name.includes('price escalator')
+}
+
+function periodsInTerm(bp: string | null | undefined, termMonths: number): number {
+  if (!termMonths) return 1
+  if (bp === 'monthly')     return termMonths
+  if (bp === 'quarterly')   return termMonths / 3
+  if (bp === 'semi-annual') return termMonths / 6
+  if (bp === 'annual')      return termMonths / 12
+  return 1
+}
+
+// Single, exhaustive status classification — every contract falls into
+// exactly one bucket, so counts always reconcile with the total. A contract
+// missing either date (can't tell if/when it's active) is its own bucket
+// rather than silently vanishing from every status filter.
+function contractStatus(c: { start: Date | null; end: Date | null }, today: Date): 'Active' | 'Upcoming' | 'Expired' | 'No dates' {
+  if (!c.start || !c.end) return 'No dates'
+  if (c.start > today) return 'Upcoming'
+  if (c.end < today) return 'Expired'
+  return 'Active'
+}
 
 function currencySym(cur: string) {
   return cur === 'EUR' ? '€' : cur === 'GBP' ? '£' : cur === 'SEK' ? 'kr' : '$'
@@ -159,9 +200,10 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
   overageByJobMonth: Record<string, Record<string, number>>
   ovgInvoicesByJob: Record<string, InvoiceDetail[]>
 }) {
-  const active   = contracts.filter(c => c.start && c.end && c.start <= today && c.end >= today)
-  const upcoming = contracts.filter(c => c.start && c.start > today)
-  const expired  = contracts.filter(c => c.end && c.end < today)
+  const active   = contracts.filter(c => contractStatus(c, today) === 'Active')
+  const upcoming = contracts.filter(c => contractStatus(c, today) === 'Upcoming')
+  const expired  = contracts.filter(c => contractStatus(c, today) === 'Expired')
+  const noDates  = contracts.filter(c => contractStatus(c, today) === 'No dates')
 
   const activeARR    = active.reduce((s, c) => s + c.arr, 0)
   const expiredARR   = expired.reduce((s, c) => s + c.arr, 0)
@@ -583,11 +625,12 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
       {/* Status breakdown */}
       <div className="bg-white border border-forest/10 rounded-2xl p-6">
         <h3 className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-5">Contract status — {cur}</h3>
-        <div className="grid grid-cols-3 gap-8">
+        <div className={`grid gap-8 ${noDates.length > 0 ? 'grid-cols-4' : 'grid-cols-3'}`}>
           {[
             { label: 'Active',    count: active.length,   arr: activeARR, color: '#27AE60' },
             { label: 'Upcoming',  count: upcoming.length, arr: upcoming.reduce((s,c) => s+c.arr,0), color: '#73C99B' },
             { label: 'Expired',   count: expired.length,  arr: expiredARR, color: '#D1D5DB' },
+            ...(noDates.length > 0 ? [{ label: 'No dates', count: noDates.length, arr: noDates.reduce((s, c) => s + c.arr, 0), color: '#E5A54B' }] : []),
           ].map(row => {
             const pct = contracts.length > 0 ? (row.count / contracts.length) * 100 : 0
             return (
@@ -617,7 +660,7 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
 export default async function ContractTrendsPage() {
   const org = await getActiveOrg()
   if (!org) redirect('/login')
-  const { jobs, overageByJob, overageByJobMonth, ovgInvoicesByJob, billedByJob } = await getContractData(org.orgId)
+  const { jobs, overageByJob, overageByJobMonth, ovgInvoicesByJob, billedByJob, oneTimeSentByJob } = await getContractData(org.orgId)
 
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -632,29 +675,39 @@ export default async function ContractTrendsPage() {
     const months = t.contract_term_months ?? (start && end
       ? (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth()) + 1
       : 12)
-    const oneTime = ((t.one_time_fees ?? []) as { amount: number }[]).reduce((s, f) => s + Number(f.amount ?? 0), 0)
     // Resolve annual fee: year_pricing.year1 → base_annual_fee → base_monthly_fee × 12
     const yp = t.year_pricing as Record<string, number> | null | undefined
     const annualFee = yp?.year1 ?? (Number(t.base_annual_fee ?? 0) || Number(t.base_monthly_fee ?? 0) * 12)
     const mrr = annualFee / 12
-    // TCV: sum all year_pricing years if available, else mrr × term
-    const tcv = yp
-      ? Object.values(yp).reduce((s: number, v: number) => s + Number(v), 0) + oneTime
-      : mrr * months + oneTime
     // Normalise currency to uppercase; fall back to job currency
     const cur = (t.currency ?? job.currency ?? 'EUR').toUpperCase()
+
+    // Base TCV — same single source of truth as the per-job Graphical view:
+    // the approved billing configuration (line_items), not raw contract_terms.
+    const lineItems = (job.line_items ?? []) as LineItem[]
+    const baseTcv = lineItems.reduce((s, item) => {
+      if (isEscalatorItem(item)) return s
+      return s + (item.total_amount ?? 0) * periodsInTerm(item.billing_period, months)
+    }, 0)
+    // Additions — sent one-time invoices for variable fees (total_amount = 0
+    // in the billing config), same match rule as the per-job page.
+    const additionsTotal = (oneTimeSentByJob[job.id] ?? []).reduce((s, inv) => {
+      const matchingItem = lineItems.find(i => i.product_name === inv.feeLabel)
+      return matchingItem && Number(matchingItem.total_amount) === 0 ? s + inv.amount : s
+    }, 0)
+
     contracts.push({
       jobId: job.id, jobName: job.name,
       customer: t.customer_name ?? job.name ?? 'Unknown',
       contractId: t.contract_id,
       start, end, termMonths: months,
-      mrr, arr: annualFee, tcv,
+      mrr, arr: annualFee, tcv: baseTcv,
       currency: cur,
       confidence: t.extraction_confidence ?? 'medium',
       isDuplicate: false, // filled below
       actualOverage: overageByJob[job.id] ?? 0,
       billedToDate: billedByJob[job.id] ?? 0,
-      actualTcv: tcv + (overageByJob[job.id] ?? 0),
+      actualTcv: baseTcv + additionsTotal,
     })
   }
 
@@ -690,7 +743,7 @@ export default async function ContractTrendsPage() {
   const currencies = Object.keys(byCurrency).sort((a, b) => byCurrency[b].length - byCurrency[a].length)
 
   // ── Active ARR donut — across all currencies ────────────────────────────
-  const activeAll = contracts.filter(c => c.start && c.end && c.start <= today && c.end >= today)
+  const activeAll = contracts.filter(c => contractStatus(c, today) === 'Active')
   const donutArrByCustomer = activeAll.reduce<Record<string, { arr: number; cur: string }>>((acc, c) => {
     if (!acc[c.customer]) acc[c.customer] = { arr: 0, cur: c.currency }
     acc[c.customer].arr += c.arr
@@ -827,11 +880,8 @@ export default async function ContractTrendsPage() {
                     </thead>
                     <tbody>
                       {contracts.map(c => {
-                        const status = !c.start || !c.end ? 'No dates'
-                          : c.start > today ? 'Upcoming'
-                          : c.end < today   ? 'Expired'
-                          : 'Active'
-                        const statusColor = status === 'Active' ? '#27AE60' : status === 'Upcoming' ? '#73C99B' : status === 'Expired' ? '#9CA3AF' : '#D1D5DB'
+                        const status = contractStatus(c, today)
+                        const statusColor = status === 'Active' ? '#27AE60' : status === 'Upcoming' ? '#73C99B' : status === 'Expired' ? '#9CA3AF' : '#E5A54B'
                         return (
                           <tr key={c.jobId} className={`border-b border-forest/6 last:border-0 ${c.isDuplicate ? 'bg-amber-50/60' : ''}`}>
                             <td className="py-3 pr-5">
