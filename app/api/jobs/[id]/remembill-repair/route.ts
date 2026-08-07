@@ -50,7 +50,7 @@ export async function POST(
 
   const { data: rows } = await supabaseServer
     .from('planned_invoices')
-    .select('id, stripe_invoice_id, fee_label, base_amount, period_start, invoice_type')
+    .select('id, stripe_invoice_id, fee_label, base_amount, period_start, invoice_type, quantity, unit_price, overage_line_items')
     .eq('job_id', jobId)
     .eq('status', 'sent')
 
@@ -66,6 +66,13 @@ export async function POST(
     const feeLabel      = row.fee_label as string | null
     const baseAmount    = row.base_amount as number
     const periodStart   = row.period_start as string
+    const overageItems  = (row.overage_line_items ?? []) as Array<{ description: string; amount: number }>
+
+    // Real per-unit breakdown (from the approved line_items row) when one was
+    // captured at push/parked-confirm time — same fallback as invoice-scheduler.
+    const rowQuantity  = row.quantity   != null ? Number(row.quantity)   : null
+    const rowUnitPrice = row.unit_price != null ? Number(row.unit_price) : null
+    const hasBreakdown = rowQuantity != null && rowUnitPrice != null && rowQuantity > 0 && rowUnitPrice > 0
 
     const description = feeLabel ?? 'Subscription fee'
     const issueDate   = new Date(periodStart + 'T00:00:00')
@@ -73,10 +80,12 @@ export async function POST(
 
     // price in öre: 1 SEK = 100 öre
     const priceOere  = Math.round(baseAmount * 100)
-    const rowPayload = { name: description, quantity: 1, price: priceOere, vat: 0 }
+    const rowPayload = hasBreakdown
+      ? { name: description, quantity: rowQuantity!, price: Math.round(rowUnitPrice! * 100), vat: 0 }
+      : { name: description, quantity: 1, price: priceOere, vat: 0 }
 
     const entry: Record<string, unknown> = {
-      rowId: row.id, feeLabel, baseAmount, priceOere,
+      rowId: row.id, feeLabel, baseAmount, priceOere, hasBreakdown,
       existingInvId,
     }
 
@@ -148,6 +157,19 @@ export async function POST(
     })
     const rowBody = await rowRes.text()
     entry.strategyC = { sentBody: rowPayload, status: rowRes.status, responseBody: rowBody }
+
+    // ── Overage rows (dropped otherwise, since we deleted the original invoice) ─
+    if (overageItems.length > 0) {
+      entry.overageRows = []
+      for (const item of overageItems) {
+        const overagePayload = { name: item.description, quantity: 1, price: Math.round(item.amount * 100), vat: 0 }
+        const overageRes  = await fetch(`${REMEMBILL_BASE}/invoices/${newId}/rows`, {
+          method: 'POST', headers: h,
+          body: JSON.stringify(overagePayload),
+        })
+        ;(entry.overageRows as unknown[]).push({ sentBody: overagePayload, status: overageRes.status })
+      }
+    }
 
     // ── GET again to see final state ──────────────────────────────────────────
     const getRes2  = await fetch(`${REMEMBILL_BASE}/invoices/${newId}`, { headers: h })
