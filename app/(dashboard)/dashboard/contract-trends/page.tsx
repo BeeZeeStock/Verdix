@@ -158,7 +158,7 @@ type ContractRow = {
   confidence: string; isDuplicate: boolean
   actualOverage: number   // total overage billed to date from planned_invoices (period rows)
   billedToDate: number    // total revenue actually invoiced to date (any invoice_type, sent/paid)
-  actualTcv: number       // contracted tcv + overage billed on top of it
+  actualTcv: number       // contracted tcv + additions (variable one-time fees actually billed)
 }
 
 type InvoiceDetail = {
@@ -188,12 +188,22 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
   const totalOverage = contracts.reduce((s, c) => s + c.actualOverage, 0)
 
   // TCV lifecycle — active contracts only: what they're contracted for (Base
-  // TCV), what that becomes once billed overage is folded in (Actual TCV),
-  // and how much of that has actually been invoiced vs is still to come.
+  // TCV), what that becomes once billed additions (variable one-time fees
+  // actually invoiced) are folded in (Actual TCV), and how much of that has
+  // actually been invoiced vs is still to come. Metered overage is a
+  // separate concept, tracked in totalOverage above.
   const baseTcv      = active.reduce((s, c) => s + c.tcv, 0)
   const actualTcvAgg = active.reduce((s, c) => s + c.actualTcv, 0)
   const billedToDate = active.reduce((s, c) => s + Math.min(c.billedToDate, c.actualTcv), 0)
   const remaining    = active.reduce((s, c) => s + Math.max(0, c.actualTcv - c.billedToDate), 0)
+
+  // Same four figures across every contract regardless of status — shown
+  // alongside the active-only numbers so this reconciles at a glance with
+  // the per-currency total on the New contracts page (which is all-time).
+  const baseTcvAll      = contracts.reduce((s, c) => s + c.tcv, 0)
+  const actualTcvAggAll = contracts.reduce((s, c) => s + c.actualTcv, 0)
+  const billedToDateAll = contracts.reduce((s, c) => s + Math.min(c.billedToDate, c.actualTcv), 0)
+  const remainingAll    = contracts.reduce((s, c) => s + Math.max(0, c.actualTcv - c.billedToDate), 0)
 
   // MRR by month — active vs expired series
   const allStarts = contracts.filter(c => c.start).map(c => c.start!)
@@ -263,18 +273,21 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
         ))}
       </div>
 
-      {/* TCV lifecycle row — active contracts only */}
+      {/* TCV lifecycle row — active contracts, with the all-contracts total
+          shown alongside so this reconciles at a glance with the New
+          contracts page (which has no active/expired concept). */}
       <div className="grid grid-cols-4 gap-4">
         {[
-          { label: 'Base TCV',        value: fmtFull(baseTcv, cur),      sub: `${active.length} active contracts`,       color: '#1A3D2B' },
-          { label: 'Actual TCV',      value: fmtFull(actualTcvAgg, cur), sub: 'Contracted + overage billed',              color: '#0B5C36' },
-          { label: 'Billed to date',  value: fmtFull(billedToDate, cur), sub: 'Actually invoiced so far',                 color: '#27AE60' },
-          { label: 'Remaining',       value: fmtFull(remaining, cur),    sub: 'Contracted, not yet invoiced',             color: '#87B09A' },
+          { label: 'Base TCV',        value: fmtFull(baseTcv, cur),      allValue: fmtFull(baseTcvAll, cur),      sub: `${active.length} active contracts`,       color: '#1A3D2B' },
+          { label: 'Actual TCV',      value: fmtFull(actualTcvAgg, cur), allValue: fmtFull(actualTcvAggAll, cur), sub: 'Contracted + additions billed',            color: '#0B5C36' },
+          { label: 'Billed to date',  value: fmtFull(billedToDate, cur), allValue: fmtFull(billedToDateAll, cur), sub: 'Actually invoiced so far',                 color: '#27AE60' },
+          { label: 'Remaining',       value: fmtFull(remaining, cur),    allValue: fmtFull(remainingAll, cur),    sub: 'Contracted, not yet invoiced',             color: '#87B09A' },
         ].map(k => (
           <div key={k.label} className="bg-white border border-forest/10 rounded-2xl p-4">
             <p className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-2">{k.label}</p>
             <p className="text-xl font-semibold font-mono" style={{ color: k.color }}>{k.value}</p>
             <p className="text-[10px] text-stone mt-1">{k.sub}</p>
+            <p className="text-[10px] text-stone/50 mt-1.5 pt-1.5 border-t border-forest/6">All contracts: <span className="font-mono">{k.allValue}</span></p>
           </div>
         ))}
       </div>

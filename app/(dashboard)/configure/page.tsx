@@ -56,6 +56,21 @@ export default async function ConfigureListPage() {
   const jobs = await getJobs(org.orgId)
   const contractSummaries = await getContractSummaries(jobs.map(j => j.id))
 
+  // Per-currency totals — a direct sum of the same per-row values shown in
+  // the table below, so this can be cross-checked against the Agreements
+  // dashboard's aggregate KPIs at a glance.
+  const totalsByCurrency: Record<string, { tcv: number; actualTcv: number; count: number }> = {}
+  for (const job of jobs) {
+    const summary = contractSummaries[job.id]
+    if (!summary) continue
+    const cur = summary.currency
+    totalsByCurrency[cur] ??= { tcv: 0, actualTcv: 0, count: 0 }
+    totalsByCurrency[cur].tcv += summary.tcv
+    totalsByCurrency[cur].actualTcv += summary.actualTcv
+    totalsByCurrency[cur].count += 1
+  }
+  const currencies = Object.keys(totalsByCurrency).sort((a, b) => totalsByCurrency[b].count - totalsByCurrency[a].count)
+
   return (
     <div className="p-4 md:p-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-8">
@@ -67,6 +82,29 @@ export default async function ConfigureListPage() {
           <i className="ti ti-file-invoice" style={{ fontSize: 16 }} /> Upload contract
         </Link>
       </div>
+
+      {currencies.length > 0 && (
+        <div className={`grid gap-4 mb-6 ${currencies.length > 1 ? 'sm:grid-cols-2' : 'sm:grid-cols-1'}`}>
+          {currencies.map(cur => {
+            const t = totalsByCurrency[cur]
+            return (
+              <div key={cur} className="bg-white border border-forest/10 rounded-2xl p-4 flex items-center gap-6">
+                <span className="text-xs font-semibold text-stone uppercase tracking-widest">{cur} <span className="text-stone/50 normal-case">({t.count})</span></span>
+                <div className="flex-1 grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-0.5">Base TCV</p>
+                    <p className="text-base font-semibold font-mono text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtTcv(t.tcv, cur)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-0.5">Actual TCV</p>
+                    <p className="text-base font-semibold font-mono" style={{ color: '#0B5C36', fontVariantNumeric: 'tabular-nums' }}>{fmtTcv(t.actualTcv, cur)}</p>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-forest/8 flex items-center justify-between">
