@@ -59,10 +59,12 @@ export function BillingTestSimulator({ orgId }: { orgId?: string }) {
     if (orgId) {
       const res = await fetch('/api/admin/meters').then(r => r.json()).catch(() => null)
       const all = (res?.meters ?? []) as Meter[]
-      return all.filter(m => m.org_id === orgId)
+      // Platform meters (org_id null, e.g. the shared 'sync' meter) apply to
+      // every org, not just orgs that registered their own — include both.
+      return all.filter(m => m.org_id === orgId || m.org_id === null)
     }
     const res = await fetch('/api/meters').then(r => r.json()).catch(() => null)
-    return (res?.org_meters ?? []) as Meter[]
+    return [...((res?.platform_meters ?? []) as Meter[]), ...((res?.org_meters ?? []) as Meter[])]
   }, [orgId])
 
   const fetchAgreements = useCallback(async () => {

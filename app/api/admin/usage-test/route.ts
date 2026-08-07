@@ -9,7 +9,9 @@ export async function GET() {
   const [orgsRes, subsRes, jobsRes] = await Promise.all([
     supabaseServer.from('organizations').select('id, name').order('name'),
     supabaseServer.from('org_subscriptions').select('org_id, plan_id, usage_counters, stripe_customer_id, stripe_subscription_id, current_period_start, current_period_end'),
-    supabaseServer.from('jobs').select('id, org_id, created_at').order('created_at', { ascending: false }).limit(50),
+    // No limit — this backs the org list's job-count badge, so every org's
+    // jobs must be counted, not just the most recently created 50 system-wide.
+    supabaseServer.from('jobs').select('id, org_id, created_at').order('created_at', { ascending: false }),
   ])
 
   const orgMap = new Map((orgsRes.data ?? []).map((o: { id: string; name: string }) => [o.id, o.name]))

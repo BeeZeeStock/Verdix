@@ -45,6 +45,7 @@ const settingsItems = [
   { href: '/settings/billing', icon: 'ti-credit-card', label: 'Billing', exact: false },
   { href: '/settings/integrations', icon: 'ti-plug-connected', label: 'Integrations', exact: false },
   { href: '/settings/meters',       icon: 'ti-antenna',         label: 'Billing meters', exact: false },
+  { href: '/settings/billing-test', icon: 'ti-flask',           label: 'Billing test',   exact: false },
   { href: '/settings/team', icon: 'ti-users', label: 'Team', exact: false },
   { href: '/settings/learned-rules', icon: 'ti-brain', label: 'Learned rules', exact: false },
 ]
@@ -112,7 +113,7 @@ function NavContent({ onNav }: { onNav?: () => void }) {
           {settingsItems
             .filter(item => !(
               ADMIN_EMAILS.includes(userEmail) &&
-              (item.href === '/settings/billing' || item.href === '/settings/meters')
+              item.href === '/settings/billing'
             ))
             .map(item => (
               <Link
