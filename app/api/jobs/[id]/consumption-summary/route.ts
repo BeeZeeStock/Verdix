@@ -74,6 +74,7 @@ export async function GET(
         periodStartUnix: Math.floor(new Date(periodStart + 'T00:00:00').getTime() / 1000),
         periodEndUnix:   Math.floor(new Date(periodEnd   + 'T23:59:59').getTime() / 1000),
         currency:        row.currency ?? terms.currency ?? 'EUR',
+        ignoreTestModeGate: true,
       }).catch(() => [])
     }
 

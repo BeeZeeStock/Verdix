@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 
 type OverageItem = {
   meter_key:      string
@@ -49,18 +49,30 @@ const STATUS_STYLE: Record<Period['status'], { icon: string; color: string; labe
 export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
   const [periods, setPeriods] = useState<Period[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error,   setError]   = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
-  useEffect(() => {
-    let cancelled = false
-    fetch(`/api/jobs/${jobId}/consumption-summary`)
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(`Error ${r.status}`)))
-      .then((data: { periods: Period[] }) => { if (!cancelled) setPeriods(data.periods ?? []) })
-      .catch(() => { if (!cancelled) setError('Failed to load consumption data') })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
+  const load = useCallback(async (isRefresh: boolean) => {
+    if (isRefresh) setRefreshing(true)
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/consumption-summary`)
+      if (!res.ok) throw new Error(`Error ${res.status}`)
+      const data = await res.json() as { periods: Period[] }
+      setPeriods(data.periods ?? [])
+      setError(null)
+    } catch {
+      setError('Failed to load consumption data')
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
   }, [jobId])
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    load(false)
+  }, [load])
 
   const toggleExpanded = (id: string) => setExpanded(prev => {
     const next = new Set(prev)
@@ -72,9 +84,20 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
 
   return (
     <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
-      <div className="p-6 pb-2" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-        <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Consumption</h2>
-        <p className="text-[11px] text-stone mt-1">Usage per billing cycle — what gets pushed into invoicing</p>
+      <div className="p-6 pb-2 flex items-start justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+        <div>
+          <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Consumption</h2>
+          <p className="text-[11px] text-stone mt-1">Usage per billing cycle — what gets pushed into invoicing</p>
+        </div>
+        <button
+          onClick={() => load(true)}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-xl transition-colors disabled:opacity-50 flex-shrink-0"
+          style={{ background: '#EEF9F2', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.25)' }}
+        >
+          <i className={`ti ti-refresh ${refreshing ? 'animate-spin' : ''}`} style={{ fontSize: 11 }} />
+          {refreshing ? 'Refreshing…' : 'Refresh'}
+        </button>
       </div>
 
       <div className="px-6 py-5">

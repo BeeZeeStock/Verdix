@@ -54,8 +54,13 @@ export async function computeOverageForPeriod(params: {
   periodStartUnix: number
   periodEndUnix: number
   currency: string
+  // Real billing (invoice-scheduler) must skip meters still in test mode —
+  // never invoice off an unfinished meter. Read-only previews (consumption
+  // summary) create no invoice and no side effect, so they should still show
+  // live data for a test-mode meter — that's the whole point of testing it.
+  ignoreTestModeGate?: boolean
 }): Promise<OverageLineItem[]> {
-  const { orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, currency } = params
+  const { orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, currency, ignoreTestModeGate } = params
   const items: OverageLineItem[] = []
 
   const { data: meterConfigs } = await supabaseServer
@@ -74,7 +79,7 @@ export async function computeOverageForPeriod(params: {
         .maybeSingle()
 
       const def = meterDef as MeterDef | null
-      if (def?.mode === 'test') {
+      if (def?.mode === 'test' && !ignoreTestModeGate) {
         console.warn(`[usage-pull] meter '${cfg.meter_key}' org ${orgId} still in test mode — skipping real overage`)
         continue
       }
