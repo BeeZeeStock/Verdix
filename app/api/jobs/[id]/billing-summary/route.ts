@@ -223,6 +223,7 @@ export async function GET(
       currency:             terms?.currency ?? 'EUR',
       paymentTermsDays:     terms?.payment_terms_days ?? null,
       computedInvoices:     computedRes.data ?? [],
+      hasOverageTerms:      (terms?.overage_tiers?.length ?? 0) > 0,
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -349,7 +350,9 @@ async function handlePlannedInvoicesPath({
       const anySent = yearRows.some(r => r.status === 'sent' || r.status === 'processing')
       const status  = anyPaid ? 'paid' : anySent ? 'open' : 'draft'
 
-      const totalAmount = yearRows.reduce((s, r) => s + Number(r.base_amount), 0)
+      const totalBase    = yearRows.reduce((s, r) => s + Number(r.base_amount), 0)
+      const yearOverageItems = yearRows.flatMap(r => r.overage_line_items ?? [])
+      const yearOverageTotal = yearRows.reduce((s, r) => s + Number(r.overage_total ?? 0), 0)
       const firstRow    = yearRows[0]
       const lastRow     = yearRows[yearRows.length - 1]
 
@@ -362,7 +365,7 @@ async function handlePlannedInvoicesPath({
         id:            `year-${yearNum}-${id}`,
         number:        null,
         status,
-        amount:        totalAmount,
+        amount:        totalBase + yearOverageTotal,
         currency:      (firstRow.currency ?? 'EUR').toUpperCase(),
         dueDate:       null,
         created:       firstRow.created_at,
@@ -372,6 +375,9 @@ async function handlePlannedInvoicesPath({
         feeLabel:      null,
         yearNum,
         scheduledDate: firstRow.period_start,
+        baseAmount:       totalBase,
+        overageLineItems: yearOverageItems,
+        overageTotal:     yearOverageTotal,
       }
     })
 
@@ -428,5 +434,6 @@ async function handlePlannedInvoicesPath({
     paymentTermsDays: terms?.payment_terms_days  ?? null,
     computedInvoices: [],
     billingPlatform:  billingPlatform ?? 'stripe',
+    hasOverageTerms:  (terms?.overage_tiers?.length ?? 0) > 0,
   })
 }

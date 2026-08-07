@@ -14,6 +14,16 @@ type SubscriptionInfo = {
   dashboardUrl: string
 }
 
+type OverageLineItem = {
+  meter_key: string
+  total_units: number
+  included_units: number
+  amount: number
+  currency: string
+  description: string
+  metric_source: 'meter_pull' | 'client_pull'
+}
+
 type InvoiceInfo = {
   id: string
   number: string | null
@@ -28,6 +38,9 @@ type InvoiceInfo = {
   feeLabel?: string | null
   yearNum?: number | null
   scheduledDate?: string | null
+  baseAmount?: number
+  overageLineItems?: OverageLineItem[]
+  overageTotal?: number
 }
 
 type YearPayment = {
@@ -68,6 +81,7 @@ type Summary = {
   paymentTermsDays: number | null
   computedInvoices: { external_invoice_id: string; status: string; total_amount: number; period_start: string }[]
   billingPlatform?: string
+  hasOverageTerms?: boolean
 }
 
 function fmt(n: number, cur = 'EUR') {
@@ -114,7 +128,7 @@ function StatusBadge({ status }: { status: string | null }) {
 }
 
 
-export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSentOneTimeInvoices }: {
+export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSentOneTimeInvoices }: {
   jobId: string
   onHasSchedule?: (has: boolean) => void
   onParkedInvoices?: (invoices: ParkedInvoiceSummary[]) => void
@@ -128,6 +142,16 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
   const [syncResult, setSyncResult]   = useState<{ checked: number; paid: number } | null>(null)
   const [repairing, setRepairing]     = useState(false)
   const [repairResult, setRepairResult] = useState<string | null>(null)
+  const [expanded, setExpanded]       = useState<Set<string>>(new Set())
+
+  const toggleExpanded = (entryId: string) => {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      if (next.has(entryId)) next.delete(entryId)
+      else next.add(entryId)
+      return next
+    })
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -254,7 +278,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
 
   if (!summary) return null
 
-  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency, paymentTermsDays, contractStart } = summary
+  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency, paymentTermsDays, contractStart, hasOverageTerms } = summary
 
 
   return (
@@ -334,6 +358,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
         type TLEntry = {
           id: string; label: string; dateLabel: string; date: Date; amount: number; currency: string
           status: string | null; hostedUrl?: string | null; pdfUrl?: string | null; kind: 'subscription' | 'one-time' | 'pending-setup'
+          baseAmount: number; overageLineItems: OverageLineItem[]; overageTotal: number; description?: string | null
         }
         const entries: TLEntry[] = []
 
@@ -384,6 +409,9 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
             dateLabel: dateLabel(planned), date: planned,
             amount: inv.amount, currency: inv.currency,
             status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'subscription',
+            baseAmount: inv.baseAmount ?? inv.amount,
+            overageLineItems: inv.overageLineItems ?? [],
+            overageTotal: inv.overageTotal ?? 0,
           })
         }
 
@@ -403,6 +431,9 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
               dateLabel: dateLabel(planned), date: planned,
               amount: inv.amount, currency: inv.currency,
               status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'subscription',
+              baseAmount: inv.baseAmount ?? inv.amount,
+              overageLineItems: inv.overageLineItems ?? [],
+              overageTotal: inv.overageTotal ?? 0,
             })
           }
         }
@@ -420,6 +451,8 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
             dateLabel: dateLabel(planned), date: planned,
             amount: inv.amount, currency: inv.currency,
             status: inv.status, hostedUrl: inv.hostedUrl, pdfUrl: inv.pdfUrl, kind: 'one-time',
+            baseAmount: inv.amount, overageLineItems: [], overageTotal: 0,
+            description: matchingFee?.description ?? null,
           })
         }
 
@@ -434,6 +467,8 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
               dateLabel: 'Will be issued', date: planned,
               amount: fee.amount, currency,
               status: 'pending', kind: 'pending-setup',
+              baseAmount: fee.amount, overageLineItems: [], overageTotal: 0,
+              description: fee.description ?? null,
             })
           }
         }
@@ -478,6 +513,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
           // Future date                  = Draft (not yet issued, regardless of Stripe status)
           const effectiveStatus = isPast ? e.status : 'draft'
           const canPark = !isPast && e.kind === 'one-time'
+          const isOpen = expanded.has(e.id)
           return (
           <div key={e.id} className="flex gap-4 group">
             {/* Icon */}
@@ -489,13 +525,23 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
 
             {/* Content */}
             <div className="pb-4 flex-1 min-w-0">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className={`text-[12px] font-medium leading-tight ${isPast ? 'text-ink' : 'text-ink/80'}`}>{e.label}</p>
-                  <p className="text-[10px] text-stone mt-0.5">
-                    <span className="text-stone/50">{e.dateLabel} </span>
-                    {e.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                  </p>
+              <div
+                className="flex items-start justify-between gap-3 cursor-pointer"
+                onClick={() => toggleExpanded(e.id)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') toggleExpanded(e.id) }}
+              >
+                <div className="min-w-0 flex items-start gap-1.5">
+                  <i className={`ti ti-chevron-right flex-shrink-0 transition-transform ${isOpen ? 'rotate-90' : ''}`}
+                    style={{ fontSize: 11, color: '#9CA3AF', marginTop: 2 }} />
+                  <div className="min-w-0">
+                    <p className={`text-[12px] font-medium leading-tight ${isPast ? 'text-ink' : 'text-ink/80'}`}>{e.label}</p>
+                    <p className="text-[10px] text-stone mt-0.5">
+                      <span className="text-stone/50">{e.dateLabel} </span>
+                      {e.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </p>
+                  </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 flex-shrink-0">
                   <div className="flex items-center gap-2">
@@ -504,7 +550,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
                     </span>
                     <StatusBadge status={effectiveStatus} />
                     {e.pdfUrl && (
-                      <a href={e.pdfUrl} target="_blank" rel="noreferrer"
+                      <a href={e.pdfUrl} target="_blank" rel="noreferrer" onClick={ev => ev.stopPropagation()}
                         className="text-stone/40 hover:text-stone transition-colors" title="Download PDF">
                         <i className="ti ti-file-download" style={{ fontSize: 11 }} />
                       </a>
@@ -512,7 +558,7 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
                   </div>
                   {canPark && (
                     <button
-                      onClick={() => moveToParked(e.id)}
+                      onClick={ev => { ev.stopPropagation(); moveToParked(e.id) }}
                       disabled={parking.has(e.id)}
                       className="text-[10px] text-amber-600 hover:text-amber-700 flex items-center gap-1 disabled:opacity-40 transition-colors"
                       title="Move to Parked Invoices — requires manual delivery confirmation before sending"
@@ -525,6 +571,42 @@ export function StripeSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onSe
                   )}
                 </div>
               </div>
+
+              {isOpen && (
+                <div className="mt-2 ml-[18px] rounded-xl px-3.5 py-3 text-[11px]" style={{ background: 'rgba(26,61,43,0.025)', border: '1px solid rgba(26,61,43,0.06)' }}>
+                  {e.kind === 'subscription' ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-stone">Base subscription fee</span>
+                        <span className="font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.baseAmount, e.currency)}</span>
+                      </div>
+                      {e.overageLineItems.length > 0 ? (
+                        <>
+                          <p className="text-[10px] font-semibold text-stone uppercase tracking-wide pt-1">Usage-based overage</p>
+                          {e.overageLineItems.map((item, i) => (
+                            <div key={i} className="flex items-center justify-between gap-3">
+                              <span className="text-stone/80 min-w-0 truncate" title={item.description}>
+                                {item.meter_key} — {item.total_units.toLocaleString()} used, {item.included_units.toLocaleString()} included
+                              </span>
+                              <span className="font-medium text-ink flex-shrink-0" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(item.amount, item.currency)}</span>
+                            </div>
+                          ))}
+                          <div className="flex items-center justify-between pt-1" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
+                            <span className="font-medium text-ink">Total invoiced</span>
+                            <span className="font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</span>
+                          </div>
+                        </>
+                      ) : isPast ? (
+                        hasOverageTerms && <p className="text-stone/60">No usage overage for this period.</p>
+                      ) : hasOverageTerms ? (
+                        <p className="text-stone/60 italic">Actual usage data will be pulled at the end of the billing cycle, as per the agreement.</p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p className="text-stone/70">{e.description || 'One-time fee — no additional usage detail.'}</p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
           )

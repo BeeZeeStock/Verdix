@@ -5,7 +5,7 @@ import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
 import { InvoicesTab } from '@/app/_components/InvoicesTab'
-import { StripeSummaryCard } from '@/app/_components/StripeSummaryCard'
+import { BillingSummaryCard } from '@/app/_components/BillingSummaryCard'
 import { MeterMappingPanel } from '@/app/_components/MeterMappingPanel'
 import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 
@@ -2774,7 +2774,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 {parkedInvoices.length > 0 && (
                   <ParkedInvoicesCard jobId={id} parkedInvoices={parkedInvoices} />
                 )}
-                <StripeSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial'} onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} onSentOneTimeInvoices={setSentOneTimeInvoices} />
+                <BillingSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial'} onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} onSentOneTimeInvoices={setSentOneTimeInvoices} />
                 {/* Rebuild banner — shown when customer exists but no planned schedule yet */}
                 {!subId && !rebuildDone && scheduleExists === false && (() => {
                   const missingForRebuild: string[] = []
