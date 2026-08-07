@@ -14,6 +14,11 @@ export async function GET(
     .select('id, period_start, period_end, currency, base_amount, overage_line_items, status')
     .eq('job_id', id)
     .eq('status', 'sent')
+    // period rows only — one-time/manual invoices (e.g. Manual invoice
+    // verification pushes) aren't real recurring-cycle overage and would
+    // both pollute this chart and double-count (their base_amount already
+    // includes the overage, unlike a period row's).
+    .eq('invoice_type', 'period')
     .order('period_start', { ascending: true })
 
   if (plannedError) {

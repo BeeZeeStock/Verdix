@@ -4,7 +4,6 @@ import { useState, useEffect, use } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
-import { InvoicesTab } from '@/app/_components/InvoicesTab'
 import { BillingSummaryCard } from '@/app/_components/BillingSummaryCard'
 import { MeterMappingPanel } from '@/app/_components/MeterMappingPanel'
 import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
@@ -1549,7 +1548,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       .catch(() => setPdfUrlError(true))
   }, [drawer.open, id, pdfUrl])
 
-  const [activeTab, setActiveTab]       = useState<'terms' | 'model' | 'invoices'>('terms')
+  const [activeTab, setActiveTab]       = useState<'terms' | 'model'>('terms')
   const [reviewPanelOpen, setReviewPanelOpen] = useState(false)
   const [escEditing,   setEscEditing]   = useState<number | null>(null)
   const [escEditValue, setEscEditValue] = useState('')
@@ -1950,7 +1949,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             <div className="h-4 w-px bg-forest/15" />
             {/* Tab nav */}
             <div className="flex items-center">
-              {(['terms', 'model', 'invoices'] as const).map(tab => (
+              {(['terms', 'model'] as const).map(tab => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -1960,7 +1959,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     : { color: '#9CA3AF', borderBottomColor: 'transparent' }
                   }
                 >
-                  {tab === 'terms' ? 'Contract · Commercials' : tab === 'model' ? 'Graphical view' : 'Processed invoices'}
+                  {tab === 'terms' ? 'Contract · Commercials' : 'Graphical view'}
                 </button>
               ))}
             </div>
@@ -2001,13 +2000,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           {activeTab === 'model' && !terms && (
             <div className="flex-1 flex items-center justify-center text-stone text-sm">
               No contract terms available for modeling.
-            </div>
-          )}
-
-          {/* ── Invoices tab ─────────────────────────────────────────────── */}
-          {activeTab === 'invoices' && (
-            <div className="flex-1 overflow-y-auto">
-              <InvoicesTab jobId={id} billingPlatform={billingPlatform} onNavigate={setActiveTab} />
             </div>
           )}
 
