@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { supabaseServer } from '@/lib/supabase'
 import { getActiveOrg } from '@/lib/org'
+import { getContractSummaries } from '@/lib/contract-tcv'
 
 // ── Data fetching ──────────────────────────────────────────────────────────
 
@@ -14,9 +15,6 @@ async function getContractData(orgId: string) {
         contract_term_months, base_monthly_fee, base_annual_fee,
         billing_frequency, currency, contract_id, extraction_confidence,
         one_time_fees, year_pricing
-      ),
-      line_items (
-        product_name, total_amount, billing_period, applied_rule
       )
     `)
     .eq('module', 'AUTO_CONFIGURE')
@@ -25,6 +23,10 @@ async function getContractData(orgId: string) {
     .order('created_at', { ascending: false })
 
   const jobIds = (jobs ?? []).map(j => j.id)
+
+  // Base TCV / Actual TCV — same shared calculation as the "New contracts"
+  // list, not re-derived here, so both pages always agree.
+  const contractSummaries = await getContractSummaries(jobIds)
 
   // period rows only, same as /api/jobs/[id]/actual-overage — one-time/manual
   // invoices aren't real recurring-cycle overage and would both pollute this
@@ -75,46 +77,20 @@ async function getContractData(orgId: string) {
   const { data: billedRows } = jobIds.length > 0
     ? await supabaseServer
         .from('planned_invoices')
-        .select('job_id, base_amount, invoice_type, fee_label')
+        .select('job_id, base_amount')
         .in('job_id', jobIds)
         .in('status', ['sent', 'paid'])
     : { data: [] }
 
   const billedByJob: Record<string, number> = {}
-  const oneTimeSentByJob: Record<string, { feeLabel: string | null; amount: number }[]> = {}
-  for (const row of (billedRows ?? []) as { job_id: string; base_amount: number; invoice_type: string; fee_label: string | null }[]) {
+  for (const row of (billedRows ?? []) as { job_id: string; base_amount: number }[]) {
     billedByJob[row.job_id] = (billedByJob[row.job_id] ?? 0) + Number(row.base_amount)
-    if (row.invoice_type === 'one_time') {
-      if (!oneTimeSentByJob[row.job_id]) oneTimeSentByJob[row.job_id] = []
-      oneTimeSentByJob[row.job_id].push({ feeLabel: row.fee_label, amount: Number(row.base_amount) })
-    }
   }
 
-  return { jobs: jobs ?? [], overageByJob, overageByJobMonth, ovgInvoicesByJob, billedByJob, oneTimeSentByJob }
+  return { jobs: jobs ?? [], overageByJob, overageByJobMonth, ovgInvoicesByJob, billedByJob, contractSummaries }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-
-// Mirrors classifyItem()/periodsInTerm() from the job Contract·Commercials
-// page — same source of truth for Base TCV (line_items × periods in term,
-// excluding escalators) so this dashboard's numbers match each contract's
-// own page exactly, just aggregated.
-type LineItem = { product_name: string; total_amount: number; billing_period: string; applied_rule?: string | null }
-
-function isEscalatorItem(item: LineItem): boolean {
-  const rule = (item.applied_rule ?? '').toLowerCase()
-  const name = item.product_name.toLowerCase()
-  return rule.includes('escalator') || name.includes('escalator') || name.includes('cpi') || name.includes('price escalator')
-}
-
-function periodsInTerm(bp: string | null | undefined, termMonths: number): number {
-  if (!termMonths) return 1
-  if (bp === 'monthly')     return termMonths
-  if (bp === 'quarterly')   return termMonths / 3
-  if (bp === 'semi-annual') return termMonths / 6
-  if (bp === 'annual')      return termMonths / 12
-  return 1
-}
 
 // Single, exhaustive status classification — every contract falls into
 // exactly one bucket, so counts always reconcile with the total. A contract
@@ -660,7 +636,7 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
 export default async function ContractTrendsPage() {
   const org = await getActiveOrg()
   if (!org) redirect('/login')
-  const { jobs, overageByJob, overageByJobMonth, ovgInvoicesByJob, billedByJob, oneTimeSentByJob } = await getContractData(org.orgId)
+  const { jobs, overageByJob, overageByJobMonth, ovgInvoicesByJob, billedByJob, contractSummaries } = await getContractData(org.orgId)
 
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -682,32 +658,22 @@ export default async function ContractTrendsPage() {
     // Normalise currency to uppercase; fall back to job currency
     const cur = (t.currency ?? job.currency ?? 'EUR').toUpperCase()
 
-    // Base TCV — same single source of truth as the per-job Graphical view:
-    // the approved billing configuration (line_items), not raw contract_terms.
-    const lineItems = (job.line_items ?? []) as LineItem[]
-    const baseTcv = lineItems.reduce((s, item) => {
-      if (isEscalatorItem(item)) return s
-      return s + (item.total_amount ?? 0) * periodsInTerm(item.billing_period, months)
-    }, 0)
-    // Additions — sent one-time invoices for variable fees (total_amount = 0
-    // in the billing config), same match rule as the per-job page.
-    const additionsTotal = (oneTimeSentByJob[job.id] ?? []).reduce((s, inv) => {
-      const matchingItem = lineItems.find(i => i.product_name === inv.feeLabel)
-      return matchingItem && Number(matchingItem.total_amount) === 0 ? s + inv.amount : s
-    }, 0)
+    // Base TCV / Actual TCV — straight from the shared per-job calculation
+    // (lib/contract-tcv.ts), same values the "New contracts" list shows.
+    const summary = contractSummaries[job.id]
 
     contracts.push({
       jobId: job.id, jobName: job.name,
       customer: t.customer_name ?? job.name ?? 'Unknown',
       contractId: t.contract_id,
       start, end, termMonths: months,
-      mrr, arr: annualFee, tcv: baseTcv,
+      mrr, arr: annualFee, tcv: summary?.tcv ?? 0,
       currency: cur,
       confidence: t.extraction_confidence ?? 'medium',
       isDuplicate: false, // filled below
       actualOverage: overageByJob[job.id] ?? 0,
       billedToDate: billedByJob[job.id] ?? 0,
-      actualTcv: baseTcv + additionsTotal,
+      actualTcv: summary?.actualTcv ?? 0,
     })
   }
 
