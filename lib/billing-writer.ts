@@ -13,6 +13,50 @@ interface BillingPeriod {
   baseAmount: number
 }
 
+// Which rate applies to a given month — ramp schedule → year pricing → flat
+// base fee, in that priority order. No escalation, no additions, no discount;
+// callers compose those on top. Exported so buildLineItems() (contract
+// execute route) can generate real per-year recurring-fee line items using
+// the exact same rate logic as the actual billing schedule, instead of a
+// separate, potentially-inconsistent approximation.
+export function computeMonthlyBaseRate(terms: ContractTerms, globalMonthIdx: number, d: Date): number {
+  const yearPricing  = terms.year_pricing
+  const rampSchedule = terms.ramp_schedule?.length ? terms.ramp_schedule : null
+  const baseAnnualFallback = terms.base_annual_fee ?? 0
+  const baseMonthly = terms.base_monthly_fee
+    ?? (baseAnnualFallback > 0 && !yearPricing && !rampSchedule ? baseAnnualFallback / 12 : 0)
+
+  if (rampSchedule) {
+    for (const step of rampSchedule) {
+      const s = new Date(step.start_date), e = new Date(step.end_date)
+      if (d >= s && d <= e) return step.monthly_fee
+    }
+    return rampSchedule[rampSchedule.length - 1].monthly_fee
+  }
+  if (yearPricing) {
+    const yr   = Math.floor(globalMonthIdx / 12) + 1
+    const key  = `year${yr}`
+    const keys = Object.keys(yearPricing)
+    return (yearPricing[key] ?? yearPricing[keys[keys.length - 1]] ?? 0) / 12
+  }
+  return baseMonthly
+}
+
+// Compound escalation multiplier for a given month. Only applies when neither
+// ramp_schedule nor year_pricing is set (those already encode their own
+// step-ups). Exported alongside computeMonthlyBaseRate for the same reason.
+export function computeEscalatorMultiplier(terms: ContractTerms, d: Date): number {
+  if (terms.year_pricing || terms.ramp_schedule?.length) return 1
+  for (const esc of terms.escalators ?? []) {
+    const ed = esc.effective_date ? new Date(esc.effective_date) : null
+    if (ed && d >= ed) {
+      const ms = (d.getFullYear() - ed.getFullYear()) * 12 + (d.getMonth() - ed.getMonth())
+      return Math.pow(1 + (esc.escalator_pct ?? 0) / 100, Math.floor(ms / 12) + 1)
+    }
+  }
+  return 1
+}
+
 function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
   const cs = terms.contract_start_date
     ? new Date(terms.contract_start_date + 'T00:00:00')
@@ -29,35 +73,10 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
   const { interval, intervalCount } = billingInterval(terms.billing_frequency)
   const monthsPerPeriod = interval === 'year' ? 12 * intervalCount : intervalCount
 
-  const yearPricing  = terms.year_pricing
-  const rampSchedule = terms.ramp_schedule?.length ? terms.ramp_schedule : null
-
-  const baseAnnualFallback = terms.base_annual_fee ?? 0
-  const baseMonthly = terms.base_monthly_fee
-    ?? (baseAnnualFallback > 0 && !yearPricing && !rampSchedule ? baseAnnualFallback / 12 : 0)
-
   const additionalMonthly = (terms.additional_recurring_fees ?? [])
     .reduce((s, f) => s + (f.amount ?? 0), 0)
 
-  const escalators = terms.escalators ?? []
-  const discounts  = terms.discounts  ?? []
-
-  function monthlyBase(globalMonthIdx: number, d: Date): number {
-    if (rampSchedule) {
-      for (const step of rampSchedule) {
-        const s = new Date(step.start_date), e = new Date(step.end_date)
-        if (d >= s && d <= e) return step.monthly_fee
-      }
-      return rampSchedule[rampSchedule.length - 1].monthly_fee
-    }
-    if (yearPricing) {
-      const yr   = Math.floor(globalMonthIdx / 12) + 1
-      const key  = `year${yr}`
-      const keys = Object.keys(yearPricing)
-      return (yearPricing[key] ?? yearPricing[keys[keys.length - 1]] ?? 0) / 12
-    }
-    return baseMonthly
-  }
+  const discounts = terms.discounts ?? []
 
   const periods: BillingPeriod[] = []
   let periodIdx  = 0
@@ -84,19 +103,8 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
     for (let mi = 0; mi < monthsInThisPeriod; mi++) {
       const globalMonthIdx = monthsUsed + mi
       const d    = new Date(cs.getFullYear(), cs.getMonth() + globalMonthIdx, 1)
-      const base = monthlyBase(globalMonthIdx, d)
-
-      let mult = 1
-      if (!yearPricing && !rampSchedule) {
-        for (const esc of escalators) {
-          const ed = esc.effective_date ? new Date(esc.effective_date) : null
-          if (ed && d >= ed) {
-            const ms = (d.getFullYear() - ed.getFullYear()) * 12 + (d.getMonth() - ed.getMonth())
-            mult = Math.pow(1 + (esc.escalator_pct ?? 0) / 100, Math.floor(ms / 12) + 1)
-            break
-          }
-        }
-      }
+      const base = computeMonthlyBaseRate(terms, globalMonthIdx, d)
+      const mult = computeEscalatorMultiplier(terms, d)
 
       let amount = (base + additionalMonthly) * mult
 

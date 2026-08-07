@@ -6,6 +6,7 @@ import { requireOrg } from '@/lib/org'
 import { extractContractTerms } from '@/lib/contract-extractor'
 import { resolveStorageUrl } from '@/lib/storage'
 import { maskText, restoreTokensInObject } from '@/lib/pii-detector'
+import { computeMonthlyBaseRate, computeEscalatorMultiplier } from '@/lib/billing-writer'
 
 
 // Allow up to 5 minutes — PDF extraction + two Anthropic calls can exceed the default 10s limit
@@ -164,7 +165,44 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
   const src = terms.field_sources ?? {}
   const conf = terms.extraction_confidence === 'high' ? 0.97 : terms.extraction_confidence === 'medium' ? 0.82 : 0.62
 
-  if (terms.base_monthly_fee) {
+  // Recurring base fee — one line item per contract year, computed with the
+  // same rate logic (ramp schedule → year pricing → flat fee, with compound
+  // escalation) as the real billing schedule (computeMonthlyBaseRate /
+  // computeEscalatorMultiplier in lib/billing-writer.ts), so a contract with
+  // an escalator or ramp schedule shows the true year-by-year total instead
+  // of a single flat, unescalated figure. Falls back to a single flat item
+  // when contract dates are missing and a per-year split can't be computed.
+  const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date + 'T00:00:00') : null
+  let termMonths = terms.contract_term_months ?? 0
+  if (!termMonths && contractStart && terms.contract_end_date) {
+    const ce = new Date(terms.contract_end_date + 'T00:00:00')
+    termMonths = (ce.getFullYear() - contractStart.getFullYear()) * 12 + (ce.getMonth() - contractStart.getMonth()) + 1
+  }
+  const hasRecurringBase = !!(terms.base_monthly_fee || terms.base_annual_fee || terms.ramp_schedule?.length || terms.year_pricing)
+
+  if (hasRecurringBase && contractStart && termMonths > 0) {
+    const byYear = new Map<number, number>()
+    for (let mi = 0; mi < termMonths; mi++) {
+      const d = new Date(contractStart.getFullYear(), contractStart.getMonth() + mi, 1)
+      const yearNum = Math.floor(mi / 12) + 1
+      const amount = computeMonthlyBaseRate(terms, mi, d) * computeEscalatorMultiplier(terms, d)
+      byYear.set(yearNum, (byYear.get(yearNum) ?? 0) + amount)
+    }
+    for (const [yearNum, amount] of [...byYear.entries()].sort(([a], [b]) => a - b)) {
+      if (amount <= 0) continue
+      const rounded = Math.round(amount * 100) / 100
+      items.push({
+        product_name: `Year ${yearNum} recurring fee`,
+        quantity: 1,
+        unit_price: rounded,
+        billing_period: 'annual',
+        total_amount: rounded,
+        currency: cur,
+        confidence_score: conf,
+        source_section: src.base_monthly_fee ?? src.year_pricing ?? src.ramp_schedule ?? null,
+      })
+    }
+  } else if (terms.base_monthly_fee) {
     items.push({
       product_name: 'Base subscription',
       quantity: 1,
@@ -177,7 +215,9 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
     })
   }
 
-  // Additional recurring fees (e.g. support tier, add-on modules billed separately)
+  // Additional recurring fees (e.g. support tier, add-on modules billed separately).
+  // Note: shown at their flat contract amount, not escalated — matches the
+  // existing display convention (unchanged by this refactor).
   for (const fee of terms.additional_recurring_fees ?? []) {
     if (!fee.amount) continue
     items.push({
@@ -189,26 +229,6 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
       currency: cur,
       confidence_score: conf,
       source_section: src.additional_recurring_fees ?? src.base_monthly_fee ?? null,
-    })
-  }
-
-  // year_pricing for annual contracts = the actual billing line items per year.
-  // For monthly/quarterly/semi-annual contracts, year_pricing is used for TCV
-  // calculation only — the base_monthly_fee line item above covers the billing.
-  const isAnnualContract = terms.billing_frequency === 'annual' ||
-    (!terms.billing_frequency && !terms.base_monthly_fee && !!terms.year_pricing)
-  if (terms.year_pricing && isAnnualContract) {
-    Object.entries(terms.year_pricing).forEach(([year, price]) => {
-      items.push({
-        product_name: `${year} pricing`,
-        quantity: 1,
-        unit_price: price,
-        billing_period: 'annual',
-        total_amount: price,
-        currency: cur,
-        confidence_score: 0.95,
-        source_section: src.year_pricing ?? src.base_monthly_fee ?? null,
-      })
     })
   }
 
