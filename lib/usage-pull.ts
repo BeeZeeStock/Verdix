@@ -64,11 +64,17 @@ export async function computeOverageForPeriod(params: {
   const { orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, currency, ignoreTestModeGate } = params
   const items: OverageLineItem[] = []
 
+  // Primary source: this job's own confirmed agreement-specific tiers.
+  // org_billing_config is deliberately NOT used here — it's a single shared
+  // row per (org, meter_key), so whichever agreement was confirmed most
+  // recently silently overwrites it for every other job at the same org.
+  // contract_meter_mappings is the one place tiers/included_units are kept
+  // genuinely per-agreement.
   const { data: meterConfigs } = await supabaseServer
-    .from('org_billing_config')
+    .from('contract_meter_mappings')
     .select('meter_key, included_units, overage_tiers')
-    .eq('org_id', orgId)
-    .eq('active', true)
+    .eq('job_id', jobId)
+    .eq('confirmed', true)
 
   if (meterConfigs && meterConfigs.length > 0) {
     for (const cfg of meterConfigs as MeterCfg[]) {
@@ -141,7 +147,7 @@ export async function computeOverageForPeriod(params: {
     return items
   }
 
-  // Legacy org-level pull config fallback (no per-meter mapping configured)
+  // Legacy org-level pull config fallback (no confirmed per-job mapping)
   const { data: orgData } = await supabaseServer
     .from('organizations')
     .select('pull_config')
