@@ -884,6 +884,98 @@ function detectPlatform(): BillingPlatform {
   return 'stripe'
 }
 
+// Creates a one-off invoice with arbitrary line items on the org's connected
+// Stripe or Remembill account. Used for manually-triggered invoices (e.g. the
+// job-scoped manual invoice generator) where the caller has already computed
+// the line items and just needs them pushed to the real billing platform —
+// mirrors the proven Stripe/Remembill mechanics used elsewhere in this file
+// so there's one code path for "create an ad-hoc invoice," not several.
+export async function createAdHocInvoice(params: {
+  orgId: string
+  billingPlatform: 'stripe' | 'remembill'
+  customerId: string
+  currency: string
+  netDays: number
+  lineItems: Array<{ description: string; quantity: number; unitPrice: number }>
+  idempotencyKey: string
+  metadata?: Record<string, string>
+}): Promise<{ invoiceId: string; hostedUrl: string | null }> {
+  const { orgId, billingPlatform, customerId, currency, netDays, lineItems, idempotencyKey, metadata } = params
+  const today = new Date()
+  const fmtDate = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+  if (billingPlatform === 'remembill') {
+    const orgConfig = await getOrgConfig(orgId, 'remembill')
+    const apiKey = orgConfig?.api_key ?? process.env.REMEMBILL_API_KEY
+    if (!apiKey) throw new Error('Remembill API key not configured')
+    const h       = remembillHeaders(apiKey)
+    const dueDate = new Date(today.getTime() + netDays * 86_400_000)
+
+    const invRes = await fetch(`${REMEMBILL_BASE}/invoices`, {
+      method: 'POST',
+      headers: { ...h, 'Idempotency-Key': safeHeaderValue(idempotencyKey) },
+      body: JSON.stringify({
+        customer_id:   customerId,
+        currency:      currency.toUpperCase(),
+        issue_date:    fmtDate(today),
+        due_date:      fmtDate(dueDate),
+        payment_terms: `Net ${netDays}`,
+      }),
+    })
+    if (!invRes.ok) {
+      const raw = await invRes.text()
+      throw new Error(`Remembill invoice creation failed (${invRes.status}): ${raw}`)
+    }
+    const invJson    = await invRes.json() as Record<string, unknown>
+    const invObj     = (invJson.invoice ?? invJson.data ?? invJson) as Record<string, unknown>
+    const invoiceId  = invObj.id as string | undefined
+    if (!invoiceId) throw new Error(`Could not extract Remembill invoice id: ${JSON.stringify(invJson)}`)
+
+    for (const item of lineItems) {
+      await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
+        method: 'POST', headers: h,
+        body: JSON.stringify({ name: item.description, quantity: item.quantity, price: Math.round(item.unitPrice * 100), vat: 0 }),
+      })
+    }
+
+    await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/email`, {
+      method: 'POST', headers: h, body: JSON.stringify({}),
+    }).catch(() => {})
+
+    return { invoiceId, hostedUrl: remembillAppUrl('') }
+  }
+
+  // ── Stripe ──────────────────────────────────────────────────────────────────
+  const { default: Stripe } = await import('stripe')
+  const orgConfig = await getOrgConfig(orgId, 'stripe')
+  const stripeKey = orgConfig?.secret_key ?? process.env.STRIPE_SECRET_KEY!
+  const stripe    = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+
+  const inv = await stripe.invoices.create({
+    customer:                       customerId,
+    collection_method:              'send_invoice',
+    days_until_due:                 netDays,
+    pending_invoice_items_behavior: 'exclude',
+    metadata,
+  })
+
+  for (const item of lineItems) {
+    await stripe.invoiceItems.create({
+      customer:    customerId,
+      invoice:     inv.id,
+      amount:      Math.round(item.quantity * item.unitPrice * 100),
+      currency:    currency.toLowerCase(),
+      description: item.quantity !== 1
+        ? `${item.description} — ${item.quantity} × ${currency.toUpperCase()} ${item.unitPrice}`
+        : item.description,
+    })
+  }
+
+  const finalized = await stripe.invoices.finalizeInvoice(inv.id).catch(() => inv)
+  return { invoiceId: inv.id, hostedUrl: finalized.hosted_invoice_url ?? null }
+}
+
 // Re-export computeBillingSchedule for use by the invoice scheduler
 export { computeBillingSchedule, REMEMBILL_BASE, remembillHeaders, remembillAppUrl }
 export type { BillingPeriod }

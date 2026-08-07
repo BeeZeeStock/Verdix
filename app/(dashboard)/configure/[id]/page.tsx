@@ -9,6 +9,7 @@ import { BillingSummaryCard } from '@/app/_components/BillingSummaryCard'
 import { MeterMappingPanel } from '@/app/_components/MeterMappingPanel'
 import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCard'
+import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
@@ -2775,10 +2776,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 {parkedInvoices.length > 0 && (
                   <ParkedInvoicesCard jobId={id} parkedInvoices={parkedInvoices} />
                 )}
-                <BillingSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial'} onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} onSentOneTimeInvoices={setSentOneTimeInvoices} />
+                <ManualInvoiceCard jobId={id} />
                 {(terms?.overage_tiers?.length ?? 0) > 0 && (
                   <ConsumptionTimelineCard jobId={id} />
                 )}
+                <BillingSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial'} onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} onSentOneTimeInvoices={setSentOneTimeInvoices} />
                 {/* Rebuild banner — shown when customer exists but no planned schedule yet */}
                 {!subId && !rebuildDone && scheduleExists === false && (() => {
                   const missingForRebuild: string[] = []
