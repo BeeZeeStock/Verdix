@@ -22,13 +22,23 @@ type SimulatedJob = {
   description:   string
 }
 
-type SimulateResult = {
-  meterKey:   string
-  meterLabel: string
-  unitLabel:  string
-  testValue:  number
-  jobs:       SimulatedJob[]
+type PlanPreview = {
+  includedUnits: number
+  billableUnits: number
+  amount:        number
+  description:   string
 }
+
+type SimulateResult = {
+  meterKey:     string
+  meterLabel:   string
+  unitLabel:    string
+  testValue:    number
+  jobs:         SimulatedJob[]
+  planPreview:  PlanPreview | null
+}
+
+type Agreement = { id: string; label: string }
 
 function fmt(amount: number) {
   return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR' }).format(amount)
@@ -36,8 +46,10 @@ function fmt(amount: number) {
 
 export function BillingTestSimulator({ orgId }: { orgId?: string }) {
   const [meters,   setMeters]   = useState<Meter[]>([])
+  const [agreements, setAgreements] = useState<Agreement[]>([])
   const [loading,  setLoading]  = useState(true)
   const [selected, setSelected] = useState<string | null>(null)
+  const [agreementId, setAgreementId] = useState<string>('')
   const [value,    setValue]    = useState('')
   const [result,   setResult]   = useState<SimulateResult | null>(null)
   const [running,  setRunning]  = useState(false)
@@ -53,13 +65,22 @@ export function BillingTestSimulator({ orgId }: { orgId?: string }) {
     return (res?.org_meters ?? []) as Meter[]
   }, [orgId])
 
+  const fetchAgreements = useCallback(async () => {
+    const url = orgId ? `/api/billing-test/jobs?org_id=${orgId}` : '/api/billing-test/jobs'
+    const res = await fetch(url).then(r => r.json()).catch(() => null)
+    return (res?.jobs ?? []) as Agreement[]
+  }, [orgId])
+
   useEffect(() => {
     let cancelled = false
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true)
-    fetchMeters().then(list => { if (!cancelled) { setMeters(list); setLoading(false) } })
+    Promise.all([fetchMeters(), fetchAgreements()]).then(([m, a]) => {
+      if (cancelled) return
+      setMeters(m); setAgreements(a); setLoading(false)
+    })
     return () => { cancelled = true }
-  }, [fetchMeters])
+  }, [fetchMeters, fetchAgreements])
 
   const meter = meters.find(m => m.id === selected) ?? null
 
@@ -72,7 +93,11 @@ export function BillingTestSimulator({ orgId }: { orgId?: string }) {
       const res = await fetch('/api/billing-test/simulate', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ meter_id: meter.id, test_value: testValue, ...(orgId ? { org_id: orgId } : {}) }),
+        body: JSON.stringify({
+          meter_id: meter.id, test_value: testValue,
+          ...(orgId ? { org_id: orgId } : {}),
+          ...(agreementId ? { job_id: agreementId } : {}),
+        }),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.error ?? 'Simulation failed'); return }
@@ -132,6 +157,22 @@ export function BillingTestSimulator({ orgId }: { orgId?: string }) {
         )}
       </div>
 
+      {meter && agreements.length > 0 && (
+        <div>
+          <label className="text-[10px] font-semibold uppercase tracking-wider text-stone block mb-1.5">
+            Agreement <span className="normal-case font-normal text-stone/50">(optional — narrows the preview to one bespoke agreement)</span>
+          </label>
+          <select
+            value={agreementId}
+            onChange={e => { setAgreementId(e.target.value); setResult(null) }}
+            className="w-full text-sm border border-forest/20 rounded-lg px-3 py-2 bg-white text-ink focus:outline-none focus:border-forest/40"
+          >
+            <option value="">All agreements using this meter</option>
+            {agreements.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+          </select>
+        </div>
+      )}
+
       {meter && (
         <div>
           <label className="text-[10px] font-semibold uppercase tracking-wider text-stone block mb-1.5">
@@ -163,24 +204,54 @@ export function BillingTestSimulator({ orgId }: { orgId?: string }) {
       {error && <p className="text-xs text-red-600">{error}</p>}
 
       {result && (
-        <div className="border-t border-forest/8 pt-4">
-          <p className="text-[10px] font-semibold text-stone uppercase tracking-wider mb-3">
-            {result.jobs.length === 0
-              ? 'No confirmed contracts are mapped to this meter yet'
-              : `Preview — ${result.jobs.length} confirmed contract${result.jobs.length > 1 ? 's' : ''} affected`}
-          </p>
-          <div className="space-y-2">
-            {result.jobs.map(j => (
-              <div key={j.jobId} className="bg-cream/40 border border-forest/10 rounded-xl px-4 py-3">
-                <div className="flex items-center justify-between mb-1">
-                  <p className="text-sm font-medium text-ink">{j.customerName ?? j.jobId}</p>
-                  <p className="text-sm font-semibold" style={{ color: '#0B5C36' }}>{fmt(j.amount)}</p>
+        <div className="border-t border-forest/8 pt-4 space-y-4">
+          <div>
+            <p className="text-[10px] font-semibold text-stone uppercase tracking-wider mb-1">
+              {result.jobs.length === 0
+                ? 'No confirmed bespoke agreements are mapped to this meter yet'
+                : `Bespoke agreements — ${result.jobs.length} affected`}
+            </p>
+            {result.jobs.length > 0 && (
+              <p className="text-[10px] text-stone/60 mb-3">
+                Matches what each job&apos;s own Contract·Commercials tab (Manual invoice / Consumption) would compute.
+              </p>
+            )}
+            <div className="space-y-2">
+              {result.jobs.map(j => (
+                <div key={j.jobId} className="bg-cream/40 border border-forest/10 rounded-xl px-4 py-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-sm font-medium text-ink">{j.customerName ?? j.jobId}</p>
+                    <p className="text-sm font-semibold" style={{ color: '#0B5C36' }}>{fmt(j.amount)}</p>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[11px] text-stone leading-snug flex-1">{j.description}</p>
+                    <a href={`/configure/${j.jobId}`} target="_blank" rel="noreferrer"
+                      className="text-[10px] text-forest hover:underline flex-shrink-0 whitespace-nowrap">
+                      Open agreement →
+                    </a>
+                  </div>
                 </div>
-                <p className="text-[11px] text-stone leading-snug">{j.description}</p>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-          <p className="text-[10px] text-stone/60 mt-3">
+
+          {result.planPreview && (
+            <div>
+              <p className="text-[10px] font-semibold text-stone uppercase tracking-wider mb-1">Self-serve plan usage</p>
+              <p className="text-[10px] text-stone/60 mb-3">
+                Org-level standard-plan billing — not tied to a specific agreement, so it has no commercial-contract page of its own.
+              </p>
+              <div className="bg-cream/40 border border-forest/10 rounded-xl px-4 py-3">
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-sm font-medium text-ink">Standard plan</p>
+                  <p className="text-sm font-semibold" style={{ color: '#0B5C36' }}>{fmt(result.planPreview.amount)}</p>
+                </div>
+                <p className="text-[11px] text-stone leading-snug">{result.planPreview.description}</p>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-stone/60">
             Preview only — no invoices were created and nothing was sent to Stripe or Remembill.
           </p>
         </div>
