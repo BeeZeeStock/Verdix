@@ -17,6 +17,7 @@ type MeterDef = {
   pull_auth_token: string | null
   pull_param_name: string | null
   mode: 'test' | 'live'
+  test_usage_value: number | null
 }
 type PullCfg = { client_usage_url: string; client_read_api_key?: string }
 
@@ -73,38 +74,49 @@ export async function computeOverageForPeriod(params: {
     for (const cfg of meterConfigs as MeterCfg[]) {
       const { data: meterDef } = await supabaseServer
         .from('billing_meters')
-        .select('pull_endpoint_url, pull_auth_token, pull_param_name, mode')
+        .select('pull_endpoint_url, pull_auth_token, pull_param_name, mode, test_usage_value')
         .or(`org_id.is.null,org_id.eq.${orgId}`)
         .eq('meter_key', cfg.meter_key)
         .maybeSingle()
 
       const def = meterDef as MeterDef | null
-      if (def?.mode === 'test' && !ignoreTestModeGate) {
-        console.warn(`[usage-pull] meter '${cfg.meter_key}' org ${orgId} still in test mode — skipping real overage`)
-        continue
+
+      // Test mode swaps the input source to the admin's last-simulated
+      // reading instead of the real endpoint — that's the whole point of
+      // testing it. Real billing (invoice-scheduler) still refuses to
+      // invoice off a test-mode meter at all, regardless of this value.
+      let totalUnits: number
+      if (def?.mode === 'test') {
+        if (!ignoreTestModeGate) {
+          console.warn(`[usage-pull] meter '${cfg.meter_key}' org ${orgId} still in test mode — skipping real overage`)
+          continue
+        }
+        if (def.test_usage_value == null) continue
+        totalUnits = def.test_usage_value
+      } else {
+        if (!def?.pull_endpoint_url) {
+          console.warn(`[usage-pull] no pull endpoint for meter '${cfg.meter_key}' org ${orgId}`)
+          continue
+        }
+
+        const pullUrl = new URL(def.pull_endpoint_url)
+        pullUrl.searchParams.set('customer_id',  customerId)
+        pullUrl.searchParams.set('period_start', String(periodStartUnix))
+        pullUrl.searchParams.set('period_end',   String(periodEndUnix))
+        pullUrl.searchParams.set(def.pull_param_name ?? 'billing_parameter', cfg.meter_key)
+
+        const pullHeaders: Record<string, string> = {}
+        if (def.pull_auth_token) pullHeaders['Authorization'] = `Bearer ${def.pull_auth_token}`
+
+        const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
+        if (!pullRes.ok) {
+          console.error(`[usage-pull] pull failed for meter '${cfg.meter_key}' (${pullRes.status})`)
+          continue
+        }
+
+        const usageData = await pullRes.json() as { total_billable_units?: number | string }
+        totalUnits = Number(usageData.total_billable_units ?? 0)
       }
-      if (!def?.pull_endpoint_url) {
-        console.warn(`[usage-pull] no pull endpoint for meter '${cfg.meter_key}' org ${orgId}`)
-        continue
-      }
-
-      const pullUrl = new URL(def.pull_endpoint_url)
-      pullUrl.searchParams.set('customer_id',  customerId)
-      pullUrl.searchParams.set('period_start', String(periodStartUnix))
-      pullUrl.searchParams.set('period_end',   String(periodEndUnix))
-      pullUrl.searchParams.set(def.pull_param_name ?? 'billing_parameter', cfg.meter_key)
-
-      const pullHeaders: Record<string, string> = {}
-      if (def.pull_auth_token) pullHeaders['Authorization'] = `Bearer ${def.pull_auth_token}`
-
-      const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
-      if (!pullRes.ok) {
-        console.error(`[usage-pull] pull failed for meter '${cfg.meter_key}' (${pullRes.status})`)
-        continue
-      }
-
-      const usageData  = await pullRes.json() as { total_billable_units?: number | string }
-      const totalUnits = Number(usageData.total_billable_units ?? 0)
       if (totalUnits <= 0) continue
 
       const tiers = (cfg.overage_tiers ?? []).map((t, i) => ({
