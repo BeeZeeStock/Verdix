@@ -33,6 +33,19 @@ type MeterDef = {
 }
 type PullCfg = { client_usage_url: string; client_read_api_key?: string }
 
+// Persisted onto planned_invoices.overage_line_items at send time — this is
+// what lets the billing timeline show "what usage produced this invoice"
+// without re-deriving it from Stripe/Remembill after the fact.
+type OverageLineItem = {
+  meter_key: string
+  total_units: number
+  included_units: number
+  amount: number
+  currency: string
+  description: string
+  metric_source: 'meter_pull' | 'client_pull'
+}
+
 function buildOverageDescription(
   unitType: string,
   quantity: number,
@@ -42,6 +55,123 @@ function buildOverageDescription(
   const billable = Math.max(0, quantity - includedUnits)
   const rate     = tiers[0]?.rate_per_unit ?? 0
   return `${unitType} overage — ${billable.toLocaleString()} excess units @ €${rate}/unit (${quantity.toLocaleString()} total, ${includedUnits.toLocaleString()} included)`
+}
+
+// Pulls usage and computes overage for a billing period — shared by both the
+// Stripe and Remembill paths so overage is computed identically regardless of
+// which platform the org sends invoices through. Meter mapping (org_billing_config)
+// is platform-agnostic, so this only needs to run once per period.
+async function computeOverageForPeriod(params: {
+  orgId: string
+  jobId: string
+  terms: ContractTerms
+  customerId: string
+  periodStartUnix: number
+  periodEndUnix: number
+  currency: string
+}): Promise<OverageLineItem[]> {
+  const { orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, currency } = params
+  const items: OverageLineItem[] = []
+
+  const { data: meterConfigs } = await supabaseServer
+    .from('org_billing_config')
+    .select('meter_key, included_units, overage_tiers')
+    .eq('org_id', orgId)
+    .eq('active', true)
+
+  if (meterConfigs && meterConfigs.length > 0) {
+    for (const cfg of meterConfigs as MeterCfg[]) {
+      const { data: meterDef } = await supabaseServer
+        .from('billing_meters')
+        .select('pull_endpoint_url, pull_auth_token, pull_param_name')
+        .or(`org_id.is.null,org_id.eq.${orgId}`)
+        .eq('meter_key', cfg.meter_key)
+        .maybeSingle()
+
+      const def = meterDef as MeterDef | null
+      if (!def?.pull_endpoint_url) {
+        console.warn(`[invoice-scheduler] no pull endpoint for meter '${cfg.meter_key}' org ${orgId}`)
+        continue
+      }
+
+      const pullUrl = new URL(def.pull_endpoint_url)
+      pullUrl.searchParams.set('customer_id',  customerId)
+      pullUrl.searchParams.set('period_start', String(periodStartUnix))
+      pullUrl.searchParams.set('period_end',   String(periodEndUnix))
+      pullUrl.searchParams.set(def.pull_param_name ?? 'billing_parameter', cfg.meter_key)
+
+      const pullHeaders: Record<string, string> = {}
+      if (def.pull_auth_token) pullHeaders['Authorization'] = `Bearer ${def.pull_auth_token}`
+
+      const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
+      if (!pullRes.ok) {
+        console.error(`[invoice-scheduler] pull failed for meter '${cfg.meter_key}' (${pullRes.status})`)
+        continue
+      }
+
+      const usageData  = await pullRes.json() as { total_billable_units?: number | string }
+      const totalUnits = Number(usageData.total_billable_units ?? 0)
+      if (totalUnits <= 0) continue
+
+      const tiers = (cfg.overage_tiers ?? []).map((t, i) => ({
+        tier_label:    `Tier ${i + 1}`,
+        from_unit:     t.from_unit ?? null,
+        to_unit:       t.to_unit   ?? null,
+        rate_per_unit: t.rate_per_unit ?? 0,
+        unit_type:     cfg.meter_key,
+      }))
+      const includedUnits = cfg.included_units ?? 0
+      const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits) : 0
+      if (overageEur <= 0) continue
+
+      const overageDesc = buildOverageDescription(cfg.meter_key, totalUnits, tiers, includedUnits)
+      items.push({
+        meter_key: cfg.meter_key, total_units: totalUnits, included_units: includedUnits,
+        amount: Math.round(overageEur * 100) / 100, currency: currency.toUpperCase(),
+        description: overageDesc, metric_source: 'meter_pull',
+      })
+    }
+    return items
+  }
+
+  // Legacy org-level pull config fallback (no per-meter mapping configured)
+  const { data: orgData } = await supabaseServer
+    .from('organizations')
+    .select('pull_config')
+    .eq('id', orgId)
+    .maybeSingle()
+  const pc = (orgData?.pull_config ?? {}) as Partial<PullCfg>
+  if (!pc.client_usage_url) return items
+
+  const pullUrl = new URL(pc.client_usage_url)
+  pullUrl.searchParams.set('customer_id',  customerId)
+  pullUrl.searchParams.set('period_start', String(periodStartUnix))
+  pullUrl.searchParams.set('period_end',   String(periodEndUnix))
+
+  const pullHeaders: Record<string, string> = {}
+  if (pc.client_read_api_key) pullHeaders['Authorization'] = `Bearer ${pc.client_read_api_key}`
+
+  const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
+  if (!pullRes.ok) {
+    console.error(`[invoice-scheduler] legacy pull failed (${pullRes.status}) for job ${jobId}`)
+    return items
+  }
+
+  const usageData      = await pullRes.json() as { total_billable_units?: number | string }
+  const aggregateUnits = Number(usageData.total_billable_units ?? 0)
+  const includedUnits  = terms.included_units ?? 0
+  if (aggregateUnits <= 0) return items
+
+  const overageAmount = Math.round(computeMetricOverage(aggregateUnits, terms.overage_tiers ?? [], includedUnits) * 100) / 100
+  if (overageAmount <= 0) return items
+
+  const overageDesc = buildOverageDescription('Usage', aggregateUnits, terms.overage_tiers ?? [], includedUnits)
+  items.push({
+    meter_key: 'usage', total_units: aggregateUnits, included_units: includedUnits,
+    amount: overageAmount, currency: currency.toUpperCase(),
+    description: overageDesc, metric_source: 'client_pull',
+  })
+  return items
 }
 
 export async function GET(req: NextRequest) {
@@ -111,9 +241,21 @@ export async function GET(req: NextRequest) {
       const daysUntilDue    = terms.payment_terms_days ?? 30
       const description     = row.fee_label
         ?? `Base subscription — Year ${row.year_num ?? 1} (${fmtPeriod(periodStart)} – ${fmtPeriod(periodEnd)})`
+      const periodStartUnix = Math.floor(periodStart.getTime() / 1000)
+      const periodEndUnix   = Math.floor(periodEnd.getTime()   / 1000)
 
       let sentInvoiceId:  string | null = null
       let sentInvoiceUrl: string | null = null
+
+      // Usage/overage computation is platform-agnostic — meter mapping lives
+      // on org_billing_config, not on the billing connector — so it's pulled
+      // once here and each platform branch just adds the resulting line items.
+      const overageLineItems: OverageLineItem[] = row.invoice_type === 'period'
+        ? await computeOverageForPeriod({
+            orgId: job.org_id, jobId: row.job_id, terms, customerId,
+            periodStartUnix, periodEndUnix, currency: cur,
+          })
+        : []
 
       // ── Remembill path ────────────────────────────────────────────────────
       if (billingPlatform === 'remembill') {
@@ -155,6 +297,14 @@ export async function GET(req: NextRequest) {
           body: JSON.stringify({ description, quantity: 1, unit_price: Math.round(Number(row.base_amount) * 100) }),
         })
 
+        // Overage rows — one per metered item with usage above its included allowance
+        for (const item of overageLineItems) {
+          await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
+            method: 'POST', headers: rbH,
+            body: JSON.stringify({ description: item.description, quantity: 1, unit_price: Math.round(item.amount * 100) }),
+          }).catch(err => console.error(`[invoice-scheduler/remembill] overage row failed for meter '${item.meter_key}'`, err))
+        }
+
         // Deliver via email
         await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/email`, {
           method: 'POST', headers: rbH, body: JSON.stringify({}),
@@ -178,19 +328,6 @@ export async function GET(req: NextRequest) {
 
         const { default: Stripe } = await import('stripe')
         const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
-
-        const periodStartUnix = Math.floor(periodStart.getTime() / 1000)
-        const periodEndUnix   = Math.floor(periodEnd.getTime()   / 1000)
-
-        // ── Fetch org-level pull config (legacy fallback) ───────────────────
-        let pullConfig: PullCfg | null = null
-        const { data: orgData } = await supabaseServer
-          .from('organizations')
-          .select('pull_config')
-          .eq('id', job.org_id)
-          .maybeSingle()
-        const pc = (orgData?.pull_config ?? {}) as Partial<PullCfg>
-        if (pc.client_usage_url) pullConfig = pc as PullCfg
 
         const inv = await stripe.invoices.create({
           customer:                       customerId,
@@ -216,102 +353,16 @@ export async function GET(req: NextRequest) {
           })
         }
 
-        // ── Overage line items ──────────────────────────────────────────────
-        if (row.invoice_type === 'period') {
-          const { data: meterConfigs } = await supabaseServer
-            .from('org_billing_config')
-            .select('meter_key, included_units, overage_tiers')
-            .eq('org_id', job.org_id)
-            .eq('active', true)
-
-          if (meterConfigs && meterConfigs.length > 0) {
-            for (const cfg of meterConfigs as MeterCfg[]) {
-              const { data: meterDef } = await supabaseServer
-                .from('billing_meters')
-                .select('pull_endpoint_url, pull_auth_token, pull_param_name')
-                .or(`org_id.is.null,org_id.eq.${job.org_id}`)
-                .eq('meter_key', cfg.meter_key)
-                .maybeSingle()
-
-              const def = meterDef as MeterDef | null
-              if (!def?.pull_endpoint_url) {
-                console.warn(`[invoice-scheduler] no pull endpoint for meter '${cfg.meter_key}' org ${job.org_id}`)
-                continue
-              }
-
-              const pullUrl = new URL(def.pull_endpoint_url)
-              pullUrl.searchParams.set('customer_id',  customerId)
-              pullUrl.searchParams.set('period_start', String(periodStartUnix))
-              pullUrl.searchParams.set('period_end',   String(periodEndUnix))
-              pullUrl.searchParams.set(def.pull_param_name ?? 'billing_parameter', cfg.meter_key)
-
-              const pullHeaders: Record<string, string> = {}
-              if (def.pull_auth_token) pullHeaders['Authorization'] = `Bearer ${def.pull_auth_token}`
-
-              const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
-              if (!pullRes.ok) {
-                console.error(`[invoice-scheduler] pull failed for meter '${cfg.meter_key}' (${pullRes.status})`)
-                continue
-              }
-
-              const usageData  = await pullRes.json() as { total_billable_units?: number | string }
-              const totalUnits = Number(usageData.total_billable_units ?? 0)
-              if (totalUnits <= 0) continue
-
-              const tiers = (cfg.overage_tiers ?? []).map((t, i) => ({
-                tier_label:    `Tier ${i + 1}`,
-                from_unit:     t.from_unit ?? null,
-                to_unit:       t.to_unit   ?? null,
-                rate_per_unit: t.rate_per_unit ?? 0,
-                unit_type:     cfg.meter_key,
-              }))
-              const includedUnits = cfg.included_units ?? 0
-              const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits) : 0
-              if (overageEur <= 0) continue
-
-              const overageDesc = buildOverageDescription(cfg.meter_key, totalUnits, tiers, includedUnits)
-              await stripe.invoiceItems.create({
-                customer:    customerId,
-                invoice:     inv.id,
-                amount:      Math.round(overageEur * 100),
-                currency:    cur,
-                description: overageDesc,
-                metadata: { metric_source: 'meter_pull', meter_key: cfg.meter_key, total_units: String(totalUnits), verdix_job: row.job_id },
-              })
-            }
-          } else if (pullConfig) {
-            const pullUrl = new URL(pullConfig.client_usage_url)
-            pullUrl.searchParams.set('customer_id',  customerId)
-            pullUrl.searchParams.set('period_start', String(periodStartUnix))
-            pullUrl.searchParams.set('period_end',   String(periodEndUnix))
-
-            const pullHeaders: Record<string, string> = {}
-            if (pullConfig.client_read_api_key) pullHeaders['Authorization'] = `Bearer ${pullConfig.client_read_api_key}`
-
-            const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
-            if (pullRes.ok) {
-              const usageData      = await pullRes.json() as { total_billable_units?: number | string }
-              const aggregateUnits = Number(usageData.total_billable_units ?? 0)
-              const includedUnits  = terms.included_units ?? 0
-
-              if (aggregateUnits > 0) {
-                const overageAmount = Math.round(computeMetricOverage(aggregateUnits, terms.overage_tiers ?? [], includedUnits) * 100) / 100
-                if (overageAmount > 0) {
-                  const overageDesc = buildOverageDescription('Usage', aggregateUnits, terms.overage_tiers ?? [], includedUnits)
-                  await stripe.invoiceItems.create({
-                    customer:    customerId,
-                    invoice:     inv.id,
-                    amount:      Math.round(overageAmount * 100),
-                    currency:    cur,
-                    description: overageDesc,
-                    metadata: { metric_source: 'client_pull', total_units: String(aggregateUnits), verdix_job: row.job_id },
-                  })
-                }
-              }
-            } else {
-              console.error(`[invoice-scheduler] legacy pull failed (${pullRes.status}) for job ${row.job_id}`)
-            }
-          }
+        // ── Overage line items (already pulled + computed above) ────────────
+        for (const item of overageLineItems) {
+          await stripe.invoiceItems.create({
+            customer:    customerId,
+            invoice:     inv.id,
+            amount:      Math.round(item.amount * 100),
+            currency:    cur,
+            description: item.description,
+            metadata: { metric_source: item.metric_source, meter_key: item.meter_key, total_units: String(item.total_units), verdix_job: row.job_id },
+          })
         }
 
         const finalized = await stripe.invoices.finalizeInvoice(inv.id)
@@ -323,11 +374,13 @@ export async function GET(req: NextRequest) {
       await supabaseServer
         .from('planned_invoices')
         .update({
-          status:             'sent',
-          stripe_invoice_id:  sentInvoiceId,
-          stripe_invoice_url: sentInvoiceUrl,
-          sent_at:            new Date().toISOString(),
-          error_message:      null,
+          status:              'sent',
+          stripe_invoice_id:   sentInvoiceId,
+          stripe_invoice_url:  sentInvoiceUrl,
+          sent_at:             new Date().toISOString(),
+          error_message:       null,
+          overage_line_items:  overageLineItems,
+          overage_total:       overageLineItems.reduce((s, i) => s + i.amount, 0),
         })
         .eq('id', row.id)
 
