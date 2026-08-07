@@ -205,6 +205,15 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
   const billedToDateAll = contracts.reduce((s, c) => s + Math.min(c.billedToDate, c.actualTcv), 0)
   const remainingAll    = contracts.reduce((s, c) => s + Math.max(0, c.actualTcv - c.billedToDate), 0)
 
+  // Upcoming (contract_start_date in the future) — broken out separately
+  // since a big gap here (e.g. a large one-time fee already invoiced ahead
+  // of the contract's start date) is otherwise invisible in the active-only
+  // figures above.
+  const baseTcvUpcoming      = upcoming.reduce((s, c) => s + c.tcv, 0)
+  const actualTcvAggUpcoming = upcoming.reduce((s, c) => s + c.actualTcv, 0)
+  const billedToDateUpcoming = upcoming.reduce((s, c) => s + Math.min(c.billedToDate, c.actualTcv), 0)
+  const remainingUpcoming    = upcoming.reduce((s, c) => s + Math.max(0, c.actualTcv - c.billedToDate), 0)
+
   // MRR by month — active vs expired series
   const allStarts = contracts.filter(c => c.start).map(c => c.start!)
   const allEnds   = contracts.filter(c => c.end).map(c => c.end!)
@@ -273,21 +282,26 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
         ))}
       </div>
 
-      {/* TCV lifecycle row — active contracts, with the all-contracts total
-          shown alongside so this reconciles at a glance with the New
-          contracts page (which has no active/expired concept). */}
+      {/* TCV lifecycle row — active contracts, with all-contracts and
+          upcoming totals shown alongside so this reconciles at a glance
+          with the New contracts page, and so a gap sitting entirely in
+          not-yet-started contracts (e.g. a large fee already invoiced
+          ahead of the contract start date) doesn't stay invisible. */}
       <div className="grid grid-cols-4 gap-4">
         {[
-          { label: 'Base TCV',        value: fmtFull(baseTcv, cur),      allValue: fmtFull(baseTcvAll, cur),      sub: `${active.length} active contracts`,       color: '#1A3D2B' },
-          { label: 'Actual TCV',      value: fmtFull(actualTcvAgg, cur), allValue: fmtFull(actualTcvAggAll, cur), sub: 'Contracted + additions billed',            color: '#0B5C36' },
-          { label: 'Billed to date',  value: fmtFull(billedToDate, cur), allValue: fmtFull(billedToDateAll, cur), sub: 'Actually invoiced so far',                 color: '#27AE60' },
-          { label: 'Remaining',       value: fmtFull(remaining, cur),    allValue: fmtFull(remainingAll, cur),    sub: 'Contracted, not yet invoiced',             color: '#87B09A' },
+          { label: 'Base TCV',        value: fmtFull(baseTcv, cur),      allValue: fmtFull(baseTcvAll, cur),      upcomingValue: fmtFull(baseTcvUpcoming, cur),      sub: `${active.length} active contracts`,       color: '#1A3D2B' },
+          { label: 'Actual TCV',      value: fmtFull(actualTcvAgg, cur), allValue: fmtFull(actualTcvAggAll, cur), upcomingValue: fmtFull(actualTcvAggUpcoming, cur), sub: 'Contracted + additions billed',            color: '#0B5C36' },
+          { label: 'Billed to date',  value: fmtFull(billedToDate, cur), allValue: fmtFull(billedToDateAll, cur), upcomingValue: fmtFull(billedToDateUpcoming, cur), sub: 'Actually invoiced so far',                 color: '#27AE60' },
+          { label: 'Remaining',       value: fmtFull(remaining, cur),    allValue: fmtFull(remainingAll, cur),    upcomingValue: fmtFull(remainingUpcoming, cur),    sub: 'Contracted, not yet invoiced',             color: '#87B09A' },
         ].map(k => (
           <div key={k.label} className="bg-white border border-forest/10 rounded-2xl p-4">
             <p className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-2">{k.label}</p>
             <p className="text-xl font-semibold font-mono" style={{ color: k.color }}>{k.value}</p>
             <p className="text-[10px] text-stone mt-1">{k.sub}</p>
-            <p className="text-[10px] text-stone/50 mt-1.5 pt-1.5 border-t border-forest/6">All contracts: <span className="font-mono">{k.allValue}</span></p>
+            <div className="mt-1.5 pt-1.5 border-t border-forest/6 space-y-0.5">
+              <p className="text-[10px] text-stone/50">All contracts: <span className="font-mono">{k.allValue}</span></p>
+              <p className="text-[10px] text-stone/50">Upcoming: <span className="font-mono">{k.upcomingValue}</span></p>
+            </div>
           </div>
         ))}
       </div>
