@@ -170,7 +170,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   const [saving, setSaving] = useState(false)
   const [saved,  setSaved]  = useState(false)
 
-  // Actual billed overage per month — fetched from computed_invoices automatically
+  // Actual billed overage per month — fetched from planned_invoices (period rows only) automatically
   const [actualOvgByMonth, setActualOvgByMonth] = useState<Map<string, number>>(new Map())
 
   type ActualInvoice = {
@@ -366,7 +366,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   const grossTcv     = totalSub + totalUserOvg + totalApiOvg + totalGenericOvg + oneTimeFees
   const totalTcv     = grossTcv + creditTotal
 
-  // ── Actuals (from computed_invoices) ───────────────────────────────
+  // ── Actuals (from planned_invoices, period rows only) ───────────────
   const baseBilledToDate = modelMonths.filter(m => m.isPast).reduce((s, m) => s + m.sub, 0)
   const actualOvgTotal   = actualInvoices.reduce((s, inv) =>
     s + (inv.line_items ?? []).filter(l => l.type === 'overage').reduce((ss, l) => ss + l.amount, 0), 0)
@@ -1066,7 +1066,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                   stroke={isCreditMonth ? '#B45309' : 'none'} strokeWidth={isCreditMonth ? 1.5 : 0} />
                 {m.userOvg > 0 && <rect x={x} y={subY - uH} width={bW} height={uH} fill="#4A7C59" />}
                 {m.apiOvg  > 0 && <rect x={x} y={subY - uH - aH} width={bW} height={aH} fill="#52C48A" />}
-                {/* Actual billed overage — deep forest green, shown automatically from computed_invoices */}
+                {/* Actual billed overage — deep forest green, shown automatically from planned_invoices */}
                 {acH > 0 && <rect x={x} y={subY - uH - aH - acH} width={bW} height={acH} fill="#0B5C36" rx={1} />}
                 {/* Downward triangle marker + credit label above bar */}
                 {isCreditMonth && (() => {
