@@ -12,14 +12,18 @@
  *   job_id provided → only that agreement's result is returned (an org can
  *                      have several bespoke agreements mapped to the same meter).
  *
- * Also previews org-level self-serve plan usage (org_billing_config with
- * source='plan', no job attached) separately from per-agreement results —
- * self-serve customers have no commercial-contract page for this to live on.
+ * Also previews org-level self-serve 'sync' usage against verdix_plans —
+ * the same computation lib/billing-engine.ts actually charges (base_price_eur
+ * + flat overage past sync_limit), so it works regardless of whether the
+ * org's plan was set via a real Stripe checkout or an admin override in
+ * /admin/customers — self-serve customers have no commercial-contract page
+ * for this to live on, so it's previewed separately from per-agreement results.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { requireAdmin } from '@/lib/admin'
+import { getOrgSubscription, getPlan } from '@/lib/billing'
 import { computeMetricOverage, describeTieredUsage } from '@/lib/tariff'
 import type { OverageTier } from '@/lib/types'
 
@@ -101,39 +105,31 @@ export async function POST(req: NextRequest) {
     }
   })
 
-  // Self-serve customers have no per-agreement mapping (org_billing_config
-  // written directly from verdix_plans at checkout, source='plan', no job_id)
-  // — there's no commercial-contract page for this to live on, so it's
-  // previewed separately, at the org level.
+  // Self-serve billing is always the 'sync' meter, always priced from
+  // verdix_plans directly (lib/billing-engine.ts) — org_billing_config is
+  // never involved for self-serve orgs, so this must read the same source
+  // the real engine reads, not a table that many self-serve orgs (anyone
+  // whose plan was set via /admin/customers rather than a live Stripe
+  // checkout) will never have a row in.
   let planPreview: {
     includedUnits: number; billableUnits: number; amount: number; description: string
   } | null = null
 
-  if (!jobIdFilter) {
-    const { data: planConfig } = await supabaseServer
-      .from('org_billing_config')
-      .select('included_units, overage_tiers')
-      .eq('org_id', orgId)
-      .eq('meter_key', meter.meter_key)
-      .eq('source', 'plan')
-      .eq('active', true)
-      .maybeSingle()
+  if (!jobIdFilter && meter.meter_key === 'sync') {
+    const sub  = await getOrgSubscription(orgId).catch(() => null)
+    const plan = sub ? await getPlan(sub.plan_id) : null
 
-    if (planConfig) {
-      const includedUnits = planConfig.included_units ?? 0
-      const tiers: OverageTier[] = ((planConfig.overage_tiers ?? []) as Array<{ from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number }>).map((t, i) => ({
-        tier_label:    `Tier ${i + 1}`,
-        from_unit:     t.from_unit ?? null,
-        to_unit:       t.to_unit   ?? null,
-        rate_per_unit: t.rate_per_unit ?? 0,
-        unit_type:     meter.meter_key,
-      }))
-      const amount = tiers.length > 0 ? computeMetricOverage(testValue, tiers, includedUnits) : 0
+    if (plan) {
+      const includedUnits = plan.sync_limit ?? 0
+      const billableUnits = Math.max(0, testValue - includedUnits)
+      const overagePrice  = plan.overage_price_eur ?? 0
+      const amount         = Math.round(billableUnits * overagePrice * 100) / 100
       planPreview = {
         includedUnits,
-        billableUnits: Math.max(0, testValue - includedUnits),
-        amount:        Math.round(amount * 100) / 100,
-        description:   describeTieredUsage(meter.display_name, testValue, tiers, includedUnits),
+        billableUnits,
+        amount,
+        description: `${meter.display_name} (${plan.name} plan) — ${testValue.toLocaleString()} total, `
+          + `${includedUnits.toLocaleString()} included, ${billableUnits.toLocaleString()} billable @ €${overagePrice}/unit`,
       }
     }
   }
