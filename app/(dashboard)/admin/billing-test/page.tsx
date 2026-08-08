@@ -50,19 +50,27 @@ export default function BillingTestPage() {
         <ol className="space-y-2.5 text-sm text-ink">
           <li className="flex gap-2.5">
             <span className="text-forest font-semibold flex-shrink-0">1.</span>
-            Register the customer&apos;s meter(s) and pull endpoint in <a href="/admin/meters" className="text-forest underline hover:no-underline">Billing Meters</a> — every new meter starts in <span className="text-amber-600 font-medium">Test</span> mode, so real billing skips it.
+            <span>
+              Register the customer&apos;s meter(s) and pull endpoint in <a href="/admin/meters" className="text-forest underline hover:no-underline">Billing Meters</a> — every new meter starts in <span className="text-amber-600 font-medium">Test</span> mode, so real billing skips it.
+            </span>
           </li>
           <li className="flex gap-2.5">
             <span className="text-forest font-semibold flex-shrink-0">2.</span>
-            Pick the organisation below, then a meter — if they have several bespoke agreements you can narrow the preview to one, or leave it on all of them.
+            <span>
+              Pick the organisation below, then a meter — if they have several bespoke agreements you can narrow the preview to one, or leave it on all of them.
+            </span>
           </li>
           <li className="flex gap-2.5">
             <span className="text-forest font-semibold flex-shrink-0">3.</span>
-            Enter a usage number to preview the overage. To actually push a real invoice for one agreement, open it from the results (or find it under Configure) and use its <span className="font-medium">Manual invoice</span> card.
+            <span>
+              Enter a usage number to preview the overage. To actually push a real invoice for one agreement, open it from the results (or find it under Configure) and use its <span className="font-medium">Manual invoice</span> card.
+            </span>
           </li>
           <li className="flex gap-2.5">
             <span className="text-forest font-semibold flex-shrink-0">4.</span>
-            Once the numbers check out, switch the meter to <span className="text-forest font-medium">Live</span> in Billing Meters — the real billing cron will then pull from that endpoint instead of skipping it.
+            <span>
+              Once the numbers check out, switch the meter to <span className="text-forest font-medium">Live</span> in Billing Meters — the real billing cron will then pull from that endpoint instead of skipping it.
+            </span>
           </li>
         </ol>
       </div>
