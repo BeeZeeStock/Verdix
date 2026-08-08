@@ -3,14 +3,14 @@
 import { useEffect, useState } from 'react'
 import { BillingTestSimulator } from '@/app/_components/BillingTestSimulator'
 
-type OrgRow = { org_id: string; org_name: string }
+type OrgRow = { org_id: string; org_name: string; plan_id?: string }
 type JobRow = { id: string; org_id: string; org_name: string; created_at: string }
 
 export default function BillingTestPage() {
   const [orgs, setOrgs]               = useState<OrgRow[]>([])
   const [jobs, setJobs]               = useState<JobRow[]>([])
   const [loading, setLoading]         = useState(true)
-  const [selectedOrg, setSelectedOrg] = useState<OrgRow | null>(null)
+  const [selectedOrgId, setSelectedOrgId] = useState<string>('')
 
   useEffect(() => {
     fetch('/api/admin/usage-test')
@@ -31,6 +31,7 @@ export default function BillingTestPage() {
     const diff = orgJobCount(b.org_id) - orgJobCount(a.org_id)
     return diff !== 0 ? diff : a.org_name.localeCompare(b.org_name)
   })
+  const selectedOrg = orgs.find(o => o.org_id === selectedOrgId) ?? null
 
   if (loading) return <div className="p-8 text-stone text-sm">Loading…</div>
 
@@ -57,7 +58,7 @@ export default function BillingTestPage() {
           <li className="flex gap-2.5">
             <span className="text-forest font-semibold flex-shrink-0">2.</span>
             <span>
-              Pick the organisation below, then a meter — if they have several bespoke agreements you can narrow the preview to one, or leave it on all of them.
+              Pick the organisation below (enterprise or self-serve), then a meter — if they have several bespoke agreements you can narrow the preview to one, or leave it on all of them.
             </span>
           </li>
           <li className="flex gap-2.5">
@@ -75,59 +76,45 @@ export default function BillingTestPage() {
         </ol>
       </div>
 
-      {/* Org selector */}
+      {/* Organisation + simulator — one flowing panel, org picked inline like the self-service page */}
       <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-forest/8">
-          <div className="text-sm font-medium text-ink flex items-center gap-2">
-            <i className="ti ti-users-group" style={{ fontSize: 15 }} />
-            Select organisation
+          <div className="text-sm font-medium text-ink flex items-center gap-2 mb-0.5">
+            <i className="ti ti-flask text-forest" style={{ fontSize: 15 }} />
+            Simulate usage
           </div>
+          <p className="text-xs text-stone">
+            Every organisation — enterprise (bespoke agreements) and self-serve (standard plans) — is available below.
+          </p>
         </div>
-        <div className="divide-y divide-forest/5">
-          {orgs.length === 0 && (
-            <div className="px-6 py-4 text-sm text-stone">No organisations found.</div>
+        <div className="p-6 space-y-5">
+          <div>
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-stone block mb-1.5">Organisation</label>
+            <select
+              value={selectedOrgId}
+              onChange={e => setSelectedOrgId(e.target.value)}
+              className="w-full text-sm border border-forest/20 rounded-lg px-3 py-2 bg-white text-ink focus:outline-none focus:border-forest/40"
+            >
+              <option value="">Select an organisation…</option>
+              {sortedOrgs.map(org => {
+                const jobCount = orgJobCount(org.org_id)
+                return (
+                  <option key={org.org_id} value={org.org_id}>
+                    {org.org_name} — {jobCount} job{jobCount !== 1 ? 's' : ''}{org.plan_id ? ` · ${org.plan_id}` : ''}
+                  </option>
+                )
+              })}
+            </select>
+            {orgs.length === 0 && <p className="text-xs text-stone mt-1.5">No organisations found.</p>}
+          </div>
+
+          {selectedOrg && (
+            <div className="border-t border-forest/8 pt-5">
+              <BillingTestSimulator orgId={selectedOrg.org_id} />
+            </div>
           )}
-          {sortedOrgs.map(org => {
-            const isActive = selectedOrg?.org_id === org.org_id
-            const jobCount = orgJobCount(org.org_id)
-            return (
-              <button
-                key={org.org_id}
-                onClick={() => setSelectedOrg(isActive ? null : org)}
-                className="w-full text-left px-6 py-3.5 flex items-center gap-4 transition-colors hover:bg-forest/3"
-                style={{ background: isActive ? '#EAF3DE' : undefined }}
-              >
-                <div className="flex-1 min-w-0 flex items-center gap-2">
-                  <span className="text-sm font-medium text-ink truncate">{org.org_name}</span>
-                  <span className="text-[11px] text-stone/60">{jobCount} job{jobCount !== 1 ? 's' : ''}</span>
-                </div>
-                <i className={`ti ${isActive ? 'ti-check' : 'ti-chevron-right'} text-forest/40`}
-                  style={{ fontSize: 14, flexShrink: 0 }} />
-              </button>
-            )
-          })}
         </div>
       </div>
-
-      {/* Contract usage simulation */}
-      {selectedOrg && (
-        <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden">
-          <div className="px-6 py-4 border-b border-forest/8">
-            <div className="text-sm font-medium text-ink flex items-center gap-2 mb-0.5">
-              <i className="ti ti-flask text-forest" style={{ fontSize: 15 }} />
-              Push usage to {selectedOrg.org_name}&apos;s agreement setup
-            </div>
-            <p className="text-xs text-stone">
-              Simulate a usage reading for one of this org&apos;s meters and preview the overage it would produce on
-              each confirmed contract — using the exact same math the real billing cron runs. Preview only; never
-              creates invoices or touches Stripe/Remembill.
-            </p>
-          </div>
-          <div className="p-6">
-            <BillingTestSimulator orgId={selectedOrg.org_id} />
-          </div>
-        </div>
-      )}
     </div>
   )
 }
