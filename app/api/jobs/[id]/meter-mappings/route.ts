@@ -162,10 +162,24 @@ export async function GET(
     Array.from(unitGroups.entries()).map(async ([unitType, tiers]) => {
       const db = existingMap.get(unitType)
 
-      const sortedTiers = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
-      const includedUnits = sortedTiers.length > 0
-        ? Math.max(0, (sortedTiers[0].from_unit ?? 1) - 1)
-        : (terms.included_units ?? 0)
+      const sortedTiersRaw = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
+      // Two ways extraction represents the free allowance: either the tier
+      // list starts after a gap (first paid tier's from_unit implies it), or
+      // — as our extractor actually does — the free allowance is its own
+      // explicit rate_per_unit: 0 tier starting at unit 1. computeMetricOverage
+      // subtracts includedUnits from quantity BEFORE walking the tiers, so a
+      // zero-rate leading tier must be dropped once its span becomes
+      // includedUnits — otherwise its width gets consumed a second time
+      // against the already-reduced billable amount, silently doubling the
+      // free allowance and undercharging every tier above it.
+      const firstTierRaw = sortedTiersRaw[0]
+      const firstIsIncludedTier = !!firstTierRaw && firstTierRaw.rate_per_unit === 0 && (firstTierRaw.from_unit ?? 1) <= 1
+      const includedUnits = !firstTierRaw
+        ? (terms.included_units ?? 0)
+        : firstIsIncludedTier
+          ? (firstTierRaw.to_unit ?? 0)
+          : Math.max(0, (firstTierRaw.from_unit ?? 1) - 1)
+      const sortedTiers = firstIsIncludedTier ? sortedTiersRaw.slice(1) : sortedTiersRaw
 
       let meter_key: string
       let confidence: number
