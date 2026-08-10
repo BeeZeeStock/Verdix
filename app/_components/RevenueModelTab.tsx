@@ -76,10 +76,16 @@ interface Props {
   onSaved?: () => void
   onRepush?: () => Promise<void>
   baseTcv?: number
+  /** false when this job has usage tiers but not every one has a confirmed
+   *  billing-meter mapping — repush must be blocked the same way the initial
+   *  approve is, otherwise corrected/added tiers can get pushed to billing
+   *  with no meter to pull usage from. */
+  meterMappingsConfirmed?: boolean
 }
 
-export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, baseTcv }: Props) {
+export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, baseTcv, meterMappingsConfirmed }: Props) {
   const allTiers   = terms.overage_tiers ?? []
+  const unconfirmedTiers = allTiers.length > 0 && !meterMappingsConfirmed
   const userTiers  = allTiers.filter(t => t.unit_type?.toLowerCase().includes('user'))
   const apiTiers   = allTiers.filter(t =>
     t.unit_type?.toLowerCase().includes('api') || t.unit_type?.toLowerCase().includes('call'))
@@ -1565,9 +1571,14 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                       {repushError && (
                         <p className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">{repushError}</p>
                       )}
+                      {unconfirmedTiers && (
+                        <p className="text-[11px] text-amber-800 bg-amber-100 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+                          Confirm billing meter mappings above before re-pushing — usage-based tiers here aren&apos;t all mapped yet.
+                        </p>
+                      )}
                       {onRepush && (
                         <button
-                          disabled={repushLoading}
+                          disabled={repushLoading || unconfirmedTiers}
                           onClick={async () => {
                             setRepushLoading(true)
                             setRepushError(null)

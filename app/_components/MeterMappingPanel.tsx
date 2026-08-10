@@ -17,6 +17,7 @@ type AvailableMeter = { meter_key: string; display_name: string; unit_label: str
 interface Props {
   jobId: string
   currency: string
+  isConfigured?: boolean
   onConfirmedChange: (allConfirmed: boolean) => void
 }
 
@@ -30,7 +31,7 @@ const CONFIDENCE_BADGE = (c: number) => {
   return             { label: 'Low confidence — verify', bg: '#FEE2E2', color: '#B91C1C' }
 }
 
-export function MeterMappingPanel({ jobId, currency, onConfirmedChange }: Props) {
+export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedChange }: Props) {
   const [suggestions, setSuggestions] = useState<MeterSuggestion[]>([])
   const [meters, setMeters]           = useState<AvailableMeter[]>([])
   const [loading, setLoading]         = useState(true)
@@ -137,7 +138,7 @@ export function MeterMappingPanel({ jobId, currency, onConfirmedChange }: Props)
             )}
             {!allConfirmed && (
               <span className="text-[10px] font-semibold" style={{ color: '#B45309' }}>
-                Required before approve
+                {isConfigured ? 'Unconfirmed — usage-based billing will skip these meters' : 'Required before approve'}
               </span>
             )}
           </div>

@@ -35,6 +35,28 @@ export async function POST(
     billing_period: string; total_amount: number; currency: string
   }>
 
+  // Server-side mirror of the Configure page's Approve-button gate — the
+  // client disables the button until every extracted usage metric has a
+  // confirmed contract_meter_mappings row, but that's UI-only. Without this
+  // check, a contract can be pushed to billing (base fee configured) while
+  // its usage-based overage silently has no meter mapped to pull from —
+  // real billing would then skip it every cycle with no visible error.
+  const unitTypes = Array.from(new Set((terms.overage_tiers ?? []).map(t => t.unit_type).filter(Boolean)))
+  if (unitTypes.length > 0) {
+    const { data: mappings } = await supabaseServer
+      .from('contract_meter_mappings')
+      .select('contract_unit_type, confirmed')
+      .eq('job_id', id)
+    const confirmedTypes = new Set((mappings ?? []).filter(m => m.confirmed).map(m => m.contract_unit_type))
+    const unconfirmed = unitTypes.filter(u => !confirmedTypes.has(u))
+    if (unconfirmed.length > 0) {
+      return NextResponse.json(
+        { error: `Confirm billing meter mappings before approving: ${unconfirmed.join(', ')}` },
+        { status: 400 },
+      )
+    }
+  }
+
   try {
     const existingCustomerId = (job as unknown as Record<string, unknown>).billing_customer_id as string | undefined
     const result = await configureBilling(terms, lineItems, billingPlatformOverride ?? undefined, id, org.orgId, existingCustomerId ?? undefined)

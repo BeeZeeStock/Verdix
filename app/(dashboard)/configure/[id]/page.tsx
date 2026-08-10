@@ -1995,7 +1995,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
           {/* ── Model tab: full screen ────────────────────────────────────── */}
           {activeTab === 'model' && terms && (
-            <RevenueModelTab terms={terms} items={items} cur={cur} jobId={id} onSaved={fetchJob} onRepush={handleApprove} baseTcv={tcv} />
+            <RevenueModelTab terms={terms} items={items} cur={cur} jobId={id} onSaved={fetchJob} onRepush={handleApprove} baseTcv={tcv} meterMappingsConfirmed={meterMappingsConfirmed} />
           )}
           {activeTab === 'model' && !terms && (
             <div className="flex-1 flex items-center justify-center text-stone text-sm">
@@ -2841,11 +2841,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
-            {/* ── Meter mapping (enterprise contracts with overage tiers) ── */}
-            {!isConfigured && tiers.length > 0 && (
+            {/* ── Meter mapping (enterprise contracts with overage tiers) ──
+                 Stays visible after the job is configured/pushed to billing —
+                 mappings can be added or changed later (new meters, missed
+                 confirmations), and real usage-based billing depends on them
+                 regardless of whether the base fee was already approved. */}
+            {tiers.length > 0 && (
               <MeterMappingPanel
                 jobId={id}
                 currency={cur}
+                isConfigured={isConfigured}
                 onConfirmedChange={setMeterMappingsConfirmed}
               />
             )}
