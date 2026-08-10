@@ -130,7 +130,7 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
 
 export type BillingPlatform = 'stripe' | 'chargebee' | 'remembill'
 
-async function getOrgConfig(orgId: string, connector: string): Promise<Record<string, string> | null> {
+export async function getOrgConfig(orgId: string, connector: string): Promise<Record<string, string> | null> {
   const { data } = await supabaseServer
     .from('org_integrations')
     .select('config')

@@ -5,6 +5,7 @@
 // silently diverge from each other.
 import { supabaseServer } from '@/lib/supabase'
 import { computeMetricOverage, describeTieredUsage } from '@/lib/tariff'
+import { createRemembillUsageConnector } from '@/lib/connectors/usage/remembill'
 import type { ContractTerms } from '@/lib/types'
 
 type MeterCfg = {
@@ -18,6 +19,8 @@ type MeterDef = {
   pull_param_name: string | null
   mode: 'test' | 'live'
   test_usage_value: number | null
+  connector: string | null
+  response_metric_key: string | null
 }
 type PullCfg = { client_usage_url: string; client_read_api_key?: string }
 
@@ -69,7 +72,7 @@ export async function computeOverageForPeriod(params: {
     for (const cfg of meterConfigs as MeterCfg[]) {
       const { data: meterDef } = await supabaseServer
         .from('billing_meters')
-        .select('pull_endpoint_url, pull_auth_token, pull_param_name, mode, test_usage_value')
+        .select('pull_endpoint_url, pull_auth_token, pull_param_name, mode, test_usage_value, connector, response_metric_key')
         .or(`org_id.is.null,org_id.eq.${orgId}`)
         .eq('meter_key', cfg.meter_key)
         .maybeSingle()
@@ -88,6 +91,19 @@ export async function computeOverageForPeriod(params: {
         }
         if (def.test_usage_value == null) continue
         totalUnits = def.test_usage_value
+      } else if (def?.connector === 'remembill') {
+        try {
+          const readings = await createRemembillUsageConnector(orgId).pullUsage({
+            customerId,
+            periodStart: new Date(periodStartUnix * 1000),
+            periodEnd:   new Date(periodEndUnix * 1000),
+          })
+          const metricKey = def.response_metric_key ?? cfg.meter_key.toUpperCase()
+          totalUnits = readings.find(r => r.metric === metricKey)?.quantity ?? 0
+        } catch (err) {
+          console.error(`[usage-pull] remembill pull failed for meter '${cfg.meter_key}' org ${orgId}:`, err)
+          continue
+        }
       } else {
         if (!def?.pull_endpoint_url) {
           console.warn(`[usage-pull] no pull endpoint for meter '${cfg.meter_key}' org ${orgId}`)
