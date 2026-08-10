@@ -15,3 +15,14 @@ export async function isAdmin(): Promise<boolean> {
   const session = await auth()
   return ADMIN_EMAILS.includes(session?.user?.email ?? '')
 }
+
+// Remembill/CoAccept AB is a billing-connector partner (lib/connectors/usage/remembill.ts),
+// not a Verdix customer — their team needs to see the Remembill platform meters
+// (invoice_sent, email_sent, ...) in their own self-service Billing Test page,
+// same as Verdix admins can, while every other org sees nothing there.
+const REMEMBILL_TEAM_DOMAINS = ['coaccept.com']
+
+export function isRemembillTeam(email: string | null | undefined): boolean {
+  const domain = email?.split('@')[1]?.toLowerCase()
+  return !!domain && REMEMBILL_TEAM_DOMAINS.includes(domain)
+}

@@ -15,7 +15,16 @@ type Meter = {
   pull_auth_token_set: boolean
   mode:                'test' | 'live'
   test_usage_value:    number | null
+  connector:           string | null
   created_at:          string
+}
+
+function RemembillLogo() {
+  return (
+    <div className="w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0" style={{ background: '#4F46E5' }}>
+      <span className="text-white text-[10px] font-bold leading-none">R</span>
+    </div>
+  )
 }
 
 type EditState = {
@@ -151,7 +160,7 @@ export default function AdminMetersPage() {
 
   const handleToggleMode = async (m: Meter) => {
     const nextMode = m.mode === 'live' ? 'test' : 'live'
-    if (nextMode === 'live' && !m.pull_endpoint_url) {
+    if (nextMode === 'live' && m.connector !== 'remembill' && !m.pull_endpoint_url) {
       setMsg({ ok: false, text: `'${m.meter_key}' needs a pull endpoint before it can go live` })
       return
     }
@@ -195,8 +204,9 @@ export default function AdminMetersPage() {
 
   if (loading) return <div className="p-8 text-stone text-sm">Loading…</div>
 
-  const platformMeters = meters.filter(m => m.org_id === null)
-  const orgMeters      = meters.filter(m => m.org_id !== null)
+  const remembillMeters = meters.filter(m => m.connector === 'remembill')
+  const platformMeters  = meters.filter(m => m.org_id === null && m.connector !== 'remembill')
+  const orgMeters       = meters.filter(m => m.org_id !== null && m.connector !== 'remembill')
   const orgGroups      = new Map<string, { name: string; meters: Meter[] }>()
   for (const m of orgMeters) {
     const key = m.org_id!
@@ -289,7 +299,12 @@ export default function AdminMetersPage() {
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-ink">{m.display_name}</div>
           {m.description && <div className="text-xs text-stone">{m.description}</div>}
-          {m.pull_endpoint_url ? (
+          {m.connector === 'remembill' ? (
+            <div className="text-[10px] font-mono text-stone/50 truncate mt-1 flex items-center gap-1">
+              <RemembillLogo />
+              <span className="not-italic font-sans">Pulled via the Remembill connector — no endpoint to configure</span>
+            </div>
+          ) : m.pull_endpoint_url ? (
             <div className="text-[10px] font-mono text-stone/50 truncate mt-1">
               <i className="ti ti-plug-connected mr-1" style={{ fontSize: 10 }} />
               {m.pull_endpoint_url}
@@ -442,13 +457,26 @@ export default function AdminMetersPage() {
           <p className="text-xs text-stone">Registered by partner organisations via Settings → Billing meters or <code className="bg-cream px-1 rounded font-mono text-[10px]">POST /api/meters</code></p>
         </div>
 
-        {orgGroups.size === 0 ? (
+        {remembillMeters.length === 0 && orgGroups.size === 0 ? (
           <div className="bg-white border border-forest/10 rounded-2xl px-6 py-8 text-center">
             <div className="text-sm text-stone/60 mb-1">No 3PP meters registered yet</div>
             <div className="text-xs text-stone/40">Partners register via Settings → Billing meters in their dashboard</div>
           </div>
         ) : (
           <div className="space-y-4">
+            {remembillMeters.length > 0 && (
+              <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden">
+                <div className="px-6 py-3 border-b border-forest/8 bg-forest/2 flex items-center gap-2">
+                  <RemembillLogo />
+                  <span className="text-sm font-medium text-ink">Remembill</span>
+                  <span className="text-[10px] text-stone/50">connector</span>
+                  <span className="ml-auto text-[10px] text-stone/50">{remembillMeters.length} meter{remembillMeters.length !== 1 ? 's' : ''}</span>
+                </div>
+                <div className="divide-y divide-forest/5">
+                  {remembillMeters.map(m => <MeterRow key={m.id} m={m} />)}
+                </div>
+              </div>
+            )}
             {Array.from(orgGroups.entries()).map(([orgId, group]) => (
               <div key={orgId} className="bg-white border border-forest/10 rounded-2xl overflow-hidden">
                 <div className="px-6 py-3 border-b border-forest/8 bg-forest/2 flex items-center gap-2">

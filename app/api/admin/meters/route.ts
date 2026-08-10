@@ -24,10 +24,11 @@ type RawMeter = {
   pull_auth_token:   string | null
   mode:              'test' | 'live'
   test_usage_value:  number | null
+  connector:         string | null
   created_at:        string
 }
 
-const METER_SELECT = 'id, org_id, meter_key, display_name, unit_label, description, pull_endpoint_url, pull_param_name, pull_auth_token, mode, test_usage_value, created_at'
+const METER_SELECT = 'id, org_id, meter_key, display_name, unit_label, description, pull_endpoint_url, pull_param_name, pull_auth_token, mode, test_usage_value, connector, created_at'
 
 function maskMeter(m: RawMeter & { org_name?: string | null }) {
   const { pull_auth_token, ...rest } = m

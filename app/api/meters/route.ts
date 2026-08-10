@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
+import { isAdmin, isRemembillTeam } from '@/lib/admin'
 
 type RawMeter = {
   id:                string
@@ -21,10 +22,11 @@ type RawMeter = {
   pull_auth_token:   string | null
   mode:              'test' | 'live'
   test_usage_value:  number | null
+  connector:         string | null
   created_at:        string
 }
 
-const METER_SELECT = 'id, org_id, meter_key, display_name, unit_label, description, pull_endpoint_url, pull_param_name, pull_auth_token, mode, test_usage_value, created_at'
+const METER_SELECT = 'id, org_id, meter_key, display_name, unit_label, description, pull_endpoint_url, pull_param_name, pull_auth_token, mode, test_usage_value, connector, created_at'
 
 function maskMeter(m: RawMeter) {
   const { pull_auth_token, ...rest } = m
@@ -43,9 +45,18 @@ export async function GET() {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
+  // Remembill-connector meters are only relevant to Verdix admins and to
+  // Remembill/CoAccept's own team (they own that connector) — every other
+  // org's self-service view should never see them.
+  const canSeeRemembill = (await isAdmin()) || isRemembillTeam(org.userEmail)
+
   const all = (meters ?? []) as RawMeter[]
+  const platformMeters = all
+    .filter(m => m.org_id === null)
+    .filter(m => m.connector !== 'remembill' || canSeeRemembill)
+
   return NextResponse.json({
-    platform_meters: all.filter(m => m.org_id === null).map(maskMeter),
+    platform_meters: platformMeters.map(maskMeter),
     org_meters:      all.filter(m => m.org_id !== null).map(maskMeter),
   })
 }

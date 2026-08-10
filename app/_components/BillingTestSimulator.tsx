@@ -19,6 +19,7 @@ type Meter = {
   pull_endpoint_url: string | null
   mode:              'test' | 'live'
   test_usage_value:  number | null
+  connector:         string | null
 }
 
 type SimulatedJob = {
@@ -77,9 +78,15 @@ export function BillingTestSimulator({ orgId }: { orgId?: string }) {
     // Org self-service view: only meters this org registered itself — unless
     // the logged-in user is Verdix staff, who can always see the shared
     // platform meter(s) regardless of which org's page they're on.
+    // Remembill-connector meters are already filtered server-side (GET
+    // /api/meters) to admins + Remembill/CoAccept's own team, so they're
+    // passed through unconditionally here; every other platform meter
+    // (sync, api_call, ...) stays admin-only on this self-service page.
     const res = await fetch('/api/meters').then(r => r.json()).catch(() => null)
-    const orgMeters = (res?.org_meters ?? []) as Meter[]
-    return isPlatformAdmin ? [...((res?.platform_meters ?? []) as Meter[]), ...orgMeters] : orgMeters
+    const orgMeters      = (res?.org_meters ?? []) as Meter[]
+    const platformMeters = (res?.platform_meters ?? []) as Meter[]
+    const visiblePlatform = platformMeters.filter(m => m.connector === 'remembill' || isPlatformAdmin)
+    return [...visiblePlatform, ...orgMeters]
   }, [orgId, isPlatformAdmin])
 
   const fetchAgreements = useCallback(async () => {
