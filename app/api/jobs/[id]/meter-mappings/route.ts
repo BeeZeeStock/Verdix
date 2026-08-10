@@ -11,8 +11,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
-
-const ADMIN_EMAILS = ['bilal.zahoor@yahoo.com', 'bilal@lynoraai.com']
+import { isAdminEmail, isRemembillTeam } from '@/lib/admin'
 
 // ── Auto-mapping heuristic ────────────────────────────────────────────────────
 const METER_RULES: Array<{ patterns: string[]; key: string; confidence: number }> = [
@@ -143,16 +142,20 @@ export async function GET(
 
   const existingMap = new Map((existing ?? []).map((r: Record<string, unknown>) => [r.contract_unit_type as string, r]))
 
-  // Fetch available meters: only this org's registered meters.
-  // Verdix admins also see platform meters (org_id IS NULL) for their own contract processing.
+  // Fetch available meters: only this org's registered meters, plus platform
+  // meters (org_id IS NULL) for Verdix admins processing their own contracts
+  // and for Remembill/CoAccept's team — they own the Remembill-connector
+  // meters and need them selectable when mapping their customers' contracts,
+  // exactly like Verdix admins need the platform 'sync' meter for their own.
   const session = await auth()
-  const isAdmin = ADMIN_EMAILS.includes(session?.user?.email ?? '')
+  const email = session?.user?.email ?? ''
+  const canSeePlatformMeters = isAdminEmail(email) || isRemembillTeam(email)
   const meterQuery = supabaseServer
     .from('billing_meters')
     .select('meter_key, display_name, unit_label, org_id')
     .order('meter_key')
 
-  const { data: meters } = await (isAdmin
+  const { data: meters } = await (canSeePlatformMeters
     ? meterQuery.or(`org_id.is.null,org_id.eq.${job.org_id}`)
     : meterQuery.eq('org_id', job.org_id))
 

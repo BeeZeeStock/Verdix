@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 
 type Meter = {
   id:                  string
-  org_id:              string
+  org_id:              string | null
   meter_key:           string
   display_name:        string
   unit_label:          string
@@ -14,7 +14,50 @@ type Meter = {
   pull_auth_token_set: boolean
   mode:                'test' | 'live'
   test_usage_value:    number | null
+  connector:           string | null
   created_at:          string
+}
+
+// Per-connector docs for pre-configured (org_id: null) meters — these are
+// wired directly by Verdix, not through the generic pull_endpoint_url
+// mechanism, so what "Verdix sends" is a fixed, real contract per connector
+// rather than something the org configures. Keyed by billing_meters.connector;
+// add an entry here whenever a new connector partner comes online.
+const CONNECTOR_DOCS: Record<string, {
+  title: string; blurb: string; request: string; response: string
+}> = {
+  remembill: {
+    title: 'How Verdix pulls your Remembill meters',
+    blurb: 'These meters are wired directly to the Remembill usage API — there is nothing to configure below. Verdix calls this automatically at billing time, using the Remembill connection from Integrations.',
+    request: `GET https://api.remembill.com/integrations/verdix/v1/customers/{customer_id}/usage
+  ?start=20260801
+  &end=20260831
+
+Authorization: Bearer <your Remembill API key, from Integrations>`,
+    response: `{
+  "data": {
+    "customer_id": "cus_...",
+    "period": { "start": "20260801", "end": "20260831" },
+    "usage": [
+      { "metric": "INVOICE_SENT",  "quantity": 19 },
+      { "metric": "EMAIL_SENT",    "quantity": 44 },
+      { "metric": "SMS_SENT",      "quantity": 11 },
+      { "metric": "LETTER_SENT",   "quantity": 2 },
+      { "metric": "REMINDER_SENT", "quantity": 6 }
+    ]
+  }
+}`,
+  },
+}
+
+function ConnectorLogo({ connector }: { connector: string }) {
+  const initial = connector.slice(0, 1).toUpperCase()
+  const bg = connector === 'remembill' ? '#4F46E5' : '#6B6660'
+  return (
+    <div className="w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0" style={{ background: bg }}>
+      <span className="text-white text-[10px] font-bold leading-none">{initial}</span>
+    </div>
+  )
 }
 
 type FormState = {
@@ -73,7 +116,8 @@ function StatusBadge({ configured }: { configured: boolean }) {
 }
 
 export default function MetersSettingsPage() {
-  const [orgMeters,   setOrgMeters]   = useState<Meter[]>([])
+  const [orgMeters,      setOrgMeters]      = useState<Meter[]>([])
+  const [platformMeters, setPlatformMeters] = useState<Meter[]>([])
   const [loading,     setLoading]     = useState(true)
   const [msg,         setMsg]         = useState<{ ok: boolean; text: string } | null>(null)
   const [showForm,    setShowForm]    = useState(false)
@@ -87,19 +131,20 @@ export default function MetersSettingsPage() {
 
   const set = (k: keyof FormState) => (v: string) => setForm(f => ({ ...f, [k]: v }))
 
-  const applyData = useCallback((res: { org_meters: Meter[] }) => {
+  const applyData = useCallback((res: { org_meters: Meter[]; platform_meters?: Meter[] }) => {
     setOrgMeters(res.org_meters ?? [])
+    setPlatformMeters(res.platform_meters ?? [])
   }, [])
 
   useEffect(() => {
     fetch('/api/meters').then(r => r.json())
-      .then(res => { applyData(res as { org_meters: Meter[] }); setLoading(false) })
+      .then(res => { applyData(res as { org_meters: Meter[]; platform_meters?: Meter[] }); setLoading(false) })
       .catch(() => setLoading(false))
   }, [applyData])
 
   const reload = useCallback(async () => {
     const res = await fetch('/api/meters').then(r => r.json()).catch(() => null)
-    if (res) applyData(res as { org_meters: Meter[] })
+    if (res) applyData(res as { org_meters: Meter[]; platform_meters?: Meter[] })
   }, [applyData])
 
   const openEndpoint = (m: Meter) => {
@@ -205,7 +250,87 @@ export default function MetersSettingsPage() {
         </p>
       </div>
 
-      {/* ── Request format ── */}
+      {/* ── Pre-configured meters (Verdix-managed connectors, e.g. Remembill) ── */}
+      {platformMeters.length > 0 && (
+        <div className="space-y-4">
+          <div>
+            <h2 className="text-sm font-semibold text-ink">Pre-configured meters</h2>
+            <p className="text-xs text-stone">Wired up by Verdix already — nothing to set up, just confirm them when mapping a contract.</p>
+          </div>
+
+          <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden">
+            <div className="divide-y divide-forest/5">
+              {platformMeters.map(m => (
+                <div key={m.id} className="px-6 py-4 flex items-center gap-4">
+                  <code className="text-xs font-mono font-semibold text-forest bg-forest/8 px-2 py-1 rounded-lg w-36 flex-shrink-0 truncate">
+                    {m.meter_key}
+                  </code>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-ink">{m.display_name}</div>
+                    {m.description && <div className="text-xs text-stone truncate">{m.description}</div>}
+                  </div>
+                  <div className="text-xs text-stone/60 font-mono flex-shrink-0">{m.unit_label}</div>
+                  {m.connector && (
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <ConnectorLogo connector={m.connector} />
+                      <span className="text-[10px] text-stone/60 capitalize">{m.connector}</span>
+                    </div>
+                  )}
+                  <span
+                    className="text-[10px] font-semibold px-2.5 py-1 rounded-full flex-shrink-0 flex items-center gap-1.5"
+                    style={m.mode === 'live'
+                      ? { background: '#EEF9F2', color: '#0B5C36', border: '1px solid rgba(11,92,54,0.25)' }
+                      : { background: '#FFF7ED', color: '#C2410C', border: '1px solid rgba(194,65,12,0.25)' }}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: m.mode === 'live' ? '#0B5C36' : '#C2410C' }} />
+                    {m.mode === 'live' ? 'Live' : 'Test'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Connector-specific docs — one block per distinct connector present */}
+          {Array.from(new Set(platformMeters.map(m => m.connector).filter((c): c is string => !!c)))
+            .map(connector => {
+              const docs = CONNECTOR_DOCS[connector]
+              if (!docs) return null
+              return (
+                <div key={connector} className="bg-white border border-forest/10 rounded-2xl overflow-hidden">
+                  <div className="px-6 py-4 border-b border-forest/8">
+                    <div className="text-sm font-semibold text-ink flex items-center gap-2">
+                      <ConnectorLogo connector={connector} />
+                      {docs.title}
+                    </div>
+                    <p className="text-xs text-stone mt-0.5">{docs.blurb}</p>
+                  </div>
+                  <div className="px-6 py-5 space-y-4">
+                    <div>
+                      <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-2">Request</div>
+                      <div className="bg-ink rounded-xl overflow-hidden">
+                        <div className="flex items-center gap-1.5 px-4 py-2.5 border-b border-white/5">
+                          <span className="w-2 h-2 rounded-full bg-[#FF5F56]" />
+                          <span className="w-2 h-2 rounded-full bg-[#FFBD2E]" />
+                          <span className="w-2 h-2 rounded-full bg-[#27C93F]" />
+                          <span className="ml-auto text-[10px] text-white/25 font-mono">bash</span>
+                        </div>
+                        <pre className="text-green-400 text-[10px] font-mono px-4 py-3 overflow-x-auto leading-[1.9] whitespace-pre">{docs.request}</pre>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-2">Response</div>
+                      <div className="bg-ink rounded-xl overflow-hidden">
+                        <pre className="text-blue-300 text-[10px] font-mono px-4 py-3 leading-relaxed whitespace-pre overflow-x-auto">{docs.response}</pre>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+        </div>
+      )}
+
+      {/* ── Request format (for meters you configure yourself) ── */}
       <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-forest/8">
           <div className="text-sm font-semibold text-ink flex items-center gap-2">
@@ -270,7 +395,7 @@ Authorization: Bearer <your-auth-token>`}</pre>
       <div>
         <div className="flex items-center justify-between mb-3">
           <div>
-            <h2 className="text-sm font-semibold text-ink">Your meters</h2>
+            <h2 className="text-sm font-semibold text-ink">{platformMeters.length > 0 ? 'Your own meters' : 'Your meters'}</h2>
             <p className="text-xs text-stone">Configure one pull endpoint per meter</p>
           </div>
           <div className="flex items-center gap-2">

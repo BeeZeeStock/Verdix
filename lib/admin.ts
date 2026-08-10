@@ -2,10 +2,16 @@ import { auth } from './auth'
 
 const ADMIN_EMAILS = ['bilal.zahoor@yahoo.com', 'bilal@lynoraai.com']
 
+// Synchronous check for callers that already have the session's email (e.g.
+// alongside another auth()-derived value) and don't want a second auth() call.
+export function isAdminEmail(email: string | null | undefined): boolean {
+  return ADMIN_EMAILS.includes(email ?? '')
+}
+
 export async function requireAdmin(): Promise<string> {
   const session = await auth()
   const email = session?.user?.email ?? ''
-  if (!ADMIN_EMAILS.includes(email)) {
+  if (!isAdminEmail(email)) {
     throw new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 })
   }
   return email
@@ -13,7 +19,7 @@ export async function requireAdmin(): Promise<string> {
 
 export async function isAdmin(): Promise<boolean> {
   const session = await auth()
-  return ADMIN_EMAILS.includes(session?.user?.email ?? '')
+  return isAdminEmail(session?.user?.email)
 }
 
 // Remembill/CoAccept AB is a billing-connector partner (lib/connectors/usage/remembill.ts),
