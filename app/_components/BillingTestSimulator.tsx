@@ -89,9 +89,12 @@ export function BillingTestSimulator({ orgId }: { orgId?: string }) {
     return [...visiblePlatform, ...orgMeters]
   }, [orgId, isPlatformAdmin])
 
-  const fetchAgreements = useCallback(async () => {
-    const url = orgId ? `/api/billing-test/jobs?org_id=${orgId}` : '/api/billing-test/jobs'
-    const res = await fetch(url).then(r => r.json()).catch(() => null)
+  const fetchAgreements = useCallback(async (meterKey?: string) => {
+    const params = new URLSearchParams()
+    if (orgId) params.set('org_id', orgId)
+    if (meterKey) params.set('meter_key', meterKey)
+    const qs  = params.toString()
+    const res = await fetch(`/api/billing-test/jobs${qs ? `?${qs}` : ''}`).then(r => r.json()).catch(() => null)
     return (res?.jobs ?? []) as Agreement[]
   }, [orgId])
 
@@ -99,14 +102,31 @@ export function BillingTestSimulator({ orgId }: { orgId?: string }) {
     let cancelled = false
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true)
-    Promise.all([fetchMeters(), fetchAgreements()]).then(([m, a]) => {
+    fetchMeters().then(m => {
       if (cancelled) return
-      setMeters(m); setAgreements(a); setLoading(false)
+      setMeters(m); setLoading(false)
     })
     return () => { cancelled = true }
-  }, [fetchMeters, fetchAgreements])
+  }, [fetchMeters])
 
   const meter = meters.find(m => m.id === selected) ?? null
+
+  // Re-scope the agreement picker to only jobs with a confirmed mapping for
+  // whichever meter is currently selected — an org's other agreements may be
+  // mapped to entirely different meters, or not confirmed at all.
+  useEffect(() => {
+    let cancelled = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAgreementId('')
+    if (!meter) {
+      setAgreements([])
+      return
+    }
+    fetchAgreements(meter.meter_key).then(a => {
+      if (!cancelled) setAgreements(a)
+    })
+    return () => { cancelled = true }
+  }, [meter, fetchAgreements])
 
   const runSimulation = async () => {
     if (!meter) return

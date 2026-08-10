@@ -136,12 +136,17 @@ export async function POST(req: NextRequest) {
       if (body.mode === 'live') {
         const { data: existing } = await supabaseServer
           .from('billing_meters')
-          .select('pull_endpoint_url')
+          .select('pull_endpoint_url, connector')
           .eq('id', body.id)
           .single()
-        const endpointAfterPatch = (patch.pull_endpoint_url as string | undefined) ?? existing?.pull_endpoint_url
-        if (!endpointAfterPatch) {
-          return NextResponse.json({ error: 'Cannot go live without a pull endpoint URL configured' }, { status: 400 })
+        // Connector-backed meters (e.g. Remembill) never use pull_endpoint_url —
+        // their pull logic is hardcoded in lib/connectors/usage/*, so there's
+        // nothing to require here.
+        if (!existing?.connector) {
+          const endpointAfterPatch = (patch.pull_endpoint_url as string | undefined) ?? existing?.pull_endpoint_url
+          if (!endpointAfterPatch) {
+            return NextResponse.json({ error: 'Cannot go live without a pull endpoint URL configured' }, { status: 400 })
+          }
         }
       }
       patch.mode = body.mode
