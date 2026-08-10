@@ -52,8 +52,17 @@ export async function computeOverageForPeriod(params: {
   // summary) create no invoice and no side effect, so they should still show
   // live data for a test-mode meter — that's the whole point of testing it.
   ignoreTestModeGate?: boolean
+  // Real invoices should only ever contain billable line items — a meter
+  // pulled fine but produced $0 overage (usage within the included
+  // allowance) has nothing to invoice, so invoice-scheduler must keep
+  // skipping it. The read-only preview wants the opposite: showing "we
+  // pulled 19, 500 included, 0 billable" is exactly how you confirm the
+  // pull actually worked, especially when every meter is under its
+  // allowance. This never changes what real billing computes or charges —
+  // only whether $0 results are included in the returned list.
+  includeZeroUsage?: boolean
 }): Promise<OverageLineItem[]> {
-  const { orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, currency, ignoreTestModeGate } = params
+  const { orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, currency, ignoreTestModeGate, includeZeroUsage } = params
   const items: OverageLineItem[] = []
 
   // Primary source: this job's own confirmed agreement-specific tiers.
@@ -128,7 +137,7 @@ export async function computeOverageForPeriod(params: {
         const usageData = await pullRes.json() as { total_billable_units?: number | string }
         totalUnits = Number(usageData.total_billable_units ?? 0)
       }
-      if (totalUnits <= 0) continue
+      if (totalUnits <= 0 && !includeZeroUsage) continue
 
       const tiers = (cfg.overage_tiers ?? []).map((t, i) => ({
         tier_label:    `Tier ${i + 1}`,
@@ -139,7 +148,7 @@ export async function computeOverageForPeriod(params: {
       }))
       const includedUnits = cfg.included_units ?? 0
       const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits) : 0
-      if (overageEur <= 0) continue
+      if (overageEur <= 0 && !includeZeroUsage) continue
 
       const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits)
       items.push({
