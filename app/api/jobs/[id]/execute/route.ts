@@ -7,6 +7,7 @@ import { extractContractTerms } from '@/lib/contract-extractor'
 import { resolveStorageUrl } from '@/lib/storage'
 import { maskText, restoreTokensInObject } from '@/lib/pii-detector'
 import { computeMonthlyBaseRate, computeEscalatorMultiplier } from '@/lib/billing-writer'
+import { billingInterval } from '@/lib/stripe-meter'
 
 
 // Allow up to 5 minutes — PDF extraction + two Anthropic calls can exceed the default 10s limit
@@ -165,13 +166,22 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
   const src = terms.field_sources ?? {}
   const conf = terms.extraction_confidence === 'high' ? 0.97 : terms.extraction_confidence === 'medium' ? 0.82 : 0.62
 
-  // Recurring base fee — one line item per contract year, computed with the
-  // same rate logic (ramp schedule → year pricing → flat fee, with compound
-  // escalation) as the real billing schedule (computeMonthlyBaseRate /
-  // computeEscalatorMultiplier in lib/billing-writer.ts), so a contract with
-  // an escalator or ramp schedule shows the true year-by-year total instead
-  // of a single flat, unescalated figure. Falls back to a single flat item
-  // when contract dates are missing and a per-year split can't be computed.
+  // Recurring base fee — one line item per distinct rate block, on the
+  // contract's *actual* billing cadence (monthly/quarterly/...), not always
+  // bucketed by calendar year regardless of whether the rate changed within
+  // it. Rate logic (ramp schedule → year pricing → flat fee, with compound
+  // escalation) mirrors computeBillingSchedule (lib/billing-writer.ts) — the
+  // same function real billing (Stripe/Remembill) uses to generate actual
+  // invoices — so this display can never disagree with what's really
+  // charged. Consecutive periods at the same rate collapse into one row; a
+  // new row starts only where the rate actually changes (an escalator/ramp
+  // step), so a flat-rate contract shows a single "12 × monthly" row instead
+  // of one "Year 1" row per calendar year. quantity stays the number of
+  // cycles and unit_price the per-cycle rate (not pre-multiplied) — several
+  // billing connectors (e.g. Chargebee) read these fields as literal
+  // per-cycle subscription quantities, so only total_amount should ever hold
+  // the full-term figure. Falls back to a single flat item when contract
+  // dates are missing and a schedule can't be computed.
   const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date + 'T00:00:00') : null
   let termMonths = terms.contract_term_months ?? 0
   if (!termMonths && contractStart && terms.contract_end_date) {
@@ -181,26 +191,44 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
   const hasRecurringBase = !!(terms.base_monthly_fee || terms.base_annual_fee || terms.ramp_schedule?.length || terms.year_pricing)
 
   if (hasRecurringBase && contractStart && termMonths > 0) {
-    const byYear = new Map<number, number>()
-    for (let mi = 0; mi < termMonths; mi++) {
-      const d = new Date(contractStart.getFullYear(), contractStart.getMonth() + mi, 1)
-      const yearNum = Math.floor(mi / 12) + 1
-      const amount = computeMonthlyBaseRate(terms, mi, d) * computeEscalatorMultiplier(terms, d)
-      byYear.set(yearNum, (byYear.get(yearNum) ?? 0) + amount)
+    const { interval, intervalCount } = billingInterval(terms.billing_frequency)
+    const monthsPerPeriod = interval === 'year' ? 12 * intervalCount : intervalCount
+    const freq = terms.billing_frequency ?? 'monthly'
+
+    const periodAmounts: number[] = []
+    let monthsUsed = 0
+    while (monthsUsed < termMonths) {
+      const monthsInThisPeriod = Math.min(monthsPerPeriod, termMonths - monthsUsed)
+      let amount = 0
+      for (let mi = 0; mi < monthsInThisPeriod; mi++) {
+        const globalMonthIdx = monthsUsed + mi
+        const d = new Date(contractStart.getFullYear(), contractStart.getMonth() + globalMonthIdx, 1)
+        amount += computeMonthlyBaseRate(terms, globalMonthIdx, d) * computeEscalatorMultiplier(terms, d)
+      }
+      periodAmounts.push(amount)
+      monthsUsed += monthsInThisPeriod
     }
-    for (const [yearNum, amount] of [...byYear.entries()].sort(([a], [b]) => a - b)) {
-      if (amount <= 0) continue
-      const rounded = Math.round(amount * 100) / 100
-      items.push({
-        product_name: `Year ${yearNum} recurring fee`,
-        quantity: 1,
-        unit_price: rounded,
-        billing_period: 'annual',
-        total_amount: rounded,
-        currency: cur,
-        confidence_score: conf,
-        source_section: src.base_monthly_fee ?? src.year_pricing ?? src.ramp_schedule ?? null,
-      })
+
+    let i = 0
+    while (i < periodAmounts.length) {
+      const rate = periodAmounts[i]
+      let j = i
+      while (j < periodAmounts.length && Math.abs(periodAmounts[j] - rate) < 0.005) j++
+      const periodCount = j - i
+      if (rate > 0) {
+        const rounded = Math.round(rate * 100) / 100
+        items.push({
+          product_name: periodCount === periodAmounts.length ? 'Recurring base fee' : `Recurring base fee (periods ${i + 1}–${j})`,
+          quantity: periodCount,
+          unit_price: rounded,
+          billing_period: freq,
+          total_amount: Math.round(rate * periodCount * 100) / 100,
+          currency: cur,
+          confidence_score: conf,
+          source_section: src.base_monthly_fee ?? src.year_pricing ?? src.ramp_schedule ?? null,
+        })
+      }
+      i = j
     }
   } else if (terms.base_monthly_fee) {
     items.push({
@@ -215,17 +243,23 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
     })
   }
 
-  // Additional recurring fees (e.g. support tier, add-on modules billed separately).
-  // Note: shown at their flat contract amount, not escalated — matches the
-  // existing display convention (unchanged by this refactor).
+  // Additional recurring fees (e.g. support tier, add-on modules billed
+  // separately) — represented the same way as the base fee above: quantity
+  // is the number of billing cycles over the term, unit_price the flat
+  // per-cycle amount (not escalated — matches the existing display
+  // convention), and total_amount their full contribution to TCV.
   for (const fee of terms.additional_recurring_fees ?? []) {
     if (!fee.amount) continue
+    const feeFreq = terms.billing_frequency ?? 'monthly'
+    const { interval, intervalCount } = billingInterval(feeFreq)
+    const feeMonthsPerPeriod = interval === 'year' ? 12 * intervalCount : intervalCount
+    const periodCount = termMonths > 0 && feeMonthsPerPeriod > 0 ? Math.ceil(termMonths / feeMonthsPerPeriod) : 1
     items.push({
       product_name: fee.fee_label,
-      quantity: 1,
+      quantity: periodCount,
       unit_price: fee.amount,
-      billing_period: terms.billing_frequency ?? 'monthly',
-      total_amount: fee.amount,
+      billing_period: feeFreq,
+      total_amount: Math.round(fee.amount * periodCount * 100) / 100,
       currency: cur,
       confidence_score: conf,
       source_section: src.additional_recurring_fees ?? src.base_monthly_fee ?? null,
@@ -237,7 +271,11 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
       product_name: `${tier.tier_label} — overage`,
       quantity: 0,
       unit_price: tier.rate_per_unit,
-      billing_period: 'monthly',
+      // A tier can be measured/charged on its own cadence, distinct from the
+      // contract's overall billing_frequency (e.g. a quarterly-measured
+      // metric inside a monthly-invoiced contract) — show that cadence, not
+      // a hardcoded 'monthly' that silently disagreed with the contract text.
+      billing_period: tier.measurement_period ?? terms.billing_frequency ?? 'monthly',
       total_amount: 0,
       currency: cur,
       confidence_score: 0.88,

@@ -931,7 +931,13 @@ async function configureChargebee(
   const params = new URLSearchParams({ 'customer_id': customerId })
   lineItems.forEach((item, i) => {
     params.append(`subscription_items[item_price_id][${i}]`, item.product_name.toLowerCase().replace(/\s+/g, '-'))
-    params.append(`subscription_items[quantity][${i}]`, String(item.quantity))
+    // Chargebee subscription items recur automatically per their item
+    // price's own configured interval — quantity means "units per cycle",
+    // never "how many cycles". item.quantity here instead counts billing
+    // cycles over the contract term (for the Configure page's display /
+    // Base TCV), so it must never be forwarded as-is — doing so would tell
+    // Chargebee to charge unit_price × cycle-count *every single cycle*.
+    params.append(`subscription_items[quantity][${i}]`, '1')
     params.append(`subscription_items[unit_price][${i}]`, String(Math.round(item.unit_price * 100)))
   })
 

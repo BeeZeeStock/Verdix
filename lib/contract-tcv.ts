@@ -2,9 +2,10 @@
 // the "New contracts" list, the Agreements dashboard, and (via the baseTcv
 // prop) the per-job Contract·Commercials page, so all three always agree.
 //
-// Base TCV: the approved billing configuration (line_items) — total_amount
-// × periods-in-term, excluding escalators (they modify a base rate, they
-// aren't their own billable line).
+// Base TCV: the approved billing configuration (line_items) — sum of every
+// row's total_amount (each row already holds its full, pre-multiplied
+// contribution to the term — see computeBaseTcv), excluding escalators
+// (they modify a base rate, they aren't their own billable line).
 // Actual TCV: Base TCV + additions — sent one-time invoices for variable
 // fees (a line_items row with total_amount = 0, or no matching row at all,
 // meaning the amount was only known once actually invoiced).
@@ -55,14 +56,8 @@ export async function getContractSummaries(jobIds: string[]): Promise<Record<str
 
   const map: Record<string, ContractSummary> = {}
   for (const row of termsData ?? []) {
-    const termMonths = (row.contract_term_months as number | null)
-      ?? (row.contract_start_date && row.contract_end_date
-        ? (new Date(row.contract_end_date as string).getFullYear() - new Date(row.contract_start_date as string).getFullYear()) * 12
-          + (new Date(row.contract_end_date as string).getMonth() - new Date(row.contract_start_date as string).getMonth()) + 1
-        : 0)
-
     const jobItems = lineItemsByJob[row.job_id] ?? []
-    const tcv = computeBaseTcv(jobItems, termMonths)
+    const tcv = computeBaseTcv(jobItems)
 
     const jobSent        = sentByJob[row.job_id] ?? []
     const additionsTotal = jobSent.reduce((s, inv) => {

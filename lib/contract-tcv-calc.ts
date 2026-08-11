@@ -12,15 +12,6 @@ export function isEscalatorItem(productName: string, appliedRule: string | null 
   return rule.includes('escalator') || name.includes('escalator') || name.includes('cpi') || name.includes('price escalator')
 }
 
-function periodsInTermFor(bp: string | null | undefined, termMonths: number): number {
-  if (!termMonths) return 1
-  if (bp === 'monthly')     return termMonths
-  if (bp === 'quarterly')   return termMonths / 3
-  if (bp === 'semi-annual') return termMonths / 6
-  if (bp === 'annual')      return termMonths / 12
-  return 1
-}
-
 export type BaseTcvItem = {
   product_name: string
   applied_rule?: string | null
@@ -28,25 +19,19 @@ export type BaseTcvItem = {
   billing_period: string | null
 }
 
-// A single line item per billing_period represents a steady recurring rate —
-// multiply by how many such periods fit in the term (legacy convention). But
-// buildLineItems generates one row *per contract year* for multi-year deals
-// ("Year 1 recurring fee", "Year 2 recurring fee", ...) so escalators land on
-// the right year — each of those rows is already a complete, distinct
-// occurrence, not a steady rate to repeat. Multiplying it again by
-// periodsInTermFor double(-or-more)-counts the whole term. Only apply the
-// multiplier when a billing_period has exactly one line item; when several
-// share it, sum them as-is.
-export function computeBaseTcv(items: BaseTcvItem[], termMonths: number): number {
-  const countByPeriod = new Map<string, number>()
-  for (const item of items) {
-    const key = item.billing_period ?? ''
-    countByPeriod.set(key, (countByPeriod.get(key) ?? 0) + 1)
-  }
+// buildLineItems (app/api/jobs/[id]/execute/route.ts) always emits
+// total_amount as the item's *already fully-resolved* contribution to the
+// term — quantity × unit_price, pre-multiplied by however many cycles that
+// row spans (one row per distinct rate block, so an escalator or ramp
+// contract naturally produces several rows, each already complete). TCV is
+// therefore just the sum of every non-escalator row's total_amount — no
+// further multiplication, and no need to infer a per-item cycle count from
+// how many other rows happen to share its billing_period (that heuristic
+// broke as soon as two unrelated fields — e.g. the base fee and an overage
+// tier — could legitimately share the same cadence).
+export function computeBaseTcv(items: BaseTcvItem[]): number {
   return items.reduce((s, item) => {
     if (isEscalatorItem(item.product_name, item.applied_rule)) return s
-    const sharesPeriodWithOthers = (countByPeriod.get(item.billing_period ?? '') ?? 0) > 1
-    const multiplier = sharesPeriodWithOthers ? 1 : periodsInTermFor(item.billing_period, termMonths)
-    return s + (item.total_amount ?? 0) * multiplier
+    return s + (item.total_amount ?? 0)
   }, 0)
 }

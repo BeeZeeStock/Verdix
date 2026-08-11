@@ -11,6 +11,8 @@ type OverageItem = {
   amount:         number
   currency:       string
   description:    string
+  windowStart?:   string
+  windowEnd?:     string
 }
 
 type Period = {
@@ -188,15 +190,32 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
                             </td>
                           </tr>
                         ) : (
-                          p.overageItems.map((item, i) => (
+                          p.overageItems.map((item, i) => {
+                            // A meter can be measured on its own cadence,
+                            // different from this invoice period's dates
+                            // (e.g. a quarterly-measured metric shown inside
+                            // a monthly row) — surface its real window so
+                            // the row doesn't silently imply it was measured
+                            // over the period's own (wrong) dates.
+                            const hasOwnWindow = item.windowStart && item.windowEnd
+                              && (item.windowStart !== p.periodStart || item.windowEnd !== p.periodEnd)
+                            return (
                             <tr key={i} style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
-                              <td className="px-3 py-2 text-ink" title={item.description}>{item.meter_key}</td>
+                              <td className="px-3 py-2 text-ink" title={item.description}>
+                                {item.meter_key}
+                                {hasOwnWindow && (
+                                  <div className="text-[9px] text-stone/60 font-normal mt-0.5">
+                                    {fmtDate(item.windowStart!)} – {fmtDate(item.windowEnd!)}
+                                  </div>
+                                )}
+                              </td>
                               <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{item.total_units.toLocaleString()}</td>
                               <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{item.included_units.toLocaleString()}</td>
                               <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{item.billable_units.toLocaleString()}</td>
                               <td className="px-3 py-2 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(item.amount, item.currency)}</td>
                             </tr>
-                          ))
+                            )
+                          })
                         )}
                       </tbody>
                     </table>

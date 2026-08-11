@@ -38,6 +38,13 @@ export type OverageLineItem = {
   currency: string
   description: string
   metric_source: 'meter_pull' | 'client_pull'
+  // The actual window this meter was measured over — set whenever the meter
+  // has its own measurement cadence, which can differ from the invoice
+  // period it's displayed under (e.g. a quarterly-measured metric shown
+  // inside a monthly invoice row). Omitted for the legacy client_pull path,
+  // which has no per-meter cadence concept.
+  windowStart?: string
+  windowEnd?: string
 }
 
 export async function computeOverageForPeriod(params: {
@@ -116,19 +123,31 @@ export async function computeOverageForPeriod(params: {
       // invoice cadence) yields exactly one window spanning the whole scan
       // range, so this is a superset of the old single-period behavior, not
       // a divergent path for it.
-      const windows: Array<{ start: Date; end: Date; isOpen?: boolean }> =
+      const windows: Array<{ start: Date; end: Date; displayEnd: Date; isOpen?: boolean }> =
         enumerateCadenceWindows(anchorDate, cfg.billing_cycle, scanStart, scanEnd)
+          .map(w => ({ ...w, displayEnd: w.end }))
 
       // Live preview: also surface the currently-open window (not yet
       // closed) so usage-so-far is visible before it actually closes. Marked
       // isOpen so its minimum_period_amount floor doesn't apply below — that
       // guarantee is for the full period, not whatever's accrued on day one.
+      // The window queried/pulled is clipped to today (end) — querying the
+      // full future-reaching cadence window would ask connectors like
+      // Remembill's sandbox for a range it doesn't cap at "today", returning
+      // fabricated future usage. displayEnd keeps the *true, uncapped*
+      // window end so the UI can still show "this meter measures quarterly,
+      // Aug 11 – Nov 10" instead of a misleading same-day range.
       if (livePreviewAsOfUnix != null) {
         const asOf = new Date(livePreviewAsOfUnix * 1000)
         const openWindow = findCadenceWindowContaining(anchorDate, cfg.billing_cycle, asOf)
         const alreadyCovered = windows.some(w => w.start.getTime() === openWindow.start.getTime())
         if (!alreadyCovered && openWindow.start <= asOf) {
-          windows.push({ start: openWindow.start, end: asOf < openWindow.end ? asOf : openWindow.end, isOpen: true })
+          windows.push({
+            start: openWindow.start,
+            end: asOf < openWindow.end ? asOf : openWindow.end,
+            displayEnd: openWindow.end,
+            isOpen: true,
+          })
         }
       }
 
@@ -199,13 +218,21 @@ export async function computeOverageForPeriod(params: {
         const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, !window.isOpen) : 0
         if (overageEur <= 0 && !includeZeroUsage) continue
 
-        // When a meter's cadence is shorter than the scan range (e.g. a
-        // monthly meter inside a quarterly arrears window), multiple
-        // windows land on one invoice — label each with its own dates so
-        // the line items are legible rather than three identical-looking
-        // rows.
-        const windowSuffix = windows.length > 1
-          ? ` (${window.start.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })})`
+        // Show this meter's own measurement window whenever it doesn't
+        // exactly match the invoice period it's displayed under — either
+        // because several windows of a shorter cadence land on one invoice
+        // (multiple monthly windows inside a quarterly arrears row — each
+        // needs its own dates to stay legible), or because a single window
+        // of a *longer* cadence than the invoice period is being previewed
+        // mid-cycle (a quarterly meter shown inside a monthly Consumption
+        // row) — without this, that row silently looked like it was
+        // measuring the same (wrong) monthly window as everything else.
+        const fmtRange = (s: Date, e: Date) =>
+          `${s.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${e.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
+        const dateOnly = (d: Date) => d.toISOString().slice(0, 10)
+        const matchesScanRange = dateOnly(window.start) === dateOnly(scanStart) && dateOnly(window.displayEnd) === dateOnly(scanEnd)
+        const windowSuffix = !matchesScanRange
+          ? ` (${fmtRange(window.start, window.displayEnd)})`
           : ''
         const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits, !window.isOpen) + windowSuffix
         items.push({
@@ -213,6 +240,8 @@ export async function computeOverageForPeriod(params: {
           billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,
           amount: Math.round(overageEur * 100) / 100, currency: currency.toUpperCase(),
           description: overageDesc, metric_source: 'meter_pull',
+          windowStart: window.start.toISOString().slice(0, 10),
+          windowEnd:   window.displayEnd.toISOString().slice(0, 10),
         })
       }
     }

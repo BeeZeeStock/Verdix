@@ -1900,17 +1900,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const billingModel = deriveBillingModel(terms)
   const src = terms?.field_sources ?? {}
 
-  // Single-source TCV: billing config table formula (items × periodsInTerm)
+  // Single-source TCV: sum of each billing-config row's total_amount (each
+  // row already holds its full, pre-multiplied contribution to the term).
   // This is Base TCV — what the contract says at signing, before any overages.
   // computeBaseTcv is the one shared implementation (lib/contract-tcv.ts) —
   // also used by getContractSummaries for the "New contracts" list and the
   // Agreements dashboard, so this page can never silently diverge from them.
-  const termMonths = terms?.contract_term_months
-    ?? (terms?.contract_start_date && terms?.contract_end_date
-      ? (new Date(terms.contract_end_date).getFullYear() - new Date(terms.contract_start_date).getFullYear()) * 12
-        + (new Date(terms.contract_end_date).getMonth() - new Date(terms.contract_start_date).getMonth()) + 1
-      : 0)
-  const tcv = computeBaseTcv(items, termMonths)
+  const tcv = computeBaseTcv(items)
 
   // Additions = sent one-time invoices for variable fees (total_amount = 0 in billing config)
   const additionsTotal = sentOneTimeInvoices.reduce((s, inv) => {
