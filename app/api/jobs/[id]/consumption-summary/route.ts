@@ -90,6 +90,7 @@ export async function GET(
         currency:        row.currency ?? terms.currency ?? 'EUR',
         ignoreTestModeGate: true,
         includeZeroUsage:   true,
+        livePreviewAsOfUnix: Math.floor(Date.now() / 1000),
       }).catch(() => [])
     }
 

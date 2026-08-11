@@ -143,6 +143,36 @@ export function enumerateCadenceWindows(
   return windows
 }
 
+// The window (of this cadence, anchored to anchorDate) that contains `date`
+// — regardless of whether it's closed yet. enumerateCadenceWindows can only
+// ever find *closed* windows (its whole point, for real billing), so a
+// meter with a longer cadence than the invoice it's being previewed inside
+// (a quarterly metric inside a monthly Consumption-card row) would never
+// show anything until the quarter actually closes — correct for what gets
+// invoiced, wrong for a live "usage so far this quarter" preview, which
+// needs the currently-open window even though it hasn't closed.
+export function findCadenceWindowContaining(
+  anchorDate: Date,
+  cadence: string | null | undefined,
+  date: Date,
+): { start: Date; end: Date } {
+  const months = CADENCE_MONTHS[cadence ?? 'monthly'] ?? 1
+  let n = Math.floor(
+    ((date.getFullYear() - anchorDate.getFullYear()) * 12 + (date.getMonth() - anchorDate.getMonth())) / months,
+  )
+  for (let guard = 0; guard < 4; guard++) {
+    const start     = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + n * months, anchorDate.getDate())
+    const nextStart = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + (n + 1) * months, anchorDate.getDate())
+    if (date < start)      { n--; continue }
+    if (date >= nextStart) { n++; continue }
+    return { start, end: new Date(nextStart.getTime() - 86_400_000) }
+  }
+  // Should never hit this given the correction loop above, but keep the
+  // function total rather than possibly returning undefined.
+  const start = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + n * months, anchorDate.getDate())
+  return { start, end: date }
+}
+
 /**
  * Groups a flat overage_tiers array by metric_code (derived from unit_type).
  * Returns a map of metric_code → tiers[], ready for per-metric computation.

@@ -4,7 +4,7 @@
 // summary / billing-test simulator (preview only) alike, so they can never
 // silently diverge from each other.
 import { supabaseServer } from '@/lib/supabase'
-import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows } from '@/lib/tariff'
+import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining } from '@/lib/tariff'
 import { createRemembillUsageConnector } from '@/lib/connectors/usage/remembill'
 import type { ContractTerms } from '@/lib/types'
 
@@ -62,8 +62,17 @@ export async function computeOverageForPeriod(params: {
   // allowance. This never changes what real billing computes or charges —
   // only whether $0 results are included in the returned list.
   includeZeroUsage?: boolean
+  // Read-only preview only: a meter whose cadence is longer than the scan
+  // range (a quarterly-measured metric previewed inside a monthly
+  // Consumption-card row) has no fully-closed window to show yet — correct
+  // for billing, but it means "usage so far this quarter" never appears
+  // until the quarter closes. Set this to also surface the meter's
+  // currently-open window (clipped to this timestamp) as a live-so-far
+  // preview. Never set by invoice-scheduler — real billing must only ever
+  // charge for windows that have actually closed.
+  livePreviewAsOfUnix?: number
 }): Promise<OverageLineItem[]> {
-  const { orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, currency, ignoreTestModeGate, includeZeroUsage } = params
+  const { orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, currency, ignoreTestModeGate, includeZeroUsage, livePreviewAsOfUnix } = params
   const items: OverageLineItem[] = []
 
   // Primary source: this job's own confirmed agreement-specific tiers.
@@ -108,6 +117,17 @@ export async function computeOverageForPeriod(params: {
       // range, so this is a superset of the old single-period behavior, not
       // a divergent path for it.
       const windows = enumerateCadenceWindows(anchorDate, cfg.billing_cycle, scanStart, scanEnd)
+
+      // Live preview: also surface the currently-open window (not yet
+      // closed) so usage-so-far is visible before it actually closes.
+      if (livePreviewAsOfUnix != null) {
+        const asOf = new Date(livePreviewAsOfUnix * 1000)
+        const openWindow = findCadenceWindowContaining(anchorDate, cfg.billing_cycle, asOf)
+        const alreadyCovered = windows.some(w => w.start.getTime() === openWindow.start.getTime())
+        if (!alreadyCovered && openWindow.start <= asOf) {
+          windows.push({ start: openWindow.start, end: asOf < openWindow.end ? asOf : openWindow.end })
+        }
+      }
 
       for (const window of windows) {
         const windowStartUnix = Math.floor(window.start.getTime() / 1000)
