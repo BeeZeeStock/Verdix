@@ -9,6 +9,7 @@ import { MeterMappingPanel } from '@/app/_components/MeterMappingPanel'
 import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCard'
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
+import { computeBaseTcv } from '@/lib/contract-tcv'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
@@ -1900,24 +1901,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const src = terms?.field_sources ?? {}
 
   // Single-source TCV: billing config table formula (items × periodsInTerm)
-  // This is Base TCV — what the contract says at signing, before any overages
+  // This is Base TCV — what the contract says at signing, before any overages.
+  // computeBaseTcv is the one shared implementation (lib/contract-tcv.ts) —
+  // also used by getContractSummaries for the "New contracts" list and the
+  // Agreements dashboard, so this page can never silently diverge from them.
   const termMonths = terms?.contract_term_months
     ?? (terms?.contract_start_date && terms?.contract_end_date
       ? (new Date(terms.contract_end_date).getFullYear() - new Date(terms.contract_start_date).getFullYear()) * 12
         + (new Date(terms.contract_end_date).getMonth() - new Date(terms.contract_start_date).getMonth()) + 1
       : 0)
-  const periodsInTerm = (bp: string | null | undefined): number => {
-    if (!termMonths) return 1
-    if (bp === 'monthly')     return termMonths
-    if (bp === 'quarterly')   return termMonths / 3
-    if (bp === 'semi-annual') return termMonths / 6
-    if (bp === 'annual')      return termMonths / 12
-    return 1
-  }
-  const tcv = items.reduce((s, item) => {
-    if (classifyItem(item) === 'escalator') return s
-    return s + (item.total_amount ?? 0) * periodsInTerm(item.billing_period)
-  }, 0)
+  const tcv = computeBaseTcv(items, termMonths)
 
   // Additions = sent one-time invoices for variable fees (total_amount = 0 in billing config)
   const additionsTotal = sentOneTimeInvoices.reduce((s, inv) => {
