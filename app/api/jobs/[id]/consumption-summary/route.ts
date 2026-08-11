@@ -2,11 +2,19 @@
  * GET /api/jobs/[id]/consumption-summary
  *
  * Per-billing-cycle consumption for a job's metered/overage terms — what
- * actually gets pushed into invoicing. Past (sent) periods read straight
- * from the overage_line_items snapshot already stored on planned_invoices
- * at send time. The current in-progress period does a live read-only pull
- * (same computeOverageForPeriod used by the real cron) so usage-so-far is
- * visible before the cycle closes. Future periods are placeholders.
+ * actually gets pushed into invoicing. invoice-scheduler bills a period's
+ * overage in arrears, on the *next* period's invoice (alongside that next
+ * period's advance base fee) — so a period's own row is never where its own
+ * overage snapshot lives once truly billed. Status per period:
+ *   - future:  hasn't started yet.
+ *   - current: today falls within it — live pull, usage-so-far.
+ *   - pending: it has closed (today is past its end) but the next period's
+ *     invoice — the one that will carry this period's arrears overage —
+ *     hasn't been sent yet. Usage is final at this point, so still a live
+ *     pull, just framed as "what will be billed" rather than "so far".
+ *   - past:    closed, and the next period's invoice has actually been
+ *     sent — read that row's overage_line_items snapshot (not this row's
+ *     own, which only ever holds the *previous* period's arrears amount).
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
@@ -14,7 +22,7 @@ import { requireOrg } from '@/lib/org'
 import { computeOverageForPeriod, type OverageLineItem } from '@/lib/usage-pull'
 import type { ContractTerms } from '@/lib/types'
 
-type PeriodStatus = 'past' | 'current' | 'future'
+type PeriodStatus = 'past' | 'current' | 'pending' | 'future'
 
 export async function GET(
   _req: NextRequest,
@@ -51,21 +59,27 @@ export async function GET(
   const today = new Date().toISOString().slice(0, 10)
   const customerId = job.billing_customer_id as string | null
 
-  const periods = await Promise.all(rows.map(async row => {
+  const periods = await Promise.all(rows.map(async (row, i) => {
     const periodStart = row.period_start as string
     const periodEnd   = row.period_end as string
+    // rows is ordered by period_start ascending, so the next row is this
+    // period's immediate successor — the invoice that bills its arrears.
+    const nextRow = rows[i + 1] ?? null
 
     let status: PeriodStatus
-    if (row.status === 'sent' || row.status === 'paid') status = 'past'
-    else if (periodStart <= today && today <= periodEnd) status = 'current'
-    else status = 'future'
+    if (today < periodStart) status = 'future'
+    else if (today <= periodEnd) status = 'current'
+    else if (nextRow && (nextRow.status === 'sent' || nextRow.status === 'paid')) status = 'past'
+    else status = 'pending'
 
-    let overageItems = (row.overage_line_items ?? []) as OverageLineItem[]
+    let overageItems: OverageLineItem[] = []
 
-    // Live read-only preview for the cycle currently in progress — same
-    // computation the real cron will run when the period closes, but nothing
-    // is written and no invoice is created.
-    if (status === 'current' && customerId && terms) {
+    if (status === 'past' && nextRow) {
+      overageItems = (nextRow.overage_line_items ?? []) as OverageLineItem[]
+    } else if ((status === 'current' || status === 'pending') && customerId && terms) {
+      // Live read-only preview — same computation the real cron will run.
+      // 'current': usage-so-far, cycle still open. 'pending': the cycle has
+      // closed so this is the final figure, just not actually invoiced yet.
       overageItems = await computeOverageForPeriod({
         orgId:           org.orgId,
         jobId,
@@ -85,8 +99,8 @@ export async function GET(
       periodEnd,
       status,
       currency:     row.currency,
-      overageItems: status === 'future' ? [] : overageItems,
-      overageTotal: status === 'future' ? 0 : overageItems.reduce((s, i) => s + i.amount, 0),
+      overageItems,
+      overageTotal: overageItems.reduce((s, i) => s + i.amount, 0),
     }
   }))
 

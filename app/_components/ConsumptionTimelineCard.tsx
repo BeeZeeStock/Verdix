@@ -17,7 +17,7 @@ type Period = {
   id:           string
   periodStart:  string
   periodEnd:    string
-  status:       'past' | 'current' | 'future'
+  status:       'past' | 'current' | 'pending' | 'future'
   currency:     string
   overageItems: OverageItem[]
   overageTotal: number
@@ -43,6 +43,7 @@ function periodLabel(start: string, end: string) {
 const STATUS_STYLE: Record<Period['status'], { icon: string; color: string; label: string }> = {
   past:    { icon: 'ti-circle-check',  color: '#27AE60', label: 'Billed' },
   current: { icon: 'ti-clock',         color: '#D97706', label: 'In progress' },
+  pending: { icon: 'ti-hourglass-low', color: '#7C3AED', label: 'Awaiting next invoice' },
   future:  { icon: 'ti-circle-dashed', color: '#9CA3AF', label: 'Upcoming' },
 }
 
@@ -158,9 +159,9 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
                 {isOpen && (
                   <div className="mt-2 ml-[18px] rounded-xl overflow-hidden text-[11px]" style={{ border: '1px solid rgba(26,61,43,0.08)' }}>
                     {p.status === 'past' && (
-                      <div className="px-3 py-2 flex items-start gap-1.5 text-[10px] text-stone/70" style={{ background: 'rgba(26,61,43,0.02)', borderBottom: '1px solid rgba(26,61,43,0.06)' }}>
-                        <i className="ti ti-info-circle flex-shrink-0 mt-0.5" style={{ fontSize: 11 }} />
-                        <span>Overage is billed in arrears — the amounts below are for the <strong>prior</strong> billing cycle, invoiced together with this period&apos;s advance base fee.</span>
+                      <div className="px-3 py-2 flex items-center gap-1.5 text-[10px] text-stone/70" style={{ background: 'rgba(26,61,43,0.02)', borderBottom: '1px solid rgba(26,61,43,0.06)' }}>
+                        <i className="ti ti-info-circle flex-shrink-0" style={{ fontSize: 11 }} />
+                        <span>Billed in arrears.</span>
                       </div>
                     )}
                     <table className="w-full" style={{ borderCollapse: 'collapse' }}>
@@ -181,7 +182,9 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
                         ) : p.overageItems.length === 0 ? (
                           <tr>
                             <td className="px-3 py-2 text-stone/40" colSpan={5}>
-                              {p.status === 'current' ? 'No usage recorded yet this cycle' : 'No usage overage for this period'}
+                              {p.status === 'current' ? 'No usage recorded yet this cycle'
+                                : p.status === 'pending' ? 'No overage — will be billed with the next invoice'
+                                : 'No usage overage for this period'}
                             </td>
                           </tr>
                         ) : (
