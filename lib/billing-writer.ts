@@ -142,16 +142,22 @@ export async function getOrgConfig(orgId: string, connector: string): Promise<Re
 }
 
 async function detectOrgPlatform(orgId: string): Promise<BillingPlatform> {
+  // Only a fallback for a job that's never been configured before — approve
+  // always passes the job's own already-known platform when one exists, so
+  // this only runs on first configuration. Still, an org can have more than
+  // one active billing connector (e.g. testing a migration), and without an
+  // explicit priority the previous .limit(1) picked whichever row Postgres
+  // happened to return first — non-deterministic. Fetch all and apply a
+  // fixed, explicit priority instead.
   const { data } = await supabaseServer
     .from('org_integrations')
     .select('connector_name')
     .eq('org_id', orgId)
     .eq('connector_type', 'billing')
     .eq('is_active', true)
-    .limit(1)
-    .single()
-  if (data?.connector_name === 'chargebee') return 'chargebee'
-  if (data?.connector_name === 'remembill') return 'remembill'
+  const active = new Set((data ?? []).map(r => r.connector_name as string))
+  if (active.has('chargebee')) return 'chargebee'
+  if (active.has('remembill')) return 'remembill'
   return 'stripe'
 }
 
@@ -256,8 +262,54 @@ async function configureStripe(
   }
   const plannedRows: PlannedRow[] = []
 
+  // Idempotent repush: carry forward already-sent invoices unchanged, and
+  // clear stale not-yet-sent rows before regenerating — otherwise every
+  // repush (e.g. re-syncing edited terms, or a platform switch) both
+  // creates a second real Stripe invoice for any period that's already due
+  // and leaves the first set of planned_invoices rows in place, duplicating
+  // the billing schedule. Mirrors configureRememhill's existing pattern.
+  type ExistingSentRow = {
+    year_num: number | null
+    period_start: string; period_end: string
+    invoice_type: string; fee_label: string | null
+    stripe_invoice_id: string | null; stripe_invoice_url: string | null
+    base_amount: number; currency: string
+    sent_at: string | null; status: string
+  }
+  let sentRows: ExistingSentRow[] = []
+  if (jobId) {
+    const { data: sent } = await supabaseServer
+      .from('planned_invoices')
+      .select('year_num, period_start, period_end, invoice_type, fee_label, stripe_invoice_id, stripe_invoice_url, base_amount, currency, sent_at, status')
+      .eq('job_id', jobId)
+      .in('status', ['sent', 'paid'])
+    sentRows = (sent ?? []) as ExistingSentRow[]
+
+    const { error: cleanErr } = await supabaseServer
+      .from('planned_invoices')
+      .delete()
+      .eq('job_id', jobId)
+      .in('status', ['scheduled', 'parked', 'processing', 'draft'])
+    if (cleanErr) console.error('[billing-writer/stripe] stale planned_invoices cleanup failed', cleanErr)
+  }
+
   // ── 3. Send immediately-due period invoices; queue future ones ──────────────
   for (const period of periods) {
+    const periodStartStr = formatDate(period.periodStart)
+    const alreadySent = sentRows.find(
+      r => r.invoice_type === 'period' && r.year_num === period.yearNum && r.period_start === periodStartStr,
+    )
+    if (alreadySent) {
+      plannedRows.push({
+        year_num: alreadySent.year_num, period_start: alreadySent.period_start, period_end: alreadySent.period_end,
+        base_amount: alreadySent.base_amount, currency: alreadySent.currency, fee_label: null,
+        invoice_type: 'period', status: alreadySent.status,
+        stripe_invoice_id: alreadySent.stripe_invoice_id, stripe_invoice_url: alreadySent.stripe_invoice_url,
+        sent_at: alreadySent.sent_at,
+      })
+      continue
+    }
+
     const isDue = period.periodStart <= now
 
     const description = `Base subscription — Year ${period.yearNum} (${fmtLabel(period.periodStart)} – ${fmtLabel(period.periodEnd)})`
@@ -333,6 +385,17 @@ async function configureStripe(
 
   // Park manual-trigger service fees — they need human confirmation before invoicing
   for (const fee of oneTimeFees.filter(f => f.manual_trigger)) {
+    const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
+    if (alreadySent) {
+      plannedRows.push({
+        year_num: null, period_start: alreadySent.period_start, period_end: alreadySent.period_end,
+        base_amount: alreadySent.base_amount, currency: alreadySent.currency, fee_label: alreadySent.fee_label,
+        invoice_type: 'one_time', status: alreadySent.status,
+        stripe_invoice_id: alreadySent.stripe_invoice_id, stripe_invoice_url: alreadySent.stripe_invoice_url,
+        sent_at: alreadySent.sent_at,
+      })
+      continue
+    }
     const li = findOneTimeLineItem(lineItems, fee.fee_label)
     plannedRows.push({
       year_num:           null,
@@ -354,6 +417,17 @@ async function configureStripe(
   }
 
   for (const fee of oneTimeFees.filter(f => !f.manual_trigger && f.amount > 0)) {
+    const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
+    if (alreadySent) {
+      plannedRows.push({
+        year_num: null, period_start: alreadySent.period_start, period_end: alreadySent.period_end,
+        base_amount: alreadySent.base_amount, currency: alreadySent.currency, fee_label: alreadySent.fee_label,
+        invoice_type: 'one_time', status: alreadySent.status,
+        stripe_invoice_id: alreadySent.stripe_invoice_id, stripe_invoice_url: alreadySent.stripe_invoice_url,
+        sent_at: alreadySent.sent_at,
+      })
+      continue
+    }
     const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
     const isDue      = !feeDueDate || feeDueDate <= now
 

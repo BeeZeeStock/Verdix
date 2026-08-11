@@ -1540,15 +1540,54 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               const parkedFees = (billingData.oneTimeFees ?? []).filter(
                 f => !pushedFeeLabels.has(f.fee_label)
               )
+
+              // Detect the actual cause when it's mechanically determinable,
+              // instead of only ever showing the generic possibilities below.
+              // Duplicate periodStarts or one-time fee labels in what's
+              // actually configured are the fingerprint of a re-push that ran
+              // before configureStripe carried forward already-sent invoices
+              // instead of recreating the whole schedule.
+              const periodCounts = new Map<string, number>()
+              for (const p of billingData.paymentSchedule ?? []) {
+                if (!p.periodStart) continue
+                periodCounts.set(p.periodStart, (periodCounts.get(p.periodStart) ?? 0) + 1)
+              }
+              const duplicatePeriods = Array.from(periodCounts.entries()).filter(([, n]) => n > 1)
+
+              const feeCounts = new Map<string, number>()
+              for (const inv of billingData.oneTimeInvoices ?? []) {
+                if (!inv.feeLabel) continue
+                feeCounts.set(inv.feeLabel, (feeCounts.get(inv.feeLabel) ?? 0) + 1)
+              }
+              const duplicateFees = Array.from(feeCounts.entries()).filter(([, n]) => n > 1)
+              const hasDuplicates = duplicatePeriods.length > 0 || duplicateFees.length > 0
+
               return (
                 <div className="mt-3 p-4 bg-amber-50 border border-amber-200/80 rounded-xl">
                   <div className="flex items-start gap-3">
                     <i className="ti ti-info-circle text-amber-600 flex-shrink-0 mt-0.5" style={{ fontSize: 15 }} />
                     <div className="flex-1 min-w-0">
                       <p className="text-[12px] font-semibold text-amber-900 mb-2">
-                        {fmt(gap, cur)} {tcvDelta < 0 ? 'below' : 'above'} the actual TCV — here&apos;s why this can happen:
+                        {fmt(gap, cur)} {tcvDelta < 0 ? 'below' : 'above'} the actual TCV
+                        {hasDuplicates ? ' — here’s exactly why:' : ' — here’s why this can happen:'}
                       </p>
                       <ul className="space-y-1.5 mb-3">
+                        {hasDuplicates && (
+                          <li className="flex items-start gap-2 text-[11px] text-amber-800">
+                            <i className="ti ti-copy flex-shrink-0 mt-0.5" style={{ fontSize: 12 }} />
+                            <span>
+                              This billing schedule has duplicate entries from an earlier re-push:{' '}
+                              {duplicatePeriods.length > 0 && (
+                                <strong>{duplicatePeriods.length} period{duplicatePeriods.length > 1 ? 's' : ''} billed twice</strong>
+                              )}
+                              {duplicatePeriods.length > 0 && duplicateFees.length > 0 && ', '}
+                              {duplicateFees.length > 0 && (
+                                <strong>&quot;{duplicateFees.map(([label]) => label).join('", "')}&quot; sent twice</strong>
+                              )}
+                              . This is a known issue with re-pushing that&apos;s now fixed for future pushes — contact support to have this job&apos;s duplicate rows cleaned up.
+                            </span>
+                          </li>
+                        )}
                         {parkedFees.length > 0 && (
                           <li className="flex items-start gap-2 text-[11px] text-amber-800">
                             <i className="ti ti-clock-pause flex-shrink-0 mt-0.5" style={{ fontSize: 12 }} />

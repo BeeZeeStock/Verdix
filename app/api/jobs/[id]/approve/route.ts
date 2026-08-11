@@ -17,7 +17,7 @@ export async function POST(
 
   const { data: job, error } = await supabaseServer
     .from('jobs')
-    .select('id, name, currency, billing_customer_id, execute_status, contract_terms ( * ), line_items ( * )')
+    .select('id, name, currency, billing_customer_id, billing_platform, execute_status, contract_terms ( * ), line_items ( * )')
     .eq('id', id)
     .eq('org_id', org.orgId)
     .single()
@@ -59,7 +59,14 @@ export async function POST(
 
   try {
     const existingCustomerId = (job as unknown as Record<string, unknown>).billing_customer_id as string | undefined
-    const result = await configureBilling(terms, lineItems, billingPlatformOverride ?? undefined, id, org.orgId, existingCustomerId ?? undefined)
+    // A job already configured on a platform must stay on it — repushing
+    // (e.g. to sync edited terms) must never silently switch platforms.
+    // detectOrgPlatform() inside configureBilling picks arbitrarily among an
+    // org's active connectors when more than one is configured, which is
+    // only safe to fall back on for a job that's never been pushed before.
+    const existingPlatform = (job as unknown as Record<string, unknown>).billing_platform as string | null
+    const platformToUse = billingPlatformOverride ?? existingPlatform ?? undefined
+    const result = await configureBilling(terms, lineItems, platformToUse, id, org.orgId, existingCustomerId ?? undefined)
 
     await supabaseServer.from('jobs').update({
       execute_status: 'COMPLETED',
