@@ -96,21 +96,44 @@ export async function GET(req: NextRequest) {
       const description = (row.fee_label
         ?? `Base subscription — Year ${row.year_num ?? 1} (${fmtPeriod(periodStart)} – ${fmtPeriod(periodEnd)})`)
         + (hasBreakdown ? ` — ${rowQuantity.toLocaleString()} × ${cur.toUpperCase()} ${rowUnitPrice.toLocaleString()}` : '')
-      const periodStartUnix = Math.floor(periodStart.getTime() / 1000)
-      const periodEndUnix   = Math.floor(periodEnd.getTime()   / 1000)
 
       let sentInvoiceId:  string | null = null
       let sentInvoiceUrl: string | null = null
 
-      // Usage/overage computation is platform-agnostic — meter mapping lives
-      // on org_billing_config, not on the billing connector — so it's pulled
-      // once here and each platform branch just adds the resulting line items.
-      const overageLineItems: OverageLineItem[] = row.invoice_type === 'period'
-        ? await computeOverageForPeriod({
+      // Overage is billed in arrears, on the same invoice as the next
+      // period's advance base fee — this row's own period_start/period_end
+      // describe the period the BASE FEE covers (prepaid, hence due the
+      // moment it starts). Usage for that period doesn't exist yet at that
+      // point, so overage must be computed for the period that just closed
+      // (the one immediately before this row), not this row's own period —
+      // querying it fresh each run rather than trusting whatever was
+      // recorded on that period's own (necessarily $0, prematurely-computed)
+      // invoice.
+      let overageLineItems: OverageLineItem[] = []
+      if (row.invoice_type === 'period') {
+        const { data: prevPeriod } = await supabaseServer
+          .from('planned_invoices')
+          .select('period_start, period_end')
+          .eq('job_id', row.job_id)
+          .eq('invoice_type', 'period')
+          .lt('period_end', row.period_start)
+          .order('period_end', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        if (prevPeriod) {
+          const prevStart = new Date(prevPeriod.period_start + 'T00:00:00')
+          const prevEnd   = new Date(prevPeriod.period_end   + 'T23:59:59')
+          overageLineItems = await computeOverageForPeriod({
             orgId: job.org_id, jobId: row.job_id, terms, customerId,
-            periodStartUnix, periodEndUnix, currency: cur,
+            periodStartUnix: Math.floor(prevStart.getTime() / 1000),
+            periodEndUnix:   Math.floor(prevEnd.getTime()   / 1000),
+            currency: cur,
           })
-        : []
+        }
+        // No prior period (this is the first invoice for this job) — nothing
+        // to bill in arrears yet.
+      }
 
       // ── Remembill path ────────────────────────────────────────────────────
       if (billingPlatform === 'remembill') {
