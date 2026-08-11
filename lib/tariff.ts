@@ -103,12 +103,44 @@ export function computeMetricOverage(
   includedUnits: number,
 ): number {
   const aggType = (tiers[0] as unknown as Record<string, unknown>)?.['aggregation_type'] as string | undefined
-  if (aggType === 'max_agg') {
-    return computeUserOverage(quantity, includedUnits, tiers)
+  const computed = aggType === 'max_agg'
+    ? computeUserOverage(quantity, includedUnits, tiers)
+    // Subtract the contract's free allowance; tiers apply only to the excess
+    : computeTransactionalOverage(Math.max(0, quantity - includedUnits), tiers)
+
+  // A contract can guarantee a minimum payment per measurement period for a
+  // metric regardless of usage (e.g. "minimum SEK 30,000 per half-year for
+  // validated invoice lines") — a floor under the tier-computed amount, not
+  // an additional charge on top of it.
+  const floor = tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0)
+  return Math.max(computed, floor)
+}
+
+const CADENCE_MONTHS: Record<string, number> = { monthly: 1, quarterly: 3, 'semi-annual': 6, annual: 12 }
+
+// Every fully-closed window of the given cadence, anchored to anchorDate,
+// whose end falls within [rangeStart, rangeEnd] (inclusive both ends) — the
+// window boundaries a metric with its own measurement_period actually
+// resets on, independent of the contract's overall billing_frequency. The
+// common case (a meter's cadence matches the invoice cadence) yields exactly
+// one window equal to the full scan range, so this is a strict superset of
+// the old single-period behavior, not a divergent path for it.
+export function enumerateCadenceWindows(
+  anchorDate: Date,
+  cadence: string | null | undefined,
+  rangeStart: Date,
+  rangeEnd: Date,
+): Array<{ start: Date; end: Date }> {
+  const months = CADENCE_MONTHS[cadence ?? 'monthly'] ?? 1
+  const windows: Array<{ start: Date; end: Date }> = []
+  for (let n = 0; n < 1200; n++) {
+    const start     = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + n * months, anchorDate.getDate())
+    const nextStart = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + (n + 1) * months, anchorDate.getDate())
+    const end       = new Date(nextStart.getTime() - 86_400_000)
+    if (start > rangeEnd) break
+    if (end >= rangeStart && end <= rangeEnd) windows.push({ start, end })
   }
-  // Subtract the contract's free allowance; tiers apply only to the excess
-  const billable = Math.max(0, quantity - includedUnits)
-  return computeTransactionalOverage(billable, tiers)
+  return windows
 }
 
 /**

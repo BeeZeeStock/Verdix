@@ -83,10 +83,16 @@ Choose the meter whose purpose best matches the contract metric. If none match w
 }
 
 // ── Billing cycle normaliser ──────────────────────────────────────────────────
+// Vocabulary matches OverageTier['measurement_period'] and
+// lib/tariff.ts's enumerateCadenceWindows — 'annual', not 'yearly', and
+// semi-annual is checked before the generic "annual" substring match (a
+// contract's own "semi-annual" would otherwise wrongly match "annual" first
+// and get treated as a full year).
 function normaliseCycle(freq: string | null | undefined): string {
   if (!freq) return 'monthly'
   const f = freq.toLowerCase()
-  if (f.includes('annual') || f.includes('year')) return 'yearly'
+  if (f.includes('semi') || f.includes('half'))     return 'semi-annual'
+  if (f.includes('annual') || f.includes('year'))   return 'annual'
   if (f.includes('quarter'))                        return 'quarterly'
   return 'monthly'
 }
@@ -112,7 +118,7 @@ export async function GET(
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   const termsArr  = job.contract_terms as unknown as Array<{
-    overage_tiers?: Array<{ unit_type?: string; from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number }>
+    overage_tiers?: Array<{ unit_type?: string; from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number; measurement_period?: string | null; minimum_period_amount?: number | null }>
     billing_frequency?: string | null
     included_units?: number | null
     included_unit_type?: string | null
@@ -120,10 +126,16 @@ export async function GET(
   const terms = termsArr?.[0] ?? {}
 
   const overageTiers = terms.overage_tiers ?? []
-  const billingCycle = normaliseCycle(terms.billing_frequency)
+  // Contract-level fallback — used whenever a metric doesn't separately
+  // state its own measurement period.
+  const contractBillingCycle = normaliseCycle(terms.billing_frequency)
 
-  // Group tiers by unit_type to build one mapping per unique unit
-  const unitGroups = new Map<string, Array<{ from_unit: number | null; to_unit: number | null; rate_per_unit: number }>>()
+  // Group tiers by unit_type to build one mapping per unique unit. A
+  // metric's measurement_period (when the contract states one) overrides
+  // the contract-level cadence for that metric specifically — e.g. a
+  // metric measured half-yearly inside an otherwise-monthly contract.
+  const unitGroups = new Map<string, Array<{ from_unit: number | null; to_unit: number | null; rate_per_unit: number; minimum_period_amount: number | null }>>()
+  const unitCycles = new Map<string, string>()
   for (const t of overageTiers) {
     if (!t.unit_type) continue
     if (!unitGroups.has(t.unit_type)) unitGroups.set(t.unit_type, [])
@@ -131,7 +143,11 @@ export async function GET(
       from_unit:    t.from_unit ?? null,
       to_unit:      t.to_unit   ?? null,
       rate_per_unit: t.rate_per_unit ?? 0,
+      minimum_period_amount: t.minimum_period_amount ?? null,
     })
+    if (t.measurement_period && !unitCycles.has(t.unit_type)) {
+      unitCycles.set(t.unit_type, normaliseCycle(t.measurement_period))
+    }
   }
 
   // Fetch any existing DB mappings for this job
@@ -213,7 +229,7 @@ export async function GET(
         confirmed:      db ? Boolean(db.confirmed) : false,
         included_units: db ? (db.included_units as number) : includedUnits,
         overage_tiers:  db ? (db.overage_tiers as unknown) : sortedTiers,
-        billing_cycle:  db ? (db.billing_cycle as string) : billingCycle,
+        billing_cycle:  db ? (db.billing_cycle as string) : (unitCycles.get(unitType) ?? contractBillingCycle),
       }
     })
   )
@@ -221,7 +237,7 @@ export async function GET(
   return NextResponse.json({
     suggestions,
     available_meters: meters ?? [],
-    billing_cycle: billingCycle,
+    billing_cycle: contractBillingCycle,
   })
 }
 

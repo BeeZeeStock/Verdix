@@ -4,14 +4,15 @@
 // summary / billing-test simulator (preview only) alike, so they can never
 // silently diverge from each other.
 import { supabaseServer } from '@/lib/supabase'
-import { computeMetricOverage, describeTieredUsage } from '@/lib/tariff'
+import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows } from '@/lib/tariff'
 import { createRemembillUsageConnector } from '@/lib/connectors/usage/remembill'
 import type { ContractTerms } from '@/lib/types'
 
 type MeterCfg = {
   meter_key: string
   included_units: number
-  overage_tiers: Array<{ from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number }>
+  overage_tiers: Array<{ from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number; minimum_period_amount?: number | null }>
+  billing_cycle: string | null
 }
 type MeterDef = {
   pull_endpoint_url: string | null
@@ -73,11 +74,20 @@ export async function computeOverageForPeriod(params: {
   // genuinely per-agreement.
   const { data: meterConfigs } = await supabaseServer
     .from('contract_meter_mappings')
-    .select('meter_key, included_units, overage_tiers')
+    .select('meter_key, included_units, overage_tiers, billing_cycle')
     .eq('job_id', jobId)
     .eq('confirmed', true)
 
   if (meterConfigs && meterConfigs.length > 0) {
+    const scanStart  = new Date(periodStartUnix * 1000)
+    const scanEnd    = new Date(periodEndUnix   * 1000)
+    // Windows are anchored to the contract's start date so a quarterly meter
+    // always resets on the same day-of-cycle the contract began, not on
+    // whatever date this particular scan range happens to start.
+    const anchorDate = terms.contract_start_date
+      ? new Date(terms.contract_start_date + 'T00:00:00')
+      : scanStart
+
     for (const cfg of meterConfigs as MeterCfg[]) {
       const { data: meterDef } = await supabaseServer
         .from('billing_meters')
@@ -88,75 +98,100 @@ export async function computeOverageForPeriod(params: {
 
       const def = meterDef as MeterDef | null
 
-      // Test mode swaps the input source to the admin's last-simulated
-      // reading instead of the real endpoint — that's the whole point of
-      // testing it. Real billing (invoice-scheduler) still refuses to
-      // invoice off a test-mode meter at all, regardless of this value.
-      let totalUnits: number
-      if (def?.mode === 'test') {
-        if (!ignoreTestModeGate) {
-          console.warn(`[usage-pull] meter '${cfg.meter_key}' org ${orgId} still in test mode — skipping real overage`)
-          continue
-        }
-        if (def.test_usage_value == null) continue
-        totalUnits = def.test_usage_value
-      } else if (def?.connector === 'remembill') {
-        try {
-          const readings = await createRemembillUsageConnector(orgId).pullUsage({
-            customerId,
-            periodStart: new Date(periodStartUnix * 1000),
-            periodEnd:   new Date(periodEndUnix * 1000),
-          })
-          const metricKey = def.response_metric_key ?? cfg.meter_key.toUpperCase()
-          totalUnits = readings.find(r => r.metric === metricKey)?.quantity ?? 0
-        } catch (err) {
-          console.error(`[usage-pull] remembill pull failed for meter '${cfg.meter_key}' org ${orgId}:`, err)
-          continue
-        }
-      } else {
-        if (!def?.pull_endpoint_url) {
-          console.warn(`[usage-pull] no pull endpoint for meter '${cfg.meter_key}' org ${orgId}`)
-          continue
-        }
+      // A meter measures on its own cadence (billing_cycle — derived from
+      // the contract's stated measurement_period for this metric, which can
+      // legitimately differ from the deal's overall billing_frequency) —
+      // e.g. a metric measured half-yearly inside a contract invoiced
+      // monthly. Enumerate every fully-closed window of THIS meter's
+      // cadence within the scan range. The common case (meter cadence ==
+      // invoice cadence) yields exactly one window spanning the whole scan
+      // range, so this is a superset of the old single-period behavior, not
+      // a divergent path for it.
+      const windows = enumerateCadenceWindows(anchorDate, cfg.billing_cycle, scanStart, scanEnd)
 
-        const pullUrl = new URL(def.pull_endpoint_url)
-        pullUrl.searchParams.set('customer_id',  customerId)
-        pullUrl.searchParams.set('period_start', String(periodStartUnix))
-        pullUrl.searchParams.set('period_end',   String(periodEndUnix))
-        pullUrl.searchParams.set(def.pull_param_name ?? 'billing_parameter', cfg.meter_key)
+      for (const window of windows) {
+        const windowStartUnix = Math.floor(window.start.getTime() / 1000)
+        const windowEndUnix   = Math.floor(window.end.getTime()   / 1000) + 86_399 // 23:59:59 on the end date
 
-        const pullHeaders: Record<string, string> = {}
-        if (def.pull_auth_token) pullHeaders['Authorization'] = `Bearer ${def.pull_auth_token}`
+        // Test mode swaps the input source to the admin's last-simulated
+        // reading instead of the real endpoint — that's the whole point of
+        // testing it. Real billing (invoice-scheduler) still refuses to
+        // invoice off a test-mode meter at all, regardless of this value.
+        let totalUnits: number
+        if (def?.mode === 'test') {
+          if (!ignoreTestModeGate) {
+            console.warn(`[usage-pull] meter '${cfg.meter_key}' org ${orgId} still in test mode — skipping real overage`)
+            continue
+          }
+          if (def.test_usage_value == null) continue
+          totalUnits = def.test_usage_value
+        } else if (def?.connector === 'remembill') {
+          try {
+            const readings = await createRemembillUsageConnector(orgId).pullUsage({
+              customerId,
+              periodStart: window.start,
+              periodEnd:   window.end,
+            })
+            const metricKey = def.response_metric_key ?? cfg.meter_key.toUpperCase()
+            totalUnits = readings.find(r => r.metric === metricKey)?.quantity ?? 0
+          } catch (err) {
+            console.error(`[usage-pull] remembill pull failed for meter '${cfg.meter_key}' org ${orgId}:`, err)
+            continue
+          }
+        } else {
+          if (!def?.pull_endpoint_url) {
+            console.warn(`[usage-pull] no pull endpoint for meter '${cfg.meter_key}' org ${orgId}`)
+            continue
+          }
 
-        const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
-        if (!pullRes.ok) {
-          console.error(`[usage-pull] pull failed for meter '${cfg.meter_key}' (${pullRes.status})`)
-          continue
+          const pullUrl = new URL(def.pull_endpoint_url)
+          pullUrl.searchParams.set('customer_id',  customerId)
+          pullUrl.searchParams.set('period_start', String(windowStartUnix))
+          pullUrl.searchParams.set('period_end',   String(windowEndUnix))
+          pullUrl.searchParams.set(def.pull_param_name ?? 'billing_parameter', cfg.meter_key)
+
+          const pullHeaders: Record<string, string> = {}
+          if (def.pull_auth_token) pullHeaders['Authorization'] = `Bearer ${def.pull_auth_token}`
+
+          const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
+          if (!pullRes.ok) {
+            console.error(`[usage-pull] pull failed for meter '${cfg.meter_key}' (${pullRes.status})`)
+            continue
+          }
+
+          const usageData = await pullRes.json() as { total_billable_units?: number | string }
+          totalUnits = Number(usageData.total_billable_units ?? 0)
         }
+        if (totalUnits <= 0 && !includeZeroUsage) continue
 
-        const usageData = await pullRes.json() as { total_billable_units?: number | string }
-        totalUnits = Number(usageData.total_billable_units ?? 0)
+        const tiers = (cfg.overage_tiers ?? []).map((t, i) => ({
+          tier_label:    `Tier ${i + 1}`,
+          from_unit:     t.from_unit ?? null,
+          to_unit:       t.to_unit   ?? null,
+          rate_per_unit: t.rate_per_unit ?? 0,
+          unit_type:     cfg.meter_key,
+          minimum_period_amount: t.minimum_period_amount ?? null,
+        }))
+        const includedUnits = cfg.included_units ?? 0
+        const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits) : 0
+        if (overageEur <= 0 && !includeZeroUsage) continue
+
+        // When a meter's cadence is shorter than the scan range (e.g. a
+        // monthly meter inside a quarterly arrears window), multiple
+        // windows land on one invoice — label each with its own dates so
+        // the line items are legible rather than three identical-looking
+        // rows.
+        const windowSuffix = windows.length > 1
+          ? ` (${window.start.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })})`
+          : ''
+        const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits) + windowSuffix
+        items.push({
+          meter_key: cfg.meter_key, total_units: totalUnits, included_units: includedUnits,
+          billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,
+          amount: Math.round(overageEur * 100) / 100, currency: currency.toUpperCase(),
+          description: overageDesc, metric_source: 'meter_pull',
+        })
       }
-      if (totalUnits <= 0 && !includeZeroUsage) continue
-
-      const tiers = (cfg.overage_tiers ?? []).map((t, i) => ({
-        tier_label:    `Tier ${i + 1}`,
-        from_unit:     t.from_unit ?? null,
-        to_unit:       t.to_unit   ?? null,
-        rate_per_unit: t.rate_per_unit ?? 0,
-        unit_type:     cfg.meter_key,
-      }))
-      const includedUnits = cfg.included_units ?? 0
-      const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits) : 0
-      if (overageEur <= 0 && !includeZeroUsage) continue
-
-      const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits)
-      items.push({
-        meter_key: cfg.meter_key, total_units: totalUnits, included_units: includedUnits,
-        billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,
-        amount: Math.round(overageEur * 100) / 100, currency: currency.toUpperCase(),
-        description: overageDesc, metric_source: 'meter_pull',
-      })
     }
     return items
   }

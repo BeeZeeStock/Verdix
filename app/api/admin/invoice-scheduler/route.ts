@@ -121,18 +121,24 @@ export async function GET(req: NextRequest) {
           .limit(1)
           .maybeSingle()
 
-        if (prevPeriod) {
-          const prevStart = new Date(prevPeriod.period_start + 'T00:00:00')
-          const prevEnd   = new Date(prevPeriod.period_end   + 'T23:59:59')
+        // No prior invoice (this is the job's first) — scan from the
+        // contract's own start date instead of skipping outright. A meter
+        // with a shorter measurement cadence than the deal's first invoice
+        // period (e.g. a monthly-measured metric inside a quarterly-billed
+        // first invoice) can still have closed windows to bill even before
+        // any invoice has ever gone out.
+        const scanStart = prevPeriod?.period_start ?? terms.contract_start_date
+        const scanEnd    = prevPeriod?.period_end
+          ?? (() => { const d = new Date(row.period_start + 'T00:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10) })()
+
+        if (scanStart) {
           overageLineItems = await computeOverageForPeriod({
             orgId: job.org_id, jobId: row.job_id, terms, customerId,
-            periodStartUnix: Math.floor(prevStart.getTime() / 1000),
-            periodEndUnix:   Math.floor(prevEnd.getTime()   / 1000),
+            periodStartUnix: Math.floor(new Date(scanStart + 'T00:00:00').getTime() / 1000),
+            periodEndUnix:   Math.floor(new Date(scanEnd   + 'T23:59:59').getTime() / 1000),
             currency: cur,
           })
         }
-        // No prior period (this is the first invoice for this job) — nothing
-        // to bill in arrears yet.
       }
 
       // ── Remembill path ────────────────────────────────────────────────────
