@@ -116,16 +116,19 @@ export async function computeOverageForPeriod(params: {
       // invoice cadence) yields exactly one window spanning the whole scan
       // range, so this is a superset of the old single-period behavior, not
       // a divergent path for it.
-      const windows = enumerateCadenceWindows(anchorDate, cfg.billing_cycle, scanStart, scanEnd)
+      const windows: Array<{ start: Date; end: Date; isOpen?: boolean }> =
+        enumerateCadenceWindows(anchorDate, cfg.billing_cycle, scanStart, scanEnd)
 
       // Live preview: also surface the currently-open window (not yet
-      // closed) so usage-so-far is visible before it actually closes.
+      // closed) so usage-so-far is visible before it actually closes. Marked
+      // isOpen so its minimum_period_amount floor doesn't apply below — that
+      // guarantee is for the full period, not whatever's accrued on day one.
       if (livePreviewAsOfUnix != null) {
         const asOf = new Date(livePreviewAsOfUnix * 1000)
         const openWindow = findCadenceWindowContaining(anchorDate, cfg.billing_cycle, asOf)
         const alreadyCovered = windows.some(w => w.start.getTime() === openWindow.start.getTime())
         if (!alreadyCovered && openWindow.start <= asOf) {
-          windows.push({ start: openWindow.start, end: asOf < openWindow.end ? asOf : openWindow.end })
+          windows.push({ start: openWindow.start, end: asOf < openWindow.end ? asOf : openWindow.end, isOpen: true })
         }
       }
 
@@ -193,7 +196,7 @@ export async function computeOverageForPeriod(params: {
           minimum_period_amount: t.minimum_period_amount ?? null,
         }))
         const includedUnits = cfg.included_units ?? 0
-        const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits) : 0
+        const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, !window.isOpen) : 0
         if (overageEur <= 0 && !includeZeroUsage) continue
 
         // When a meter's cadence is shorter than the scan range (e.g. a
@@ -204,7 +207,7 @@ export async function computeOverageForPeriod(params: {
         const windowSuffix = windows.length > 1
           ? ` (${window.start.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })})`
           : ''
-        const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits) + windowSuffix
+        const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits, !window.isOpen) + windowSuffix
         items.push({
           meter_key: cfg.meter_key, total_units: totalUnits, included_units: includedUnits,
           billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,

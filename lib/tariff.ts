@@ -73,23 +73,33 @@ export function describeTieredUsage(
   quantity: number,
   tiers: TierLike[],
   includedUnits: number,
+  applyMinimumFloor: boolean = true,
 ): string {
   const billable = Math.max(0, quantity - includedUnits)
   const base = `${meterLabel} — ${quantity.toLocaleString()} total, ${includedUnits.toLocaleString()} included, ${billable.toLocaleString()} billable`
-  if (billable <= 0 || tiers.length === 0) return base
 
   const sorted = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
   const parts: string[] = []
   let counted = 0
+  let tierAmount = 0
   for (const t of sorted) {
     if (counted >= billable) break
     const tierStart = t.from_unit ?? 1
     const tierCap   = t.to_unit != null ? (t.to_unit - tierStart + 1) : billable - counted
     const here      = Math.min(billable - counted, tierCap)
-    if (here > 0) parts.push(`${here.toLocaleString()} @ ${t.rate_per_unit ?? 0}`)
+    if (here > 0) { parts.push(`${here.toLocaleString()} @ ${t.rate_per_unit ?? 0}`); tierAmount += here * (t.rate_per_unit ?? 0) }
     counted += here
   }
-  return parts.length > 1 ? `${base}: ${parts.join(' + ')}` : `${base} @ ${sorted[0]?.rate_per_unit ?? 0}/unit`
+
+  // The period minimum only actually binds when it's higher than what the
+  // tiers alone would charge — mentioning it whenever one merely exists
+  // would be misleading once real usage grows past it.
+  const floor = applyMinimumFloor ? tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0) : 0
+  const floorNote = floor > tierAmount ? ` (period minimum of ${floor.toLocaleString()} applies)` : ''
+
+  if (billable <= 0 || tiers.length === 0) return base + floorNote
+  const tierText = parts.length > 1 ? `${base}: ${parts.join(' + ')}` : `${base} @ ${sorted[0]?.rate_per_unit ?? 0}/unit`
+  return tierText + floorNote
 }
 
 /**
@@ -101,6 +111,16 @@ export function computeMetricOverage(
   quantity: number,
   tiers: OverageTier[],
   includedUnits: number,
+  // A contract can guarantee a minimum payment per measurement period for a
+  // metric regardless of usage (e.g. "minimum SEK 30,000 per half-year for
+  // validated invoice lines") — a floor under the tier-computed amount, not
+  // an additional charge on top of it. That guarantee is *for the full
+  // period* — applying it to a window that hasn't closed yet (a live "so
+  // far" preview on day one of a quarter) would show the full quarterly
+  // minimum as already owed, which is wrong: the customer hasn't failed to
+  // hit the floor, the period just isn't over. Callers previewing an open
+  // window must pass false here.
+  applyMinimumFloor: boolean = true,
 ): number {
   const aggType = (tiers[0] as unknown as Record<string, unknown>)?.['aggregation_type'] as string | undefined
   const computed = aggType === 'max_agg'
@@ -108,10 +128,7 @@ export function computeMetricOverage(
     // Subtract the contract's free allowance; tiers apply only to the excess
     : computeTransactionalOverage(Math.max(0, quantity - includedUnits), tiers)
 
-  // A contract can guarantee a minimum payment per measurement period for a
-  // metric regardless of usage (e.g. "minimum SEK 30,000 per half-year for
-  // validated invoice lines") — a floor under the tier-computed amount, not
-  // an additional charge on top of it.
+  if (!applyMinimumFloor) return computed
   const floor = tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0)
   return Math.max(computed, floor)
 }
