@@ -28,7 +28,14 @@ export function computeMonthlyBaseRate(terms: ContractTerms, globalMonthIdx: num
 
   if (rampSchedule) {
     for (const step of rampSchedule) {
-      const s = new Date(step.start_date), e = new Date(step.end_date)
+      // Bare date-only strings ("2024-04-01") parse as UTC midnight, while d
+      // (the per-month cursor, built via `new Date(y, m, 1)`) is local
+      // midnight — in any timezone east of UTC those disagree by several
+      // hours, so the *first* day of every ramp step failed its own
+      // `d >= s` check and silently fell through to the wrong rate.
+      // Anchoring both to local midnight keeps this correct regardless of
+      // which timezone the code happens to run in.
+      const s = new Date(step.start_date + 'T00:00:00'), e = new Date(step.end_date + 'T00:00:00')
       if (d >= s && d <= e) return step.monthly_fee
     }
     return rampSchedule[rampSchedule.length - 1].monthly_fee
@@ -48,7 +55,7 @@ export function computeMonthlyBaseRate(terms: ContractTerms, globalMonthIdx: num
 export function computeEscalatorMultiplier(terms: ContractTerms, d: Date): number {
   if (terms.year_pricing || terms.ramp_schedule?.length) return 1
   for (const esc of terms.escalators ?? []) {
-    const ed = esc.effective_date ? new Date(esc.effective_date) : null
+    const ed = esc.effective_date ? new Date(esc.effective_date + 'T00:00:00') : null
     if (ed && d >= ed) {
       const ms = (d.getFullYear() - ed.getFullYear()) * 12 + (d.getMonth() - ed.getMonth())
       return Math.pow(1 + (esc.escalator_pct ?? 0) / 100, Math.floor(ms / 12) + 1)
@@ -109,8 +116,11 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
       let amount = (base + additionalMonthly) * mult
 
       for (const disc of discounts) {
-        const ds = disc.start_date ? new Date(disc.start_date) : null
-        const de = disc.end_date   ? new Date(disc.end_date)   : null
+        // Same local-midnight anchoring as computeMonthlyBaseRate's ramp
+        // dates above — a bare date-only string parses as UTC midnight,
+        // which disagrees with d's local-midnight construction east of UTC.
+        const ds = disc.start_date ? new Date(disc.start_date + 'T00:00:00') : null
+        const de = disc.end_date   ? new Date(disc.end_date   + 'T00:00:00') : null
         if (ds && de && d >= ds && d <= de && disc.discount_pct) {
           amount *= 1 - disc.discount_pct / 100
           break

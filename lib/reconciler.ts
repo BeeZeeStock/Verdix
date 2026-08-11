@@ -99,13 +99,16 @@ function detectEscalatorMisses(
   if (!terms.escalators?.length || !terms.contract_start_date) return findings
   if (!terms.base_monthly_fee && !terms.base_annual_fee) return findings
 
-  const startDate = new Date(terms.contract_start_date)
+  // Anchor to local midnight, not UTC midnight (the default for a bare
+  // date-only string) — otherwise this disagrees with any Date built via
+  // the local (y, m, d) constructor elsewhere, e.g. in lib/billing-writer.ts.
+  const startDate = new Date(terms.contract_start_date + 'T00:00:00')
   const baseMonthly = terms.base_monthly_fee ?? (terms.base_annual_fee! / 12)
 
   for (const escalator of terms.escalators) {
     if (!escalator.escalator_pct || !escalator.effective_date) continue
 
-    const effectiveDate = new Date(escalator.effective_date)
+    const effectiveDate = new Date(escalator.effective_date + 'T00:00:00')
 
     const postEscalationRecords = records.filter(r => {
       const d = new Date(r.invoiceDate)
@@ -167,9 +170,9 @@ function detectDiscountOverhangs(
 
     let discountEndDate: Date | null = null
     if (discount.end_date) {
-      discountEndDate = new Date(discount.end_date)
+      discountEndDate = new Date(discount.end_date + 'T00:00:00')
     } else if (discount.start_date && discount.duration_months) {
-      discountEndDate = new Date(discount.start_date)
+      discountEndDate = new Date(discount.start_date + 'T00:00:00')
       discountEndDate.setMonth(discountEndDate.getMonth() + discount.duration_months)
     }
     if (!discountEndDate) continue
