@@ -52,6 +52,7 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
   const [refreshing, setRefreshing] = useState(false)
   const [error,   setError]   = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [cardOpen, setCardOpen] = useState(false)
 
   const load = useCallback(async (isRefresh: boolean) => {
     if (isRefresh) setRefreshing(true)
@@ -84,22 +85,36 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
 
   return (
     <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
-      <div className="p-6 pb-2 flex items-start justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-        <div>
-          <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Consumption</h2>
-          <p className="text-[11px] text-stone mt-1">Usage per billing cycle — what gets pushed into invoicing</p>
+      <div
+        className={`p-6 flex items-start justify-between cursor-pointer ${cardOpen ? 'pb-2' : ''}`}
+        style={cardOpen ? { borderBottom: '1px solid rgba(26,61,43,0.07)' } : undefined}
+        onClick={() => setCardOpen(o => !o)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') setCardOpen(o => !o) }}
+      >
+        <div className="flex items-start gap-1.5">
+          <i className={`ti ti-chevron-right flex-shrink-0 transition-transform ${cardOpen ? 'rotate-90' : ''}`}
+            style={{ fontSize: 12, color: '#9CA3AF', marginTop: 2 }} />
+          <div>
+            <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Consumption</h2>
+            <p className="text-[11px] text-stone mt-1">Usage per billing cycle — what gets pushed into invoicing</p>
+          </div>
         </div>
-        <button
-          onClick={() => load(true)}
-          disabled={refreshing}
-          className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-xl transition-colors disabled:opacity-50 flex-shrink-0"
-          style={{ background: '#EEF9F2', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.25)' }}
-        >
-          <i className={`ti ti-refresh ${refreshing ? 'animate-spin' : ''}`} style={{ fontSize: 11 }} />
-          {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
+        {cardOpen && (
+          <button
+            onClick={ev => { ev.stopPropagation(); load(true) }}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-xl transition-colors disabled:opacity-50 flex-shrink-0"
+            style={{ background: '#EEF9F2', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.25)' }}
+          >
+            <i className={`ti ti-refresh ${refreshing ? 'animate-spin' : ''}`} style={{ fontSize: 11 }} />
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+        )}
       </div>
 
+      {cardOpen && (
       <div className="px-6 py-5">
         {periods.map(p => {
           const isOpen = expanded.has(p.id)
@@ -183,6 +198,7 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
           )
         })}
       </div>
+      )}
     </div>
   )
 }

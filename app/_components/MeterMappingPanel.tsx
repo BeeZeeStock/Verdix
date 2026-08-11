@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 type MeterSuggestion = {
   contract_unit_type: string
@@ -73,6 +73,20 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
 
   useEffect(() => { onConfirmedChange(allConfirmed) }, [allConfirmed, onConfirmedChange])
 
+  // Collapsed by default once everything's already confirmed — nothing left
+  // to do here, so don't take up space unless the user wants to check/edit
+  // it. Auto-collapses once, the first time it becomes fully confirmed;
+  // afterwards the user's own toggle is left alone (e.g. re-opening to fix
+  // one row shouldn't immediately snap shut again).
+  const [collapsed, setCollapsed] = useState(false)
+  const autoCollapsedRef = useRef(false)
+  useEffect(() => {
+    if (allConfirmed && !autoCollapsedRef.current) {
+      autoCollapsedRef.current = true
+      setCollapsed(true)
+    }
+  }, [allConfirmed])
+
   const handleSave = async () => {
     setSaving(true)
     setSaveMsg(null)
@@ -126,9 +140,16 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
     <div className="bg-white border border-amber-200/70 rounded-2xl overflow-hidden"
       style={{ background: '#FFFDF7' }}>
       {/* Header */}
-      <div className="px-7 py-4 border-b border-amber-100 flex items-center justify-between gap-4">
+      <div
+        className="px-7 py-4 border-b border-amber-100 flex items-center justify-between gap-4 cursor-pointer"
+        onClick={() => setCollapsed(c => !c)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') setCollapsed(c => !c) }}
+      >
         <div>
           <div className="flex items-center gap-2 mb-0.5">
+            <i className={`ti ti-chevron-right text-stone/50 transition-transform ${collapsed ? '' : 'rotate-90'}`} style={{ fontSize: 12 }} />
             <i className="ti ti-plug-connected text-amber-700" style={{ fontSize: 15 }} />
             <span className="text-sm font-medium text-ink">Configure billing meters</span>
             {allConfirmed && (
@@ -146,7 +167,7 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
             Map each usage metric in this contract to your billing meter. Auto-suggestions are based on the extracted unit types — review and confirm each one.
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 flex-shrink-0" onClick={ev => ev.stopPropagation()}>
           {!allConfirmed && (
             <button
               onClick={confirmAll}
@@ -170,6 +191,7 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
         </div>
       </div>
 
+      {!collapsed && <>
       {/* No meters registered */}
       {meters.length === 0 && (
         <div className="px-7 py-6 flex items-start gap-3 bg-amber-50/60 border-t border-amber-100">
@@ -260,6 +282,7 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
           )
         })}
       </div>
+      </>}
     </div>
   )
 }

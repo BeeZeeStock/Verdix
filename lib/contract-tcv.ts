@@ -74,9 +74,25 @@ export async function getContractSummaries(jobIds: string[]): Promise<Record<str
         : 0)
 
     const jobItems = lineItemsByJob[row.job_id] ?? []
+    // A single line item per billing_period represents a steady recurring
+    // rate — multiply by how many such periods fit in the term (legacy
+    // convention). But buildLineItems generates one row *per contract year*
+    // for multi-year deals ("Year 1 recurring fee", "Year 2 recurring fee",
+    // ...) so escalators land on the right year — each of those rows is
+    // already a complete, distinct occurrence, not a steady rate to repeat.
+    // Multiplying it again by periodsInTermFor double(-or-more)-counts the
+    // whole term. Only apply the multiplier when this billing_period has
+    // exactly one line item; when several share it, sum them as-is.
+    const countByPeriod = new Map<string, number>()
+    for (const item of jobItems) {
+      const key = item.billing_period ?? ''
+      countByPeriod.set(key, (countByPeriod.get(key) ?? 0) + 1)
+    }
     const tcv = jobItems.reduce((s, item) => {
       if (isEscalatorItem(item.product_name, item.applied_rule)) return s
-      return s + (item.total_amount ?? 0) * periodsInTermFor(item.billing_period, termMonths)
+      const sharesPeriodWithOthers = (countByPeriod.get(item.billing_period ?? '') ?? 0) > 1
+      const multiplier = sharesPeriodWithOthers ? 1 : periodsInTermFor(item.billing_period, termMonths)
+      return s + (item.total_amount ?? 0) * multiplier
     }, 0)
 
     const jobSent        = sentByJob[row.job_id] ?? []
