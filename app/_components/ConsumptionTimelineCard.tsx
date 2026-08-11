@@ -13,6 +13,7 @@ type OverageItem = {
   description:    string
   windowStart?:   string
   windowEnd?:     string
+  windowOpen?:    boolean
 }
 
 type Period = {
@@ -194,9 +195,11 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
                             // A meter can be measured on its own cadence,
                             // different from this invoice period's dates
                             // (e.g. a quarterly-measured metric shown inside
-                            // a monthly row) — surface its real window so
-                            // the row doesn't silently imply it was measured
-                            // over the period's own (wrong) dates.
+                            // a monthly row) — surface its real window,
+                            // clearly labeled as *its own* measurement cycle
+                            // (not the invoice period above), so the two
+                            // different date ranges on screen don't read as
+                            // an unexplained mismatch.
                             const hasOwnWindow = item.windowStart && item.windowEnd
                               && (item.windowStart !== p.periodStart || item.windowEnd !== p.periodEnd)
                             return (
@@ -205,7 +208,8 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
                                 {item.meter_key}
                                 {hasOwnWindow && (
                                   <div className="text-[9px] text-stone/60 font-normal mt-0.5">
-                                    {fmtDate(item.windowStart!)} – {fmtDate(item.windowEnd!)}
+                                    Measured {fmtDate(item.windowStart!)} – {fmtDate(item.windowEnd!)}
+                                    {item.windowOpen ? ' · so far' : ''}
                                   </div>
                                 )}
                               </td>

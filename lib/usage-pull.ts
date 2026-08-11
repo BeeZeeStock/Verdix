@@ -45,6 +45,9 @@ export type OverageLineItem = {
   // which has no per-meter cadence concept.
   windowStart?: string
   windowEnd?: string
+  // True when windowEnd is the cadence's natural (not-yet-reached) end date
+  // rather than a closed cycle — the figure is "so far", not final.
+  windowOpen?: boolean
 }
 
 export async function computeOverageForPeriod(params: {
@@ -242,6 +245,7 @@ export async function computeOverageForPeriod(params: {
           description: overageDesc, metric_source: 'meter_pull',
           windowStart: window.start.toISOString().slice(0, 10),
           windowEnd:   window.displayEnd.toISOString().slice(0, 10),
+          windowOpen:  window.isOpen ?? false,
         })
       }
     }
