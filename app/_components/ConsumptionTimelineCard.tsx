@@ -157,6 +157,12 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
 
                 {isOpen && (
                   <div className="mt-2 ml-[18px] rounded-xl overflow-hidden text-[11px]" style={{ border: '1px solid rgba(26,61,43,0.08)' }}>
+                    {p.status === 'past' && (
+                      <div className="px-3 py-2 flex items-start gap-1.5 text-[10px] text-stone/70" style={{ background: 'rgba(26,61,43,0.02)', borderBottom: '1px solid rgba(26,61,43,0.06)' }}>
+                        <i className="ti ti-info-circle flex-shrink-0 mt-0.5" style={{ fontSize: 11 }} />
+                        <span>Overage is billed in arrears — the amounts below are for the <strong>prior</strong> billing cycle, invoiced together with this period&apos;s advance base fee.</span>
+                      </div>
+                    )}
                     <table className="w-full" style={{ borderCollapse: 'collapse' }}>
                       <thead>
                         <tr style={{ background: 'rgba(26,61,43,0.03)' }}>
