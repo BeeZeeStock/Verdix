@@ -105,5 +105,37 @@ export async function GET(
     }
   }))
 
-  return NextResponse.json({ periods })
+  // A meter's live "so far" figure is computed from the cadence window
+  // containing *today*, independent of which invoice row triggered the
+  // pull — so once a meter's cadence outlasts the invoice cadence (a
+  // quarterly-measured metric inside monthly invoice rows), every invoice
+  // row still open within that same quarter recomputes the exact same
+  // figure. Collapse consecutive rows whose overageItems are identical
+  // (same meters, same measured windows) into one displayed row, and show
+  // that shared window's own dates instead of whichever invoice period
+  // happened to trigger it first — otherwise the same number renders
+  // several times under different, misleadingly short-looking date ranges.
+  const windowKey = (items: OverageLineItem[]) =>
+    items.length === 0 ? null : items.map(it => `${it.meter_key}:${it.windowStart ?? ''}:${it.windowEnd ?? ''}`).sort().join('|')
+
+  const merged: typeof periods = []
+  for (const p of periods) {
+    const key  = windowKey(p.overageItems)
+    const prev = merged[merged.length - 1]
+    if (key && prev && key === windowKey(prev.overageItems)) {
+      prev.status = p.status // prefer the later row's framing (closer to "now")
+      continue
+    }
+    merged.push(p)
+  }
+  for (const p of merged) {
+    const starts = new Set(p.overageItems.map(it => it.windowStart).filter(Boolean))
+    const ends   = new Set(p.overageItems.map(it => it.windowEnd).filter(Boolean))
+    if (starts.size === 1 && ends.size === 1) {
+      p.periodStart = [...starts][0] as string
+      p.periodEnd   = [...ends][0] as string
+    }
+  }
+
+  return NextResponse.json({ periods: merged })
 }
