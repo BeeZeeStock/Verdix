@@ -232,7 +232,14 @@ export async function computeOverageForPeriod(params: {
         // measuring the same (wrong) monthly window as everything else.
         const fmtRange = (s: Date, e: Date) =>
           `${s.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${e.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
-        const dateOnly = (d: Date) => d.toISOString().slice(0, 10)
+        // window.start/end are built via the local `new Date(y, m, d)`
+        // constructor (lib/tariff.ts) — toISOString() converts to UTC
+        // first, which would silently shift this a day off on any server
+        // not running in UTC. Use the date's own local calendar fields.
+        const dateOnly = (d: Date) => {
+          const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0')
+          return `${y}-${m}-${day}`
+        }
         const matchesScanRange = dateOnly(window.start) === dateOnly(scanStart) && dateOnly(window.displayEnd) === dateOnly(scanEnd)
         const windowSuffix = !matchesScanRange
           ? ` (${fmtRange(window.start, window.displayEnd)})`
@@ -243,8 +250,8 @@ export async function computeOverageForPeriod(params: {
           billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,
           amount: Math.round(overageEur * 100) / 100, currency: currency.toUpperCase(),
           description: overageDesc, metric_source: 'meter_pull',
-          windowStart: window.start.toISOString().slice(0, 10),
-          windowEnd:   window.displayEnd.toISOString().slice(0, 10),
+          windowStart: dateOnly(window.start),
+          windowEnd:   dateOnly(window.displayEnd),
           windowOpen:  window.isOpen ?? false,
         })
       }

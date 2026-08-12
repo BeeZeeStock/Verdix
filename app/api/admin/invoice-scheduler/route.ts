@@ -128,8 +128,16 @@ export async function GET(req: NextRequest) {
         // first invoice) can still have closed windows to bill even before
         // any invoice has ever gone out.
         const scanStart = prevPeriod?.period_start ?? terms.contract_start_date
+        // toISOString() converts to UTC first — on a server not running in
+        // UTC that silently shifts this a day off from the local calendar
+        // date d was built from. Format from d's own local fields instead.
         const scanEnd    = prevPeriod?.period_end
-          ?? (() => { const d = new Date(row.period_start + 'T00:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10) })()
+          ?? (() => {
+            const d = new Date(row.period_start + 'T00:00:00')
+            d.setDate(d.getDate() - 1)
+            const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0')
+            return `${y}-${m}-${day}`
+          })()
 
         if (scanStart) {
           overageLineItems = await computeOverageForPeriod({

@@ -8,8 +8,17 @@ import type { UsageConnector, UsageReading } from './types'
 // (invoice_sent, email_sent, sms_sent, letter_sent, reminder_sent, …).
 const REMEMBILL_USAGE_BASE = 'https://api.remembill.com/integrations/verdix/v1'
 
+// periodStart/periodEnd are always built via the local `new Date(y, m, d)`
+// constructor (see enumerateCadenceWindows/findCadenceWindowContaining in
+// lib/tariff.ts) — toISOString() converts to UTC first, which silently
+// shifts the date sent to Remembill by up to a day on any server not
+// running in UTC. Use the date's own local calendar fields instead, so the
+// literal calendar date we intend is the one actually sent.
 function yyyymmdd(d: Date): string {
-  return d.toISOString().slice(0, 10).replace(/-/g, '')
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}${m}${day}`
 }
 
 async function fetchUsage(orgId: string | undefined, customerId: string, periodStart: Date, periodEnd: Date): Promise<UsageReading[]> {

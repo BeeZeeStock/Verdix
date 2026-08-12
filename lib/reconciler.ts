@@ -13,6 +13,13 @@ function isoMonth(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
+// d's own local calendar fields — toISOString() converts to UTC first,
+// which would silently shift the displayed date by up to a day on a server
+// not running in UTC.
+function formatLocalDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 // Fuzzy customer-name match: normalize out legal suffixes and punctuation
 function matchesCustomer(csvName: string, contractName: string): boolean {
   const norm = (s: string) =>
@@ -196,7 +203,7 @@ function detectDiscountOverhangs(
           contract_id: contractId,
           invoice_id: record.invoiceId,
           billing_month: isoMonth(new Date(record.invoiceDate)),
-          description: `${discountPct}% introductory discount expired ${discountEndDate.toISOString().slice(0, 10)} but customer still billed at discounted rate (${currency} ${billedMonthly.toFixed(2)}). Full rate ${currency} ${baseMonthly.toFixed(2)}/mo not applied.`,
+          description: `${discountPct}% introductory discount expired ${formatLocalDate(discountEndDate)} but customer still billed at discounted rate (${currency} ${billedMonthly.toFixed(2)}). Full rate ${currency} ${baseMonthly.toFixed(2)}/mo not applied.`,
           contracted_amount: baseMonthly,
           billed_amount: billedMonthly,
           leakage_amount: leakage,
