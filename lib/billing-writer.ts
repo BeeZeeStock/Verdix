@@ -306,19 +306,16 @@ async function configureStripe(
   // ── 3. Send immediately-due period invoices; queue future ones ──────────────
   for (const period of periods) {
     const periodStartStr = formatDate(period.periodStart)
+    // Already sent in a previous push — leave the existing row untouched
+    // (don't reinsert a copy). It may since have been updated in place by
+    // invoice-scheduler (e.g. overage_line_items for arrears billing), which
+    // a reinserted copy here would silently drop; and reinserting at all
+    // just duplicates the row on every repush without ever recreating a
+    // real Stripe invoice for it, since alreadySent already means one exists.
     const alreadySent = sentRows.find(
       r => r.invoice_type === 'period' && r.year_num === period.yearNum && r.period_start === periodStartStr,
     )
-    if (alreadySent) {
-      plannedRows.push({
-        year_num: alreadySent.year_num, period_start: alreadySent.period_start, period_end: alreadySent.period_end,
-        base_amount: alreadySent.base_amount, currency: alreadySent.currency, fee_label: null,
-        invoice_type: 'period', status: alreadySent.status,
-        stripe_invoice_id: alreadySent.stripe_invoice_id, stripe_invoice_url: alreadySent.stripe_invoice_url,
-        sent_at: alreadySent.sent_at,
-      })
-      continue
-    }
+    if (alreadySent) continue
 
     const isDue = period.periodStart <= now
 
@@ -395,17 +392,10 @@ async function configureStripe(
 
   // Park manual-trigger service fees — they need human confirmation before invoicing
   for (const fee of oneTimeFees.filter(f => f.manual_trigger)) {
+    // Same reasoning as the period loop above: already-sent rows are left
+    // untouched rather than reinserted.
     const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
-    if (alreadySent) {
-      plannedRows.push({
-        year_num: null, period_start: alreadySent.period_start, period_end: alreadySent.period_end,
-        base_amount: alreadySent.base_amount, currency: alreadySent.currency, fee_label: alreadySent.fee_label,
-        invoice_type: 'one_time', status: alreadySent.status,
-        stripe_invoice_id: alreadySent.stripe_invoice_id, stripe_invoice_url: alreadySent.stripe_invoice_url,
-        sent_at: alreadySent.sent_at,
-      })
-      continue
-    }
+    if (alreadySent) continue
     const li = findOneTimeLineItem(lineItems, fee.fee_label)
     plannedRows.push({
       year_num:           null,
@@ -428,16 +418,7 @@ async function configureStripe(
 
   for (const fee of oneTimeFees.filter(f => !f.manual_trigger && f.amount > 0)) {
     const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
-    if (alreadySent) {
-      plannedRows.push({
-        year_num: null, period_start: alreadySent.period_start, period_end: alreadySent.period_end,
-        base_amount: alreadySent.base_amount, currency: alreadySent.currency, fee_label: alreadySent.fee_label,
-        invoice_type: 'one_time', status: alreadySent.status,
-        stripe_invoice_id: alreadySent.stripe_invoice_id, stripe_invoice_url: alreadySent.stripe_invoice_url,
-        sent_at: alreadySent.sent_at,
-      })
-      continue
-    }
+    if (alreadySent) continue
     const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
     const isDue      = !feeDueDate || feeDueDate <= now
 
@@ -785,21 +766,16 @@ async function configureRememhill(
     const periodStartStr = fmtDate(period.periodStart)
     const periodEndStr   = fmtDate(period.periodEnd)
 
-    // If this period's invoice was already sent in a previous push, carry it
-    // forward unchanged — don't create a duplicate in Remembill.
+    // If this period's invoice was already sent in a previous push, leave
+    // the existing row untouched rather than reinserting a copy — it may
+    // since have been updated in place by invoice-scheduler (e.g.
+    // overage_line_items for arrears billing), which a reinserted copy here
+    // would silently drop, and reinserting duplicates the row on every
+    // repush without ever creating a second real Remembill invoice for it.
     const alreadySent = sentRows.find(
       r => r.invoice_type === 'period' && r.year_num === period.yearNum && r.period_start === periodStartStr,
     )
-    if (alreadySent) {
-      plannedRows.push({
-        year_num: alreadySent.year_num, period_start: alreadySent.period_start, period_end: alreadySent.period_end,
-        base_amount: alreadySent.base_amount, currency: alreadySent.currency, fee_label: null,
-        invoice_type: 'period', status: alreadySent.status,
-        stripe_invoice_id: alreadySent.stripe_invoice_id, stripe_invoice_url: alreadySent.stripe_invoice_url,
-        sent_at: alreadySent.sent_at,
-      })
-      continue
-    }
+    if (alreadySent) continue
 
     const description = `Base subscription — Year ${period.yearNum} (${fmtLabel(period.periodStart)} – ${fmtLabel(period.periodEnd)})`
 
@@ -830,11 +806,10 @@ async function configureRememhill(
   const oneTimeFees = (terms.one_time_fees ?? []) as OneTimeFeeInput[]
 
   for (const fee of oneTimeFees.filter(f => f.manual_trigger)) {
+    // Same reasoning as the period loop above: already-sent rows are left
+    // untouched rather than reinserted.
     const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
-    if (alreadySent) {
-      plannedRows.push({ ...alreadySent, invoice_type: 'one_time', fee_label: alreadySent.fee_label })
-      continue
-    }
+    if (alreadySent) continue
     const li = findOneTimeLineItem(lineItems, fee.fee_label)
     plannedRows.push({
       year_num: null, period_start: fee.due_date ?? fmtDate(now), period_end: fee.due_date ?? fmtDate(now),
@@ -855,10 +830,7 @@ async function configureRememhill(
 
     // Don't re-send an already-sent one-time fee
     const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
-    if (alreadySent) {
-      plannedRows.push({ ...alreadySent, invoice_type: 'one_time', fee_label: alreadySent.fee_label })
-      continue
-    }
+    if (alreadySent) continue
 
     // Prefer the approved line_items row (may carry a human-corrected
     // quantity/unit_price/total) over the raw extracted contract amount.
