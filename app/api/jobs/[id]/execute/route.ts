@@ -6,7 +6,7 @@ import { requireOrg } from '@/lib/org'
 import { extractContractTerms } from '@/lib/contract-extractor'
 import { resolveStorageUrl } from '@/lib/storage'
 import { maskText, restoreTokensInObject } from '@/lib/pii-detector'
-import { computeMonthlyBaseRate, computeEscalatorMultiplier } from '@/lib/billing-writer'
+import { computeMonthlyBaseRate, computeEscalatorMultiplier, computeDiscountMultiplier } from '@/lib/billing-writer'
 import { billingInterval } from '@/lib/stripe-meter'
 
 
@@ -170,18 +170,21 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
   // contract's *actual* billing cadence (monthly/quarterly/...), not always
   // bucketed by calendar year regardless of whether the rate changed within
   // it. Rate logic (ramp schedule → year pricing → flat fee, with compound
-  // escalation) mirrors computeBillingSchedule (lib/billing-writer.ts) — the
-  // same function real billing (Stripe/Remembill) uses to generate actual
-  // invoices — so this display can never disagree with what's really
-  // charged. Consecutive periods at the same rate collapse into one row; a
-  // new row starts only where the rate actually changes (an escalator/ramp
-  // step), so a flat-rate contract shows a single "12 × monthly" row instead
-  // of one "Year 1" row per calendar year. quantity stays the number of
-  // cycles and unit_price the per-cycle rate (not pre-multiplied) — several
-  // billing connectors (e.g. Chargebee) read these fields as literal
-  // per-cycle subscription quantities, so only total_amount should ever hold
-  // the full-term figure. Falls back to a single flat item when contract
-  // dates are missing and a schedule can't be computed.
+  // escalation and any dated discount) mirrors computeBillingSchedule
+  // (lib/billing-writer.ts) — the same function real billing (Stripe/
+  // Remembill) uses to generate actual invoices — so this display can never
+  // disagree with what's really charged (previously it ignored discounts
+  // entirely, so a contract with an intro discount showed a higher Base TCV
+  // than what actually got billed). Consecutive periods at the same rate
+  // collapse into one row; a new row starts wherever the rate actually
+  // changes (an escalator/ramp step, or a discount window's edge), so a
+  // flat-rate contract shows a single "12 × monthly" row instead of one
+  // "Year 1" row per calendar year. quantity stays the number of cycles and
+  // unit_price the per-cycle rate (not pre-multiplied) — several billing
+  // connectors (e.g. Chargebee) read these fields as literal per-cycle
+  // subscription quantities, so only total_amount should ever hold the
+  // full-term figure. Falls back to a single flat item when contract dates
+  // are missing and a schedule can't be computed.
   const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date + 'T00:00:00') : null
   let termMonths = terms.contract_term_months ?? 0
   if (!termMonths && contractStart && terms.contract_end_date) {
@@ -203,7 +206,7 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
       for (let mi = 0; mi < monthsInThisPeriod; mi++) {
         const globalMonthIdx = monthsUsed + mi
         const d = new Date(contractStart.getFullYear(), contractStart.getMonth() + globalMonthIdx, 1)
-        amount += computeMonthlyBaseRate(terms, globalMonthIdx, d) * computeEscalatorMultiplier(terms, d)
+        amount += computeMonthlyBaseRate(terms, globalMonthIdx, d) * computeEscalatorMultiplier(terms, d) * computeDiscountMultiplier(terms, d)
       }
       periodAmounts.push(amount)
       monthsUsed += monthsInThisPeriod

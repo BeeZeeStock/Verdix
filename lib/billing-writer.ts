@@ -64,6 +64,24 @@ export function computeEscalatorMultiplier(terms: ContractTerms, d: Date): numbe
   return 1
 }
 
+// Discount multiplier for a given month — 1 (no discount) unless d falls
+// within a dated discount window. Exported alongside computeMonthlyBaseRate/
+// computeEscalatorMultiplier so buildLineItems (contract execute route) can
+// apply the same discount a real invoice would get; previously it ignored
+// discounts entirely, so a contract with an intro discount showed a Base TCV
+// higher than what actually got billed.
+export function computeDiscountMultiplier(terms: ContractTerms, d: Date): number {
+  for (const disc of terms.discounts ?? []) {
+    // Same local-midnight anchoring as the ramp/escalator dates above.
+    const ds = disc.start_date ? new Date(disc.start_date + 'T00:00:00') : null
+    const de = disc.end_date   ? new Date(disc.end_date   + 'T00:00:00') : null
+    if (ds && de && d >= ds && d <= de && disc.discount_pct) {
+      return 1 - disc.discount_pct / 100
+    }
+  }
+  return 1
+}
+
 function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
   const cs = terms.contract_start_date
     ? new Date(terms.contract_start_date + 'T00:00:00')
@@ -82,8 +100,6 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
 
   const additionalMonthly = (terms.additional_recurring_fees ?? [])
     .reduce((s, f) => s + (f.amount ?? 0), 0)
-
-  const discounts = terms.discounts ?? []
 
   const periods: BillingPeriod[] = []
   let periodIdx  = 0
@@ -110,24 +126,11 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
     for (let mi = 0; mi < monthsInThisPeriod; mi++) {
       const globalMonthIdx = monthsUsed + mi
       const d    = new Date(cs.getFullYear(), cs.getMonth() + globalMonthIdx, 1)
-      const base = computeMonthlyBaseRate(terms, globalMonthIdx, d)
-      const mult = computeEscalatorMultiplier(terms, d)
+      const base    = computeMonthlyBaseRate(terms, globalMonthIdx, d)
+      const escMult = computeEscalatorMultiplier(terms, d)
+      const discMult = computeDiscountMultiplier(terms, d)
 
-      let amount = (base + additionalMonthly) * mult
-
-      for (const disc of discounts) {
-        // Same local-midnight anchoring as computeMonthlyBaseRate's ramp
-        // dates above — a bare date-only string parses as UTC midnight,
-        // which disagrees with d's local-midnight construction east of UTC.
-        const ds = disc.start_date ? new Date(disc.start_date + 'T00:00:00') : null
-        const de = disc.end_date   ? new Date(disc.end_date   + 'T00:00:00') : null
-        if (ds && de && d >= ds && d <= de && disc.discount_pct) {
-          amount *= 1 - disc.discount_pct / 100
-          break
-        }
-      }
-
-      baseAmount += amount
+      baseAmount += (base + additionalMonthly) * escMult * discMult
     }
 
     periods.push({ yearNum, periodIndex: periodIdx, periodStart, periodEnd, baseAmount })
