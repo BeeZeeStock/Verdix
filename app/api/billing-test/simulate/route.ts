@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
 
   let mappingsQuery = supabaseServer
     .from('contract_meter_mappings')
-    .select('job_id, included_units, overage_tiers, jobs!inner(id, org_id, contract_terms(customer_name))')
+    .select('job_id, included_units, overage_tiers, jobs!inner(id, org_id, contract_terms(customer_name, currency))')
     .eq('meter_key', meter.meter_key)
     .eq('confirmed', true)
     .eq('jobs.org_id', orgId)
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
     job_id: string
     included_units: number | null
     overage_tiers: Array<{ from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number }>
-    jobs: { id: string; org_id: string; contract_terms: { customer_name: string | null }[] } | null
+    jobs: { id: string; org_id: string; contract_terms: { customer_name: string | null; currency: string | null }[] } | null
   }
 
   const jobs = ((mappings ?? []) as unknown as MappingRow[]).map(m => {
@@ -98,6 +98,9 @@ export async function POST(req: NextRequest) {
     return {
       jobId:         m.job_id,
       customerName:  m.jobs?.contract_terms?.[0]?.customer_name ?? null,
+      // Each agreement bills in its own contract currency — never assume
+      // EUR, which is only correct for the self-serve planPreview below.
+      currency:      m.jobs?.contract_terms?.[0]?.currency ?? 'EUR',
       includedUnits,
       billableUnits: Math.max(0, testValue - includedUnits),
       amount:        Math.round(amount * 100) / 100,

@@ -25,6 +25,7 @@ type Meter = {
 type SimulatedJob = {
   jobId:         string
   customerName:  string | null
+  currency:      string
   includedUnits: number
   billableUnits: number
   amount:        number
@@ -49,8 +50,12 @@ type SimulateResult = {
 
 type Agreement = { id: string; label: string }
 
-function fmt(amount: number) {
-  return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR' }).format(amount)
+// Each agreement bills in its own contract currency (e.g. SEK) — only the
+// self-serve plan preview is genuinely always EUR (verdix_plans prices in
+// EUR regardless of the org's contracts), so that's the only caller that
+// should rely on the default.
+function fmt(amount: number, currency: string = 'EUR') {
+  return new Intl.NumberFormat('en-GB', { style: 'currency', currency }).format(amount)
 }
 
 export function BillingTestSimulator({ orgId }: { orgId?: string }) {
@@ -270,7 +275,7 @@ export function BillingTestSimulator({ orgId }: { orgId?: string }) {
                 <div key={j.jobId} className="bg-cream/40 border border-forest/10 rounded-xl px-4 py-3">
                   <div className="flex items-center justify-between mb-1">
                     <p className="text-sm font-medium text-ink">{j.customerName ?? j.jobId}</p>
-                    <p className="text-sm font-semibold" style={{ color: '#0B5C36' }}>{fmt(j.amount)}</p>
+                    <p className="text-sm font-semibold" style={{ color: '#0B5C36' }}>{fmt(j.amount, j.currency)}</p>
                   </div>
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-[11px] text-stone leading-snug flex-1">{j.description}</p>
