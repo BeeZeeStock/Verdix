@@ -286,6 +286,7 @@ async function handlePlannedInvoicesPath({
     line_item_id: string | null
     quantity: number | null
     unit_price: number | null
+    error_message: string | null
   }
 
   const rows = planned as PlannedRow[]
@@ -295,7 +296,13 @@ async function handlePlannedInvoicesPath({
     const liveStatus = stripeInv?.status ?? null
     // For Stripe: derive display status from live API status.
     // For Remembill: use planned_invoices.status directly (no live API lookup).
+    // A row invoice-scheduler failed to push (status='failed', a real
+    // error_message attached) must never render as an ordinary 'draft' row —
+    // that hid genuine push failures (bad org number, expired API key, etc.)
+    // behind a normal-looking "not due yet" badge with no indication anything
+    // needed attention.
     const status = row.status === 'paid' ? 'paid'
+      : row.status === 'failed' ? 'failed'
       : liveStatus === 'paid' ? 'paid'
       : liveStatus === 'open' ? 'open'
       : row.status === 'sent' ? (billingPlatform === 'remembill' ? 'sent' : 'open')
@@ -332,6 +339,7 @@ async function handlePlannedInvoicesPath({
       quantity:   row.quantity   != null ? Number(row.quantity)   : null,
       unitPrice:  row.unit_price != null ? Number(row.unit_price) : null,
       lineItemId: row.line_item_id,
+      errorMessage: status === 'failed' ? row.error_message : null,
     }
   }
 

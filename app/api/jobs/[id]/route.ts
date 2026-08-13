@@ -3,6 +3,10 @@ import Stripe from 'stripe'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { REMEMBILL_BASE, remembillHeaders } from '@/lib/billing-writer'
+import { AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
+import { isAdminEmail } from '@/lib/admin'
+
+const GENERIC_INFRA_ERROR = 'This contract couldn’t be processed right now due to a temporary system issue. Please contact bilal@lynoraai.com for help.'
 
 async function getStripeKey(orgId: string): Promise<string> {
   const { data } = await supabaseServer
@@ -224,5 +228,16 @@ export async function GET(
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 404 })
+
+  // An AI-infra failure (out of Anthropic credit, rate-limited, timed out) is
+  // an admin problem to go fix, not something a customer viewing their own
+  // job can do anything about — never show them the raw technical detail.
+  const rawError = job.error_message as string | null
+  if (rawError?.startsWith(AI_INFRA_ERROR_PREFIX)) {
+    job.error_message = isAdminEmail(org.userEmail)
+      ? rawError.slice(AI_INFRA_ERROR_PREFIX.length)
+      : GENERIC_INFRA_ERROR
+  }
+
   return NextResponse.json(job)
 }

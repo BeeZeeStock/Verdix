@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { waitUntil } from '@vercel/functions'
-import Anthropic from '@anthropic-ai/sdk'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { extractContractTerms } from '@/lib/contract-extractor'
@@ -8,6 +7,7 @@ import { resolveStorageUrl } from '@/lib/storage'
 import { maskText, restoreTokensInObject } from '@/lib/pii-detector'
 import { computeMonthlyBaseRate, computeEscalatorMultiplier, computeDiscountMultiplier } from '@/lib/billing-writer'
 import { billingInterval } from '@/lib/stripe-meter'
+import { newAnthropicClient, isAIInfraError, AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
 
 
 // Allow up to 5 minutes — PDF extraction + two Anthropic calls can exceed the default 10s limit
@@ -15,7 +15,7 @@ export const maxDuration = 300
 
 // PDF text extraction always uses the Anthropic SDK directly because the document
 // content type (base64 PDF upload) is not yet supported in our Bedrock shim.
-const anthropicDirect = new Anthropic()
+const anthropicDirect = newAnthropicClient()
 
 export async function POST(
   _req: NextRequest,
@@ -41,9 +41,16 @@ export async function POST(
 
   waitUntil(
     runExecutePipeline(id, org.orgId, job.contract_pdf_url, job.currency).catch(async (err) => {
+      const rawMessage = err instanceof Error ? err.message : String(err)
+      // AI-infra failures (out of Anthropic credit, rate-limited, timed out,
+      // etc.) are an admin problem to fix, not something a customer can act
+      // on — prefix so the GET /api/jobs/[id] handler can show the real
+      // detail to admins only and a generic "contact us" message to everyone
+      // else, without needing a schema change to track it separately.
+      const message = isAIInfraError(err) ? `${AI_INFRA_ERROR_PREFIX}${rawMessage}` : rawMessage
       await supabaseServer.from('jobs').update({
         execute_status: 'FAILED',
-        error_message: err instanceof Error ? err.message : String(err),
+        error_message: message,
       }).eq('id', id)
     })
   )

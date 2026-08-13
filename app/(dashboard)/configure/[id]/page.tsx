@@ -2778,7 +2778,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         </p>
                       ) : (
                         <p className="text-xs text-amber-800 mb-3">
-                          The billing schedule was not generated when this contract was approved. Click below to create Stripe invoices for all billing periods.
+                          The billing schedule was not generated when this contract was approved. Click below to create invoices for all billing periods in {billingPlatform === 'remembill' ? 'Remembill' : 'Stripe'}.
                         </p>
                       )}
                       {rebuildError && <p className="text-xs text-red-600 mb-2">{rebuildError}</p>}

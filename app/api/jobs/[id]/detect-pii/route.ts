@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { resolveStorageUrl } from '@/lib/storage'
 import { getOrgSubscription } from '@/lib/billing'
+import { newAnthropicClient, isAIInfraError, AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
+import { isAdminEmail } from '@/lib/admin'
 import type { PIIEntity } from '@/lib/pii-detector'
 
-const anthropicDirect = new Anthropic()
+const anthropicDirect = newAnthropicClient()
+
+const GENERIC_INFRA_ERROR = 'This contract couldn’t be processed right now due to a temporary system issue. Please contact bilal@lynoraai.com for help.'
 
 export const maxDuration = 120
 
@@ -89,12 +92,19 @@ export async function POST(
 
     return NextResponse.json({ entities: saved })
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const rawMessage = err instanceof Error ? err.message : String(err)
+    const isInfra = isAIInfraError(err)
+    // Same reasoning as execute/route.ts: an AI-infra failure (out of
+    // Anthropic credit, rate-limited, timed out) is an admin problem, not
+    // something the caller can act on — store the real detail prefixed for
+    // admins, but never hand it back in the immediate response to a
+    // non-admin caller either.
     await supabaseServer.from('jobs').update({
       execute_status: 'FAILED',
-      error_message: message,
+      error_message: isInfra ? `${AI_INFRA_ERROR_PREFIX}${rawMessage}` : rawMessage,
     }).eq('id', id)
-    return NextResponse.json({ error: message }, { status: 500 })
+    const responseMessage = isInfra && !isAdminEmail(org.userEmail) ? GENERIC_INFRA_ERROR : rawMessage
+    return NextResponse.json({ error: responseMessage }, { status: 500 })
   }
 }
 

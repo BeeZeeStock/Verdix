@@ -45,6 +45,7 @@ type InvoiceInfo = {
   overageTotal?: number
   quantity?: number | null
   unitPrice?: number | null
+  errorMessage?: string | null
 }
 
 type YearPayment = {
@@ -127,6 +128,7 @@ function StatusBadge({ status }: { status: string | null }) {
     void:          { icon: 'ti-circle-x',      color: '#9CA3AF', label: 'Void' },
     canceled:      { icon: 'ti-circle-x',      color: '#9CA3AF', label: 'Canceled' },
     pending:       { icon: 'ti-circle-dashed', color: '#9CA3AF', label: 'Pending' },
+    failed:        { icon: 'ti-alert-triangle', color: '#DC2626', label: 'Push failed' },
   }
   const s = status ?? 'unknown'
   const style = map[s] ?? { icon: 'ti-circle-dashed', color: '#9CA3AF', label: s }
@@ -319,7 +321,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
           id: string; label: string; dateLabel: string; date: Date; amount: number; currency: string
           status: string | null; hostedUrl?: string | null; pdfUrl?: string | null; kind: 'subscription' | 'one-time' | 'pending-setup'
           baseAmount: number; overageLineItems: OverageLineItem[]; overageTotal: number; description?: string | null
-          quantity?: number | null; unitPrice?: number | null
+          quantity?: number | null; unitPrice?: number | null; errorMessage?: string | null
         }
         const entries: TLEntry[] = []
 
@@ -373,6 +375,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
             baseAmount: inv.baseAmount ?? inv.amount,
             overageLineItems: inv.overageLineItems ?? [],
             overageTotal: inv.overageTotal ?? 0,
+            errorMessage: inv.errorMessage ?? null,
           })
         }
 
@@ -415,6 +418,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
             baseAmount: inv.amount, overageLineItems: [], overageTotal: 0,
             description: matchingFee?.description ?? null,
             quantity: inv.quantity ?? null, unitPrice: inv.unitPrice ?? null,
+            errorMessage: inv.errorMessage ?? null,
           })
         }
 
@@ -449,6 +453,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
         const timelineIcon = (status: string | null): { icon: string; color: string } => {
           if (status === 'paid')    return { icon: 'ti-circle-check',  color: '#27AE60' }
           if (status === 'open')    return { icon: 'ti-clock',         color: '#D97706' }
+          if (status === 'failed')  return { icon: 'ti-alert-triangle', color: '#DC2626' }
           if (status === 'draft')   return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
           if (status === 'pending') return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
           return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
@@ -503,6 +508,12 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
                       <span className="text-stone/50">{e.dateLabel} </span>
                       {e.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                     </p>
+                    {effectiveStatus === 'failed' && e.errorMessage && (
+                      <p className="text-[10px] mt-1 flex items-start gap-1" style={{ color: '#DC2626' }}>
+                        <i className="ti ti-alert-triangle flex-shrink-0" style={{ fontSize: 11, marginTop: 1 }} />
+                        <span>{e.errorMessage}</span>
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 flex-shrink-0">
