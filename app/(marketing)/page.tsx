@@ -321,7 +321,7 @@ function ProblemSection() {
   return (
     <section className="px-6 py-24 border-t border-forest/8">
       <div className="max-w-6xl mx-auto">
-        <div className="mb-12 max-w-2xl">
+        <div className="text-center mb-12 max-w-2xl mx-auto">
           <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">The problem</div>
           <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Bespoke contracts move faster than billing systems</h2>
           <p className="text-stone leading-relaxed">Usage tiers, minimum commitments, credits, ramp discounts and amendments get negotiated in the contract — but billing teams still have to translate them into executable billing logic.</p>
@@ -337,7 +337,7 @@ function ProblemSection() {
             </div>
           ))}
         </div>
-        <p className="text-stone text-sm mb-6">Best fit: negotiated B2B contracts · recurring or usage-linked pricing · manual contract-to-billing operations</p>
+        <p className="text-stone text-sm mb-6 text-center">Best fit: negotiated B2B contracts · recurring or usage-linked pricing · manual contract-to-billing operations</p>
         <div className="rounded-2xl px-5 py-4 flex items-center gap-3 flex-wrap" style={{ background: '#F0EBE1' }}>
           <i className="ti ti-trending-down flex-shrink-0" style={{ fontSize: 18, color: '#D97706' }} />
           <p className="text-sm font-medium text-ink">The result: billing rework · revenue leakage · delayed invoices · slower close</p>
@@ -646,7 +646,7 @@ function RemembillProofSection() {
   return (
     <section className="px-6 py-24 border-t border-forest/8">
       <div className="max-w-6xl mx-auto">
-        <div className="mb-10 max-w-2xl">
+        <div className="text-center mb-10 max-w-2xl mx-auto">
           <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Live design partner pilot</div>
           <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Remembill is using Verdix on its own enterprise contract</h2>
           <p className="text-stone leading-relaxed">Its signed agreement enters Verdix, usage is pulled directly from the Remembill platform, and the resulting billing logic stays reviewable by the billing owner.</p>
@@ -684,7 +684,7 @@ function RemembillProofSection() {
             </div>
           </div>
         </div>
-        <p className="text-stone text-sm mt-6 max-w-3xl">Verdix connects the agreement to the operational data, then sends the approved billing result into the billing and finance stack you already run.</p>
+        <p className="text-stone text-sm mt-6 max-w-3xl mx-auto text-center">Verdix connects the agreement to the operational data, then sends the approved billing result into the billing and finance stack you already run.</p>
       </div>
     </section>
   )
