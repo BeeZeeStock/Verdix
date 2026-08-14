@@ -143,7 +143,7 @@ export default function VerifyResultsPage({ params }: { params: Promise<{ id: st
         <p className="text-stone text-sm mb-6">{job.error_message || 'An unexpected error occurred.'}</p>
         <div className="flex gap-3 justify-center">
           <Link href="/verify/new" className="bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors">Try again</Link>
-          <a href="mailto:support@verdix.io" className="border border-forest/20 text-stone text-sm font-medium px-4 py-2 rounded-xl hover:bg-cream transition-colors">Contact support</a>
+          <a href="mailto:bilal@lynoraai.com" className="border border-forest/20 text-stone text-sm font-medium px-4 py-2 rounded-xl hover:bg-cream transition-colors">Contact support</a>
         </div>
       </div>
     </div>

@@ -3,8 +3,8 @@ import { SessionProvider } from 'next-auth/react'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Verdix — Revenue Intelligence for B2B SaaS',
-  description: 'Verdix reads your signed contracts and checks your billing setup against them — surfacing mismatches before they cost you revenue.',
+  title: 'Verdix — Agreement-to-Billing for Complex B2B Contracts',
+  description: 'Verdix turns signed B2B agreements and required usage into traceable billing instructions for the systems you already use — without replacing your billing stack.',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

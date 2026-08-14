@@ -35,13 +35,15 @@ function Footer() {
       <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-5">
         <div className="flex items-center gap-2.5">
           <VerdixLogo size={24} />
-          <span className="font-sans font-semibold" style={{ color: '#1A3D2B', letterSpacing: '0.02em' }}>Verdix</span>
-          <span className="text-stone text-sm ml-2">Revenue intelligence for B2B SaaS</span>
+          <div>
+            <div className="font-sans font-semibold leading-tight" style={{ color: '#1A3D2B', letterSpacing: '0.02em' }}>Verdix — Agreement-to-billing for complex B2B contracts</div>
+            <div className="text-stone text-xs leading-tight">A product by Lynora AB · Sweden</div>
+          </div>
         </div>
         <div className="flex items-center gap-8 text-sm text-stone">
           <Link href="/privacy" className="hover:text-forest transition-colors">Privacy Policy</Link>
           <Link href="/terms" className="hover:text-forest transition-colors">Terms</Link>
-          <a href="mailto:hello@verdix.io" className="hover:text-forest transition-colors">Contact</a>
+          <a href="mailto:bilal@lynoraai.com" className="hover:text-forest transition-colors">Contact</a>
         </div>
         <div className="text-xs text-stone">© 2026 Verdix. All rights reserved.</div>
       </div>
@@ -60,9 +62,9 @@ export default function DesignPartnerPage() {
 
   const platforms = ['Stripe', 'Chargebee', 'Maxio', 'Other']
   const moduleOptions = [
-    { key: 'billing_verification', label: 'Billing verification', desc: 'Verify customer billing matches signed contracts' },
-    { key: 'auto_configure', label: 'Auto-configure', desc: 'Automate billing setup when a new contract is signed' },
-    { key: 'partner_recon', label: 'Partner reconciliation', desc: 'Validate partner and supplier invoices against agreements' },
+    { key: 'auto_configure', label: 'Agreement-to-billing', desc: 'Turn complex customer agreements into billing instructions' },
+    { key: 'billing_verification', label: 'Billing verification', desc: 'Check existing billing against signed agreements' },
+    { key: 'partner_recon', label: 'Partner reconciliation', desc: 'Validate partner charges against agreements' },
   ]
 
   const toggleModule = (key: string) => {
@@ -108,36 +110,55 @@ export default function DesignPartnerPage() {
         <div className="max-w-5xl mx-auto">
 
           {/* Header */}
-          <div className="text-center mb-14">
+          <div className="text-center mb-10">
             <div className="inline-flex items-center gap-2 mb-5" style={{ background: '#EAF3DE', border: '0.5px solid #C0DD97', borderRadius: 999, padding: '5px 14px' }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#27500A', display: 'inline-block' }} />
               <span style={{ fontSize: 11, fontWeight: 500, color: '#27500A', letterSpacing: '.05em' }}>DESIGN PARTNER PROGRAMME</span>
             </div>
-            <h1 className="font-display font-light text-ink text-4xl mb-4">Become a Verdix Design Partner</h1>
-            <p className="text-stone leading-relaxed max-w-xl mx-auto" style={{ fontSize: 15 }}>
-              We are building Verdix with a small group of Design Partners — companies who work directly with us to shape the product. Design Partners get early access, influence the roadmap, and receive preferential terms in exchange for structured feedback and collaboration.
+            <h1 className="font-display font-light text-ink text-4xl mb-4">Bring us one difficult agreement.<br />We&apos;ll show you what it should have billed.</h1>
+            <p className="text-stone leading-relaxed max-w-xl mx-auto mb-5" style={{ fontSize: 15 }}>
+              Start with a 30-minute working session. If the workflow is a fit, we&apos;ll model one historical agreement and the usage behind it before you decide whether to integrate anything.
             </p>
+            <p className="text-sm font-medium mb-8" style={{ color: '#27500A' }}>
+              No billing migration · No production changes · No long implementation · Human-approved before anything moves
+            </p>
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+              <a
+                href="mailto:bilal@lynoraai.com?subject=30-minute working session"
+                className="w-full sm:w-auto text-white font-medium px-8 py-4 rounded-xl transition-colors shadow-md text-center"
+                style={{ background: '#27AE60' }}
+                onMouseOver={e => (e.currentTarget.style.background = '#219150')}
+                onMouseOut={e => (e.currentTarget.style.background = '#27AE60')}
+              >
+                Book a 30-minute working session →
+              </a>
+              <a href="#apply" className="w-full sm:w-auto bg-white border border-sage text-sage font-medium px-8 py-4 rounded-xl hover:bg-mint transition-colors text-center">
+                Apply as a Design Partner
+              </a>
+            </div>
           </div>
 
-          {/* Benefit cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-14">
+          {/* Fit check → first audit → read-only pilot */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
             {[
-              { icon: 'ti-clock', title: 'Early access', desc: 'Access the platform before public launch. The first audit is complimentary, and all findings are yours to keep regardless of whether you proceed further.' },
-              { icon: 'ti-message-circle', title: 'Direct input on what we build', desc: 'A monthly working session with the founding team. Contract formats, billing platforms, and workflow requirements raised by Design Partners are prioritised directly into the development cycle.' },
-              { icon: 'ti-lock', title: 'Preferred pricing, permanently', desc: 'Design Partners receive a preferential rate that is locked in for the lifetime of the account — not subject to future pricing changes as the platform scales.' },
-            ].map(b => (
-              <div key={b.title} className="bg-white border border-forest/10 rounded-2xl p-7">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-5" style={{ background: '#EAF3DE' }}>
-                  <i className={`ti ${b.icon}`} style={{ fontSize: 20, color: '#1A3D2B' }} />
-                </div>
-                <div style={{ fontSize: 14, fontWeight: 500, color: '#1C1917', marginBottom: 8 }}>{b.title}</div>
-                <div style={{ fontSize: 13, color: '#6B6660', lineHeight: 1.7 }}>{b.desc}</div>
+              { step: '01 — Fit check', time: '30 minutes', desc: 'Walk us through the agreement, the billing workflow and the source systems.' },
+              { step: '02 — First audit', time: 'Complimentary', desc: 'Verdix models the commercial logic and maps the usage required to calculate it.' },
+              { step: '03 — Read-only pilot', time: 'Prove it before integrating', desc: 'Compare the result against what your existing process actually billed.' },
+            ].map(s => (
+              <div key={s.step} className="bg-white border border-forest/10 rounded-2xl p-6">
+                <div className="text-xs font-semibold uppercase tracking-widest mb-2" style={{ color: '#27500A' }}>{s.step}</div>
+                <div className="text-sm font-medium text-ink mb-2">{s.time}</div>
+                <div className="text-sm text-stone leading-relaxed">{s.desc}</div>
               </div>
             ))}
           </div>
+          <div className="rounded-2xl px-5 py-4 mb-14 text-center" style={{ background: '#EAF3DE', border: '1px solid #C0DD97' }}>
+            <span className="text-sm font-medium" style={{ color: '#27500A' }}>As a Design Partner: </span>
+            <span className="text-sm" style={{ color: '#27500A' }}>Early access · Direct roadmap input · Preferred commercial terms</span>
+          </div>
 
           {/* Application form */}
-          <div className="bg-white border border-forest/10 rounded-3xl overflow-hidden shadow-sm">
+          <div id="apply" className="bg-white border border-forest/10 rounded-3xl overflow-hidden shadow-sm" style={{ scrollMarginTop: 90 }}>
             <div className="px-8 py-6 border-b border-forest/8" style={{ background: '#F5F3EE' }}>
               <div style={{ fontSize: 15, fontWeight: 500, color: '#1C1917', marginBottom: 2 }}>Apply to become a Design Partner</div>
               <div style={{ fontSize: 13, color: '#6B6660' }}>We review every application and respond within 48 hours.</div>
@@ -161,7 +182,7 @@ export default function DesignPartnerPage() {
                       { label: 'Full name *', id: 'name', placeholder: 'Anna Lindqvist', type: 'text' },
                       { label: 'Work email *', id: 'email', placeholder: 'anna@company.com', type: 'email' },
                       { label: 'Company *', id: 'company', placeholder: 'Acme AB', type: 'text' },
-                      { label: 'Role', id: 'role', placeholder: 'CFO / VP Finance / Founder', type: 'text' },
+                      { label: 'Role', id: 'role', placeholder: 'Your role', type: 'text' },
                     ].map(f => (
                       <div key={f.id}>
                         <label style={{ fontSize: 10, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.07em', color: '#6B6660', display: 'block', marginBottom: 6 }}>{f.label}</label>

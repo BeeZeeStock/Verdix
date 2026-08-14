@@ -31,7 +31,7 @@ export default function TermsPage() {
             },
             {
               title: '3. Account responsibilities',
-              body: 'You are responsible for maintaining the confidentiality of your login credentials and for all activity that occurs under your account. You must not share your credentials with unauthorised third parties. You agree to notify us immediately at support@verdix.io if you suspect any unauthorised use of your account.',
+              body: 'You are responsible for maintaining the confidentiality of your login credentials and for all activity that occurs under your account. You must not share your credentials with unauthorised third parties. You agree to notify us immediately at bilal@lynoraai.com if you suspect any unauthorised use of your account.',
             },
             {
               title: '4. Acceptable use',

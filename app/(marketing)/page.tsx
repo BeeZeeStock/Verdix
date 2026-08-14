@@ -238,25 +238,27 @@ function Hero() {
       <div className="max-w-4xl mx-auto text-center relative">
         <div className="inline-flex items-center gap-2 text-xs font-medium mb-8" style={{ color: '#27500A' }}>
           <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: '#27500A' }} />
-          Contract-to-cash and partner reconciliation for B2B/B2B2C companies requiring EU residency & GDPR compliance
+          Agreement-to-billing for complex B2B contracts
         </div>
         <h1 className="font-display font-light text-ink leading-tight mb-5" style={{ fontSize: 'clamp(2.2rem,4.5vw,3.4rem)' }}>
-          Automate bespoke contract billing—<br /><span className="text-forest">without replacing your finance stack.</span>
+          Your contracts already say what to bill.<br /><span className="text-forest">Your billing system doesn&apos;t know it.</span>
         </h1>
-        <div className="text-stone text-lg max-w-2xl mx-auto leading-relaxed mb-10 space-y-3">
-          <p>Verdix reads signed customer and partner agreements, pulls the required usage from your existing data endpoints, and turns the terms into automated billing and reconciliation workflows.</p>
-          <p style={{ fontSize: '1rem' }}>Create customer billing schedules, send invoice instructions to your chosen billing or payment system, and identify incorrect partner charges before payment.</p>
+        <div className="text-stone text-lg max-w-2xl mx-auto leading-relaxed mb-6 space-y-3">
+          <p>Verdix reads the signed agreement, pulls the usage it requires, and turns both into approved billing instructions for the systems you already use.</p>
         </div>
+        <p className="text-center mb-10 text-sm font-medium" style={{ color: '#27500A' }}>
+          No billing migration · No new usage pipeline · Every calculation traceable to the contract
+        </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-4">
-          <Link href="/signup" className="w-full sm:w-auto text-white font-medium px-8 py-4 rounded-xl transition-colors shadow-md text-center" style={{ background: '#27AE60' }}
+          <a href="#how" className="w-full sm:w-auto text-white font-medium px-8 py-4 rounded-xl transition-colors shadow-md text-center" style={{ background: '#27AE60' }}
             onMouseOver={e => (e.currentTarget.style.background = '#219150')}
             onMouseOut={e => (e.currentTarget.style.background = '#27AE60')}
           >
-            Automate your first agreement →
-          </Link>
-          <a href="#how" className="w-full sm:w-auto bg-white border border-sage text-sage font-medium px-8 py-4 rounded-xl hover:bg-mint transition-colors text-center">
-            See how Verdix works
+            See how Verdix works →
           </a>
+          <Link href="/design-partner" className="w-full sm:w-auto bg-white border border-sage text-sage font-medium px-8 py-4 rounded-xl hover:bg-mint transition-colors text-center">
+            Book a 30-minute working session →
+          </Link>
         </div>
         <p className="text-center mb-10" style={{ fontSize: 11, color: '#9CA3AF' }}>
           EU-hosted · GDPR-first · Direct identifiers masked locally before AI processing
@@ -297,27 +299,140 @@ function Hero() {
   )
 }
 
+/* ─────────────── PROBLEM SECTION ─────────────── */
+function ProblemSection() {
+  const cards = [
+    {
+      icon: 'ti-file-text',
+      title: 'Terms live in the agreement',
+      body: 'Rates, tiers, commitments and exceptions sit in contracts and amendments — not in the billing configuration.',
+    },
+    {
+      icon: 'ti-database',
+      title: 'The invoice depends on data elsewhere',
+      body: 'Seats, transactions, API calls or other usage live in product and operational systems — outside the billing workflow.',
+    },
+    {
+      icon: 'ti-calculator',
+      title: 'Billing teams connect the two manually',
+      body: 'Teams re-read agreements, pull usage and rebuild the billing logic every cycle. Errors are often found only after invoicing.',
+    },
+  ]
+  return (
+    <section className="px-6 py-24 border-t border-forest/8">
+      <div className="max-w-6xl mx-auto">
+        <div className="mb-12 max-w-2xl">
+          <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">The problem</div>
+          <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Bespoke contracts move faster than billing systems</h2>
+          <p className="text-stone leading-relaxed">Usage tiers, minimum commitments, credits, ramp discounts and amendments get negotiated in the contract — but billing teams still have to translate them into executable billing logic.</p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          {cards.map(card => (
+            <div key={card.title} className="bg-white border border-forest/10 rounded-2xl p-6">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-4" style={{ background: '#EAF3DE' }}>
+                <i className={`ti ${card.icon}`} style={{ fontSize: 20, color: '#1A3D2B' }} />
+              </div>
+              <div className="text-sm font-semibold text-ink mb-2">{card.title}</div>
+              <div className="text-sm text-stone leading-relaxed">{card.body}</div>
+            </div>
+          ))}
+        </div>
+        <p className="text-stone text-sm mb-6">Best fit: negotiated B2B contracts · recurring or usage-linked pricing · manual contract-to-billing operations</p>
+        <div className="rounded-2xl px-5 py-4 flex items-center gap-3" style={{ background: '#FEF3C7', border: '1px solid #FDE68A' }}>
+          <i className="ti ti-trending-down flex-shrink-0" style={{ fontSize: 18, color: '#92400E' }} />
+          <p className="text-sm font-medium" style={{ color: '#92400E' }}>The result: billing rework · revenue leakage · delayed invoices · slower close</p>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 /* ─────────────── BILLING VERIFICATION SECTION ─────────────── */
 function BillingVerificationSection() {
   return (
     <section id="verify" className="px-6 py-24 border-t border-forest/8">
       <div className="max-w-6xl mx-auto">
         <div className="text-center mb-12 max-w-2xl mx-auto">
-          <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Contract-to-billing automation</div>
-          <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Turn every signed agreement into an approved billing schedule—before the first invoice goes out.</h2>
-          <p className="text-stone leading-relaxed mb-3">Connect the signed contract, your customer-usage endpoint and your preferred billing system. Verdix extracts the commercial terms, pulls the required usage automatically and creates the billing schedule for review.</p>
-          <p className="text-stone leading-relaxed mb-6">Once approved, Verdix sends the invoice instructions to your chosen billing infrastructure—while keeping every calculation traceable to the underlying agreement.</p>
-          <div className="flex flex-wrap justify-center gap-x-8 gap-y-2 mb-6">
-            {['Contract terms extracted and structured', 'Live usage pulled from your endpoint', 'Billing schedule generated automatically', 'Review, approve and sync'].map(f => (
-              <span key={f} className="flex items-center gap-2 text-sm text-stone">
-                <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: '#EAF3DE', border: '1px solid #C0DD97' }}>
-                  <i className="ti ti-check" style={{ fontSize: 10, color: '#27500A' }} />
-                </div>
-                {f}
-              </span>
-            ))}
+          <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">The solution</div>
+          <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Verdix turns the signed agreement into the billing instruction</h2>
+        </div>
+
+        {/* Architecture: Agreement + Usage → Verdix → Existing stack */}
+        <div className="flex flex-col lg:flex-row items-stretch gap-3 mb-8">
+          <div className="flex-1 flex flex-col gap-3">
+            <div className="bg-white border border-forest/10 rounded-2xl p-5">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: '#27500A' }}>
+                <i className="ti ti-file-text" style={{ fontSize: 14 }} /> Signed agreement
+              </div>
+              <p className="text-sm text-stone leading-relaxed">Rates · tiers · commitments · discounts &amp; escalators · amendments</p>
+            </div>
+            <div className="bg-white border border-forest/10 rounded-2xl p-5">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: '#27500A' }}>
+                <i className="ti ti-database" style={{ fontSize: 14 }} /> Required usage
+              </div>
+              <p className="text-sm text-stone leading-relaxed">Transactions · seats · API calls · orders · consumption</p>
+              <p className="text-xs text-stone/60 mt-2">Pulled from your existing endpoints</p>
+            </div>
           </div>
-          <p className="text-stone text-sm italic">Built-in verification keeps pricing, discounts, tiers, escalators and amendments aligned with the signed agreement.</p>
+
+          <div className="flex items-center justify-center flex-shrink-0 lg:rotate-0 rotate-90 py-1">
+            <i className="ti ti-arrow-right text-sage" style={{ fontSize: 22 }} />
+          </div>
+
+          <div className="flex-1 rounded-2xl p-5" style={{ background: '#1A3D2B' }}>
+            <div className="flex items-center gap-2 text-sm font-semibold text-white mb-4">
+              <VerdixLogo size={18} /> Verdix
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { title: 'Reads', body: 'Extracts the commercial terms and amendments.' },
+                { title: 'Pulls', body: 'Retrieves only the operational data the contract requires.' },
+                { title: 'Calculates', body: 'Applies the agreed rates, tiers and billing rules.' },
+                { title: 'Reviews', body: 'The billing owner reviews the result before anything is sent downstream.' },
+              ].map(step => (
+                <div key={step.title} className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.06)' }}>
+                  <div className="text-xs font-semibold uppercase tracking-widest mb-1.5" style={{ color: '#8FD19E' }}>{step.title}</div>
+                  <div className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.78)' }}>{step.body}</div>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs mt-4 leading-relaxed" style={{ color: '#8FD19E' }}>Billing that matches the agreement — without rebuilding your finance stack.</p>
+          </div>
+
+          <div className="flex items-center justify-center flex-shrink-0 lg:rotate-0 rotate-90 py-1">
+            <i className="ti ti-arrow-right text-sage" style={{ fontSize: 22 }} />
+          </div>
+
+          <div className="flex-1 bg-white border border-forest/10 rounded-2xl p-5">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: '#27500A' }}>
+              <i className="ti ti-plug-connected" style={{ fontSize: 14 }} /> Your existing stack
+            </div>
+            <div className="space-y-2 mb-3">
+              {[
+                { name: 'Remembill', desc: 'Invoice delivery & payment workflow' },
+                { name: 'Stripe', desc: 'Billing / payment workflow' },
+              ].map(p => (
+                <div key={p.name} className="rounded-xl px-3 py-2" style={{ background: '#F7F5F0' }}>
+                  <div className="text-sm font-medium text-ink">{p.name}</div>
+                  <div className="text-xs text-stone">{p.desc}</div>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-stone/60">Or connect Verdix to the systems you already use via API.</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-12 max-w-4xl mx-auto text-center">
+          {[
+            { title: 'No billing migration', body: 'Keep your existing billing and finance stack.' },
+            { title: 'No new usage pipeline', body: 'Verdix pulls only the usage the agreement requires.' },
+            { title: 'Clause-level traceability', body: 'Every rate and calculation traces back to its source.' },
+          ].map(p => (
+            <div key={p.title}>
+              <div className="text-sm font-semibold text-ink mb-1">{p.title}</div>
+              <div className="text-xs text-stone leading-relaxed">{p.body}</div>
+            </div>
+          ))}
         </div>
 
         {/* Real UI mockup — billing schedule + timeline */}
@@ -520,6 +635,61 @@ function BillingVerificationSection() {
   )
 }
 
+/* ─────────────── REMEMBILL LIVE PROOF SECTION ─────────────── */
+function RemembillProofSection() {
+  const steps = [
+    { num: '01', title: 'Agreement', body: 'Commercial terms extracted from Remembill’s signed contract.' },
+    { num: '02', title: 'Usage', body: 'Required billing metric pulled from the Remembill platform.' },
+    { num: '03', title: 'Billing logic', body: 'Verdix applies the agreed rates, tiers and billing period.' },
+    { num: '04', title: 'Review', body: 'The billing owner reviews the result with clause-level evidence.' },
+  ]
+  return (
+    <section className="px-6 py-24 border-t border-forest/8">
+      <div className="max-w-6xl mx-auto">
+        <div className="mb-10 max-w-2xl">
+          <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Live design partner pilot</div>
+          <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Remembill is using Verdix on its own enterprise contract</h2>
+          <p className="text-stone leading-relaxed">Its signed agreement enters Verdix, usage is pulled directly from the Remembill platform, and the resulting billing logic stays reviewable by the billing owner.</p>
+        </div>
+
+        <div className="bg-white border border-forest/10 rounded-2xl p-6 mb-6">
+          <div className="text-xs font-semibold uppercase tracking-widest mb-4" style={{ color: '#27500A' }}>Remembill using Verdix</div>
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+            {steps.map((s, i) => (
+              <div key={s.num} className="flex items-start gap-2">
+                <div className="flex-1 rounded-xl p-4" style={{ background: '#F7F5F0' }}>
+                  <div className="text-xs font-semibold mb-1.5" style={{ color: '#27500A' }}>{s.num} — {s.title}</div>
+                  <div className="text-xs text-stone leading-relaxed">{s.body}</div>
+                </div>
+                {i < steps.length - 1 && (
+                  <i className="ti ti-arrow-right hidden sm:block flex-shrink-0 mt-4" style={{ fontSize: 16, color: '#C0DD97' }} />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-2xl p-6" style={{ background: '#1A3D2B' }}>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-widest mb-1.5" style={{ color: '#8FD19E' }}>Approved billing flows into your existing stack</div>
+              <p className="text-sm" style={{ color: 'rgba(255,255,255,0.78)' }}>Nothing moves until the result is approved.</p>
+            </div>
+            <div className="flex items-center gap-2 text-sm flex-shrink-0">
+              <span className="rounded-full px-3 py-1.5 font-medium" style={{ background: 'rgba(255,255,255,0.1)', color: '#fff' }}>Verdix</span>
+              <i className="ti ti-arrow-right" style={{ color: '#8FD19E', fontSize: 14 }} />
+              <span className="text-xs" style={{ color: 'rgba(255,255,255,0.6)' }}>Approved invoice</span>
+              <i className="ti ti-arrow-right" style={{ color: '#8FD19E', fontSize: 14 }} />
+              <span className="rounded-full px-3 py-1.5 font-medium" style={{ background: 'rgba(255,255,255,0.1)', color: '#fff' }}>Remembill · Stripe</span>
+            </div>
+          </div>
+        </div>
+        <p className="text-stone text-sm mt-6 max-w-3xl">Verdix connects the agreement to the operational data, then sends the approved billing result into the billing and finance stack you already run.</p>
+      </div>
+    </section>
+  )
+}
+
 /* ─────────────── AUTO-CONFIGURE SECTION ─────────────── */
 function AutoConfigureSection() {
   return (
@@ -594,12 +764,12 @@ function AutoConfigureSection() {
           </div>
           {/* Copy */}
           <div className="order-1 lg:order-2">
-            <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Auto-configure</div>
-            <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Every new deal — billing configured automatically in 60 seconds</h2>
-            <p className="text-stone leading-relaxed mb-8">Connect your CRM. The moment a deal is marked Closed Won, Verdix reads every clause, proposes the exact billing configuration, and sets up your billing platform after your 60-second review. No manual translation. No errors.</p>
+            <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Agreement-to-billing automation</div>
+            <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">From signed agreement to reviewed billing configuration</h2>
+            <p className="text-stone leading-relaxed mb-8">Verdix extracts the commercial logic, identifies the required usage, calculates the billing instruction and sends the approved result into your existing stack. For connected workflows, processing can begin automatically when a deal is signed or marked Closed Won.</p>
             <ul className="space-y-3">
               {[
-                'CRM webhook triggers extraction the moment a deal is Closed Won',
+                'Commercial terms extracted and structured from the signed contract',
                 'AI extracts prices, tiers, escalators, and discount terms',
                 'Human reviews proposed config with PDF source side-by-side',
                 'Billing platform configured — zero manual typing, full audit trail',
@@ -627,10 +797,10 @@ function PartnerReconciliationSection() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
           <div>
             <div className="inline-flex items-center gap-2 mb-4" style={{ background: '#EAF3DE', border: '0.5px solid #C0DD97', borderRadius: 999, padding: '4px 12px' }}>
-              <span style={{ fontSize: 10, fontWeight: 500, color: '#27500A' }}>NEW MODULE</span>
+              <span style={{ fontSize: 10, fontWeight: 500, color: '#27500A' }}>ALSO BUILT ON THE SAME AGREEMENT LOGIC</span>
             </div>
             <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Partner reconciliation</div>
-            <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Validate every partner invoice against your signed agreement — before you pay</h2>
+            <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Verify partner charges before you pay them</h2>
             <p className="text-stone leading-relaxed mb-8">Revenue doesn&apos;t just leak outward. You can also overpay partners, resellers, and suppliers when their invoices don&apos;t match what was agreed. Verdix reads your partner agreements and checks incoming invoices against them — line by line — before you approve payment.</p>
             <ul className="space-y-3">
               {[
@@ -839,9 +1009,9 @@ function CalculationBreakdown() {
     <section className="px-6 py-24 bg-white border-b border-forest/8">
       <div className="max-w-6xl mx-auto">
         <div className="text-center mb-12 max-w-2xl mx-auto">
-          <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Calculation transparency</div>
-          <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Every number traced back to the contract clause that generated it</h2>
-          <p className="text-stone leading-relaxed">Verdix doesn&apos;t just flag mismatches — it shows the exact arithmetic. Every invoice amount, TCV, and leakage figure is derived step by step from the signed contract.</p>
+          <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Built for finance &amp; RevOps to trust</div>
+          <h2 className="font-display font-light text-ink text-3xl leading-tight mb-4">Click any rate. Land on the clause that set it.</h2>
+          <p className="text-stone leading-relaxed">Every billing calculation keeps its evidence — the contract term, source usage and applied logic. No black-box billing decisions.</p>
         </div>
         <div className="overflow-x-auto -mx-6 px-6 md:mx-0 md:px-0">
         <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden shadow-sm mx-auto" style={{ maxWidth: 900, minWidth: 700, fontSize: 12 }}>
@@ -949,15 +1119,15 @@ function Security() {
     <section id="security" className="px-6 py-20 border-b border-forest/8">
       <div className="max-w-5xl mx-auto">
         <div className="text-center mb-12">
-          <h2 className="font-display font-light text-ink text-2xl mb-3">Your contracts are sensitive. We treat them that way.</h2>
-          <p className="text-stone text-sm max-w-lg mx-auto">Built for the data sovereignty requirements of Nordic and European enterprises.</p>
+          <div className="text-xs font-medium uppercase tracking-widest text-sage mb-3">Built for sensitive commercial agreements</div>
+          <h2 className="font-display font-light text-ink text-2xl mb-3">Designed around European data requirements</h2>
+          <p className="text-stone text-sm max-w-lg mx-auto">Designed around GDPR and European data-residency requirements.</p>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-3xl mx-auto">
           {[
-            { icon: 'ti-shield-lock', title: 'EU data residency', desc: 'All data stored within the European Economic Area. GDPR compliant by design.' },
-            { icon: 'ti-eye-off', title: 'No AI training', desc: 'Contracts processed for extraction only. Raw text not retained after processing.' },
-            { icon: 'ti-file-description', title: 'Full audit trail', desc: 'Every billing change logged with the contract clause that authorised it.' },
-            { icon: 'ti-lock', title: 'SOC 2 Type II', desc: 'AES-256 at rest, TLS 1.3 in transit, row-level tenant isolation.' },
+            { icon: 'ti-shield-lock', title: 'EU-based architecture', desc: 'Customer data is processed within European infrastructure.' },
+            { icon: 'ti-eye-off', title: 'Masked before AI processing', desc: 'Sensitive identifiers are masked before contract text reaches the model layer.' },
+            { icon: 'ti-ban', title: 'No training on your contracts', desc: 'Your agreements are not used to train AI models.' },
           ].map(item => (
             <div key={item.title} className="bg-white border border-forest/10 rounded-2xl p-5 text-center">
               <i className={`ti ${item.icon} text-forest mb-3 block`} style={{ fontSize: 24 }} />
@@ -965,193 +1135,6 @@ function Security() {
               <div className="text-xs text-stone leading-snug">{item.desc}</div>
             </div>
           ))}
-        </div>
-      </div>
-    </section>
-  )
-}
-
-/* ─────────────── DESIGN PARTNER SECTION ─────────────── */
-function DesignPartnerSection() {
-  const [form, setForm] = useState({ name: '', email: '', company: '', role: '', platform: '', modules: [] as string[], pain: '' })
-  const [error, setError] = useState('')
-  const [submitted, setSubmitted] = useState(false)
-  const [loading, setLoading] = useState(false)
-
-  const platforms = ['Stripe', 'Chargebee', 'Maxio', 'Other']
-  const moduleOptions = [
-    { key: 'billing_verification', label: 'Billing verification', desc: 'Verify customer billing matches signed contracts' },
-    { key: 'auto_configure', label: 'Auto-configure', desc: 'Automate billing setup when a new contract is signed' },
-    { key: 'partner_recon', label: 'Partner reconciliation', desc: 'Validate partner and supplier invoices against agreements' },
-  ]
-
-  const toggleModule = (key: string) => {
-    setForm(f => ({
-      ...f,
-      modules: f.modules.includes(key) ? f.modules.filter(m => m !== key) : [...f.modules, key]
-    }))
-  }
-
-  const handleSubmit = async () => {
-    if (!form.name || !form.email || !form.company) {
-      setError('Please complete your name, work email, and company before submitting.')
-      return
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
-      setError('Please enter a valid work email address.')
-      return
-    }
-    setError('')
-    setLoading(true)
-    try {
-      await fetch('/api/design-partner-apply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
-      })
-      setSubmitted(true)
-    } catch {
-      setSubmitted(true) // graceful fallback
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <section id="alpha" className="px-6 py-24 border-t border-forest/8">
-      <div className="max-w-5xl mx-auto">
-        <div className="text-center mb-14">
-          <div className="inline-flex items-center gap-2 mb-5" style={{ background: '#EAF3DE', border: '0.5px solid #C0DD97', borderRadius: 999, padding: '5px 14px' }}>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#27500A', display: 'inline-block' }} />
-            <span style={{ fontSize: 11, fontWeight: 500, color: '#27500A', letterSpacing: '.05em' }}>DESIGN PARTNER PROGRAMME · LIMITED TO 20 COMPANIES</span>
-          </div>
-          <h2 className="font-display font-light text-ink text-3xl mb-4">Become a Verdix Design Partner</h2>
-          <p className="text-stone leading-relaxed max-w-xl mx-auto" style={{ fontSize: 15 }}>We are building Verdix with a small group of Design Partners — companies who work directly with us to shape the product. Design Partners get early access, influence the roadmap, and receive preferential terms in exchange for structured feedback and collaboration.</p>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-14">
-          {[
-            { icon: 'ti-clock', title: 'Early access', desc: 'Access the platform before public launch. The first audit is complimentary, and all findings are yours to keep regardless of whether you proceed further.' },
-            { icon: 'ti-message-circle', title: 'Direct input on what we build', desc: 'A monthly working session with the founding team. Contract formats, billing platforms, and workflow requirements raised by Design Partners are prioritised directly into the development cycle.' },
-            { icon: 'ti-lock', title: 'Preferred pricing, permanently', desc: 'Design Partners receive a preferential rate that is locked in for the lifetime of the account — not subject to future pricing changes as the platform scales.' },
-          ].map(b => (
-            <div key={b.title} className="bg-white border border-forest/10 rounded-2xl p-7">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-5" style={{ background: '#EAF3DE' }}>
-                <i className={`ti ${b.icon}`} style={{ fontSize: 20, color: '#1A3D2B' }} />
-              </div>
-              <div style={{ fontSize: 14, fontWeight: 500, color: '#1C1917', marginBottom: 8 }}>{b.title}</div>
-              <div style={{ fontSize: 13, color: '#6B6660', lineHeight: 1.7 }}>{b.desc}</div>
-            </div>
-          ))}
-        </div>
-        <div className="bg-white border border-forest/10 rounded-3xl overflow-hidden shadow-sm">
-          <div className="px-8 py-6 border-b border-forest/8" style={{ background: '#F5F3EE' }}>
-            <div style={{ fontSize: 15, fontWeight: 500, color: '#1C1917', marginBottom: 2 }}>Apply to become a Design Partner</div>
-            <div style={{ fontSize: 13, color: '#6B6660' }}>We review every application and respond within 48 hours.</div>
-          </div>
-          <div className="px-8 py-8">
-            {submitted ? (
-              <div style={{ textAlign: 'center', padding: '32px 0' }}>
-                <div style={{ width: 52, height: 52, background: '#EAF3DE', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-                  <i className="ti ti-check" style={{ fontSize: 24, color: '#1A3D2B' }} />
-                </div>
-                <div style={{ fontSize: 18, fontWeight: 500, color: '#1C1917', marginBottom: 8 }}>Application received</div>
-                <div style={{ fontSize: 14, color: '#6B6660', maxWidth: 400, margin: '0 auto', lineHeight: 1.7 }}>
-                  Thank you, {form.name}. We will review your application and be in touch within 48 hours to arrange a call.
-                </div>
-                <div style={{ marginTop: 20, fontSize: 12, color: '#9CA3AF' }}>A confirmation has been sent to {form.email}</div>
-              </div>
-            ) : (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
-                  {[
-                    { label: 'Full name *', id: 'name', placeholder: 'Anna Lindqvist', type: 'text' },
-                    { label: 'Work email *', id: 'email', placeholder: 'anna@company.com', type: 'email' },
-                    { label: 'Company *', id: 'company', placeholder: 'Acme AB', type: 'text' },
-                    { label: 'Role', id: 'role', placeholder: 'CFO / VP Finance / Founder', type: 'text' },
-                  ].map(f => (
-                    <div key={f.id}>
-                      <label style={{ fontSize: 10, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.07em', color: '#6B6660', display: 'block', marginBottom: 6 }}>{f.label}</label>
-                      <input
-                        type={f.type}
-                        placeholder={f.placeholder}
-                        value={(form as Record<string, string | string[]>)[f.id] as string ?? ''}
-                        onChange={e => setForm(prev => ({ ...prev, [f.id]: e.target.value }))}
-                        style={{ width: '100%', background: '#FAF8F4', border: '0.5px solid rgba(26,61,43,0.15)', borderRadius: 10, padding: '11px 14px', fontSize: 13, color: '#1C1917', outline: 'none' }}
-                        onFocus={e => { e.target.style.borderColor = '#1A3D2B'; e.target.style.background = '#fff' }}
-                        onBlur={e => { e.target.style.borderColor = 'rgba(26,61,43,0.15)'; e.target.style.background = '#FAF8F4' }}
-                      />
-                    </div>
-                  ))}
-                </div>
-                <div className="mb-5">
-                  <label style={{ fontSize: 10, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.07em', color: '#6B6660', display: 'block', marginBottom: 6 }}>Current billing platform</label>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    {platforms.map(p => (
-                      <label
-                        key={p}
-                        onClick={() => setForm(f => ({ ...f, platform: p.toLowerCase() }))}
-                        style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '10px 12px', background: form.platform === p.toLowerCase() ? '#EAF3DE' : '#FAF8F4', border: `0.5px solid ${form.platform === p.toLowerCase() ? '#1A3D2B' : 'rgba(26,61,43,0.15)'}`, borderRadius: 8, transition: '.15s' }}
-                      >
-                        <input type="radio" name="platform" value={p.toLowerCase()} checked={form.platform === p.toLowerCase()} onChange={() => {}} style={{ accentColor: '#1A3D2B' }} />
-                        <span style={{ fontSize: 12, color: '#1C1917' }}>{p}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <div className="mb-5">
-                  <label style={{ fontSize: 10, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.07em', color: '#6B6660', display: 'block', marginBottom: 6 }}>Which capabilities are most relevant?</label>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    {moduleOptions.map(m => (
-                      <label
-                        key={m.key}
-                        onClick={() => toggleModule(m.key)}
-                        style={{ display: 'flex', alignItems: 'flex-start', gap: 9, cursor: 'pointer', padding: '12px 14px', background: form.modules.includes(m.key) ? '#EAF3DE' : '#FAF8F4', border: `0.5px solid ${form.modules.includes(m.key) ? '#1A3D2B' : 'rgba(26,61,43,0.15)'}`, borderRadius: 10, transition: '.15s' }}
-                      >
-                        <input type="checkbox" checked={form.modules.includes(m.key)} onChange={() => {}} style={{ marginTop: 1, accentColor: '#1A3D2B', flexShrink: 0 }} />
-                        <div>
-                          <div style={{ fontSize: 12, fontWeight: 500, color: '#1C1917', marginBottom: 2 }}>{m.label}</div>
-                          <div style={{ fontSize: 11, color: '#6B6660', lineHeight: 1.5 }}>{m.desc}</div>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <div className="mb-6">
-                  <label style={{ fontSize: 10, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.07em', color: '#6B6660', display: 'block', marginBottom: 6 }}>
-                    What would you most like Verdix to solve for you? <span style={{ color: '#9CA3AF', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional)</span>
-                  </label>
-                  <textarea
-                    rows={3}
-                    value={form.pain}
-                    onChange={e => setForm(f => ({ ...f, pain: e.target.value }))}
-                    placeholder="For example: we have 60 enterprise contracts and no systematic way to verify our billing configuration matches what was agreed..."
-                    style={{ width: '100%', background: '#FAF8F4', border: '0.5px solid rgba(26,61,43,0.15)', borderRadius: 10, padding: '11px 14px', fontSize: 13, color: '#1C1917', outline: 'none', resize: 'none', lineHeight: 1.6 }}
-                    onFocus={e => { e.target.style.borderColor = '#1A3D2B'; e.target.style.background = '#fff' }}
-                    onBlur={e => { e.target.style.borderColor = 'rgba(26,61,43,0.15)'; e.target.style.background = '#FAF8F4' }}
-                  />
-                </div>
-                <div style={{ borderTop: '0.5px solid rgba(26,61,43,0.08)', marginBottom: 20 }} />
-                {error && (
-                  <div style={{ fontSize: 12, color: '#791F1F', background: '#FCEBEB', border: '0.5px solid #F09595', borderRadius: 8, padding: '10px 14px', marginBottom: 14 }}>{error}</div>
-                )}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-                  <div style={{ fontSize: 11, color: '#9CA3AF', lineHeight: 1.6 }}>
-                    Limited to 20 Design Partners &nbsp;·&nbsp; EU and Nordic companies preferred<br />
-                    No commitment or payment required at this stage
-                  </div>
-                  <button
-                    onClick={handleSubmit}
-                    disabled={loading}
-                    style={{ background: loading ? '#4A7C59' : '#1A3D2B', color: '#fff', fontWeight: 500, padding: '13px 28px', borderRadius: 12, fontSize: 14, border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}
-                    onMouseOver={e => { if (!loading) (e.target as HTMLButtonElement).style.background = '#4A7C59' }}
-                    onMouseOut={e => { if (!loading) (e.target as HTMLButtonElement).style.background = '#1A3D2B' }}
-                  >
-                    {loading ? 'Submitting...' : 'Apply to become a Design Partner →'}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
         </div>
       </div>
     </section>
@@ -1378,13 +1361,15 @@ function Footer() {
       <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-5">
         <div className="flex items-center gap-2.5">
           <VerdixLogo size={24} />
-          <span className="font-sans font-semibold" style={{ color: '#1A3D2B', letterSpacing: '0.02em' }}>Verdix</span>
-          <span className="text-stone text-sm ml-2">Revenue intelligence for B2B SaaS</span>
+          <div>
+            <div className="font-sans font-semibold leading-tight" style={{ color: '#1A3D2B', letterSpacing: '0.02em' }}>Verdix — Agreement-to-billing for complex B2B contracts</div>
+            <div className="text-stone text-xs leading-tight">A product by Lynora AB · Sweden</div>
+          </div>
         </div>
         <div className="flex items-center gap-8 text-sm text-stone">
           <Link href="/privacy" className="hover:text-forest transition-colors">Privacy Policy</Link>
           <Link href="/terms" className="hover:text-forest transition-colors">Terms</Link>
-          <a href="mailto:hello@verdix.io" className="hover:text-forest transition-colors">Contact</a>
+          <a href="mailto:bilal@lynoraai.com" className="hover:text-forest transition-colors">Contact</a>
         </div>
         <div className="text-xs text-stone">© 2026 Verdix. All rights reserved.</div>
       </div>
@@ -1401,12 +1386,14 @@ export default function MarketingPage() {
     <>
       <Nav />
       <Hero />
+      <ProblemSection />
       <BillingVerificationSection />
-      <AutoConfigureSection />
-      <PartnerReconciliationSection />
+      <RemembillProofSection />
       <HowItWorks />
       <CalculationBreakdown />
       <Security />
+      <AutoConfigureSection />
+      <PartnerReconciliationSection />
       <Pricing />
       <CTA />
       <Footer />

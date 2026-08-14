@@ -119,7 +119,7 @@ export default function PricingPage() {
             No percentage of revenue, no charge per raw usage event, and no requirement to replace your billing or payment infrastructure.
           </p>
           <p className="text-stone max-w-2xl mx-auto leading-relaxed">
-            Built for B2B SaaS, AI, fintech, marketplace and digital-platform companies managing bespoke customer or partner agreements—especially Finance, RevOps, Billing Operations and Partner Operations teams that want automation while keeping their existing systems.
+            Built for companies with negotiated B2B contracts and recurring or usage-linked pricing — especially RevOps, Billing Operations and Finance teams managing manual contract-to-billing workflows.
           </p>
         </div>
 
