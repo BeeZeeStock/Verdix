@@ -338,9 +338,9 @@ function ProblemSection() {
           ))}
         </div>
         <p className="text-stone text-sm mb-6">Best fit: negotiated B2B contracts · recurring or usage-linked pricing · manual contract-to-billing operations</p>
-        <div className="rounded-2xl px-5 py-4 flex items-center gap-3" style={{ background: '#FEF3C7', border: '1px solid #FDE68A' }}>
-          <i className="ti ti-trending-down flex-shrink-0" style={{ fontSize: 18, color: '#92400E' }} />
-          <p className="text-sm font-medium" style={{ color: '#92400E' }}>The result: billing rework · revenue leakage · delayed invoices · slower close</p>
+        <div className="rounded-2xl px-5 py-4 flex items-center gap-3 flex-wrap" style={{ background: '#F0EBE1' }}>
+          <i className="ti ti-trending-down flex-shrink-0" style={{ fontSize: 18, color: '#D97706' }} />
+          <p className="text-sm font-medium text-ink">The result: billing rework · revenue leakage · delayed invoices · slower close</p>
         </div>
       </div>
     </section>
@@ -675,12 +675,12 @@ function RemembillProofSection() {
               <div className="text-xs font-semibold uppercase tracking-widest mb-1.5" style={{ color: '#8FD19E' }}>Approved billing flows into your existing stack</div>
               <p className="text-sm" style={{ color: 'rgba(255,255,255,0.78)' }}>Nothing moves until the result is approved.</p>
             </div>
-            <div className="flex items-center gap-2 text-sm flex-shrink-0">
-              <span className="rounded-full px-3 py-1.5 font-medium" style={{ background: 'rgba(255,255,255,0.1)', color: '#fff' }}>Verdix</span>
-              <i className="ti ti-arrow-right" style={{ color: '#8FD19E', fontSize: 14 }} />
-              <span className="text-xs" style={{ color: 'rgba(255,255,255,0.6)' }}>Approved invoice</span>
-              <i className="ti ti-arrow-right" style={{ color: '#8FD19E', fontSize: 14 }} />
-              <span className="rounded-full px-3 py-1.5 font-medium" style={{ background: 'rgba(255,255,255,0.1)', color: '#fff' }}>Remembill · Stripe</span>
+            <div className="flex items-center gap-2 text-sm flex-wrap">
+              <span className="rounded-full px-3 py-1.5 font-medium whitespace-nowrap" style={{ background: 'rgba(255,255,255,0.1)', color: '#fff' }}>Verdix</span>
+              <i className="ti ti-arrow-right flex-shrink-0" style={{ color: '#8FD19E', fontSize: 14 }} />
+              <span className="text-xs whitespace-nowrap" style={{ color: 'rgba(255,255,255,0.6)' }}>Approved invoice</span>
+              <i className="ti ti-arrow-right flex-shrink-0" style={{ color: '#8FD19E', fontSize: 14 }} />
+              <span className="rounded-full px-3 py-1.5 font-medium whitespace-nowrap" style={{ background: 'rgba(255,255,255,0.1)', color: '#fff' }}>Remembill · Stripe</span>
             </div>
           </div>
         </div>
