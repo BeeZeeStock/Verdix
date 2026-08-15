@@ -18,6 +18,8 @@ type OverageItem = {
   minimumFloorAmount?:  number
 }
 
+type PendingMinimum = { meter_key: string; amount: number; currency: string }
+
 type Period = {
   id:           string
   periodStart:  string
@@ -26,6 +28,7 @@ type Period = {
   currency:     string
   overageItems: OverageItem[]
   overageTotal: number
+  pendingMinimums?: PendingMinimum[]
 }
 
 function fmt(n: number, cur = 'EUR') {
@@ -181,9 +184,23 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
                       </thead>
                       <tbody>
                         {p.status === 'future' ? (
-                          <tr>
-                            <td className="px-3 py-2 text-stone/50 italic" colSpan={5}>Will be measured at the end of the billing cycle</td>
-                          </tr>
+                          (p.pendingMinimums ?? []).length > 0 ? (
+                            (p.pendingMinimums ?? []).map((m, i) => (
+                              <tr key={i} style={i > 0 ? { borderTop: '1px solid rgba(26,61,43,0.06)' } : undefined}>
+                                <td className="px-3 py-2 text-ink" colSpan={4}>
+                                  {m.meter_key}
+                                  <div className="text-[9px] font-medium mt-0.5" style={{ color: '#B45309' }}>
+                                    Minimum floor: {fmt(m.amount, m.currency)} · usage awaiting period close
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2 text-right text-stone/50 italic" style={{ fontSize: 11 }}>Pending</td>
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td className="px-3 py-2 text-stone/50 italic" colSpan={5}>Will be measured at the end of the billing cycle</td>
+                            </tr>
+                          )
                         ) : p.overageItems.length === 0 ? (
                           <tr>
                             <td className="px-3 py-2 text-stone/40" colSpan={5}>

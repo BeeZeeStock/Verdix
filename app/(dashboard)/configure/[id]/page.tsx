@@ -120,6 +120,30 @@ function fmtDate(s: string | null | undefined) {
   return new Date(s).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+// Short, unambiguous economic-treatment label for a confirmed minimum
+// commitment — "SEK 5,000/quarterly minimum" alone reads as an additive
+// recurring charge; every display of a confirmed rule must say which
+// treatment was actually approved (floor vs additive vs spend commitment).
+function ruleModeShortLabel(mode: string): string {
+  const labels: Record<string, string> = {
+    floor: 'minimum floor', additive: 'additive fee', minimum_spend: 'spend commitment',
+    prepaid_commitment: 'prepaid commitment', minimum_quantity: 'minimum quantity',
+  }
+  return labels[mode] ?? mode
+}
+
+const CADENCE_NOUN: Record<string, string> = { monthly: 'month', quarterly: 'quarter', 'semi-annual': 'half-year', annual: 'year' }
+
+// "calendar quarter" vs plain "quarter" — the reset_anchor distinction this
+// session's cadence-anchor fix introduced is exactly the kind of detail a
+// compact rule display must not silently drop, since it changes which real
+// dates the rule evaluates on.
+function ruleCadenceLabel(period: string | null | undefined, resetAnchor: 'contract_start' | 'calendar' | null | undefined): string | null {
+  if (!period) return null
+  const noun = CADENCE_NOUN[period] ?? period
+  return resetAnchor === 'calendar' ? `calendar ${noun}` : noun
+}
+
 function fmtShort(d: Date) {
   return d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' })
 }
@@ -1796,6 +1820,25 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [scheduleExists,  setScheduleExists]  = useState<boolean | null>(null)
   const [parkedInvoices,  setParkedInvoices]  = useState<Array<{ id: string; feeLabel: string | null; currency: string; baseAmount: number; metricName: string | null; ratePerUnit: number | null; description: string | null }>>([])
   const [sentOneTimeInvoices, setSentOneTimeInvoices] = useState<{ feeLabel: string | null; amount: number }[]>([])
+
+  // Audit-trail metadata (reviewer, timestamp, source clause) for every
+  // currently-confirmed commercial rule — enriches the Commercial Terms
+  // "Confirmed rules" card beyond what contract_terms alone can show, since
+  // contract_terms only holds the current operational value, not who
+  // approved it or when. Resilient to the audit table not existing yet.
+  type RuleInterpretationRecord = {
+    rule_type: string; contract_unit_type: string | null; source_clause: string | null
+    approved_interpretation: Record<string, unknown>; reviewer_email: string; reviewer_name: string | null; created_at: string
+  }
+  const [ruleInterpretations, setRuleInterpretations] = useState<RuleInterpretationRecord[]>([])
+  const [editingRule, setEditingRule] = useState<string | null>(null)
+  const fetchRuleInterpretations = () => {
+    fetch(`/api/jobs/${id}/rule-interpretations`)
+      .then(r => r.json())
+      .then((res: { interpretations?: RuleInterpretationRecord[] }) => setRuleInterpretations(res.interpretations ?? []))
+      .catch(() => {})
+  }
+  useEffect(() => { fetchRuleInterpretations() }, [id])
   const [connectedBillingPlatforms, setConnectedBillingPlatforms] = useState<string[]>([])
   const [selectedBillingPlatform,   setSelectedBillingPlatform]   = useState<string | null>(null)
 
@@ -2434,9 +2477,14 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
 
               {/* Confirmed rules — generated from the approved, normalized model
-                  (a reviewer's rule-interpretation flow), not something to
-                  manually re-enter here. This is a read view; resolving or
-                  changing one happens back in the Review panel. */}
+                  (a reviewer's rule-interpretation flow). Reviewer/timestamp/
+                  source come from the commercial_rule_interpretations audit
+                  trail; the rule content itself comes from contract_terms
+                  (the current operational value) so this can never show a
+                  stale interpretation if the audit lookup fails. "Edit
+                  interpretation" re-opens the same in-panel flow used to
+                  confirm it in the first place — approving a new proposal
+                  creates a new revision, never overwrites the old one. */}
               {(() => {
                 const confirmedMinimums = new Map<string, Tier>()
                 for (const t of tiers) {
@@ -2450,35 +2498,99 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   floor: 'Minimum charge floor', additive: 'Additive fee', minimum_spend: 'Spend commitment',
                   prepaid_commitment: 'Prepaid commitment', minimum_quantity: 'Minimum quantity',
                 }
+                const findAudit = (ruleType: string, unitType: string | null) =>
+                  ruleInterpretations.find(r => r.rule_type === ruleType && r.contract_unit_type === unitType)
                 return (
                   <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
                     <p className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-3">Confirmed rules</p>
                     <div className="grid grid-cols-2 gap-4">
                       {Array.from(confirmedMinimums.entries()).map(([unitType, t]) => {
                         const mc = t.minimum_commitment!
+                        const editKey = `min:${unitType}`
+                        if (editingRule === editKey) {
+                          return (
+                            <div key={unitType} className="rounded-xl p-4 col-span-2" style={{ background: '#FFFDF7', border: '1px solid #FDE68A' }}>
+                              <div className="flex items-center justify-between mb-2">
+                                <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Editing: {unitType}</p>
+                                <button onClick={() => setEditingRule(null)} className="text-[11px] text-stone hover:text-ink underline underline-offset-2">Cancel</button>
+                              </div>
+                              <RuleInterpretationCard
+                                jobId={id}
+                                kind="minimum_commitment"
+                                contractUnitType={unitType}
+                                sourceClause={findAudit('minimum_commitment', unitType)?.source_clause ?? `${unitType} minimum commitment`}
+                                currency={cur}
+                                meterMappingConfirmed={true}
+                                onApplied={() => { setEditingRule(null); fetchRuleInterpretations(); fetchJob() }}
+                              />
+                            </div>
+                          )
+                        }
+                        const audit = findAudit('minimum_commitment', unitType)
                         return (
                           <div key={unitType} className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
                             <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">{modeLabel[mc.mode] ?? mc.mode}</p>
-                            <p className="text-lg font-semibold text-ink mb-1">{fmt(mc.amount, cur)}{mc.period ? ` / ${mc.period}` : ''}</p>
+                            <p className="text-lg font-semibold text-ink mb-1">
+                              {fmt(mc.amount, cur)}{ruleCadenceLabel(mc.period, t.reset_anchor) ? ` / ${ruleCadenceLabel(mc.period, t.reset_anchor)}` : ''}
+                            </p>
                             <p className="text-[11px] text-stone">Applies to: <span className="font-medium text-ink">{unitType}</span></p>
                             {mc.included_allowance_interaction && (
                               <p className="text-[11px] text-stone">Allowance: <span className="font-medium text-ink">{mc.included_allowance_interaction.replace(/_/g, ' ')}</span></p>
                             )}
-                            <p className="text-[10px] text-stone/60 mt-2">Status: <span className="font-medium" style={{ color: '#0B5C36' }}>Confirmed</span></p>
+                            <p className="text-[10px] text-stone/60 mt-2">
+                              Status: <span className="font-medium" style={{ color: '#0B5C36' }}>Confirmed</span>
+                              {audit && <> by {audit.reviewer_name ?? audit.reviewer_email} · {fmtDate(audit.created_at)}</>}
+                            </p>
+                            <div className="flex items-center gap-3 mt-2">
+                              {src.overage_tiers && (
+                                <button onClick={() => openPDF(src.overage_tiers)} className="text-[11px] font-medium text-forest hover:underline">View source ↗</button>
+                              )}
+                              <button onClick={() => setEditingRule(editKey)} className="text-[11px] font-medium text-stone hover:text-ink">Edit interpretation</button>
+                            </div>
                           </div>
                         )
                       })}
-                      {confirmedEscalators.map((e, i) => (
-                        <div key={i} className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
-                          <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">Price escalation</p>
-                          <p className="text-lg font-semibold text-ink mb-1">
-                            {e.interpretation!.index}{e.interpretation!.cap_pct != null ? `, capped ${e.interpretation!.cap_pct}%` : ''}
-                          </p>
-                          <p className="text-[11px] text-stone">{e.interpretation!.calculation_method}</p>
-                          <p className="text-[11px] text-stone">Frequency: <span className="font-medium text-ink">{e.interpretation!.frequency}</span></p>
-                          <p className="text-[10px] text-stone/60 mt-2">Status: <span className="font-medium" style={{ color: '#0B5C36' }}>Confirmed</span></p>
-                        </div>
-                      ))}
+                      {confirmedEscalators.map((e, i) => {
+                        const editKey = `esc:${i}`
+                        if (editingRule === editKey) {
+                          return (
+                            <div key={i} className="rounded-xl p-4 col-span-2" style={{ background: '#FFFDF7', border: '1px solid #FDE68A' }}>
+                              <div className="flex items-center justify-between mb-2">
+                                <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Editing: Price escalation</p>
+                                <button onClick={() => setEditingRule(null)} className="text-[11px] text-stone hover:text-ink underline underline-offset-2">Cancel</button>
+                              </div>
+                              <RuleInterpretationCard
+                                jobId={id}
+                                kind="escalator_interpretation"
+                                sourceClause={findAudit('escalator', null)?.source_clause ?? e.description ?? 'Price escalator'}
+                                currency={cur}
+                                onApplied={() => { setEditingRule(null); fetchRuleInterpretations(); fetchJob() }}
+                              />
+                            </div>
+                          )
+                        }
+                        const audit = findAudit('escalator', null)
+                        return (
+                          <div key={i} className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
+                            <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">Price escalation</p>
+                            <p className="text-lg font-semibold text-ink mb-1">
+                              {e.interpretation!.index}{e.interpretation!.cap_pct != null ? `, capped ${e.interpretation!.cap_pct}%` : ''}
+                            </p>
+                            <p className="text-[11px] text-stone">{e.interpretation!.calculation_method}</p>
+                            <p className="text-[11px] text-stone">Frequency: <span className="font-medium text-ink">{e.interpretation!.frequency}</span></p>
+                            <p className="text-[10px] text-stone/60 mt-2">
+                              Status: <span className="font-medium" style={{ color: '#0B5C36' }}>Confirmed</span>
+                              {audit && <> by {audit.reviewer_name ?? audit.reviewer_email} · {fmtDate(audit.created_at)}</>}
+                            </p>
+                            <div className="flex items-center gap-3 mt-2">
+                              {src.escalators && (
+                                <button onClick={() => openPDF(src.escalators)} className="text-[11px] font-medium text-forest hover:underline">View source ↗</button>
+                              )}
+                              <button onClick={() => setEditingRule(editKey)} className="text-[11px] font-medium text-stone hover:text-ink">Edit interpretation</button>
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
                   </div>
                 )
@@ -2912,8 +3024,22 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       </thead>
                       <tbody>
                         {orderedItems.map(item => {
-                          const isEscalator = classifyItem(item) === 'escalator'
-                          const isVariable  = classifyItem(item) === 'one_time' && item.total_amount === 0
+                          // Classified once, with the real escalators/partial-period
+                          // context — calling classifyItem(item) bare here previously
+                          // meant an unresolved CPI escalator could never be told apart
+                          // from a resolved one, so its Total column silently rendered
+                          // the raw (often 0) total_amount as "0%" instead of flagging
+                          // that no rate exists yet.
+                          const rowKind = classifyItem(item, tiers, terms?.escalators ?? [], partialPeriodMetricsForConfig)
+                          const isEscalator = rowKind === 'escalator'
+                          const isEscalatorUnresolved = rowKind === 'escalator_interpretation'
+                          const isVariableTier = rowKind === 'overage_tier' || rowKind === 'minimum_commitment' || rowKind === 'partial_period'
+                          const isVariable  = rowKind === 'one_time' && item.total_amount === 0
+                          // Both resolved and unresolved escalators get the same
+                          // non-editable-numeric-cell treatment (Qty/Unit price are
+                          // meaningless for a % rate either way) — only the Total
+                          // column's text differs between them.
+                          const isEscalatorLike = isEscalator || isEscalatorUnresolved
                           const group = groupOf(item)
                           const showGroupHeader = group !== lastGroup
                           lastGroup = group
@@ -2940,7 +3066,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
                             {/* Qty — editable */}
                             <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums', minWidth: 48 }}>
-                              {!isEscalator && billingEdit?.itemId === item.id && billingEdit.field === 'quantity' ? (
+                              {!isEscalatorLike && billingEdit?.itemId === item.id && billingEdit.field === 'quantity' ? (
                                 <input autoFocus type="number" min="0" step="1"
                                   className={editCellStyle}
                                   style={{ width: 56 }}
@@ -2951,17 +3077,17 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                                 />
                               ) : (
                                 <span
-                                  className={isEscalator ? '' : 'cursor-pointer hover:text-forest transition-colors'}
-                                  title={isEscalator ? undefined : 'Click to edit'}
-                                  onClick={() => !isEscalator && setBillingEdit({ itemId: item.id, field: 'quantity', value: String(item.quantity) })}
-                                >{item.quantity}</span>
+                                  className={isEscalatorLike ? '' : 'cursor-pointer hover:text-forest transition-colors'}
+                                  title={isEscalatorLike ? undefined : 'Click to edit'}
+                                  onClick={() => !isEscalatorLike && setBillingEdit({ itemId: item.id, field: 'quantity', value: String(item.quantity) })}
+                                >{isVariableTier && item.quantity === 0 ? <span className="text-stone/40">—</span> : item.quantity}</span>
                               )}
                             </td>
 
                             {/* Unit price — editable */}
                             <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums', minWidth: 96 }}>
-                              {isEscalator ? (
-                                <span>{item.unit_price != null ? `${item.unit_price}%` : '—'}</span>
+                              {isEscalatorLike ? (
+                                <span>{isEscalatorUnresolved ? <span className="text-amber-600">Pending interpretation</span> : item.unit_price != null ? `${item.unit_price}%` : '—'}</span>
                               ) : billingEdit?.itemId === item.id && billingEdit.field === 'unit_price' ? (
                                 <input autoFocus type="number" min="0" step="any"
                                   className={editCellStyle}
@@ -2976,7 +3102,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                                   className="cursor-pointer hover:text-forest transition-colors"
                                   title="Click to edit"
                                   onClick={() => {
-                                    if (classifyItem(item) === 'one_time' && item.unit_price === 0) {
+                                    if (rowKind === 'one_time' && item.unit_price === 0) {
                                       const termFee = allFees.find(f => f.fee_label === item.product_name)
                                       if (termFee?.manual_trigger && termFee.rate_per_unit) {
                                         setBillingEdit({ itemId: item.id, field: 'unit_price', value: String(termFee.rate_per_unit) })
@@ -2986,7 +3112,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                                     setBillingEdit({ itemId: item.id, field: 'unit_price', value: String(item.unit_price) })
                                   }}
                                 >
-                                  {classifyItem(item) === 'one_time' && item.unit_price === 0 ? (() => {
+                                  {rowKind === 'one_time' && item.unit_price === 0 ? (() => {
                                     const termFee = allFees.find(f => f.fee_label === item.product_name)
                                     if (termFee?.manual_trigger && termFee.rate_per_unit) {
                                       return <span>{fmt(termFee.rate_per_unit, cur)}<span className="text-stone/60">/{termFee.metric_name ?? 'unit'}</span></span>
@@ -2997,13 +3123,20 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                               )}
                             </td>
 
-                            {/* Total — calculated, read-only */}
+                            {/* Total — calculated, read-only. A variable-pricing tier
+                                with no usage yet is a pricing rule waiting to be
+                                consumed, not an invoice line for SEK 0 — showing the
+                                raw total here previously read as "nothing configured". */}
                             <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                              {isEscalator
-                                ? <span>{item.total_amount != null ? `${item.total_amount}%` : '—'}</span>
-                                : isVariable
-                                  ? <span className="text-amber-600 font-normal text-[11px]">Variable — on delivery</span>
-                                  : fmt(item.total_amount, cur)}
+                              {isEscalatorUnresolved
+                                ? <span className="text-amber-600 font-normal text-[11px]">Pending interpretation</span>
+                                : isEscalator
+                                  ? <span>{item.total_amount != null ? `${item.total_amount}%` : '—'}</span>
+                                  : isVariable
+                                    ? <span className="text-amber-600 font-normal text-[11px]">Variable — on delivery</span>
+                                    : isVariableTier && item.quantity === 0
+                                      ? <span className="text-stone/50 font-normal text-[11px]">Usage-based — not yet billed</span>
+                                      : fmt(item.total_amount, cur)}
                             </td>
 
                             {/* Period — editable via select */}
@@ -3057,7 +3190,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             <span key={t.unit_type} className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full"
                               style={{ background: '#F6FAF4', color: '#0B5C36', border: '1px solid rgba(74,124,89,0.25)' }}>
                               <i className="ti ti-shield-check" style={{ fontSize: 11 }} />
-                              {t.unit_type}: {fmt(t.minimum_commitment!.amount, cur)}{t.minimum_commitment!.period ? `/${t.minimum_commitment!.period}` : ''} minimum · Confirmed
+                              {t.unit_type} · {fmt(t.minimum_commitment!.amount, cur)} {ruleModeShortLabel(t.minimum_commitment!.mode)}{ruleCadenceLabel(t.minimum_commitment!.period, t.reset_anchor) ? ` / ${ruleCadenceLabel(t.minimum_commitment!.period, t.reset_anchor)}` : ''} · Confirmed
                             </span>
                           ))}
                         </div>

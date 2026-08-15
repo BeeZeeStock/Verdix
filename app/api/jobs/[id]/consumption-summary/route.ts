@@ -73,6 +73,13 @@ export async function GET(
     else status = 'pending'
 
     let overageItems: OverageLineItem[] = []
+    // Confirmed minimum commitments a future period will eventually enforce
+    // — a cheap, static read of the current contract model (no live usage
+    // pull; the period hasn't started, so there's nothing to measure yet).
+    // Lets the timeline show "Minimum floor: X · awaiting period close" for
+    // a metric ahead of time, instead of only the generic "will be measured"
+    // message that gave no hint a floor was already confirmed.
+    let pendingMinimums: Array<{ meter_key: string; amount: number; currency: string }> = []
 
     if (status === 'past' && nextRow) {
       overageItems = (nextRow.overage_line_items ?? []) as OverageLineItem[]
@@ -92,6 +99,11 @@ export async function GET(
         includeZeroUsage:   true,
         livePreviewAsOfUnix: Math.floor(Date.now() / 1000),
       }).catch(() => [])
+    } else if (status === 'future' && terms) {
+      const seen = new Set<string>()
+      pendingMinimums = (terms.overage_tiers ?? [])
+        .filter(t => t.unit_type && t.minimum_commitment && !t.minimum_commitment.requires_confirmation && !seen.has(t.unit_type) && seen.add(t.unit_type))
+        .map(t => ({ meter_key: t.unit_type!, amount: t.minimum_commitment!.amount, currency: row.currency ?? terms.currency ?? 'EUR' }))
     }
 
     return {
@@ -102,6 +114,7 @@ export async function GET(
       currency:     row.currency,
       overageItems,
       overageTotal: overageItems.reduce((s, i) => s + i.amount, 0),
+      pendingMinimums,
     }
   }))
 
