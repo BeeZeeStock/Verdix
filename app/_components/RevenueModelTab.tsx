@@ -251,7 +251,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
           <p className="text-sm font-medium text-ink mb-1">Contract dates required</p>
           <p className="text-xs text-stone leading-relaxed">
             {!start && !end ? 'Start and end dates are' : !start ? 'A start date is' : 'An end date is'} missing.
-            Go to the <strong>Contract terms</strong> tab and click the date to add it — TCV and this model will calculate automatically.
+            Go to the <strong>Contract terms</strong> tab and click the date to add it — Fixed fees and this model will calculate automatically.
           </p>
         </div>
       </div>
@@ -1374,8 +1374,8 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
           }
         })
         const configuredTotal = cum
-        // TCV total bar — spans full height from 0
-        wBars.push({ label: 'TCV', sub: '', from: 0, to: configuredTotal, amount: configuredTotal, status: 'total', kind: 'total' })
+        // Configured total bar — spans full height from 0
+        wBars.push({ label: 'Configured total', sub: '', from: 0, to: configuredTotal, amount: configuredTotal, status: 'total', kind: 'total' })
 
         const n = wBars.length
         const bScale = configuredTotal > 0 ? configuredTotal : 1
@@ -1494,7 +1494,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                 {contractTcv > 0 && (
                   <div className="flex items-start gap-5">
                     <div>
-                      <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Base TCV</p>
+                      <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Fixed fees</p>
                       <p className="text-[20px] font-semibold leading-none" style={{ color: '#9CA3AF', fontVariantNumeric: 'tabular-nums' }}>
                         {fmt(contractTcv, cur)}
                       </p>
@@ -1508,7 +1508,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                           </p>
                         </div>
                         <div>
-                          <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Actual TCV</p>
+                          <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Committed contract value</p>
                           <p className="text-[20px] font-semibold leading-none" style={{ color: '#9CA3AF', fontVariantNumeric: 'tabular-nums' }}>
                             {fmt(actualTcv, cur)}
                           </p>
@@ -1526,7 +1526,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               {actualTcv > 0 && !isMatch && (
                 <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg">
                   <i className="ti ti-alert-triangle-filled" style={{ fontSize: 13 }} />
-                  {tcvDelta > 0 ? '+' : ''}{(tcvDelta * 100).toFixed(1)}% vs actual TCV
+                  {tcvDelta > 0 ? '+' : ''}{(tcvDelta * 100).toFixed(1)}% vs committed contract value
                 </div>
               )}
             </div>
@@ -1568,7 +1568,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                     <i className="ti ti-info-circle text-amber-600 flex-shrink-0 mt-0.5" style={{ fontSize: 15 }} />
                     <div className="flex-1 min-w-0">
                       <p className="text-[12px] font-semibold text-amber-900 mb-2">
-                        {fmt(gap, cur)} {tcvDelta < 0 ? 'below' : 'above'} the actual TCV
+                        {fmt(gap, cur)} {tcvDelta < 0 ? 'below' : 'above'} the committed contract value
                         {hasDuplicates ? ' — here’s exactly why:' : ' — here’s why this can happen:'}
                       </p>
                       <ul className="space-y-1.5 mb-3">
@@ -1758,8 +1758,8 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
         type ABar = { label: string; sub?: string; amount: number; kind: 'segment' | 'total'; color: string; dashed?: boolean }
         const aBars: ABar[] = [
           { label: 'Billed to date', sub: elapsedMonths > 0 ? `${elapsedMonths} mo elapsed` : undefined, amount: totalBilled, kind: 'segment', color: '#27AE60' },
-          { label: 'Remaining', sub: 'contracted', amount: actualsRemaining, kind: 'segment', color: '#C8E6D4', dashed: true },
-          { label: 'Actual TCV', amount: actualTcv, kind: 'total', color: '#1A3D2B' },
+          { label: 'Remaining committed value', sub: 'contracted', amount: actualsRemaining, kind: 'segment', color: '#C8E6D4', dashed: true },
+          { label: 'Committed contract value', amount: actualTcv, kind: 'total', color: '#1A3D2B' },
         ]
         let cum = 0
         const aPos = aBars.map(b => {
@@ -1786,8 +1786,8 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Revenue actuals — billed to date</h3>
               <div className="flex items-center gap-3 text-[10px] text-stone/60">
                 <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Billed to date</span>
-                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm border border-dashed" style={{ background: '#C8E6D4', borderColor: '#4A7C59' }} /> Remaining</span>
-                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#1A3D2B' }} /> Actual TCV</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm border border-dashed" style={{ background: '#C8E6D4', borderColor: '#4A7C59' }} /> Remaining committed value</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#1A3D2B' }} /> Committed contract value</span>
               </div>
             </div>
 

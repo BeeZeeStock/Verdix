@@ -118,7 +118,16 @@ export async function GET(
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   const termsArr  = job.contract_terms as unknown as Array<{
-    overage_tiers?: Array<{ unit_type?: string; from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number; measurement_period?: string | null; minimum_period_amount?: number | null }>
+    overage_tiers?: Array<{
+      unit_type?: string
+      from_unit?: number | null
+      to_unit?: number | null
+      rate_per_unit?: number
+      measurement_period?: string | null
+      minimum_period_amount?: number | null
+      minimum_commitment?: import('@/lib/types').MinimumCommitment | null
+      reset_anchor?: 'contract_start' | 'calendar' | null
+    }>
     billing_frequency?: string | null
     included_units?: number | null
     included_unit_type?: string | null
@@ -134,7 +143,14 @@ export async function GET(
   // metric's measurement_period (when the contract states one) overrides
   // the contract-level cadence for that metric specifically — e.g. a
   // metric measured half-yearly inside an otherwise-monthly contract.
-  const unitGroups = new Map<string, Array<{ from_unit: number | null; to_unit: number | null; rate_per_unit: number; minimum_period_amount: number | null }>>()
+  const unitGroups = new Map<string, Array<{
+    from_unit: number | null
+    to_unit: number | null
+    rate_per_unit: number
+    minimum_period_amount: number | null
+    minimum_commitment: import('@/lib/types').MinimumCommitment | null
+    reset_anchor: 'contract_start' | 'calendar' | null
+  }>>()
   const unitCycles = new Map<string, string>()
   for (const t of overageTiers) {
     if (!t.unit_type) continue
@@ -144,6 +160,8 @@ export async function GET(
       to_unit:      t.to_unit   ?? null,
       rate_per_unit: t.rate_per_unit ?? 0,
       minimum_period_amount: t.minimum_period_amount ?? null,
+      minimum_commitment: t.minimum_commitment ?? null,
+      reset_anchor: t.reset_anchor ?? null,
     })
     if (t.measurement_period && !unitCycles.has(t.unit_type)) {
       unitCycles.set(t.unit_type, normaliseCycle(t.measurement_period))
@@ -258,6 +276,10 @@ export async function POST(
       overage_tiers: unknown
       billing_cycle: string
       confidence?: number
+      // Reviewer's resolution of an ambiguous minimum commitment, written
+      // alongside the meter mapping itself — see ReviewPanel's
+      // minimum_commitment ItemKind in configure/[id]/page.tsx.
+      minimum_commitment_note?: string | null
     }>
   }
 
@@ -281,23 +303,67 @@ export async function POST(
     }))
   }
 
-  // Upsert all mappings
-  const rows = mappings.map(m => ({
-    job_id:             jobId,
-    contract_unit_type: m.contract_unit_type,
-    meter_key:          m.meter_key,
-    confidence:         m.confidence ?? null,
-    confirmed:          m.confirmed,
-    confirmed_by:       m.confirmed ? confirmedBy : null,
-    confirmed_at:       m.confirmed ? new Date().toISOString() : null,
-    included_units:     Math.round(m.included_units ?? 0),
-    overage_tiers:      sanitiseTiers(m.overage_tiers),
-    billing_cycle:      m.billing_cycle,
-  }))
+  // A metric's minimum commitment is stored per-tier (duplicated across that
+  // metric's tiers by extraction) but tracked for confirmation once per
+  // metric here, matching contract_meter_mappings' one-row-per-metric shape.
+  // Take the first tier that carries one rather than trying to merge
+  // conflicting values across tiers of the same metric.
+  type MinCommitTier = { minimum_commitment?: { mode: string; amount: number; requires_confirmation: boolean } | null }
+  function resolveMinimumCommitment(tiers: unknown): MinCommitTier['minimum_commitment'] | null {
+    if (!Array.isArray(tiers)) return null
+    for (const t of tiers as MinCommitTier[]) {
+      if (t.minimum_commitment) return t.minimum_commitment
+    }
+    return null
+  }
 
-  const { error } = await supabaseServer
+  // Upsert all mappings
+  const rows = mappings.map(m => {
+    const mc = resolveMinimumCommitment(m.overage_tiers)
+    return {
+      job_id:             jobId,
+      contract_unit_type: m.contract_unit_type,
+      meter_key:          m.meter_key,
+      confidence:         m.confidence ?? null,
+      confirmed:          m.confirmed,
+      confirmed_by:       m.confirmed ? confirmedBy : null,
+      confirmed_at:       m.confirmed ? new Date().toISOString() : null,
+      included_units:     Math.round(m.included_units ?? 0),
+      overage_tiers:      sanitiseTiers(m.overage_tiers),
+      billing_cycle:      m.billing_cycle,
+      minimum_commitment_mode: mc?.mode ?? null,
+      minimum_commitment_requires_confirmation: mc?.requires_confirmation ?? false,
+      // Only stamp confirmed_by/at for the minimum commitment once it's no
+      // longer flagged as requiring confirmation — mirrors the meter
+      // mapping's own confirmed/confirmed_by/confirmed_at pattern above.
+      minimum_commitment_confirmed_by: mc && !mc.requires_confirmation ? confirmedBy : null,
+      minimum_commitment_confirmed_at: mc && !mc.requires_confirmation ? new Date().toISOString() : null,
+      minimum_commitment_note: m.minimum_commitment_note ?? null,
+    }
+  })
+
+  let { error } = await supabaseServer
     .from('contract_meter_mappings')
     .upsert(rows, { onConflict: 'job_id,contract_unit_type' })
+
+  // The minimum_commitment_* columns require a migration
+  // (20260811000001_minimum_commitment_confirmation.sql) that may not have
+  // run yet in every environment. Rather than hard-failing every mapping
+  // save until it does, degrade to the columns that definitely exist — the
+  // ambiguity itself still lives in overage_tiers JSONB (already written
+  // above) and is what the UI actually reads to flag it, so nothing about
+  // the "never silently apply" guarantee depends on these columns existing.
+  if (error?.message?.includes('minimum_commitment')) {
+    console.warn('[meter-mappings] minimum_commitment_* columns missing — run the pending migration. Falling back without them.')
+    const fallbackRows = rows.map(r => ({
+      job_id: r.job_id, contract_unit_type: r.contract_unit_type, meter_key: r.meter_key,
+      confidence: r.confidence, confirmed: r.confirmed, confirmed_by: r.confirmed_by, confirmed_at: r.confirmed_at,
+      included_units: r.included_units, overage_tiers: r.overage_tiers, billing_cycle: r.billing_cycle,
+    }))
+    ;({ error } = await supabaseServer
+      .from('contract_meter_mappings')
+      .upsert(fallbackRows, { onConflict: 'job_id,contract_unit_type' }))
+  }
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 

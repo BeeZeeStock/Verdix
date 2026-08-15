@@ -1,8 +1,18 @@
-import type { OverageTier } from './types'
+import type { MinimumCommitment, OverageTier } from './types'
 
 // Structural minimum accepted by the computation functions —
 // compatible with both OverageTier and the local Tier type in RevenueModelTab.
 type TierLike = Partial<OverageTier>
+
+// A minimum commitment is stored per-metric (duplicated onto each tier of
+// that metric by extraction), not per-tier — take the first one present
+// rather than trying to merge conflicting values across tiers.
+function resolveMinimumCommitment(tiers: TierLike[]): MinimumCommitment | null {
+  for (const t of tiers) {
+    if (t.minimum_commitment) return t.minimum_commitment
+  }
+  return null
+}
 
 /**
  * Converts a human-readable unit_type string into a stable Lago metric code.
@@ -123,17 +133,70 @@ export function computeMetricOverage(
   applyMinimumFloor: boolean = true,
 ): number {
   const aggType = (tiers[0] as unknown as Record<string, unknown>)?.['aggregation_type'] as string | undefined
+  const mc = resolveMinimumCommitment(tiers)
+  const mcActive = !!mc && !mc.requires_confirmation
+
+  // minimum_quantity, once confirmed, is a take-or-pay clause: it raises the
+  // billable quantity itself before tier rates apply, unlike the other four
+  // modes which act on the resulting currency amount.
+  let effectiveQuantity = quantity
+  if (mcActive && mc!.mode === 'minimum_quantity' && applyMinimumFloor) {
+    const billable = Math.max(0, quantity - includedUnits)
+    effectiveQuantity = quantity + Math.max(0, mc!.amount - billable)
+  }
+
   const computed = aggType === 'max_agg'
-    ? computeUserOverage(quantity, includedUnits, tiers)
+    ? computeUserOverage(effectiveQuantity, includedUnits, tiers)
     // Subtract the contract's free allowance; tiers apply only to the excess
-    : computeTransactionalOverage(Math.max(0, quantity - includedUnits), tiers)
+    : computeTransactionalOverage(Math.max(0, effectiveQuantity - includedUnits), tiers)
 
   if (!applyMinimumFloor) return computed
+
+  if (mc) {
+    // Ambiguous minimum (e.g. unclear interaction with an included
+    // allowance) — never silently applied. Usage-based charges still bill;
+    // the commitment itself is surfaced for reviewer confirmation
+    // separately (getReviewContext/ReviewPanel), not guessed here.
+    if (!mcActive) return computed
+    switch (mc.mode) {
+      case 'floor':
+      case 'minimum_spend':
+        return Math.max(computed, mc.amount)
+      case 'additive':
+        return computed + mc.amount
+      case 'prepaid_commitment':
+        // The commitment amount was already collected up front; only usage
+        // beyond that prepaid pool is billed here.
+        return Math.max(0, computed - mc.amount)
+      case 'minimum_quantity':
+        return computed // already folded into effectiveQuantity above
+    }
+  }
+
+  // No structured commitment on this metric — legacy scalar-floor behavior,
+  // preserved for data extracted before the minimum_commitment model existed.
   const floor = tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0)
   return Math.max(computed, floor)
 }
 
 const CADENCE_MONTHS: Record<string, number> = { monthly: 1, quarterly: 3, 'semi-annual': 6, annual: 12 }
+
+export type CadenceAnchorMode = 'contract_start' | 'calendar'
+
+// 'calendar' mode resets on fixed, universal boundaries — Jan/Apr/Jul/Oct 1
+// for quarterly, Jan/Jul 1 for semi-annual, Jan 1 for annual — regardless of
+// which day the contract itself started. Only used when the contract text
+// explicitly says "calendar quarter"/"calendar year" (OverageTier.reset_anchor);
+// 'contract_start' (the historical, still-default behavior) resets on the
+// contract's own start-date anniversary instead.
+function calendarPeriodStart(date: Date, months: number): Date {
+  const periodIndex = Math.floor(date.getMonth() / months)
+  return new Date(date.getFullYear(), periodIndex * months, 1)
+}
+
+function resolveWindowAnchor(anchorDate: Date, months: number, anchor: CadenceAnchorMode): Date {
+  return anchor === 'calendar' ? calendarPeriodStart(anchorDate, months) : anchorDate
+}
 
 // Every fully-closed window of the given cadence, anchored to anchorDate,
 // whose end falls within [rangeStart, rangeEnd] (inclusive both ends) — the
@@ -147,12 +210,14 @@ export function enumerateCadenceWindows(
   cadence: string | null | undefined,
   rangeStart: Date,
   rangeEnd: Date,
+  anchor: CadenceAnchorMode = 'contract_start',
 ): Array<{ start: Date; end: Date }> {
   const months = CADENCE_MONTHS[cadence ?? 'monthly'] ?? 1
+  const base = resolveWindowAnchor(anchorDate, months, anchor)
   const windows: Array<{ start: Date; end: Date }> = []
   for (let n = 0; n < 1200; n++) {
-    const start     = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + n * months, anchorDate.getDate())
-    const nextStart = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + (n + 1) * months, anchorDate.getDate())
+    const start     = new Date(base.getFullYear(), base.getMonth() + n * months, base.getDate())
+    const nextStart = new Date(base.getFullYear(), base.getMonth() + (n + 1) * months, base.getDate())
     const end       = new Date(nextStart.getTime() - 86_400_000)
     if (start > rangeEnd) break
     if (end >= rangeStart && end <= rangeEnd) windows.push({ start, end })
@@ -172,22 +237,41 @@ export function findCadenceWindowContaining(
   anchorDate: Date,
   cadence: string | null | undefined,
   date: Date,
+  anchor: CadenceAnchorMode = 'contract_start',
 ): { start: Date; end: Date } {
   const months = CADENCE_MONTHS[cadence ?? 'monthly'] ?? 1
+  const base = resolveWindowAnchor(anchorDate, months, anchor)
   let n = Math.floor(
-    ((date.getFullYear() - anchorDate.getFullYear()) * 12 + (date.getMonth() - anchorDate.getMonth())) / months,
+    ((date.getFullYear() - base.getFullYear()) * 12 + (date.getMonth() - base.getMonth())) / months,
   )
   for (let guard = 0; guard < 4; guard++) {
-    const start     = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + n * months, anchorDate.getDate())
-    const nextStart = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + (n + 1) * months, anchorDate.getDate())
+    const start     = new Date(base.getFullYear(), base.getMonth() + n * months, base.getDate())
+    const nextStart = new Date(base.getFullYear(), base.getMonth() + (n + 1) * months, base.getDate())
     if (date < start)      { n--; continue }
     if (date >= nextStart) { n++; continue }
     return { start, end: new Date(nextStart.getTime() - 86_400_000) }
   }
   // Should never hit this given the correction loop above, but keep the
   // function total rather than possibly returning undefined.
-  const start = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + n * months, anchorDate.getDate())
+  const start = new Date(base.getFullYear(), base.getMonth() + n * months, base.getDate())
   return { start, end: date }
+}
+
+// True when the contract wasn't actually in effect for this window's full
+// span — only possible under 'calendar' anchoring, where window boundaries
+// are fixed (Jan/Apr/Jul/Oct 1, etc.) independent of the contract's own
+// start/end date, so the first and/or last window a contract touches can be
+// shorter than a full cadence cycle. A partial window means a stated
+// minimum commitment covering it shouldn't be applied at face value until a
+// reviewer confirms how (or whether) it prorates.
+export function isPartialWindow(
+  window: { start: Date; end: Date },
+  contractStartDate: Date | null,
+  contractEndDate: Date | null,
+): boolean {
+  if (contractStartDate && contractStartDate > window.start && contractStartDate <= window.end) return true
+  if (contractEndDate && contractEndDate < window.end && contractEndDate >= window.start) return true
+  return false
 }
 
 /**

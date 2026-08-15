@@ -5,6 +5,7 @@ import { requireOrg } from '@/lib/org'
 import { REMEMBILL_BASE, remembillHeaders } from '@/lib/billing-writer'
 import { AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
 import { isAdminEmail } from '@/lib/admin'
+import { getContractSummaries } from '@/lib/contract-tcv'
 
 const GENERIC_INFRA_ERROR = 'This contract couldn’t be processed right now due to a temporary system issue. Please contact bilal@lynoraai.com for help.'
 
@@ -239,5 +240,15 @@ export async function GET(
       : GENERIC_INFRA_ERROR
   }
 
-  return NextResponse.json(job)
+  // Billed to date / Committed contract value — the same canonical figures
+  // used by the "New contracts" list and Agreements dashboard, so this
+  // page's Commercials footer can never silently diverge from them.
+  const summaries = await getContractSummaries([id])
+  const summary = summaries[id]
+
+  return NextResponse.json({
+    ...job,
+    billedToDate: summary?.billedToDate ?? 0,
+    committedContractValue: summary?.committedContractValue ?? 0,
+  })
 }

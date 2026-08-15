@@ -59,14 +59,14 @@ export default async function ConfigureListPage() {
   // Per-currency totals — a direct sum of the same per-row values shown in
   // the table below, so this can be cross-checked against the Agreements
   // dashboard's aggregate KPIs at a glance.
-  const totalsByCurrency: Record<string, { tcv: number; actualTcv: number; count: number }> = {}
+  const totalsByCurrency: Record<string, { tcv: number; committedContractValue: number; count: number }> = {}
   for (const job of jobs) {
     const summary = contractSummaries[job.id]
     if (!summary) continue
     const cur = summary.currency
-    totalsByCurrency[cur] ??= { tcv: 0, actualTcv: 0, count: 0 }
+    totalsByCurrency[cur] ??= { tcv: 0, committedContractValue: 0, count: 0 }
     totalsByCurrency[cur].tcv += summary.tcv
-    totalsByCurrency[cur].actualTcv += summary.actualTcv
+    totalsByCurrency[cur].committedContractValue += summary.committedContractValue
     totalsByCurrency[cur].count += 1
   }
   const currencies = Object.keys(totalsByCurrency).sort((a, b) => totalsByCurrency[b].count - totalsByCurrency[a].count)
@@ -92,12 +92,12 @@ export default async function ConfigureListPage() {
                 <span className="text-xs font-semibold text-stone uppercase tracking-widest">{cur} <span className="text-stone/50 normal-case">({t.count})</span></span>
                 <div className="flex-1 grid grid-cols-2 gap-4">
                   <div>
-                    <p className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-0.5">Base TCV</p>
+                    <p className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-0.5">Fixed fees</p>
                     <p className="text-base font-semibold font-mono text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtTcv(t.tcv, cur)}</p>
                   </div>
                   <div>
-                    <p className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-0.5">Actual TCV</p>
-                    <p className="text-base font-semibold font-mono" style={{ color: '#0B5C36', fontVariantNumeric: 'tabular-nums' }}>{fmtTcv(t.actualTcv, cur)}</p>
+                    <p className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-0.5">Committed contract value</p>
+                    <p className="text-base font-semibold font-mono" style={{ color: '#0B5C36', fontVariantNumeric: 'tabular-nums' }}>{fmtTcv(t.committedContractValue, cur)}</p>
                   </div>
                 </div>
               </div>
@@ -115,7 +115,7 @@ export default async function ConfigureListPage() {
         <table className="w-full">
           <thead>
             <tr className="border-b border-forest/8">
-              {['Contract name', 'Customer', 'Base TCV', 'Actual TCV', 'Status', 'Billing', 'Date', '', ''].map(h => (
+              {['Contract name', 'Customer', 'Fixed fees', 'Committed contract value', 'Status', 'Billing', 'Date', '', ''].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-[10px] font-semibold text-stone uppercase tracking-wider">{h}</th>
               ))}
             </tr>
@@ -159,7 +159,7 @@ export default async function ConfigureListPage() {
                     {summary ? fmtTcv(summary.tcv, summary.currency) : '—'}
                   </td>
                   <td className="px-4 py-3 font-mono text-sm font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                    {summary ? fmtTcv(summary.actualTcv, summary.currency) : '—'}
+                    {summary ? fmtTcv(summary.committedContractValue, summary.currency) : '—'}
                   </td>
                   <td className="px-4 py-3">
                     <span className="text-xs font-medium" style={{ color: s.color }}>{s.label}</span>

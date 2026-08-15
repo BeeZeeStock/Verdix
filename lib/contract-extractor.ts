@@ -40,7 +40,13 @@ Rules:
   - rate_per_unit: price PER SINGLE unit (e.g. price per 1 API call, or price per 1 seat). If the contract says "€2.40 per 1,000 calls", rate_per_unit = 0.0024 (divide by 1000). EXCEPTION: if unit_type explicitly contains "1,000" or "per block", keep the rate as stated and set unit_type accordingly.
   - unit_type: the measurable quantity, e.g. "API call", "user seat", "GB storage"
   - measurement_period: how often usage is accumulated and billed for this metric. Set to 'monthly', 'quarterly', 'semi-annual', or 'annual'. CRITICAL: this often DIFFERS from the contract's main billing_frequency. Examples: a contract may measure API usage monthly and invoice monthly, but measure validated invoice lines half-yearly and invoice half-yearly; or measure active-contract counts monthly but invoice quarterly in arrears. Always read the measurement/invoicing period stated for each specific metric. Set to null only when not separately stated (fall back to main billing_frequency).
-  - minimum_period_amount: if the contract states a guaranteed minimum payment per measurement period for this metric (a consumption floor), set this to the minimum amount per period. Example: "minimum SEK 30,000 per half-year for validated invoice lines" → minimum_period_amount: 30000 (with measurement_period: 'semi-annual'). This is a floor payment separate from the per-unit rate — the customer pays at least this amount even if usage is below the floor.
+  - reset_anchor: set to 'calendar' ONLY when the contract text explicitly ties this metric's measurement window to fixed calendar boundaries — the words "calendar quarter", "calendar year", "calendar half-year", or equivalent (e.g. "measured each calendar quarter (Jan–Mar, Apr–Jun, ...)"). Otherwise set to 'contract_start' (the default — windows reset on the contract's own start-date anniversary). NEVER infer 'calendar' from context or convenience; only an explicit calendar-boundary statement qualifies.
+  - minimum_period_amount: if the contract states a guaranteed minimum payment per measurement period for this metric (a consumption floor), set this to the minimum amount per period. Example: "minimum SEK 30,000 per half-year for validated invoice lines" → minimum_period_amount: 30000 (with measurement_period: 'semi-annual'). This is a floor payment separate from the per-unit rate — the customer pays at least this amount even if usage is below the floor. Also populate minimum_commitment (below) alongside this field whenever a minimum is stated.
+  - minimum_commitment: populate whenever the contract states ANY form of guaranteed minimum, floor, or take-or-pay commitment for this metric — a structured object: { "mode": "floor" | "additive" | "minimum_spend" | "prepaid_commitment" | "minimum_quantity", "amount": <number>, "currency": "<ISO code or null>", "period": "<cadence or null, defaults to measurement_period>", "included_allowance_interaction": "before_allowance" | "after_allowance" | "unclear", "rollover": <boolean or omit>, "prorate_partial_periods": true | false | "unclear", "source_clause": "<verbatim or paraphrased clause, or null>", "requires_confirmation": <boolean>, "confirmation_reason": "<string or null>" }.
+    - mode: 'floor' = pay max(usage charge, minimum). 'additive' = minimum is charged ON TOP of usage regardless. 'minimum_spend' = a spend commitment that usage draws against, with any shortfall billed as a true-up. 'prepaid_commitment' = the amount is paid up front and usage draws down from it. 'minimum_quantity' = a unit-quantity (take-or-pay) commitment, not a currency floor — the customer is billed for at least this many units even if actual usage is lower. Read the contract's actual mechanism; do not default to 'floor' when the text describes a different mechanism.
+    - included_allowance_interaction: set to 'before_allowance' or 'after_allowance' ONLY when the contract text explicitly states whether the minimum applies before or after the included/free allowance is consumed. This is frequently NOT stated even when both a minimum and an included allowance exist on the same metric — in that case you MUST set this to 'unclear' rather than guessing. Do not resolve the ambiguity yourself.
+    - requires_confirmation: set to true whenever included_allowance_interaction is 'unclear' AND this metric also has a non-zero included_units/allowance, OR whenever prorate_partial_periods is 'unclear' and the contract has calendar-anchored cadence, OR whenever the mechanism itself (mode) is not clearly stated. Set to false only when the contract text leaves no reasonable ambiguity about how this minimum interacts with everything else on the metric. When in doubt, set true — a human reviewer resolves it, you must never guess and mark it resolved.
+    - confirmation_reason: a short plain-English note on what specifically is ambiguous (e.g. "Contract states a SEK 5,000 minimum per line but does not say whether it applies before or after the 200 included lines"), or null when requires_confirmation is false.
   - For graduated/incremental tiers: each call falls into exactly one bracket and is billed at that bracket's rate. Encode as distinct non-overlapping from_unit/to_unit ranges.
   - For volume tiers (all-or-nothing): if the contract specifies a single rate that applies to the entire volume once a threshold is hit, set from_unit to the threshold and to_unit:null for each tier.
   - CRITICAL — rate_per_unit decimal parsing: rates written as "€0.0500", "€0.035", "€0.02" are NOT zero. They are decimal fractions: 0.0500 = 0.05, 0.035, 0.02. Extract the full numeric value including leading-zero decimals. NEVER set rate_per_unit to 0 when a non-zero rate is stated in the contract.
@@ -280,7 +286,39 @@ function mergeExtractions(results: ContractTerms[]): ContractTerms {
     }
   }
 
+  merged.overage_tiers = flagAmbiguousMinimumCommitments(merged.overage_tiers)
+
   return merged
+}
+
+// Safety net: force requires_confirmation=true whenever a metric structurally
+// has both an included/free allowance (a same-unit_type tier priced at 0)
+// AND a minimum commitment, but the model's own included_allowance_interaction
+// wasn't explicitly set — never trust a single extraction pass to self-report
+// its own uncertainty consistently; re-derive the same rule the prompt asks
+// for as a hard check rather than a suggestion.
+function flagAmbiguousMinimumCommitments(tiers: OverageTier[]): OverageTier[] {
+  const metricsWithAllowance = new Set(
+    tiers.filter(t => (t.rate_per_unit ?? 0) === 0).map(t => t.unit_type),
+  )
+  return tiers.map(t => {
+    if (!t.minimum_commitment) return t
+    const interactionUnclear = !t.minimum_commitment.included_allowance_interaction
+      || t.minimum_commitment.included_allowance_interaction === 'unclear'
+    if (interactionUnclear && metricsWithAllowance.has(t.unit_type) && !t.minimum_commitment.requires_confirmation) {
+      return {
+        ...t,
+        minimum_commitment: {
+          ...t.minimum_commitment,
+          included_allowance_interaction: 'unclear' as const,
+          requires_confirmation: true,
+          confirmation_reason: t.minimum_commitment.confirmation_reason
+            ?? 'This metric has both an included allowance and a minimum commitment; the contract does not state whether the minimum applies before or after the allowance.',
+        },
+      }
+    }
+    return t
+  })
 }
 
 function scoreCompleteness(t: ContractTerms): number {

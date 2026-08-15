@@ -9,7 +9,7 @@ import { MeterMappingPanel } from '@/app/_components/MeterMappingPanel'
 import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCard'
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
-import { computeBaseTcv } from '@/lib/contract-tcv-calc'
+import { computeBaseTcv, contractLifecycleStatus } from '@/lib/contract-tcv-calc'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
@@ -17,7 +17,19 @@ const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: fa
 
 type Escalator = { escalator_pct?: number; escalator_type?: string; effective_date?: string; description?: string; cap_pct?: number }
 type Discount   = { discount_pct?: number; discount_amount?: number; discount_type?: string; start_date?: string; end_date?: string; duration_months?: number; applies_to?: string; description?: string }
-type Tier       = { tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string; measurement_period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null; minimum_period_amount?: number | null }
+type Tier       = {
+  tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string
+  measurement_period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
+  minimum_period_amount?: number | null
+  minimum_commitment?: {
+    mode: 'floor' | 'additive' | 'minimum_spend' | 'prepaid_commitment' | 'minimum_quantity'
+    amount: number
+    included_allowance_interaction?: 'before_allowance' | 'after_allowance' | 'unclear'
+    requires_confirmation: boolean
+    confirmation_reason?: string | null
+  } | null
+  reset_anchor?: 'contract_start' | 'calendar' | null
+}
 
 type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null; description?: string | null; manual_trigger?: boolean; metric_name?: string | null; rate_per_unit?: number | null }
 type AdditionalRecurringFee = { fee_label: string; amount: number; description?: string | null; billing_frequency?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null }
@@ -56,6 +68,13 @@ type Job = {
   contract_pdf_url?: string; error_message?: string
   billing_subscription_id?: string; billing_platform?: string; billing_customer_id?: string
   line_items: LineItem[]; contract_terms: Terms[]
+  // Canonical figures from getContractSummaries (lib/contract-tcv.ts) — see
+  // the terminology-standardisation plan: Billed to date is every
+  // planned_invoices row actually sent/paid; Committed contract value is
+  // Fixed fees + confirmed minimum commitments only (unconfirmed ones are
+  // deliberately excluded, never guessed).
+  billedToDate?: number
+  committedContractValue?: number
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -614,344 +633,19 @@ function SectionHeader({ title, section, onSection }: { title: string; section?:
   )
 }
 
-function _unusedContractVisual({ terms, items, cur }: { terms: Terms; items: LineItem[]; cur: string }) {
-  const start = terms.contract_start_date ? parseLocalDate(terms.contract_start_date) : null
-  const end   = terms.contract_end_date   ? parseLocalDate(terms.contract_end_date)   : null
-
-  if (!start || !end || !terms.base_monthly_fee) {
-    return (
-      <div className="flex flex-col items-center justify-center h-60 px-6 text-center gap-2">
-        <i className="ti ti-chart-area text-stone/20" style={{ fontSize: 32 }} />
-        <p className="text-xs text-stone">Contract dates or fee not available</p>
-      </div>
-    )
-  }
-
-  const today    = new Date()
-  const totalMs  = end.getTime() - start.getTime()
-  const clampPos = (d: Date) => Math.max(0, Math.min(1, (d.getTime() - start.getTime()) / totalMs))
-
-  const PW = 332 // panel content width (380px panel − 24px padding × 2)
-
-  // Timeline SVG constants
-  const TH = 86
-  const tx1 = 10, tx2 = PW - 10, trackW = tx2 - tx1, trackY = 44
-  const txOf = (d: Date) => tx1 + clampPos(d) * trackW
-  const todayX    = txOf(today)
-  const todayFrac = clampPos(today)
-
-  const discounts   = terms.discounts  ?? []
-  const escalators  = terms.escalators ?? []
-  const renewalDays = terms.renewal_notice_days ?? 0
-  const renewalStart = renewalDays > 0
-    ? new Date(end.getTime() - renewalDays * 24 * 60 * 60 * 1000)
-    : null
-
-  // Build monthly revenue series
-  type MonthData = { date: Date; amount: number; inDiscount: boolean; escalated: boolean }
-  const months: MonthData[] = []
-  const base = terms.base_monthly_fee
-
-  let cursor = new Date(start.getFullYear(), start.getMonth(), 1)
-  const endMonth = new Date(end.getFullYear(), end.getMonth(), 1)
-
-  while (cursor <= endMonth) {
-    const md = new Date(cursor)
-
-    let inDiscount = false, discountPct = 0
-    for (const d of discounts) {
-      const ds = d.start_date ? parseLocalDate(d.start_date) : null
-      const de = d.end_date   ? parseLocalDate(d.end_date)   : null
-      if (ds && de && md >= ds && md <= de && d.discount_pct) {
-        inDiscount = true; discountPct = d.discount_pct; break
-      }
-    }
-
-    let escalated = false, escalatorPct = 0
-    for (const e of escalators) {
-      const ed = e.effective_date ? parseLocalDate(e.effective_date) : null
-      if (ed && md >= ed && e.escalator_pct) {
-        escalated = true; escalatorPct = e.escalator_pct; break
-      }
-    }
-
-    let amount = base
-    if (escalated) amount = amount * (1 + escalatorPct / 100)
-    if (inDiscount) amount = amount * (1 - discountPct / 100)
-
-    months.push({ date: md, amount, inDiscount, escalated })
-    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)
-  }
-
-  // Recurring revenue summary
-  const recurringTotal = months.reduce((s, m) => s + m.amount, 0)
-  const discountSaving = months.filter(m => m.inDiscount).reduce((s, m) => s + (base - m.amount), 0)
-  const elapsedMonths  = months.filter(m => m.date <= today).length
-
-  // One-time / fixed fees, sourced from structured line items (e.g. onboarding)
-  const oneTimeItems = items
-    .filter(i => /one.?time/i.test(i.billing_period))
-    .map(i => ({ label: i.product_name, amount: i.total_amount }))
-  const oneTimeTotal = oneTimeItems.reduce((s, i) => s + i.amount, 0)
-
-  const grandTotal   = recurringTotal + oneTimeTotal
-  const billedToDate = months.filter(m => m.date <= today).reduce((s, m) => s + m.amount, 0)
-    + (today >= start ? oneTimeTotal : 0)
-
-  // ── Waterfall buckets: follow billing_frequency from the contract ────────
-  // "monthly" billing → show each invoiced month as a bar
-  // "annual"/"yearly" billing → aggregate into contract-year bars
-  const termMonths  = terms.contract_term_months ?? months.length
-  const billingFreq = (terms.billing_frequency ?? '').toLowerCase()
-  const useAnnual   = billingFreq.includes('annual') || billingFreq.includes('year')
-                   || (!billingFreq.includes('month') && termMonths > 12)
-  const GREEN_STEPS = ['#73C99B', '#27AE60', '#1F7A4A', '#0F2D1A']
-
-  type WBar = { label: string; amount: number; tooltip: string; color: string; kind: 'onetime' | 'recurring' | 'total' }
-
-  const recurringBars: WBar[] = useAnnual
-    ? Array.from({ length: Math.ceil(months.length / 12) }, (_, yi) => {
-        const slice  = months.slice(yi * 12, yi * 12 + 12)
-        const amount = slice.reduce((s, m) => s + m.amount, 0)
-        return {
-          label: `Yr ${yi + 1}`,
-          amount,
-          tooltip: `Year ${yi + 1}: ${fmt(amount, cur)}`,
-          color: GREEN_STEPS[Math.min(yi, GREEN_STEPS.length - 1)],
-          kind: 'recurring' as const,
-        }
-      })
-    : months.map(m => ({
-        label: m.date.toLocaleDateString('en-GB', { month: 'short' }),
-        amount: m.amount,
-        tooltip: `${m.date.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}: ${fmt(m.amount, cur)}`,
-        color: m.inDiscount ? '#B8E0CC' : m.escalated ? '#0F2D1A' : '#27AE60',
-        kind: 'recurring' as const,
-      }))
-
-  const oneTimeBars: WBar[] = oneTimeItems.map(i => ({
-    label: i.label.length > 12 ? i.label.slice(0, 11) + '…' : i.label,
-    amount: i.amount,
-    tooltip: `${i.label} (one-time): ${fmt(i.amount, cur)}`,
-    color: '#D9A35A',
-    kind: 'onetime' as const,
-  }))
-
-  const waterfallBars: WBar[] = [
-    ...oneTimeBars,
-    ...recurringBars,
-    { label: 'TCV', amount: grandTotal, tooltip: `Total contract value: ${fmt(grandTotal, cur)}`, color: '#1A3D2B', kind: 'total' as const },
-  ]
-
-  let cum = 0
-  const positioned = waterfallBars.map(b => {
-    const from = b.kind === 'total' ? 0 : cum
-    const to   = b.kind === 'total' ? grandTotal : cum + b.amount
-    if (b.kind !== 'total') cum = to
-    return { ...b, from, to }
-  })
-
-  // Waterfall SVG layout
-  const WH = 156
-  const plotTop = 16, plotBottom = 102, plotH = plotBottom - plotTop
-  const px1 = 4, px2 = PW - 4, plotW = px2 - px1
-  const barGap = positioned.length > 10 ? 2 : 5
-  const barW   = Math.max(3, plotW / positioned.length - barGap)
-  const rotateLabels = positioned.length > 8
-
-  const yOf = (v: number) => plotBottom - (grandTotal > 0 ? (v / grandTotal) * plotH : 0)
-
-  return (
-    <div className="p-6 space-y-6">
-
-      {/* ── Timeline ─────────────────────────────── */}
-      <div>
-        <p className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-3">Contract timeline</p>
-        <svg width={PW} height={TH} viewBox={`0 0 ${PW} ${TH}`} className="w-full overflow-visible">
-
-          {/* Base track */}
-          <rect x={tx1} y={trackY - 4} width={trackW} height={8} rx={4} fill="#E8F0E9" />
-
-          {/* Discount bands */}
-          {discounts.map((d, i) => {
-            if (!d.start_date || !d.end_date) return null
-            const x1 = txOf(parseLocalDate(d.start_date))
-            const x2 = txOf(parseLocalDate(d.end_date))
-            return <rect key={i} x={x1} y={trackY - 4} width={Math.max(0, x2 - x1)} height={8} rx={2} fill="#B8E0CC" />
-          })}
-
-          {/* Renewal window */}
-          {renewalStart && clampPos(renewalStart) < 1 && (
-            <rect
-              x={txOf(renewalStart)} y={trackY - 4}
-              width={Math.max(0, txOf(end) - txOf(renewalStart))}
-              height={8}
-              fill="#FAC775" opacity={0.65}
-            />
-          )}
-
-          {/* Elapsed portion */}
-          <rect
-            x={tx1} y={trackY - 4}
-            width={Math.min(Math.max(0, todayX - tx1), trackW)}
-            height={8} rx={4}
-            fill="#1A3D2B" opacity={0.55}
-          />
-
-          {/* Escalator tick markers */}
-          {escalators.map((e, i) => {
-            if (!e.effective_date) return null
-            const ex = txOf(parseLocalDate(e.effective_date))
-            return (
-              <g key={i}>
-                <line x1={ex} y1={trackY - 16} x2={ex} y2={trackY + 5} stroke="#27AE60" strokeWidth={1.5} />
-                <circle cx={ex} cy={trackY - 18} r={3} fill="#27AE60" />
-              </g>
-            )
-          })}
-
-          {/* Today marker */}
-          {todayFrac >= 0 && todayFrac <= 1 && (
-            <g>
-              <line x1={todayX} y1={trackY - 22} x2={todayX} y2={trackY + 14} stroke="#1A3D2B" strokeWidth={1.5} strokeDasharray="3 2" />
-              <text x={todayX} y={trackY - 25} textAnchor="middle" fontSize={9} fill="#1A3D2B" fontWeight={700}>today</text>
-            </g>
-          )}
-
-          {/* Date labels */}
-          <text x={tx1} y={trackY + 22} fontSize={9} fill="#9CA3AF" textAnchor="start">{fmtShort(start)}</text>
-          <text x={tx2} y={trackY + 22} fontSize={9} fill="#9CA3AF" textAnchor="end">{fmtShort(end)}</text>
-
-          {/* Legend */}
-          {[
-            discounts.length > 0  ? { color: '#B8E0CC', label: 'Discount' }        : null,
-            escalators.length > 0 ? { color: '#27AE60', label: 'Escalator' }       : null,
-            renewalStart           ? { color: '#FAC775', label: 'Renewal window' } : null,
-          ].filter((x): x is { color: string; label: string } => x !== null).map((li, i) => (
-            <g key={i} transform={`translate(${tx1 + i * 96}, ${TH - 6})`}>
-              <rect width={7} height={7} rx={1.5} fill={li.color} opacity={0.9} />
-              <text x={10} y={6.5} fontSize={8.5} fill="#9CA3AF">{li.label}</text>
-            </g>
-          ))}
-        </svg>
-
-        {/* Progress bar */}
-        <div className="flex items-center gap-2 mt-1">
-          <div className="flex-1 h-1 bg-forest/8 rounded-full overflow-hidden">
-            <div className="h-full bg-forest rounded-full" style={{ width: `${Math.min(100, Math.round(todayFrac * 100))}%` }} />
-          </div>
-          <span className="text-[10px] text-stone font-medium whitespace-nowrap">
-            {elapsedMonths} / {months.length} mo
-          </span>
-        </div>
-      </div>
-
-      {/* ── Revenue waterfall ─────────────────────── */}
-      <div>
-        <div className="flex items-baseline justify-between mb-3">
-          <p className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Revenue build-up</p>
-          <span className="text-[9px] text-stone">{useAnnual ? 'by year' : 'by month'}</span>
-        </div>
-        <svg width={PW} height={WH} viewBox={`0 0 ${PW} ${WH}`} className="w-full overflow-visible">
-
-          {/* Baseline */}
-          <line x1={px1} y1={plotBottom} x2={px2} y2={plotBottom} stroke="#E8F0E9" strokeWidth={1} />
-
-          {/* Connector ties */}
-          {positioned.slice(0, -1).map((b, i) => {
-            const xRight = px1 + i * (barW + barGap) + barW
-            const xLeft  = px1 + (i + 1) * (barW + barGap)
-            const y = yOf(b.to)
-            return <line key={`c${i}`} x1={xRight} y1={y} x2={xLeft} y2={y} stroke="#C9CCC6" strokeWidth={1} strokeDasharray="2 2" />
-          })}
-
-          {/* Bars */}
-          {positioned.map((b, i) => {
-            const x    = px1 + i * (barW + barGap)
-            const yTop = yOf(b.to)
-            const yBot = yOf(b.from)
-            const h    = Math.max(1.5, yBot - yTop)
-            return (
-              <g key={i}>
-                <rect x={x} y={yTop} width={barW} height={h} rx={1.5} fill={b.color}>
-                  <title>{b.tooltip}</title>
-                </rect>
-                {(b.kind === 'onetime' || b.kind === 'total' || useAnnual) && (
-                  <text x={x + barW / 2} y={yTop - 5} textAnchor="middle" fontSize={8.5} fontWeight={b.kind === 'total' ? 700 : 600} fill="#4A4640">
-                    {fmt(b.amount, cur).replace(/\.00$/, '')}
-                  </text>
-                )}
-                <text
-                  x={x + barW / 2}
-                  y={plotBottom + (rotateLabels ? 9 : 13)}
-                  textAnchor={rotateLabels ? 'end' : 'middle'}
-                  fontSize={8.5}
-                  fill="#9CA3AF"
-                  transform={rotateLabels ? `rotate(-55 ${x + barW / 2} ${plotBottom + 9})` : undefined}
-                >
-                  {b.label}
-                </text>
-              </g>
-            )
-          })}
-        </svg>
-
-        {/* Chart legend */}
-        <div className="flex items-center flex-wrap gap-x-4 gap-y-1 mt-1">
-          {oneTimeBars.length > 0 && (
-            <div className="flex items-center gap-1">
-              <div className="w-2.5 h-2.5 rounded-sm bg-[#D9A35A]" />
-              <span className="text-[9px] text-stone">One-time</span>
-            </div>
-          )}
-          <div className="flex items-center gap-1">
-            <div className="w-2.5 h-2.5 rounded-sm bg-[#27AE60]" />
-            <span className="text-[9px] text-stone">Recurring</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="w-2.5 h-2.5 rounded-sm bg-[#1A3D2B]" />
-            <span className="text-[9px] text-stone">TCV</span>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Financial summary ─────────────────────── */}
-      <div className="border-t border-forest/8 pt-4 space-y-2.5">
-        <div className="flex justify-between items-baseline">
-          <span className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em]">Total contract value</span>
-          <span className="text-sm font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(grandTotal, cur)}</span>
-        </div>
-        {oneTimeTotal > 0 && (
-          <div className="flex justify-between items-baseline">
-            <span className="text-[10px] text-stone">incl. one-time fees</span>
-            <span className="text-xs font-medium" style={{ color: '#B9802F', fontVariantNumeric: 'tabular-nums' }}>{fmt(oneTimeTotal, cur)}</span>
-          </div>
-        )}
-        <div className="flex justify-between items-baseline">
-          <span className="text-[10px] text-stone">Billed to date</span>
-          <span className="text-xs font-medium text-forest" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(billedToDate, cur)}</span>
-        </div>
-        <div className="flex justify-between items-baseline">
-          <span className="text-[10px] text-stone">Remaining</span>
-          <span className="text-xs font-medium text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(grandTotal - billedToDate, cur)}</span>
-        </div>
-        {discountSaving > 0 && (
-          <div className="flex justify-between items-baseline pt-2.5 border-t border-forest/8">
-            <span className="text-[10px] text-stone">Discount saving</span>
-            <span className="text-xs font-medium text-[#4A7C59]" style={{ fontVariantNumeric: 'tabular-nums' }}>-{fmt(discountSaving, cur)}</span>
-          </div>
-        )}
-      </div>
-
-    </div>
-  )
-}
-
 // ── Review panel helpers ───────────────────────────────────────────────────
 
-type ItemKind = 'overage_tier' | 'escalator' | 'base_fee' | 'user_seat' | 'one_time' | 'unknown'
+type ItemKind = 'overage_tier' | 'escalator' | 'base_fee' | 'user_seat' | 'one_time' | 'minimum_commitment' | 'unknown'
 
-function classifyItem(item: LineItem): ItemKind {
+// A tier and its rendered LineItem share a tier_label — buildLineItems
+// (execute route) sets product_name from tier_label, optionally with a
+// trailing "— overage"/"— included in base fee" clause appended.
+function findTierForItem(item: LineItem, tiers: Tier[]): Tier | undefined {
+  const cleanName = item.product_name.replace(/\s*—\s*(included in base fee|overage)\s*$/i, '').trim().toLowerCase()
+  return tiers.find(t => (t.tier_label ?? '').trim().toLowerCase() === cleanName)
+}
+
+function classifyItem(item: LineItem, tiers: Tier[] = []): ItemKind {
   const rule = (item.applied_rule ?? '').toLowerCase()
   const name = item.product_name.toLowerCase()
 
@@ -962,6 +656,13 @@ function classifyItem(item: LineItem): ItemKind {
   if (item.billing_period === 'one_time' || rule.includes('one_time') || name.includes('setup') || name.includes('onboarding')) return 'one_time'
 
   if (rule.includes('escalator') || name.includes('escalator') || name.includes('cpi') || name.includes('price escalator')) return 'escalator'
+
+  // A minimum commitment flagged as ambiguous (unclear interaction with an
+  // included allowance, unclear proration, etc.) takes priority over the
+  // ordinary overage_tier classification — it needs a reviewer's explicit
+  // interpretation, not just a rate confirmation. Never silently resolved.
+  const matchedTier = findTierForItem(item, tiers)
+  if (matchedTier?.minimum_commitment?.requires_confirmation) return 'minimum_commitment'
 
   // Usage/overage pricing tiers always carry quantity 0 from extraction (no
   // usage confirmed yet) — a structural signal, unlike matching "overage"/
@@ -985,7 +686,7 @@ type ReviewContext = {
   whyFlagged: string
 }
 
-function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 'comma' = 'dot'): ReviewContext {
+function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 'comma' = 'dot', tiers: Tier[] = []): ReviewContext {
   const score = item.confidence_score
   // Terser than a full sentence and varied by what's actually uncertain,
   // rather than one repeated line on every card in the drawer — "why review"
@@ -1013,6 +714,27 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
           ? `Confirm that ${cleanName} are included in the base fee.`
           : `Confirm that ${cleanName} are charged at ${fmtUnit(item.unit_price, item.currency)}/unit, billed ${item.billing_period}.`,
         whyFlagged:         ambiguous ?? 'Billing-impacting pricing term.',
+      }
+    }
+    case 'minimum_commitment': {
+      const mc = findTierForItem(item, tiers)?.minimum_commitment
+      const modeLabel: Record<string, string> = {
+        floor: 'a usage floor (bill the greater of usage or the minimum)',
+        additive: 'charged on top of usage regardless',
+        minimum_spend: 'a spend commitment usage draws against',
+        prepaid_commitment: 'prepaid up front, with usage drawing it down',
+        minimum_quantity: 'a minimum billable quantity, not a currency floor',
+      }
+      const modeText = mc ? (modeLabel[mc.mode] ?? mc.mode) : 'a minimum commitment'
+      return {
+        typeLabel:          'Minimum commitment',
+        typeIcon:           'ti-alert-triangle',
+        primaryField:       'unit_price',
+        primaryLabel:       'Minimum amount',
+        primaryPlaceholder: mc ? `e.g. ${fmtExample(mc.amount)}` : 'e.g. 5000',
+        whatToCheck:        `Confirm how the ${fmt(mc?.amount ?? 0, item.currency)} minimum for ${item.product_name} interacts with the included allowance — ${modeText}.`,
+        whyFlagged:         mc?.confirmation_reason
+          ?? 'This metric has both an included allowance and a stated minimum; the contract does not say how they interact.',
       }
     }
     case 'escalator':
@@ -1322,8 +1044,8 @@ function ReviewPanel({
 
               <div className="space-y-3">
                 {groupItems.map(item => {
-                  const kind        = classifyItem(item)
-                  const ctx         = getReviewContext(item, kind, numberFormat)
+                  const kind        = classifyItem(item, overageTiers ?? [])
+                  const ctx         = getReviewContext(item, kind, numberFormat, overageTiers ?? [])
                   const isResolved  = !!(resolved[item.id] || item.id in corrections)
                   const isEditing   = editing === item.id
                   const isSaving    = saving === item.id
@@ -1404,7 +1126,21 @@ function ReviewPanel({
                         </p>
 
                         {/* Actions or edit form */}
-                        {isResolved ? (
+                        {kind === 'minimum_commitment' && !isResolved ? (
+                          // A minimum commitment's ambiguity is resolved by picking one of
+                          // the structured interpretations (floor/additive/minimum_spend/
+                          // prepaid/minimum_quantity) — that selection, plus reviewer/
+                          // timestamp/note, is written per-metric in the Meter mapping
+                          // panel below, not here as a simple value confirmation.
+                          <button
+                            onClick={() => document.getElementById('meter-mapping-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                            className="w-full py-2 rounded-xl text-sm font-semibold transition-colors"
+                            style={{ background: '#1A3D2B', color: 'white' }}
+                          >
+                            <i className="ti ti-arrow-down mr-1.5" style={{ fontSize: 12 }} />
+                            Resolve in Meter mapping ↓
+                          </button>
+                        ) : isResolved ? (
                           <div className="flex items-center gap-2">
                             <i
                               className={`ti ${resolved[item.id] === 'corrected' ? 'ti-edit-circle' : 'ti-circle-check-filled'} flex-shrink-0`}
@@ -1949,9 +1685,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const billingModel = deriveBillingModel(terms)
   const src = terms?.field_sources ?? {}
 
-  // Single-source TCV: sum of each billing-config row's total_amount (each
-  // row already holds its full, pre-multiplied contribution to the term).
-  // This is Base TCV — what the contract says at signing, before any overages.
+  // Single-source Fixed fees: sum of each billing-config row's total_amount
+  // (each row already holds its full, pre-multiplied contribution to the
+  // term) — what the contract says at signing, before any overages.
   // computeBaseTcv is the one shared implementation (lib/contract-tcv.ts) —
   // also used by getContractSummaries for the "New contracts" list and the
   // Agreements dashboard, so this page can never silently diverge from them.
@@ -1962,7 +1698,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     const matchingItem = items.find(i => i.product_name === inv.feeLabel)
     return s + ((!matchingItem || matchingItem.total_amount === 0) ? inv.amount : 0)
   }, 0)
-  const actualTcv = tcv + additionsTotal
+  // Billed to date / Committed contract value — canonical figures computed
+  // server-side (GET /api/jobs/[id], via getContractSummaries) so this page
+  // never diverges from the "New contracts" list or Agreements dashboard.
+  const billedToDate            = job?.billedToDate ?? 0
+  const committedContractValue  = job?.committedContractValue ?? tcv
+  const lifecycleStatus         = contractLifecycleStatus(terms?.contract_start_date ?? null, terms?.contract_end_date ?? null)
+  // Once a contract's own end date has passed, nothing further will ever be
+  // invoiced against it — "billed to date" becomes the final, realised
+  // total under a different label, per the terminology-standardisation plan.
+  const isCompleted             = lifecycleStatus === 'completed'
 
   const summaryLines = buildContractSummary(terms, cur, tcv, userTiers, apiTiers)
 
@@ -2235,7 +1980,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   sub={terms?.renewal_notice_days ? `${terms.renewal_notice_days} days notice required` : undefined}
                   onSave={v => saveField('auto_renews', v)}
                 />
-                <Stat label="Total contract value (Base)" value={tcv > 0 ? fmt(tcv, cur) : billingModel === 'consumption' ? 'Usage-based' : '—'} />
+                <Stat label="Fixed fees" value={tcv > 0 ? fmt(tcv, cur) : billingModel === 'consumption' ? 'Usage-based' : '—'} />
               </div>
             </div>
 
@@ -2767,10 +2512,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           </tr>
                         )})}
                       </tbody>
-                      {/* TCV footer */}
+                      {/* Fixed fees footer */}
                       <tfoot>
                         <tr style={{ borderTop: '2px solid rgba(26,61,43,0.10)' }}>
-                          <td colSpan={3} className="pt-3 text-[10px] font-bold text-stone uppercase tracking-[0.1em]">Base TCV</td>
+                          <td colSpan={3} className="pt-3 text-[10px] font-bold text-stone uppercase tracking-[0.1em]">Fixed fees</td>
                           <td className="pt-3 text-[13px] font-semibold text-ink text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
                             {fmt(tcv, cur)}
                           </td>
@@ -2873,7 +2618,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       : 'Contract end date is missing'}
                   </p>
                   <p className="text-xs text-amber-800">
-                    TCV cannot be calculated without both dates. Click the date fields above in Contract overview to add them.
+                    Fixed fees cannot be calculated without both dates. Click the date fields above in Contract overview to add them.
                   </p>
                 </div>
               </div>
@@ -2885,21 +2630,24 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                  confirmations), and real usage-based billing depends on them
                  regardless of whether the base fee was already approved. */}
             {tiers.length > 0 && (
-              <MeterMappingPanel
-                jobId={id}
-                currency={cur}
-                isConfigured={isConfigured}
-                onConfirmedChange={setMeterMappingsConfirmed}
-              />
+              <div id="meter-mapping-panel">
+                <MeterMappingPanel
+                  jobId={id}
+                  currency={cur}
+                  isConfigured={isConfigured}
+                  onConfirmedChange={setMeterMappingsConfirmed}
+                  contractBillingFrequency={terms?.billing_frequency ?? null}
+                />
+              </div>
             )}
 
-            {/* ── TCV + Approve footer ── */}
+            {/* ── Fixed fees + Approve footer ── */}
             <div className="bg-white rounded-2xl border border-forest/10 px-7 py-5 flex items-center justify-between gap-8">
                 {/* Left: label + number */}
                 <div className="min-w-0 flex items-end gap-8">
                   <div>
                     <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/50">
-                      Total contract value (Base)
+                      Fixed fees
                     </p>
                     <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
                       {tcv > 0
@@ -2909,7 +2657,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           : <span className="text-stone/30">—</span>}
                     </p>
                     {tcv === 0 && billingModel === 'consumption' && terms?.contract_start_date && terms?.contract_end_date && (
-                      <p className="text-[10px] text-stone/40 mt-2">TCV depends on usage volume</p>
+                      <p className="text-[10px] text-stone/40 mt-2">Fixed fees depend on usage volume</p>
                     )}
                     {tcv === 0 && billingModel !== 'consumption' && terms?.contract_start_date && terms?.contract_end_date &&
                       parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date) && (
@@ -2919,21 +2667,31 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       <p className="text-[10px] text-stone/40 mt-2">Add contract dates above to calculate</p>
                     )}
                   </div>
+                  {committedContractValue > tcv && (
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/40">Committed contract value</p>
+                      <p className="text-[24px] font-semibold leading-none text-stone/60" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
+                        {fmt(committedContractValue, cur)}
+                      </p>
+                    </div>
+                  )}
                   {additionsTotal > 0 && (
-                    <>
-                      <div>
-                        <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/40">Additions</p>
-                        <p className="text-[24px] font-semibold leading-none text-stone/60" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
-                          +{fmt(additionsTotal, cur)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/50">Actual TCV</p>
-                        <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
-                          {fmt(actualTcv, cur)}
-                        </p>
-                      </div>
-                    </>
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/40">Additions</p>
+                      <p className="text-[24px] font-semibold leading-none text-stone/60" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
+                        +{fmt(additionsTotal, cur)}
+                      </p>
+                    </div>
+                  )}
+                  {billedToDate > 0 && (
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/50">
+                        {isCompleted ? 'Realised TCV' : 'Billed to date'}
+                      </p>
+                      <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
+                        {fmt(billedToDate, cur)}
+                      </p>
+                    </div>
                   )}
                 </div>
 

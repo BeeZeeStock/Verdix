@@ -4,14 +4,21 @@
 // summary / billing-test simulator (preview only) alike, so they can never
 // silently diverge from each other.
 import { supabaseServer } from '@/lib/supabase'
-import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining } from '@/lib/tariff'
+import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining, isPartialWindow, type CadenceAnchorMode } from '@/lib/tariff'
 import { createRemembillUsageConnector } from '@/lib/connectors/usage/remembill'
-import type { ContractTerms } from '@/lib/types'
+import type { ContractTerms, MinimumCommitment } from '@/lib/types'
 
 type MeterCfg = {
   meter_key: string
   included_units: number
-  overage_tiers: Array<{ from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number; minimum_period_amount?: number | null }>
+  overage_tiers: Array<{
+    from_unit?: number | null
+    to_unit?: number | null
+    rate_per_unit?: number
+    minimum_period_amount?: number | null
+    minimum_commitment?: MinimumCommitment | null
+    reset_anchor?: 'contract_start' | 'calendar' | null
+  }>
   billing_cycle: string | null
 }
 type MeterDef = {
@@ -48,6 +55,11 @@ export type OverageLineItem = {
   // True when windowEnd is the cadence's natural (not-yet-reached) end date
   // rather than a closed cycle — the figure is "so far", not final.
   windowOpen?: boolean
+  // True when the contract wasn't in effect for this window's full span
+  // (only possible under calendar cadence anchoring). Any minimum
+  // commitment for this window is withheld from billing until a reviewer
+  // confirms how it prorates — see isPartialWindow in lib/tariff.ts.
+  windowPartial?: boolean
 }
 
 export async function computeOverageForPeriod(params: {
@@ -102,12 +114,22 @@ export async function computeOverageForPeriod(params: {
     const scanEnd    = new Date(periodEndUnix   * 1000)
     // Windows are anchored to the contract's start date so a quarterly meter
     // always resets on the same day-of-cycle the contract began, not on
-    // whatever date this particular scan range happens to start.
+    // whatever date this particular scan range happens to start — unless the
+    // contract explicitly states calendar-boundary cadence (reset_anchor
+    // below), in which case windows instead reset on fixed calendar dates
+    // regardless of when the contract itself began.
     const anchorDate = terms.contract_start_date
       ? new Date(terms.contract_start_date + 'T00:00:00')
       : scanStart
+    const contractEndDate = terms.contract_end_date ? new Date(terms.contract_end_date + 'T00:00:00') : null
 
     for (const cfg of meterConfigs as MeterCfg[]) {
+      // reset_anchor is stored per-tier (duplicated across a metric's tiers
+      // by extraction) — only switch to calendar cadence when the contract
+      // text was explicit about it; never inferred.
+      const cadenceAnchor: CadenceAnchorMode =
+        cfg.overage_tiers?.some(t => t.reset_anchor === 'calendar') ? 'calendar' : 'contract_start'
+
       const { data: meterDef } = await supabaseServer
         .from('billing_meters')
         .select('pull_endpoint_url, pull_auth_token, pull_param_name, mode, test_usage_value, connector, response_metric_key')
@@ -126,9 +148,9 @@ export async function computeOverageForPeriod(params: {
       // invoice cadence) yields exactly one window spanning the whole scan
       // range, so this is a superset of the old single-period behavior, not
       // a divergent path for it.
-      const windows: Array<{ start: Date; end: Date; displayEnd: Date; isOpen?: boolean }> =
-        enumerateCadenceWindows(anchorDate, cfg.billing_cycle, scanStart, scanEnd)
-          .map(w => ({ ...w, displayEnd: w.end }))
+      const windows: Array<{ start: Date; end: Date; displayEnd: Date; isOpen?: boolean; isPartial?: boolean }> =
+        enumerateCadenceWindows(anchorDate, cfg.billing_cycle, scanStart, scanEnd, cadenceAnchor)
+          .map(w => ({ ...w, displayEnd: w.end, isPartial: isPartialWindow(w, anchorDate, contractEndDate) }))
 
       // Live preview: also surface the currently-open window (not yet
       // closed) so usage-so-far is visible before it actually closes. Marked
@@ -142,7 +164,7 @@ export async function computeOverageForPeriod(params: {
       // Aug 11 – Nov 10" instead of a misleading same-day range.
       if (livePreviewAsOfUnix != null) {
         const asOf = new Date(livePreviewAsOfUnix * 1000)
-        const openWindow = findCadenceWindowContaining(anchorDate, cfg.billing_cycle, asOf)
+        const openWindow = findCadenceWindowContaining(anchorDate, cfg.billing_cycle, asOf, cadenceAnchor)
         const alreadyCovered = windows.some(w => w.start.getTime() === openWindow.start.getTime())
         if (!alreadyCovered && openWindow.start <= asOf) {
           windows.push({
@@ -150,6 +172,7 @@ export async function computeOverageForPeriod(params: {
             end: asOf < openWindow.end ? asOf : openWindow.end,
             displayEnd: openWindow.end,
             isOpen: true,
+            isPartial: isPartialWindow(openWindow, anchorDate, contractEndDate),
           })
         }
       }
@@ -216,9 +239,16 @@ export async function computeOverageForPeriod(params: {
           rate_per_unit: t.rate_per_unit ?? 0,
           unit_type:     cfg.meter_key,
           minimum_period_amount: t.minimum_period_amount ?? null,
+          minimum_commitment: t.minimum_commitment ?? null,
         }))
         const includedUnits = cfg.included_units ?? 0
-        const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, !window.isOpen) : 0
+        // A minimum commitment guarantees a full cadence period's worth of
+        // payment — never applied to a window that hasn't closed (isOpen)
+        // or that the contract wasn't actually in effect for the whole span
+        // of (isPartial, calendar-anchored only). Usage-based charges still
+        // bill either way; only the minimum-floor/additive/etc. amount is withheld.
+        const applyMinimum = !window.isOpen && !window.isPartial
+        const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, applyMinimum) : 0
         if (overageEur <= 0 && !includeZeroUsage) continue
 
         // Show this meter's own measurement window whenever it doesn't
@@ -244,7 +274,7 @@ export async function computeOverageForPeriod(params: {
         const windowSuffix = !matchesScanRange
           ? ` (${fmtRange(window.start, window.displayEnd)})`
           : ''
-        const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits, !window.isOpen) + windowSuffix
+        const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits, applyMinimum) + windowSuffix
         items.push({
           meter_key: cfg.meter_key, total_units: totalUnits, included_units: includedUnits,
           billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,
@@ -253,6 +283,7 @@ export async function computeOverageForPeriod(params: {
           windowStart: dateOnly(window.start),
           windowEnd:   dateOnly(window.displayEnd),
           windowOpen:  window.isOpen ?? false,
+          windowPartial: window.isPartial ?? false,
         })
       }
     }

@@ -289,8 +289,8 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
           ahead of the contract start date) doesn't stay invisible. */}
       <div className="grid grid-cols-4 gap-4">
         {[
-          { label: 'Base TCV',        value: fmtFull(baseTcv, cur),      allValue: fmtFull(baseTcvAll, cur),      upcomingValue: fmtFull(baseTcvUpcoming, cur),      sub: `${active.length} active contracts`,       color: '#1A3D2B' },
-          { label: 'Actual TCV',      value: fmtFull(actualTcvAgg, cur), allValue: fmtFull(actualTcvAggAll, cur), upcomingValue: fmtFull(actualTcvAggUpcoming, cur), sub: 'Contracted + additions billed',            color: '#0B5C36' },
+          { label: 'Fixed fees',      value: fmtFull(baseTcv, cur),      allValue: fmtFull(baseTcvAll, cur),      upcomingValue: fmtFull(baseTcvUpcoming, cur),      sub: `${active.length} active contracts`,       color: '#1A3D2B' },
+          { label: 'Committed contract value', value: fmtFull(actualTcvAgg, cur), allValue: fmtFull(actualTcvAggAll, cur), upcomingValue: fmtFull(actualTcvAggUpcoming, cur), sub: 'Contracted + additions billed',            color: '#0B5C36' },
           { label: 'Billed to date',  value: fmtFull(billedToDate, cur), allValue: fmtFull(billedToDateAll, cur), upcomingValue: fmtFull(billedToDateUpcoming, cur), sub: 'Actually invoiced so far',                 color: '#27AE60' },
           { label: 'Remaining',       value: fmtFull(remaining, cur),    allValue: fmtFull(remainingAll, cur),    upcomingValue: fmtFull(remainingUpcoming, cur),    sub: 'Contracted, not yet invoiced',             color: '#87B09A' },
         ].map(k => (
@@ -470,7 +470,7 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
         const wBars: WBar[] = [
           { label: 'Billed to date', sub: `${active.length} active agreement${active.length !== 1 ? 's' : ''}`, amount: billedToDate, kind: 'segment', color: '#27AE60' },
           { label: 'Remaining',      sub: 'contracted',                                                          amount: remaining,    kind: 'segment', color: '#C8E6D4', dashed: true },
-          { label: 'Actual TCV',     amount: actualTcvAgg, kind: 'total', color: '#1A3D2B' },
+          { label: 'Committed contract value', amount: actualTcvAgg, kind: 'total', color: '#1A3D2B' },
         ]
         let wCum = 0
         const wPos = wBars.map(b => {
@@ -498,7 +498,7 @@ function CurrencySection({ cur, contracts, today, overageByJobMonth, ovgInvoices
               <div className="flex items-center gap-3 text-[10px] text-stone/60">
                 <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Billed to date</span>
                 <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm border border-dashed" style={{ background: '#C8E6D4', borderColor: '#4A7C59' }} /> Remaining</span>
-                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#1A3D2B' }} /> Actual TCV</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#1A3D2B' }} /> Committed contract value</span>
               </div>
             </div>
 

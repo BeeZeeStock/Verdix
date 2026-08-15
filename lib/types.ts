@@ -1,3 +1,28 @@
+// A minimum commitment is commercially ambiguous the moment it coexists with
+// an included allowance on the same metric (does the minimum apply before or
+// after the free units? is it a floor under usage charges, or an additional
+// fixed charge on top?) — never inferred silently. requires_confirmation
+// defaults to true whenever that ambiguity is detected at extraction time;
+// the billing owner picks the interpretation in the review workflow, and
+// only a confirmed commitment counts toward committed_contract_value.
+export interface MinimumCommitment {
+  /** floor: max(usage_charge, amount). additive: amount charged on top of usage regardless.
+   *  minimum_spend: amount is a spend commitment usage consumes, shortfall billed at true-up.
+   *  prepaid_commitment: amount is prepaid, usage draws down from it.
+   *  minimum_quantity: a unit-quantity commitment (take-or-pay), not a currency floor. */
+  mode: 'floor' | 'additive' | 'minimum_spend' | 'prepaid_commitment' | 'minimum_quantity'
+  amount: number
+  currency?: string | null
+  /** Cadence this commitment is evaluated over. Defaults to the tier's own measurement_period when unset. */
+  period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
+  included_allowance_interaction?: 'before_allowance' | 'after_allowance' | 'unclear'
+  rollover?: boolean
+  prorate_partial_periods?: boolean | 'unclear'
+  source_clause?: string | null
+  requires_confirmation: boolean
+  confirmation_reason?: string | null
+}
+
 export interface OverageTier {
   tier_label: string
   from_unit: number | null
@@ -6,8 +31,18 @@ export interface OverageTier {
   unit_type: string
   /** How often usage is accumulated and billed. May differ from the contract's main billing_frequency. */
   measurement_period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
-  /** Minimum payment per measurement period regardless of actual usage (a consumption floor). */
+  /** Minimum payment per measurement period regardless of actual usage (a consumption floor).
+   *  @deprecated kept for backward compatibility with existing extracted/stored data — prefer
+   *  minimum_commitment, which can represent modes other than a pure floor and carries its own
+   *  confirmation state. New extractions populate both when a minimum is present. */
   minimum_period_amount?: number | null
+  /** Structured minimum-commitment rule, when the contract states one for this metric. */
+  minimum_commitment?: MinimumCommitment | null
+  /** Whether measurement_period resets on the contract's own start-date anniversary (default,
+   *  preserves existing behavior) or on true calendar boundaries (Jan/Apr/Jul/Oct for quarterly,
+   *  Jan/Jul for semi-annual, Jan for annual) — only set to 'calendar' when the contract text
+   *  explicitly says so (e.g. "calendar quarter"); never inferred. */
+  reset_anchor?: 'contract_start' | 'calendar' | null
 }
 
 export interface PriceEscalator {
