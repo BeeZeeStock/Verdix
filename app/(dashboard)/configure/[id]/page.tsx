@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, use } from 'react'
+import { useState, useEffect, useRef, use, Fragment } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
@@ -10,12 +10,25 @@ import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCard'
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, contractLifecycleStatus } from '@/lib/contract-tcv-calc'
+import { findCadenceWindowContaining, isPartialWindow } from '@/lib/tariff'
+import { optionsForRuleType, type RuleType } from '@/lib/rule-interpretation'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-type Escalator = { escalator_pct?: number; escalator_type?: string; effective_date?: string; description?: string; cap_pct?: number }
+type Escalator = {
+  escalator_pct?: number; escalator_type?: string; effective_date?: string; description?: string; cap_pct?: number
+  interpretation?: {
+    index: 'CPI' | 'fixed_pct' | 'other'
+    frequency: 'annual' | 'monthly' | 'quarterly'
+    effective_date: string | null
+    cap_pct: number | null
+    calculation_method: string
+    requires_confirmation: boolean
+    confirmation_reason?: string | null
+  } | null
+}
 type Discount   = { discount_pct?: number; discount_amount?: number; discount_type?: string; start_date?: string; end_date?: string; duration_months?: number; applies_to?: string; description?: string }
 type Tier       = {
   tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string
@@ -24,7 +37,9 @@ type Tier       = {
   minimum_commitment?: {
     mode: 'floor' | 'additive' | 'minimum_spend' | 'prepaid_commitment' | 'minimum_quantity'
     amount: number
+    period?: string | null
     included_allowance_interaction?: 'before_allowance' | 'after_allowance' | 'unclear'
+    prorate_partial_periods?: boolean | 'unclear'
     requires_confirmation: boolean
     confirmation_reason?: string | null
   } | null
@@ -633,7 +648,7 @@ function SectionHeader({ title, section, onSection }: { title: string; section?:
 
 // ── Review panel helpers ───────────────────────────────────────────────────
 
-type ItemKind = 'overage_tier' | 'escalator' | 'base_fee' | 'user_seat' | 'one_time' | 'minimum_commitment' | 'unknown'
+type ItemKind = 'overage_tier' | 'escalator' | 'escalator_interpretation' | 'base_fee' | 'user_seat' | 'one_time' | 'minimum_commitment' | 'partial_period' | 'unknown'
 
 // A tier and its rendered LineItem share a tier_label — buildLineItems
 // (execute route) sets product_name from tier_label, optionally with a
@@ -647,7 +662,38 @@ function findTierForItem(item: LineItem, tiers: Tier[]): Tier | undefined {
   return tiers.find(t => stripTierSuffix(t.tier_label ?? '') === cleanName)
 }
 
-function classifyItem(item: LineItem, tiers: Tier[] = []): ItemKind {
+// A metric's minimum commitment resets on calendar-quarter (etc.) boundaries
+// independent of the contract's own start/end date, so the first and/or
+// last window the contract touches can be shorter than a full cadence cycle
+// — only surfaced once the allowance-interaction ambiguity is already
+// resolved, so the reviewer tackles one ambiguity at a time per metric.
+function computePartialPeriodMetrics(contractStartDate: string | undefined, contractEndDate: string | undefined, tiers: Tier[]): Set<string> {
+  const result = new Set<string>()
+  if (!contractStartDate || !contractEndDate) return result
+  const start = parseLocalDate(contractStartDate)
+  const end   = parseLocalDate(contractEndDate)
+  const byUnit = new Map<string, Tier[]>()
+  for (const t of tiers) {
+    if (!t.unit_type) continue
+    if (!byUnit.has(t.unit_type)) byUnit.set(t.unit_type, [])
+    byUnit.get(t.unit_type)!.push(t)
+  }
+  for (const [unitType, unitTiers] of byUnit) {
+    const mc = unitTiers.find(t => t.minimum_commitment)?.minimum_commitment
+    if (!mc || mc.requires_confirmation || mc.prorate_partial_periods !== 'unclear') continue
+    const anchorTier = unitTiers.find(t => t.reset_anchor === 'calendar')
+    if (!anchorTier) continue
+    const cadence = anchorTier.measurement_period ?? 'monthly'
+    const firstWindow = findCadenceWindowContaining(start, cadence, start, 'calendar')
+    const lastWindow  = findCadenceWindowContaining(start, cadence, end, 'calendar')
+    if (isPartialWindow(firstWindow, start, end) || isPartialWindow(lastWindow, start, end)) {
+      result.add(unitType)
+    }
+  }
+  return result
+}
+
+function classifyItem(item: LineItem, tiers: Tier[] = [], escalators: Escalator[] = [], partialPeriodMetrics: Set<string> = new Set()): ItemKind {
   const rule = (item.applied_rule ?? '').toLowerCase()
   const name = item.product_name.toLowerCase()
 
@@ -657,14 +703,24 @@ function classifyItem(item: LineItem, tiers: Tier[] = []): ItemKind {
   // it would get misclassified as a pricing tier.
   if (item.billing_period === 'one_time' || rule.includes('one_time') || name.includes('setup') || name.includes('onboarding')) return 'one_time'
 
-  if (rule.includes('escalator') || name.includes('escalator') || name.includes('cpi') || name.includes('price escalator')) return 'escalator'
+  if (rule.includes('escalator') || name.includes('escalator') || name.includes('cpi') || name.includes('price escalator')) {
+    // A CPI-linked escalator with no resolved rate/interpretation needs the
+    // same structured-interpretation flow as an ambiguous minimum — a plain
+    // "confirm this value" doesn't make sense when there's no value yet.
+    const unresolved = escalators.some(e => e.escalator_pct == null && !e.interpretation)
+    return unresolved ? 'escalator_interpretation' : 'escalator'
+  }
 
-  // A minimum commitment flagged as ambiguous (unclear interaction with an
-  // included allowance, unclear proration, etc.) takes priority over the
-  // ordinary overage_tier classification — it needs a reviewer's explicit
-  // interpretation, not just a rate confirmation. Never silently resolved.
   const matchedTier = findTierForItem(item, tiers)
+  // A minimum commitment flagged as ambiguous (unclear interaction with an
+  // included allowance) takes priority over the ordinary overage_tier
+  // classification — it needs a reviewer's explicit interpretation, not
+  // just a rate confirmation. Never silently resolved.
   if (matchedTier?.minimum_commitment?.requires_confirmation) return 'minimum_commitment'
+  // Once the allowance interaction is resolved, a partial calendar-quarter
+  // (etc.) at the contract's edges is a second, narrower ambiguity on the
+  // same commitment — surfaced as its own card, not bundled into the first.
+  if (matchedTier?.unit_type && partialPeriodMetrics.has(matchedTier.unit_type)) return 'partial_period'
 
   // Usage/overage pricing tiers always carry quantity 0 from extraction (no
   // usage confirmed yet) — a structural signal, unlike matching "overage"/
@@ -739,6 +795,28 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
           ?? 'This metric has both an included allowance and a stated minimum; the contract does not say how they interact.',
       }
     }
+    case 'partial_period': {
+      const mc = findTierForItem(item, tiers)?.minimum_commitment
+      return {
+        typeLabel:          'Partial-period treatment',
+        typeIcon:           'ti-calendar-exclamation',
+        primaryField:       'unit_price',
+        primaryLabel:       'Proration',
+        primaryPlaceholder: '',
+        whatToCheck:        `Confirm how the ${mc ? fmt(mc.amount, item.currency) : ''} minimum for ${item.product_name} applies to a period the contract wasn't in effect for the whole of.`,
+        whyFlagged:         "The agreement begins or ends part-way through a calendar period, but the minimum resets on calendar boundaries. No explicit proration rule was identified.",
+      }
+    }
+    case 'escalator_interpretation':
+      return {
+        typeLabel:          'Price escalation',
+        typeIcon:           'ti-trending-up',
+        primaryField:       'unit_price',
+        primaryLabel:       'Escalation rate (%)',
+        primaryPlaceholder: 'e.g. 3',
+        whatToCheck:        'Confirm the escalation index, frequency, cap, and calculation method.',
+        whyFlagged:         'The contract defines a CPI-linked or otherwise variable escalation mechanism, but the applicable rate cannot be known at signing and requires interpretation.',
+      }
     case 'escalator':
       return {
         typeLabel:          'Price escalator',
@@ -792,6 +870,258 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
   }
 }
 
+const ITEM_KIND_TO_RULE_TYPE: Partial<Record<ItemKind, RuleType>> = {
+  minimum_commitment: 'minimum_commitment',
+  partial_period: 'partial_period',
+  escalator_interpretation: 'escalator',
+}
+
+// ── Rule interpretation card ────────────────────────────────────────────────
+// Human input → AI interpretation → structured rule preview → human approval
+// → propagation, entirely in-panel — the reviewer never leaves this card to
+// resolve an ambiguous commercial rule (minimum commitment, escalator, or
+// partial-period proration all share this one mechanism). No AI-proposed
+// interpretation ever reaches contract_terms/contract_meter_mappings without
+// the reviewer explicitly clicking "Confirm & apply" below.
+type RulePhase = 'input' | 'loading' | 'missing' | 'proposal' | 'confirming' | 'applied' | 'partial' | 'error'
+
+function RuleInterpretationCard({
+  jobId, kind, contractUnitType, sourceClause, currency, meterMappingConfirmed, meterSuggestion, availableMeters, onApplied, onChangeMapping,
+}: {
+  jobId: string
+  kind: ItemKind
+  contractUnitType?: string
+  sourceClause: string
+  currency: string
+  meterMappingConfirmed?: boolean
+  meterSuggestion?: { meter_key: string; display_name?: string } | null
+  availableMeters?: Array<{ meter_key: string; display_name: string }>
+  onApplied: () => void
+  onChangeMapping?: (meterKey: string) => void
+}) {
+  const ruleType = ITEM_KIND_TO_RULE_TYPE[kind] ?? 'minimum_commitment'
+  const options = optionsForRuleType(ruleType)
+  const [phase, setPhase] = useState<RulePhase>('input')
+  const [selectedOption, setSelectedOption] = useState<string | null>(null)
+  const [freeText, setFreeText] = useState('')
+  const [proposal, setProposal] = useState<Record<string, unknown> | null>(null)
+  const [whatWillChange, setWhatWillChange] = useState<Array<{ component: string; change: string }>>([])
+  const [missingQuestions, setMissingQuestions] = useState<string[]>([])
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [propagation, setPropagation] = useState<Record<string, string> | null>(null)
+
+  const generate = async () => {
+    setPhase('loading')
+    setErrorMsg(null)
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/interpret-rule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ruleType, contractUnitType, selectedOption: selectedOption ?? undefined, freeText, sourceClause }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setErrorMsg(data.error ?? 'Verdix could not interpret this rule.'); setPhase('input'); return }
+      if (!data.ok) {
+        setMissingQuestions(data.questions ?? ['Verdix needs more detail to operationalize this instruction.'])
+        setPhase('missing')
+        return
+      }
+      setProposal(data.proposal)
+      setWhatWillChange(data.whatWillChange ?? [])
+      setPhase('proposal')
+    } catch {
+      setErrorMsg('Verdix could not reach the AI interpretation service. Try again.')
+      setPhase('input')
+    }
+  }
+
+  const confirmAndApply = async () => {
+    if (!proposal) return
+    setPhase('confirming')
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ruleType, contractUnitType, sourceClause, reviewerInput: freeText,
+          aiProposedInterpretation: proposal, approvedInterpretation: proposal,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok && !data.propagation) { setErrorMsg(data.error ?? 'Approval failed.'); setPhase('proposal'); return }
+      setPropagation(data.propagation ?? {})
+      const anyFailed = Object.values(data.propagation ?? {}).includes('failed')
+      if (anyFailed) {
+        setPhase('partial')
+      } else {
+        setPhase('applied')
+        onApplied()
+      }
+    } catch {
+      setErrorMsg('Verdix could not save this approval. Try again.')
+      setPhase('proposal')
+    }
+  }
+
+  if (phase === 'applied') {
+    return (
+      <div className="rounded-xl p-3" style={{ background: '#F0FDF4', border: '1px solid rgba(11,92,54,0.2)' }}>
+        <p className="text-sm font-medium flex items-center gap-1.5" style={{ color: '#0B5C36' }}>
+          <i className="ti ti-circle-check-filled" style={{ fontSize: 15 }} /> Rule confirmed and applied
+        </p>
+        <p className="text-[11px] text-stone mt-1">Updated: Commercial Terms · Billing Configuration · Billing Schedule</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      {phase === 'partial' && (
+        <div className="rounded-xl p-3" style={{ background: '#FFFBEB', border: '1px solid #FDE68A' }}>
+          <p className="text-sm font-medium" style={{ color: '#92400E' }}>Confirmed — propagation incomplete</p>
+          <ul className="text-[11px] mt-1 space-y-0.5" style={{ color: '#78350F' }}>
+            {Object.entries(propagation ?? {}).map(([component, status]) => (
+              <li key={component}>{component.replace(/_/g, ' ')}: {status}</li>
+            ))}
+          </ul>
+          <button
+            onClick={confirmAndApply}
+            className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-lg"
+            style={{ background: '#1A3D2B', color: 'white' }}
+          >
+            Retry propagation
+          </button>
+        </div>
+      )}
+
+      {(phase === 'input' || phase === 'loading' || phase === 'missing') && (
+        <>
+          {phase === 'missing' && (
+            <div className="rounded-xl p-3 mb-1" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
+              <p className="text-xs font-semibold mb-1" style={{ color: '#991B1B' }}>Verdix needs more detail to operationalize this instruction.</p>
+              <ul className="text-[11px] space-y-0.5" style={{ color: '#7F1D1D' }}>
+                {missingQuestions.map((q, i) => <li key={i}>• {q}</li>)}
+              </ul>
+            </div>
+          )}
+          <p className="text-[10px] font-bold uppercase tracking-widest text-stone">How should this rule be applied?</p>
+          <div className="space-y-1.5">
+            {options.map(opt => (
+              <label key={opt.id} className="flex items-start gap-2 p-2 rounded-lg cursor-pointer transition-colors"
+                style={{ background: selectedOption === opt.id ? '#F0FDF4' : 'transparent', border: `1px solid ${selectedOption === opt.id ? 'rgba(11,92,54,0.3)' : 'rgba(26,61,43,0.1)'}` }}>
+                <input type="radio" name={`rule-option-${contractUnitType ?? 'escalator'}`} className="mt-0.5" checked={selectedOption === opt.id} onChange={() => setSelectedOption(opt.id)} />
+                <span>
+                  <span className="block text-xs font-semibold text-ink">{opt.label}</span>
+                  <span className="block text-[11px] text-stone">{opt.description}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-widest text-stone block mb-1">Tell Verdix how this should work</label>
+            <textarea
+              value={freeText}
+              onChange={e => setFreeText(e.target.value)}
+              placeholder="Example: Apply the stated minimum as the quarterly floor after the included allowance. Do not add it on top of calculated usage."
+              rows={3}
+              className="w-full text-xs border rounded-xl px-3 py-2 outline-none"
+              style={{ borderColor: 'rgba(26,61,43,0.15)', background: '#FAFAF9' }}
+            />
+          </div>
+          {errorMsg && <p className="text-xs" style={{ color: '#DC2626' }}>{errorMsg}</p>}
+          <button
+            onClick={generate}
+            disabled={phase === 'loading' || (!selectedOption && !freeText.trim())}
+            className="w-full py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
+            style={{ background: '#1A3D2B', color: 'white' }}
+          >
+            {phase === 'loading' ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : 'Generate billing rule'}
+          </button>
+        </>
+      )}
+
+      {(phase === 'proposal' || phase === 'confirming') && proposal && (
+        <>
+          <div className="rounded-xl p-3" style={{ background: '#F0FDF4', border: '1px solid rgba(11,92,54,0.2)' }}>
+            <p className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: '#0B5C36' }}>Proposed interpretation</p>
+            <dl className="space-y-1.5">
+              {Object.entries(proposal).map(([field, value]) => (
+                <div key={field} className="flex justify-between gap-3 text-xs">
+                  <dt className="text-stone capitalize flex-shrink-0">{field.replace(/_/g, ' ')}</dt>
+                  <dd className="font-medium text-ink text-right">
+                    {field === 'amount' && typeof value === 'number' ? fmt(value, currency) : String(value)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+
+          <div className="rounded-xl p-3" style={{ background: '#FFFDF5', border: '1px solid rgba(217,167,90,0.35)' }}>
+            <p className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: '#92400E' }}>What will change</p>
+            <ul className="space-y-1">
+              {whatWillChange.map((c, i) => (
+                <li key={i} className="text-[11px]" style={{ color: c.component === 'Usage Source' ? '#B45309' : '#78350F' }}>
+                  <span className="font-semibold">{c.component}</span> — {c.change}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {errorMsg && <p className="text-xs" style={{ color: '#DC2626' }}>{errorMsg}</p>}
+          <div className="flex gap-2">
+            <button
+              onClick={confirmAndApply}
+              disabled={phase === 'confirming'}
+              className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
+              style={{ background: '#1A3D2B', color: 'white' }}
+            >
+              {phase === 'confirming' ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : 'Confirm & apply'}
+            </button>
+            <button
+              onClick={() => setPhase('input')}
+              className="px-4 py-2 rounded-xl text-sm text-stone hover:text-ink border transition-colors"
+              style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+            >
+              Edit interpretation
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Meter-mapping dependency, resolvable without leaving the panel */}
+      {contractUnitType && meterMappingConfirmed === false && (
+        <div className="rounded-xl p-3" style={{ background: '#F5F5F4', border: '1px solid rgba(26,61,43,0.1)' }}>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-stone mb-1.5">Usage source</p>
+          <p className="text-[11px] text-stone mb-2">
+            Contract metric <span className="font-medium text-ink">&quot;{contractUnitType}&quot;</span> maps to{' '}
+            <span className="font-medium text-ink">{meterSuggestion?.display_name ?? meterSuggestion?.meter_key ?? 'a suggested meter'}</span>.
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onChangeMapping?.(meterSuggestion?.meter_key ?? '')}
+              className="flex-1 text-xs font-semibold py-1.5 rounded-lg border transition-colors"
+              style={{ borderColor: 'rgba(26,61,43,0.25)', color: '#1A3D2B', background: '#F0FDF4' }}
+            >
+              Confirm mapping
+            </button>
+            {availableMeters && availableMeters.length > 1 && (
+              <select
+                onChange={e => onChangeMapping?.(e.target.value)}
+                defaultValue=""
+                className="text-xs border rounded-lg px-2 py-1.5"
+                style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+              >
+                <option value="" disabled>Change mapping…</option>
+                {availableMeters.map(m => <option key={m.meter_key} value={m.meter_key}>{m.display_name}</option>)}
+              </select>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Review panel ──────────────────────────────────────────────────────────
 
 function ReviewPanel({
@@ -802,6 +1132,9 @@ function ReviewPanel({
   onRefresh,
   jobId,
   overageTiers,
+  escalators,
+  contractStartDate,
+  contractEndDate,
   numberFormat = 'dot',
   onViewSource,
 }: {
@@ -812,16 +1145,56 @@ function ReviewPanel({
   onRefresh: () => void
   jobId: string
   overageTiers?: Tier[]
+  escalators?: Escalator[]
+  contractStartDate?: string
+  contractEndDate?: string
   numberFormat?: 'dot' | 'comma'
   onViewSource?: (section?: string) => void
 }) {
   const [saving,    setSaving]    = useState<string | null>(null)
   const [resolved,  setResolved]  = useState<Record<string, 'confirmed' | 'corrected'>>({})
   const [editing,   setEditing]   = useState<string | null>(null)
+  const [previewing, setPreviewing] = useState<string | null>(null)
   const [draftPrice, setDraftPrice] = useState<Record<string, string>>({})
   const [draftName,  setDraftName]  = useState<Record<string, string>>({})
   const [saveError,  setSaveError]  = useState<Record<string, string>>({})
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  // Meter-mapping suggestions, fetched once so any rule-interpretation card
+  // can show/resolve its "usage source" dependency inline — the same data
+  // MeterMappingPanel uses, so Confirm/Change mapping here writes through
+  // the same endpoint and never diverges from that panel's own state.
+  type MeterSuggestion = { contract_unit_type: string; meter_key: string; confirmed: boolean; included_units: number; overage_tiers: unknown; billing_cycle: string }
+  type AvailableMeter  = { meter_key: string; display_name: string }
+  const [meterSuggestions, setMeterSuggestions] = useState<MeterSuggestion[]>([])
+  const [availableMeters,  setAvailableMeters]  = useState<AvailableMeter[]>([])
+  useEffect(() => {
+    fetch(`/api/jobs/${jobId}/meter-mappings`)
+      .then(r => r.json())
+      .then((res: { suggestions?: MeterSuggestion[]; available_meters?: AvailableMeter[] }) => {
+        setMeterSuggestions(res.suggestions ?? [])
+        setAvailableMeters(res.available_meters ?? [])
+      })
+      .catch(() => {})
+  }, [jobId])
+
+  const changeMeterMapping = async (contractUnitType: string, meterKey: string) => {
+    const suggestion = meterSuggestions.find(s => s.contract_unit_type === contractUnitType)
+    if (!suggestion) return
+    const mappings = meterSuggestions.map(s =>
+      s.contract_unit_type === contractUnitType
+        ? { ...s, meter_key: meterKey || s.meter_key, confirmed: true }
+        : s
+    )
+    await fetch(`/api/jobs/${jobId}/meter-mappings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mappings }),
+    })
+    setMeterSuggestions(mappings)
+  }
+
+  const partialPeriodMetrics = computePartialPeriodMetrics(contractStartDate, contractEndDate, overageTiers ?? [])
 
   const resolvedCount = items.filter(i => resolved[i.id] || i.id in corrections).length
   const allDone = resolvedCount === items.length
@@ -875,6 +1248,7 @@ function ReviewPanel({
       onCorrect(item.id, item.product_name)
       setResolved(r => ({ ...r, [item.id]: 'confirmed' }))
       setEditing(null)
+      setPreviewing(null)
       scrollToNextUnresolved(item.id)
       onRefresh()
     } finally {
@@ -984,6 +1358,7 @@ function ReviewPanel({
       // Only mark resolved if we reached here (all saves succeeded)
       setResolved(r => ({ ...r, [item.id]: 'corrected' }))
       setEditing(null)
+      setPreviewing(null)
       scrollToNextUnresolved(item.id)
       onRefresh()
     } finally {
@@ -1046,9 +1421,13 @@ function ReviewPanel({
 
               <div className="space-y-3">
                 {groupItems.map(item => {
-                  const kind        = classifyItem(item, overageTiers ?? [])
+                  const kind        = classifyItem(item, overageTiers ?? [], escalators ?? [], partialPeriodMetrics)
                   const ctx         = getReviewContext(item, kind, numberFormat, overageTiers ?? [])
                   const isResolved  = !!(resolved[item.id] || item.id in corrections)
+                  const isRuleInterpretation = kind === 'minimum_commitment' || kind === 'partial_period' || kind === 'escalator_interpretation'
+                  const ruleUnitType   = isRuleInterpretation ? findTierForItem(item, overageTiers ?? [])?.unit_type : undefined
+                  const ruleMeterSuggestion = ruleUnitType ? meterSuggestions.find(s => s.contract_unit_type === ruleUnitType) : undefined
+                  const ruleMeter      = ruleMeterSuggestion ? availableMeters.find(m => m.meter_key === ruleMeterSuggestion.meter_key) : undefined
                   const isEditing   = editing === item.id
                   const isSaving    = saving === item.id
                   const score       = item.confidence_score
@@ -1128,20 +1507,26 @@ function ReviewPanel({
                         </p>
 
                         {/* Actions or edit form */}
-                        {kind === 'minimum_commitment' && !isResolved ? (
-                          // A minimum commitment's ambiguity is resolved by picking one of
-                          // the structured interpretations (floor/additive/minimum_spend/
-                          // prepaid/minimum_quantity) — that selection, plus reviewer/
-                          // timestamp/note, is written per-metric in the Meter mapping
-                          // panel below, not here as a simple value confirmation.
-                          <button
-                            onClick={() => document.getElementById('meter-mapping-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-                            className="w-full py-2 rounded-xl text-sm font-semibold transition-colors"
-                            style={{ background: '#1A3D2B', color: 'white' }}
-                          >
-                            <i className="ti ti-arrow-down mr-1.5" style={{ fontSize: 12 }} />
-                            Resolve in Meter mapping ↓
-                          </button>
+                        {isRuleInterpretation && !isResolved ? (
+                          // Ambiguous commercial rules are resolved entirely in-panel:
+                          // structured choice + free text → AI proposal → "what will
+                          // change" → human approval — never routed to another screen.
+                          <RuleInterpretationCard
+                            jobId={jobId}
+                            kind={kind}
+                            contractUnitType={ruleUnitType}
+                            sourceClause={ctx.whatToCheck}
+                            currency={item.currency}
+                            meterMappingConfirmed={ruleMeterSuggestion?.confirmed}
+                            meterSuggestion={ruleMeterSuggestion ? { meter_key: ruleMeterSuggestion.meter_key, display_name: ruleMeter?.display_name } : null}
+                            availableMeters={availableMeters}
+                            onChangeMapping={meterKey => ruleUnitType && changeMeterMapping(ruleUnitType, meterKey || (ruleMeterSuggestion?.meter_key ?? ''))}
+                            onApplied={() => {
+                              setResolved(r => ({ ...r, [item.id]: 'confirmed' }))
+                              scrollToNextUnresolved(item.id)
+                              onRefresh()
+                            }}
+                          />
                         ) : isResolved ? (
                           <div className="flex items-center gap-2">
                             <i
@@ -1162,6 +1547,63 @@ function ReviewPanel({
                               Undo
                             </button>
                           </div>
+                        ) : isEditing && previewing === item.id ? (
+                          <div className="space-y-2">
+                            {/* Preview change — the reviewer sees exactly what's about to
+                                change before it touches any billing data, per the same
+                                approve-once-before-propagation pattern used for ambiguous
+                                rules below. */}
+                            <div className="rounded-xl p-3" style={{ background: '#FFFDF5', border: '1px solid rgba(217,167,90,0.35)' }}>
+                              <p className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: '#92400E' }}>Proposed update</p>
+                              <div className="flex justify-between text-xs mb-1">
+                                <span className="text-stone">Old</span>
+                                <span className="font-medium text-ink">
+                                  {ctx.primaryField === 'unit_price' ? fmtUnit(item.unit_price, item.currency) : item.product_name}
+                                </span>
+                              </div>
+                              <div className="flex justify-between text-xs mb-2">
+                                <span className="text-stone">New</span>
+                                <span className="font-semibold text-ink">
+                                  {ctx.primaryField === 'unit_price' ? (draftPrice[item.id] || '—') : (draftName[item.id] || '—')}
+                                </span>
+                              </div>
+                              <p className="text-[10px] font-semibold uppercase tracking-widest text-stone/60 mb-1">Affected configuration</p>
+                              <ul className="text-[11px] text-stone space-y-0.5">
+                                <li>• Billing Configuration</li>
+                                <li>• Commercial Terms</li>
+                              </ul>
+                            </div>
+                            {saveError[item.id] && (
+                              <p className="text-xs" style={{ color: '#DC2626' }}>{saveError[item.id]}</p>
+                            )}
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => saveCorrection(item, ctx)}
+                                disabled={isSaving}
+                                className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
+                                style={{ background: '#1A3D2B', color: 'white' }}
+                              >
+                                {isSaving
+                                  ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} />
+                                  : 'Confirm & apply'
+                                }
+                              </button>
+                              <button
+                                onClick={() => setPreviewing(null)}
+                                className="px-3 py-2 rounded-xl text-sm text-stone hover:text-ink border transition-colors"
+                                style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                              >
+                                Continue editing
+                              </button>
+                              <button
+                                onClick={() => { setEditing(null); setPreviewing(null) }}
+                                className="px-3 py-2 rounded-xl text-sm text-stone hover:text-ink border transition-colors"
+                                style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
                         ) : isEditing ? (
                           <div className="space-y-2">
                             <label className="text-[10px] font-bold uppercase tracking-widest text-stone block">
@@ -1178,7 +1620,7 @@ function ReviewPanel({
                                     setDraftPrice(d => ({ ...d, [item.id]: e.target.value }))
                                     setSaveError(err => { const n = { ...err }; delete n[item.id]; return n })
                                   }}
-                                  onKeyDown={e => { if (e.key === 'Enter') saveCorrection(item, ctx) }}
+                                  onKeyDown={e => { if (e.key === 'Enter') setPreviewing(item.id) }}
                                   className="w-full text-sm border rounded-xl px-3 py-2 outline-none"
                                   style={{ borderColor: saveError[item.id] ? '#DC2626' : '#FAC775', background: '#FFFDF5' }}
                                   autoFocus
@@ -1197,7 +1639,7 @@ function ReviewPanel({
                                     setDraftName(d => ({ ...d, [item.id]: e.target.value }))
                                     setSaveError(err => { const n = { ...err }; delete n[item.id]; return n })
                                   }}
-                                  onKeyDown={e => { if (e.key === 'Enter') saveCorrection(item, ctx) }}
+                                  onKeyDown={e => { if (e.key === 'Enter') setPreviewing(item.id) }}
                                   className="w-full text-sm border rounded-xl px-3 py-2 outline-none"
                                   style={{ borderColor: saveError[item.id] ? '#DC2626' : '#FAC775', background: '#FFFDF5' }}
                                   autoFocus
@@ -1209,15 +1651,12 @@ function ReviewPanel({
                             )}
                             <div className="flex gap-2">
                               <button
-                                onClick={() => saveCorrection(item, ctx)}
+                                onClick={() => setPreviewing(item.id)}
                                 disabled={isSaving}
                                 className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
                                 style={{ background: '#1A3D2B', color: 'white' }}
                               >
-                                {isSaving
-                                  ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} />
-                                  : 'Save correction'
-                                }
+                                Preview change
                               </button>
                               <button
                                 onClick={() => setEditing(null)}
@@ -1994,6 +2433,57 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 <BillingModelBadge model={billingModel} />
               </div>
 
+              {/* Confirmed rules — generated from the approved, normalized model
+                  (a reviewer's rule-interpretation flow), not something to
+                  manually re-enter here. This is a read view; resolving or
+                  changing one happens back in the Review panel. */}
+              {(() => {
+                const confirmedMinimums = new Map<string, Tier>()
+                for (const t of tiers) {
+                  if (t.unit_type && t.minimum_commitment && !t.minimum_commitment.requires_confirmation && !confirmedMinimums.has(t.unit_type)) {
+                    confirmedMinimums.set(t.unit_type, t)
+                  }
+                }
+                const confirmedEscalators = (terms?.escalators ?? []).filter(e => e.interpretation && !e.interpretation.requires_confirmation)
+                if (confirmedMinimums.size === 0 && confirmedEscalators.length === 0) return null
+                const modeLabel: Record<string, string> = {
+                  floor: 'Minimum charge floor', additive: 'Additive fee', minimum_spend: 'Spend commitment',
+                  prepaid_commitment: 'Prepaid commitment', minimum_quantity: 'Minimum quantity',
+                }
+                return (
+                  <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                    <p className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-3">Confirmed rules</p>
+                    <div className="grid grid-cols-2 gap-4">
+                      {Array.from(confirmedMinimums.entries()).map(([unitType, t]) => {
+                        const mc = t.minimum_commitment!
+                        return (
+                          <div key={unitType} className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
+                            <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">{modeLabel[mc.mode] ?? mc.mode}</p>
+                            <p className="text-lg font-semibold text-ink mb-1">{fmt(mc.amount, cur)}{mc.period ? ` / ${mc.period}` : ''}</p>
+                            <p className="text-[11px] text-stone">Applies to: <span className="font-medium text-ink">{unitType}</span></p>
+                            {mc.included_allowance_interaction && (
+                              <p className="text-[11px] text-stone">Allowance: <span className="font-medium text-ink">{mc.included_allowance_interaction.replace(/_/g, ' ')}</span></p>
+                            )}
+                            <p className="text-[10px] text-stone/60 mt-2">Status: <span className="font-medium" style={{ color: '#0B5C36' }}>Confirmed</span></p>
+                          </div>
+                        )
+                      })}
+                      {confirmedEscalators.map((e, i) => (
+                        <div key={i} className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
+                          <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">Price escalation</p>
+                          <p className="text-lg font-semibold text-ink mb-1">
+                            {e.interpretation!.index}{e.interpretation!.cap_pct != null ? `, capped ${e.interpretation!.cap_pct}%` : ''}
+                          </p>
+                          <p className="text-[11px] text-stone">{e.interpretation!.calculation_method}</p>
+                          <p className="text-[11px] text-stone">Frequency: <span className="font-medium text-ink">{e.interpretation!.frequency}</span></p>
+                          <p className="text-[10px] text-stone/60 mt-2">Status: <span className="font-medium" style={{ color: '#0B5C36' }}>Confirmed</span></p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
+
               {/* Discounts */}
               {(terms?.discounts?.length ?? 0) > 0 && (
                 <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
@@ -2391,6 +2881,21 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 const platformLabel = billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'
                 const periodOptions = ['monthly', 'quarterly', 'semi-annual', 'annual', 'one_time']
                 const editCellStyle = 'w-full text-right bg-transparent border-0 border-b border-forest/30 focus:outline-none focus:border-forest text-[12px] tabular-nums py-0 px-0'
+
+                // Fixed line items / Variable pricing are visually separated —
+                // a usage tier's Qty 0 / Total 0.00 reads as "nothing is
+                // configured" when shown inline with real fixed fees, but is
+                // exactly what an unconsumed pricing rule should look like on
+                // its own. Same rows, same editing behavior, grouped order only.
+                const partialPeriodMetricsForConfig = computePartialPeriodMetrics(terms?.contract_start_date, terms?.contract_end_date, tiers)
+                const groupOf = (item: LineItem): 'Variable pricing' | 'Fixed line items' => {
+                  const k = classifyItem(item, tiers, terms?.escalators ?? [], partialPeriodMetricsForConfig)
+                  return (k === 'overage_tier' || k === 'minimum_commitment' || k === 'partial_period') ? 'Variable pricing' : 'Fixed line items'
+                }
+                const groupOrder = ['Fixed line items', 'Variable pricing'] as const
+                const orderedItems = groupOrder.flatMap(g => items.filter(i => groupOf(i) === g))
+                let lastGroup: string | null = null
+
                 return (
                 <div className="p-6">
                   <div className="overflow-x-auto">
@@ -2406,11 +2911,20 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         </tr>
                       </thead>
                       <tbody>
-                        {items.map(item => {
+                        {orderedItems.map(item => {
                           const isEscalator = classifyItem(item) === 'escalator'
                           const isVariable  = classifyItem(item) === 'one_time' && item.total_amount === 0
+                          const group = groupOf(item)
+                          const showGroupHeader = group !== lastGroup
+                          lastGroup = group
                           return (
-                          <tr key={item.id} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                          <Fragment key={item.id}>
+                          {showGroupHeader && (
+                            <tr>
+                              <td colSpan={5} className="pt-4 pb-1.5 text-[9px] font-bold text-stone/50 uppercase tracking-[0.14em]">{group}</td>
+                            </tr>
+                          )}
+                          <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
                             {/* Product */}
                             <td className="py-2.5 pr-4 text-[12px] text-ink">
                               {item.confidence_score < 0.95 && !correction(item.id) && (
@@ -2510,6 +3024,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                               )}
                             </td>
                           </tr>
+                          </Fragment>
                         )})}
                       </tbody>
                       {/* Fixed fees footer */}
@@ -2524,6 +3039,32 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       </tfoot>
                     </table>
                   </div>
+
+                  {/* Commercial rules — pricing tiers and minimum/escalator
+                      rules are configuration, not usage actuals, so they're
+                      never represented as an ordinary qty × unit-price row.
+                      Same confirmed-rule data as the Commercial Terms section. */}
+                  {(() => {
+                    const confirmed = tiers.filter(t => t.unit_type && t.minimum_commitment && !t.minimum_commitment.requires_confirmation)
+                    const seen = new Set<string>()
+                    const rules = confirmed.filter(t => t.unit_type && !seen.has(t.unit_type) && seen.add(t.unit_type))
+                    if (rules.length === 0) return null
+                    return (
+                      <div className="mt-5 pt-4" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
+                        <p className="text-[9px] font-bold text-stone/50 uppercase tracking-[0.14em] mb-2">Commercial rules</p>
+                        <div className="flex flex-wrap gap-2">
+                          {rules.map(t => (
+                            <span key={t.unit_type} className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full"
+                              style={{ background: '#F6FAF4', color: '#0B5C36', border: '1px solid rgba(74,124,89,0.25)' }}>
+                              <i className="ti ti-shield-check" style={{ fontSize: 11 }} />
+                              {t.unit_type}: {fmt(t.minimum_commitment!.amount, cur)}{t.minimum_commitment!.period ? `/${t.minimum_commitment!.period}` : ''} minimum · Confirmed
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })()}
+
                   <p className="text-[10px] text-stone/50 mt-4">
                     Platform: <span className="font-medium text-stone/70">{platformLabel}</span>
                   </p>
@@ -2781,6 +3322,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           onRefresh={fetchJob}
           jobId={id}
           overageTiers={terms?.overage_tiers}
+          escalators={terms?.escalators}
+          contractStartDate={terms?.contract_start_date}
+          contractEndDate={terms?.contract_end_date}
           numberFormat={terms?.number_format ?? 'dot'}
           onViewSource={openPDF}
         />

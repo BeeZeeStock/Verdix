@@ -60,6 +60,12 @@ export type OverageLineItem = {
   // commitment for this window is withheld from billing until a reviewer
   // confirms how it prorates — see isPartialWindow in lib/tariff.ts.
   windowPartial?: boolean
+  // True when a confirmed minimum commitment (floor/minimum_spend mode) is
+  // what determined the final billed amount, i.e. it exceeded the pure
+  // tiered-usage charge — surfaced as a first-class line in the Consumption
+  // timeline rather than only appearing inside the description tooltip.
+  minimumFloorApplied?: boolean
+  minimumFloorAmount?: number
 }
 
 export async function computeOverageForPeriod(params: {
@@ -251,6 +257,19 @@ export async function computeOverageForPeriod(params: {
         const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, applyMinimum) : 0
         if (overageEur <= 0 && !includeZeroUsage) continue
 
+        // Whether a confirmed minimum commitment is what determined the
+        // final billed amount — compared against the pure tiered-usage
+        // charge with no floor/additive/etc. applied, so the Consumption
+        // timeline can show "Minimum floor applies: X" as a first-class
+        // line instead of it being buried in the description tooltip only.
+        const rawUsageCharge = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, false) : 0
+        const activeCommitment = tiers.find(t => t.minimum_commitment && !t.minimum_commitment.requires_confirmation)?.minimum_commitment
+        const minimumFloorApplied = applyMinimum && overageEur !== rawUsageCharge
+          && (activeCommitment ? (activeCommitment.mode === 'floor' || activeCommitment.mode === 'minimum_spend') : true)
+        const minimumFloorAmount = minimumFloorApplied
+          ? (activeCommitment?.amount ?? tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0))
+          : undefined
+
         // Show this meter's own measurement window whenever it doesn't
         // exactly match the invoice period it's displayed under — either
         // because several windows of a shorter cadence land on one invoice
@@ -284,6 +303,8 @@ export async function computeOverageForPeriod(params: {
           windowEnd:   dateOnly(window.displayEnd),
           windowOpen:  window.isOpen ?? false,
           windowPartial: window.isPartial ?? false,
+          minimumFloorApplied: minimumFloorApplied || undefined,
+          minimumFloorAmount,
         })
       }
     }

@@ -45,6 +45,20 @@ export interface OverageTier {
   reset_anchor?: 'contract_start' | 'calendar' | null
 }
 
+// A reviewer's resolved reading of an escalator whose actual rate can't be
+// known at contract signing (CPI-linked, etc.) — mirrors MinimumCommitment's
+// confirmation pattern: never fabricated, always explicit, always attributable.
+export interface EscalatorInterpretation {
+  index: 'CPI' | 'fixed_pct' | 'other'
+  frequency: 'annual' | 'monthly' | 'quarterly'
+  effective_date: string | null
+  cap_pct: number | null
+  /** Plain-English calculation formula, e.g. "CPI change + 2pp, capped at 6% per 12-month period" — never fabricated. */
+  calculation_method: string
+  requires_confirmation: boolean
+  confirmation_reason?: string | null
+}
+
 export interface PriceEscalator {
   escalator_pct: number | null
   escalator_type: 'fixed_pct' | 'CPI' | 'CPI_cap' | 'flat_amount'
@@ -52,6 +66,8 @@ export interface PriceEscalator {
   applies_from_year: number | null
   cap_pct: number | null
   description: string
+  /** Reviewer-approved structured reading of this escalator's actual calculation, once resolved. */
+  interpretation?: EscalatorInterpretation | null
 }
 
 export interface Discount {

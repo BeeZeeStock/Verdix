@@ -14,6 +14,8 @@ type OverageItem = {
   windowStart?:   string
   windowEnd?:     string
   windowOpen?:    boolean
+  minimumFloorApplied?: boolean
+  minimumFloorAmount?:  number
 }
 
 type Period = {
@@ -212,11 +214,21 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
                                     {item.windowOpen ? ' · so far' : ''}
                                   </div>
                                 )}
+                                {item.minimumFloorApplied && (
+                                  <div className="text-[9px] font-medium mt-0.5" style={{ color: '#B45309' }}>
+                                    Minimum floor applies: {fmt(item.minimumFloorAmount ?? 0, item.currency)}
+                                  </div>
+                                )}
                               </td>
                               <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{item.total_units.toLocaleString()}</td>
                               <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{item.included_units.toLocaleString()}</td>
                               <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{item.billable_units.toLocaleString()}</td>
-                              <td className="px-3 py-2 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(item.amount, item.currency)}</td>
+                              <td className="px-3 py-2 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                                {fmt(item.amount, item.currency)}
+                                {item.minimumFloorApplied && (
+                                  <div className="text-[9px] font-normal text-stone/50">Billing instruction</div>
+                                )}
+                              </td>
                             </tr>
                             )
                           })
