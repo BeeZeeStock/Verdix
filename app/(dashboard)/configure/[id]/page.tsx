@@ -84,22 +84,20 @@ function fmt(n: number | null | undefined, cur = 'EUR') {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
 }
 
-// Maps ISO currency codes to their conventional display symbols.
-// For currencies without a unique symbol, falls back to the code + space.
-const CURRENCY_SYMBOLS: Record<string, string> = {
-  EUR: '€', GBP: '£', USD: '$', SEK: 'kr ', NOK: 'kr ', DKK: 'kr ',
-  CHF: 'Fr ', JPY: '¥', CAD: 'CA$', AUD: 'A$', PLN: 'zł ', CZK: 'Kč ',
-  HUF: 'Ft ', MXN: 'MX$', BRL: 'R$', INR: '₹', CNY: '¥', SGD: 'S$', HKD: 'HK$',
-}
-function currencySymbol(cur: string) { return CURRENCY_SYMBOLS[cur.toUpperCase()] ?? (cur + ' ') }
-
-// For per-unit rates which are often fractional (e.g. €0.05, €0.035).
-// fmt() uses maximumFractionDigits:0 which rounds 0.05 → €0, so we need
-// a rate-aware formatter that keeps up to 4 decimal places for values < 1.
+// For per-unit rates which are often fractional (e.g. €0.05, SEK 0.035).
+// fmt() fixes 2 decimal places, which would round a sub-cent rate like
+// 0.0035 away to 0.00, so this keeps up to 4 decimal places for values < 1.
+// Always routes through Intl.NumberFormat (same as fmt()) rather than a
+// hand-maintained symbol table — the old table showed "kr" for SEK/NOK/DKK
+// here but "SEK"/"NOK"/"DKK" everywhere fmt() was used instead, which read
+// as inconsistent for the same currency. Intl's en-US currency formatting
+// already renders major currencies with their real symbol (€, $, £, ¥) and
+// everything else as its ISO code (SEK, CHF, PLN, ...) — the one convention
+// this file should use everywhere.
 function fmtUnit(n: number | null | undefined, cur = 'EUR') {
   if (n == null) return '—'
-  if (n > 0 && n < 1) return `${currencySymbol(cur)}${n.toFixed(4).replace(/\.?0+$/, '')}`
-  return fmt(n, cur)
+  const fractionDigits = n > 0 && n < 1 ? 4 : 2
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 0, maximumFractionDigits: fractionDigits }).format(n)
 }
 
 function fmtDate(s: string | null | undefined) {
@@ -640,9 +638,13 @@ type ItemKind = 'overage_tier' | 'escalator' | 'base_fee' | 'user_seat' | 'one_t
 // A tier and its rendered LineItem share a tier_label — buildLineItems
 // (execute route) sets product_name from tier_label, optionally with a
 // trailing "— overage"/"— included in base fee" clause appended.
+function stripTierSuffix(label: string): string {
+  return label.replace(/\s*—\s*(included in base fee|overage)\s*$/i, '').trim().toLowerCase()
+}
+
 function findTierForItem(item: LineItem, tiers: Tier[]): Tier | undefined {
-  const cleanName = item.product_name.replace(/\s*—\s*(included in base fee|overage)\s*$/i, '').trim().toLowerCase()
-  return tiers.find(t => (t.tier_label ?? '').trim().toLowerCase() === cleanName)
+  const cleanName = stripTierSuffix(item.product_name)
+  return tiers.find(t => stripTierSuffix(t.tier_label ?? '') === cleanName)
 }
 
 function classifyItem(item: LineItem, tiers: Tier[] = []): ItemKind {
@@ -2035,9 +2037,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         <div className="grid grid-cols-3 gap-8">
                           {tierList.map(({ tier: t, origIdx }) => {
                             const isEditingTier = tierEditing === origIdx
-                            const fmtRate = (r: number) => r > 0 && r < 1
-                              ? `${currencySymbol(cur)}${r.toFixed(4).replace(/\.?0+$/, '')}`
-                              : fmt(r, cur)
+                            const fmtRate = (r: number) => fmtUnit(r, cur)
                             const note = t.from_unit != null
                               ? `From unit ${t.from_unit.toLocaleString()}${t.to_unit != null ? ` to ${t.to_unit.toLocaleString()}` : '+'}`
                               : undefined

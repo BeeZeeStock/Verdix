@@ -103,8 +103,15 @@ function contractStatus(c: { start: Date | null; end: Date | null }, today: Date
   return 'Active'
 }
 
+// Was a hardcoded 3-currency map that silently fell back to "$" for
+// anything else (a NOK/DKK/CHF contract's chart axis would show a dollar
+// sign) and used "kr" for SEK while fmtFull below uses Intl's own "SEK" —
+// inconsistent for the same currency. Derive the prefix from Intl itself so
+// every currency (not just the three that happened to be hardcoded) gets
+// the same abbreviation everywhere on this page.
 function currencySym(cur: string) {
-  return cur === 'EUR' ? '€' : cur === 'GBP' ? '£' : cur === 'SEK' ? 'kr' : '$'
+  const parts = new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 0, maximumFractionDigits: 0 }).formatToParts(0)
+  return parts.filter(p => p.type === 'currency').map(p => p.value).join('')
 }
 
 function fmtAxis(n: number, cur: string) {
