@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, use } from 'react'
+import { useState, useEffect, useRef, use } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
@@ -954,10 +954,23 @@ type ItemKind = 'overage_tier' | 'escalator' | 'base_fee' | 'user_seat' | 'one_t
 function classifyItem(item: LineItem): ItemKind {
   const rule = (item.applied_rule ?? '').toLowerCase()
   const name = item.product_name.toLowerCase()
-  if (rule.includes('escalator') || name.includes('escalator') || name.includes('cpi') || name.includes('price escalator')) return 'escalator'
-  if (rule.includes('overage') || name.includes('overage') || name.includes('tier')) return 'overage_tier'
-  if (name.includes('user') || name.includes('seat') || name.includes('license')) return 'user_seat'
+
+  // One-time fees are unambiguous from billing_period alone — check first.
+  // A parked manual-trigger one-time fee also has quantity 0 (same as an
+  // unconfirmed usage tier below), so this must run before that check or
+  // it would get misclassified as a pricing tier.
   if (item.billing_period === 'one_time' || rule.includes('one_time') || name.includes('setup') || name.includes('onboarding')) return 'one_time'
+
+  if (rule.includes('escalator') || name.includes('escalator') || name.includes('cpi') || name.includes('price escalator')) return 'escalator'
+
+  // Usage/overage pricing tiers always carry quantity 0 from extraction (no
+  // usage confirmed yet) — a structural signal, unlike matching "overage"/
+  // "tier" in the tier's own label, which correctly no longer always
+  // contains those words (a tier can just be named "SMS reminders 1–500").
+  if (item.quantity === 0) return 'overage_tier'
+  if (rule.includes('overage') || name.includes('overage') || name.includes('tier')) return 'overage_tier'
+
+  if (name.includes('user') || name.includes('seat') || name.includes('license')) return 'user_seat'
   if (rule.includes('base') || name.includes('base') || name.includes('subscription') || name.includes('platform')) return 'base_fee'
   return 'unknown'
 }
@@ -974,29 +987,34 @@ type ReviewContext = {
 
 function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 'comma' = 'dot'): ReviewContext {
   const score = item.confidence_score
-  // Framed as a normal billing-control step, not an AI apologizing for
-  // itself — the reviewer is confirming a term that affects billing, not
-  // fixing something the model got wrong.
-  const reasonForReview = score < 0.7
-    ? 'This term needs confirmation — the source clause may be ambiguous or in an unusual format.'
-    : score < 0.85
-    ? 'This term needs confirmation — a similar clause nearby may affect interpretation.'
-    : 'This term affects downstream billing and requires confirmation.'
+  // Terser than a full sentence and varied by what's actually uncertain,
+  // rather than one repeated line on every card in the drawer — "why review"
+  // should read as diagnostic, not filler.
+  const ambiguous = score < 0.85 ? 'Multiple values in the source clause may apply.' : null
 
   // Format a number example in the contract's own notation so it matches what the user sees in the PDF
   const fmtExample = (n: number) => numberFormat === 'comma' ? String(n).replace('.', ',') : String(n)
 
   switch (kind) {
-    case 'overage_tier':
+    case 'overage_tier': {
+      const isIncluded = !item.unit_price || item.unit_price === 0
+      // The tier's own label may already read naturally on its own ("SMS
+      // reminders 1–500 — included in base fee") or may need a rate clause
+      // appended ("SMS reminders 501–2,000") — strip any trailing
+      // description so the sentence never repeats itself.
+      const cleanName = item.product_name.replace(/\s*—\s*(included in base fee|overage)\s*$/i, '').trim()
       return {
-        typeLabel:          'Pricing tier',
-        typeIcon:           'ti-chart-bar',
+        typeLabel:          isIncluded ? 'Included usage tier' : 'Usage pricing tier',
+        typeIcon:           isIncluded ? 'ti-gift' : 'ti-chart-bar',
         primaryField:       'unit_price',
         primaryLabel:       'Rate per unit',
         primaryPlaceholder: item.unit_price > 0 ? `e.g. ${fmtExample(item.unit_price)}` : numberFormat === 'comma' ? 'e.g. 0,035' : 'e.g. 0.035',
-        whatToCheck:        `Confirm that ${fmtUnit(item.unit_price, item.currency)}/unit applies to ${item.product_name}.`,
-        whyFlagged:         reasonForReview,
+        whatToCheck:        isIncluded
+          ? `Confirm that ${cleanName} are included in the base fee.`
+          : `Confirm that ${cleanName} are charged at ${fmtUnit(item.unit_price, item.currency)}/unit, billed ${item.billing_period}.`,
+        whyFlagged:         ambiguous ?? 'Billing-impacting pricing term.',
       }
+    }
     case 'escalator':
       return {
         typeLabel:          'Price escalator',
@@ -1004,8 +1022,8 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         primaryField:       'unit_price',
         primaryLabel:       'Escalation rate (%)',
         primaryPlaceholder: 'e.g. 3',
-        whatToCheck:        'Confirm the escalation rate and method applied each contract year.',
-        whyFlagged:         reasonForReview,
+        whatToCheck:        'Confirm the escalation method and rate cap stated in the contract.',
+        whyFlagged:         'The contract defines an escalation mechanism, but the applicable rate requires interpretation.',
       }
     case 'user_seat':
       return {
@@ -1015,7 +1033,7 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         primaryLabel:       'Price per seat',
         primaryPlaceholder: `e.g. ${fmtExample(item.unit_price || 0)}`,
         whatToCheck:        `Confirm that ${fmtUnit(item.unit_price, item.currency)}/seat applies above the included seat count.`,
-        whyFlagged:         reasonForReview,
+        whyFlagged:         ambiguous ?? 'Billing-impacting pricing term.',
       }
     case 'one_time':
       return {
@@ -1025,7 +1043,7 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         primaryLabel:       'Fee amount',
         primaryPlaceholder: `e.g. ${fmtExample(item.unit_price || 0)}`,
         whatToCheck:        `Confirm the one-time fee of ${fmt(item.unit_price, item.currency)} for ${item.product_name}.`,
-        whyFlagged:         reasonForReview,
+        whyFlagged:         'One-time charge — confirm before invoicing.',
       }
     case 'base_fee':
       return {
@@ -1034,8 +1052,8 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         primaryField:       'unit_price',
         primaryLabel:       'Fee amount',
         primaryPlaceholder: `e.g. ${fmtExample(item.unit_price || 0)}`,
-        whatToCheck:        `Confirm the recurring fee of ${fmt(item.unit_price, item.currency)}, billed each ${item.billing_period ?? 'period'}.`,
-        whyFlagged:         reasonForReview,
+        whatToCheck:        `Confirm the recurring fee of ${fmt(item.unit_price, item.currency)}, billed ${item.billing_period ?? 'per period'}.`,
+        whyFlagged:         'Billing-impacting pricing term.',
       }
     default:
       return {
@@ -1045,7 +1063,7 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         primaryLabel:       'Description',
         primaryPlaceholder: 'Enter correct description…',
         whatToCheck:        'Confirm this value against the source clause.',
-        whyFlagged:         reasonForReview,
+        whyFlagged:         ambiguous ?? 'Billing-impacting pricing term.',
       }
   }
 }
@@ -1079,9 +1097,24 @@ function ReviewPanel({
   const [draftPrice, setDraftPrice] = useState<Record<string, string>>({})
   const [draftName,  setDraftName]  = useState<Record<string, string>>({})
   const [saveError,  setSaveError]  = useState<Record<string, string>>({})
+  const itemRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   const resolvedCount = items.filter(i => resolved[i.id] || i.id in corrections).length
   const allDone = resolvedCount === items.length
+
+  // After confirming/saving one term, jump straight to the next one that
+  // still needs attention — View clause → Confirm/Edit → next item, instead
+  // of making the reviewer scroll to find where they left off.
+  const scrollToNextUnresolved = (afterId: string) => {
+    const idx = items.findIndex(i => i.id === afterId)
+    for (let i = idx + 1; i < items.length; i++) {
+      const next = items[i]
+      if (!resolved[next.id] && !(next.id in corrections)) {
+        itemRefs.current[next.id]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        return
+      }
+    }
+  }
 
   // Group by source_section so the same section header doesn't repeat per card
   const groups = items.reduce<Record<string, LineItem[]>>((acc, item) => {
@@ -1118,6 +1151,7 @@ function ReviewPanel({
       onCorrect(item.id, item.product_name)
       setResolved(r => ({ ...r, [item.id]: 'confirmed' }))
       setEditing(null)
+      scrollToNextUnresolved(item.id)
       onRefresh()
     } finally {
       setSaving(null)
@@ -1226,6 +1260,7 @@ function ReviewPanel({
       // Only mark resolved if we reached here (all saves succeeded)
       setResolved(r => ({ ...r, [item.id]: 'corrected' }))
       setEditing(null)
+      scrollToNextUnresolved(item.id)
       onRefresh()
     } finally {
       setSaving(null)
@@ -1298,6 +1333,7 @@ function ReviewPanel({
                   return (
                     <div
                       key={item.id}
+                      ref={el => { itemRefs.current[item.id] = el }}
                       className="rounded-2xl border overflow-hidden transition-colors"
                       style={{
                         borderColor: isResolved ? 'rgba(11,92,54,0.2)' : '#FAC775',
@@ -1363,7 +1399,7 @@ function ReviewPanel({
 
                         {/* Reason for review */}
                         <p className="text-[11px] text-stone leading-relaxed mb-3">
-                          <span className="font-medium">Reason for review: </span>
+                          <span className="font-medium">Why review: </span>
                           {ctx.whyFlagged}
                         </p>
 
@@ -2993,8 +3029,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       )}
 
       {/* ── PDF Drawer ──────────────────────────────────────────────────── */}
+      {/* When the review panel is also open, stop short of its 480px width
+          instead of covering it — "View source clause" should let the
+          reviewer see the clause and the term they're confirming at once,
+          not replace one drawer with the other. */}
       {drawer.open && (
-        <div className="fixed inset-0 z-40 flex justify-end">
+        <div className="fixed inset-0 z-40 flex justify-end" style={reviewPanelOpen ? { right: 480 } : undefined}>
           <div className="absolute inset-0 bg-black/35" onClick={() => closePDF()} />
           <div className="relative h-full bg-white shadow-2xl flex flex-col" style={{ width: `${PANEL_WIDTH_PCT}%` }}>
             <div className="flex items-center justify-between px-5 py-3 border-b border-forest/10 bg-white">
