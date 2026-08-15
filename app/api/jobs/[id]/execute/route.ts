@@ -278,7 +278,12 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
 
   for (const tier of terms.overage_tiers ?? []) {
     items.push({
-      product_name: `${tier.tier_label} — overage`,
+      // tier_label already fully describes the tier per the extraction
+      // prompt's own rules (e.g. "SMS reminders 501–2,000" or "... —
+      // included in base fee") — appending "— overage" here duplicated that
+      // description instead of adding information ("... — overage —
+      // overage", "... — included in base fee — overage").
+      product_name: tier.tier_label,
       quantity: 0,
       unit_price: tier.rate_per_unit,
       // A tier can be measured/charged on its own cadence, distinct from the

@@ -260,7 +260,7 @@ function buildContractSummary(
     const cap = e.cap_pct ? ` capped at ${e.cap_pct}%` : ''
     extras.push(e.escalator_pct != null
       ? `${e.escalator_pct}% annual escalator${cap}`
-      : 'price escalator (rate unclear — review contract)')
+      : 'price escalator — confirm rate from source clause')
   }
   if (terms.discounts && terms.discounts.length > 0) {
     const d    = terms.discounts[0]
@@ -974,11 +974,14 @@ type ReviewContext = {
 
 function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 'comma' = 'dot'): ReviewContext {
   const score = item.confidence_score
-  const lowBecause = score < 0.7
-    ? 'The AI had low confidence extracting this — the contract wording may be ambiguous or in an unusual format.'
+  // Framed as a normal billing-control step, not an AI apologizing for
+  // itself — the reviewer is confirming a term that affects billing, not
+  // fixing something the model got wrong.
+  const reasonForReview = score < 0.7
+    ? 'This term needs confirmation — the source clause may be ambiguous or in an unusual format.'
     : score < 0.85
-    ? 'The AI found this value but wasn\'t fully certain. A similar clause nearby may have caused confusion.'
-    : 'The AI found this but flagged it for human confirmation due to its billing impact.'
+    ? 'This term needs confirmation — a similar clause nearby may affect interpretation.'
+    : 'This term affects downstream billing and requires confirmation.'
 
   // Format a number example in the contract's own notation so it matches what the user sees in the PDF
   const fmtExample = (n: number) => numberFormat === 'comma' ? String(n).replace('.', ',') : String(n)
@@ -986,13 +989,13 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
   switch (kind) {
     case 'overage_tier':
       return {
-        typeLabel:          'Overage pricing tier',
+        typeLabel:          'Pricing tier',
         typeIcon:           'ti-chart-bar',
         primaryField:       'unit_price',
         primaryLabel:       'Rate per unit',
         primaryPlaceholder: item.unit_price > 0 ? `e.g. ${fmtExample(item.unit_price)}` : numberFormat === 'comma' ? 'e.g. 0,035' : 'e.g. 0.035',
-        whatToCheck:        `Verify the per-unit rate (${fmtUnit(item.unit_price, item.currency)}/unit) matches the contract. This rate is used to automatically calculate overage charges each billing cycle.`,
-        whyFlagged:         lowBecause,
+        whatToCheck:        `Confirm that ${fmtUnit(item.unit_price, item.currency)}/unit applies to ${item.product_name}.`,
+        whyFlagged:         reasonForReview,
       }
     case 'escalator':
       return {
@@ -1001,8 +1004,8 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         primaryField:       'unit_price',
         primaryLabel:       'Escalation rate (%)',
         primaryPlaceholder: 'e.g. 3',
-        whatToCheck:        `Verify the escalation percentage and method. Verdix applies this automatically each contract year to calculate the correct base fee. An incorrect rate here will silently under-bill every renewal.`,
-        whyFlagged:         lowBecause,
+        whatToCheck:        'Confirm the escalation rate and method applied each contract year.',
+        whyFlagged:         reasonForReview,
       }
     case 'user_seat':
       return {
@@ -1011,8 +1014,8 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         primaryField:       'unit_price',
         primaryLabel:       'Price per seat',
         primaryPlaceholder: `e.g. ${fmtExample(item.unit_price || 0)}`,
-        whatToCheck:        `Verify the per-seat rate (${fmtUnit(item.unit_price, item.currency)}/seat). This is used to calculate charges when the customer exceeds their included seat count.`,
-        whyFlagged:         lowBecause,
+        whatToCheck:        `Confirm that ${fmtUnit(item.unit_price, item.currency)}/seat applies above the included seat count.`,
+        whyFlagged:         reasonForReview,
       }
     case 'one_time':
       return {
@@ -1021,8 +1024,8 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         primaryField:       'unit_price',
         primaryLabel:       'Fee amount',
         primaryPlaceholder: `e.g. ${fmtExample(item.unit_price || 0)}`,
-        whatToCheck:        `Verify the one-time fee amount (${fmt(item.unit_price, item.currency)}). This will be invoiced once at the start of the contract.`,
-        whyFlagged:         lowBecause,
+        whatToCheck:        `Confirm the one-time fee of ${fmt(item.unit_price, item.currency)} for ${item.product_name}.`,
+        whyFlagged:         reasonForReview,
       }
     case 'base_fee':
       return {
@@ -1031,8 +1034,8 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         primaryField:       'unit_price',
         primaryLabel:       'Fee amount',
         primaryPlaceholder: `e.g. ${fmtExample(item.unit_price || 0)}`,
-        whatToCheck:        `Verify the base fee amount (${fmt(item.unit_price, item.currency)}). This is the recurring charge billed each ${item.billing_period ?? 'period'}.`,
-        whyFlagged:         lowBecause,
+        whatToCheck:        `Confirm the recurring fee of ${fmt(item.unit_price, item.currency)}, billed each ${item.billing_period ?? 'period'}.`,
+        whyFlagged:         reasonForReview,
       }
     default:
       return {
@@ -1041,8 +1044,8 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         primaryField:       'product_name',
         primaryLabel:       'Description',
         primaryPlaceholder: 'Enter correct description…',
-        whatToCheck:        'Review this item and confirm or correct the extracted value.',
-        whyFlagged:         lowBecause,
+        whatToCheck:        'Confirm this value against the source clause.',
+        whyFlagged:         reasonForReview,
       }
   }
 }
@@ -1058,6 +1061,7 @@ function ReviewPanel({
   jobId,
   overageTiers,
   numberFormat = 'dot',
+  onViewSource,
 }: {
   items: LineItem[]
   corrections: Record<string, { value: string; remember: boolean }>
@@ -1067,6 +1071,7 @@ function ReviewPanel({
   jobId: string
   overageTiers?: Tier[]
   numberFormat?: 'dot' | 'comma'
+  onViewSource?: (section?: string) => void
 }) {
   const [saving,    setSaving]    = useState<string | null>(null)
   const [resolved,  setResolved]  = useState<Record<string, 'confirmed' | 'corrected'>>({})
@@ -1235,9 +1240,9 @@ function ReviewPanel({
         {/* Header */}
         <div className="flex-shrink-0 px-6 py-4 border-b border-forest/10 flex items-center justify-between">
           <div>
-            <p className="text-sm font-semibold text-ink">Review extracted values</p>
+            <p className="text-sm font-semibold text-ink">Review contract terms</p>
             <p className="text-xs text-stone mt-0.5">
-              {resolvedCount} of {items.length} resolved
+              {resolvedCount} of {items.length} confirmed
               {allDone && <span className="ml-1.5 font-medium" style={{ color: '#0B5C36' }}>· Ready to approve</span>}
             </p>
           </div>
@@ -1270,6 +1275,14 @@ function ReviewPanel({
                   Contract §{section}
                 </p>
                 <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                {onViewSource && (
+                  <button
+                    onClick={() => onViewSource(section)}
+                    className="flex-shrink-0 text-[10px] font-medium text-forest hover:underline whitespace-nowrap"
+                  >
+                    View source clause ↗
+                  </button>
+                )}
               </div>
 
               <div className="space-y-3">
@@ -1304,7 +1317,7 @@ function ReviewPanel({
                             className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
                             style={{ color: scoreColor, background: `${scoreColor}15` }}
                           >
-                            {Math.round(score * 100)}% confidence
+                            Needs confirmation
                           </span>
                         </div>
 
@@ -1341,16 +1354,16 @@ function ReviewPanel({
                         {/* What to check */}
                         <div className="rounded-xl p-3 mb-3" style={{ background: '#FFFBEB', border: '1px solid #FDE68A' }}>
                           <p className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: '#92400E' }}>
-                            <i className="ti ti-eye mr-1" />What to verify
+                            <i className="ti ti-shield-check mr-1" />Confirm this term
                           </p>
                           <p className="text-xs leading-relaxed" style={{ color: '#78350F' }}>
                             {ctx.whatToCheck}
                           </p>
                         </div>
 
-                        {/* Why flagged */}
+                        {/* Reason for review */}
                         <p className="text-[11px] text-stone leading-relaxed mb-3">
-                          <span className="font-medium">Why flagged: </span>
+                          <span className="font-medium">Reason for review: </span>
                           {ctx.whyFlagged}
                         </p>
 
@@ -1451,7 +1464,7 @@ function ReviewPanel({
                             >
                               {isSaving
                                 ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} />
-                                : <><i className="ti ti-check mr-1.5" style={{ fontSize: 12 }} />Looks correct</>
+                                : <><i className="ti ti-check mr-1.5" style={{ fontSize: 12 }} />Confirm value</>
                               }
                             </button>
                             <button
@@ -1460,7 +1473,7 @@ function ReviewPanel({
                               style={{ background: '#1A3D2B', color: 'white' }}
                             >
                               <i className="ti ti-edit mr-1.5" style={{ fontSize: 12 }} />
-                              Correct value
+                              Edit value
                             </button>
                           </div>
                         )}
@@ -1482,7 +1495,7 @@ function ReviewPanel({
             </div>
           ) : (
             <p className="text-xs text-stone leading-relaxed">
-              For each item: confirm it looks correct, or correct the value. Open the signed contract in the PDF viewer to cross-check.
+              Confirm each term against its source clause, or edit it before approval.
             </p>
           )}
         </div>
@@ -2014,10 +2027,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   <i className="ti ti-alert-triangle flex-shrink-0 mt-0.5" style={{ fontSize: 14, color: '#D97706' }} />
                   <div>
                     <p className="text-sm font-medium" style={{ color: '#92400E' }}>
-                      {needsReview} extracted value{needsReview > 1 ? 's' : ''} flagged for review
+                      {needsReview} contract term{needsReview > 1 ? 's' : ''} need confirmation
                     </p>
                     <p className="text-xs mt-0.5" style={{ color: '#B45309' }}>
-                      Verify and correct these before approving — low confidence means the extraction was uncertain.
+                      Review these items against the source agreement before approving.
                     </p>
                   </div>
                 </div>
@@ -2975,6 +2988,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           jobId={id}
           overageTiers={terms?.overage_tiers}
           numberFormat={terms?.number_format ?? 'dot'}
+          onViewSource={openPDF}
         />
       )}
 
