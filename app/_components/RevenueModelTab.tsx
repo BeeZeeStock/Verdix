@@ -88,6 +88,30 @@ function shortMonthYear(d: Date) {
   return d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' })
 }
 
+// Greedy 2-line word-wrap for SVG bar labels — long commercial-rule labels
+// (e.g. "SMS reminder minimum commitment") otherwise overflow their bar's
+// width and run into the neighboring bar's label, since SVG <text> never
+// wraps on its own. Truncates only the (rare) case where line 2 is still
+// too long, rather than truncating away the part that says what the number
+// actually represents.
+function wrapBarLabel(label: string, maxCharsPerLine = 16): string[] {
+  const words = label.split(' ')
+  const lines: string[] = ['']
+  for (const word of words) {
+    if (lines.length === 1) {
+      const candidate = lines[0] ? `${lines[0]} ${word}` : word
+      if (candidate.length <= maxCharsPerLine) { lines[0] = candidate; continue }
+      lines.push(word)
+    } else {
+      lines[1] = lines[1] ? `${lines[1]} ${word}` : word
+    }
+  }
+  if (lines[1] && lines[1].length > maxCharsPerLine) {
+    lines[1] = lines[1].slice(0, maxCharsPerLine - 1) + '…'
+  }
+  return lines.filter(Boolean)
+}
+
 function commitmentModeShortLabel(mode: string): string {
   switch (mode) {
     case 'floor': return 'minimum'
@@ -1375,6 +1399,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
             const yTop = wyOf(b.to)
             const yBot = wyOf(b.from)
             const h    = Math.max(2, yBot - yTop)
+            const labelLines = wrapBarLabel(b.label, Math.max(10, Math.round(wBW / 8)))
             return (
               <g key={i}>
                 <title>{b.tooltip}</title>
@@ -1386,10 +1411,12 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                 <text x={x + wBW / 2} y={wBottom + 18} textAnchor="middle" fontSize={11}
                   fill={b.kind === 'total' ? '#1A3D2B' : '#6B6660'}
                   fontWeight={b.kind === 'total' ? 700 : 400}>
-                  {b.label}
+                  {labelLines.map((line, li) => (
+                    <tspan key={li} x={x + wBW / 2} dy={li === 0 ? 0 : 12}>{line}</tspan>
+                  ))}
                 </text>
                 {b.sub && (
-                  <text x={x + wBW / 2} y={wBottom + 31} textAnchor="middle" fontSize={9} fill="#9CA3AF">
+                  <text x={x + wBW / 2} y={wBottom + 18 + labelLines.length * 12 + 1} textAnchor="middle" fontSize={9} fill="#9CA3AF">
                     ({b.sub})
                   </text>
                 )}
@@ -1704,6 +1731,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                 const yBot = byOf(b.kind === 'total' ? 0 : b.from)
                 const h    = Math.max(2, yBot - yTop)
                 const col  = b.kind === 'total' ? '#1A3D2B' : b.isOneTime ? '#D9A35A' : '#4A7C59'
+                const labelLines = wrapBarLabel(b.label, Math.max(10, Math.round(bBW / 8)))
                 return (
                   <g key={i}>
                     <rect x={x} y={yTop} width={bBW} height={h} rx={3} fill={col} />
@@ -1719,11 +1747,13 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                     <text x={x + bBW / 2} y={bBottom + 18} textAnchor="middle"
                       fontSize={11} fill={b.kind === 'total' ? '#1A3D2B' : '#6B6660'}
                       fontWeight={b.kind === 'total' ? 700 : 400}>
-                      {b.label}
+                      {labelLines.map((line, li) => (
+                        <tspan key={li} x={x + bBW / 2} dy={li === 0 ? 0 : 12}>{line}</tspan>
+                      ))}
                     </text>
                     {/* Date */}
                     {b.sub && (
-                      <text x={x + bBW / 2} y={bBottom + 31} textAnchor="middle" fontSize={9} fill="#9CA3AF">
+                      <text x={x + bBW / 2} y={bBottom + 18 + labelLines.length * 12 + 1} textAnchor="middle" fontSize={9} fill="#9CA3AF">
                         {b.sub}
                       </text>
                     )}
@@ -2065,7 +2095,9 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
           return { ...b, from, to }
         })
 
-        const AW = 1100, AH = 200
+        // Extra height (was 200) leaves room for a bar label that wraps to
+        // two lines (e.g. "Unbilled minimum commitment") without clipping.
+        const AW = 1100, AH = 215
         const ax1 = 70, ax2 = AW - 12, aw = ax2 - ax1
         const aTop = 24, aBot = 148, aPlotH = aBot - aTop
         const aN   = aPos.length
@@ -2091,7 +2123,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
             </div>
 
             {/* Waterfall */}
-            <svg viewBox={`0 0 ${AW} ${AH}`} className="w-full" style={{ height: 200 }}>
+            <svg viewBox={`0 0 ${AW} ${AH}`} className="w-full" style={{ height: AH }}>
               {aGrid.map((v, i) => {
                 const yy = ayOf(v)
                 return (
@@ -2119,6 +2151,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                 const yTop = ayOf(b.to)
                 const yBot = ayOf(b.from)
                 const h    = Math.max(2, yBot - yTop)
+                const labelLines = wrapBarLabel(b.label, Math.max(10, Math.round(aBW / 8)))
                 return (
                   <g key={i}>
                     <title>{b.needsConfirmation ? `${b.label}: needs confirmation` : `${b.label}: ${fmt(b.amount, cur)}`}</title>
@@ -2133,10 +2166,12 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                     <text x={x + aBW / 2} y={aBot + 17} textAnchor="middle" fontSize={11}
                       fill={b.kind === 'total' ? '#1A3D2B' : '#6B6660'}
                       fontWeight={b.kind === 'total' ? 700 : 400}>
-                      {b.label}
+                      {labelLines.map((line, li) => (
+                        <tspan key={li} x={x + aBW / 2} dy={li === 0 ? 0 : 12}>{line}</tspan>
+                      ))}
                     </text>
                     {b.sub && (
-                      <text x={x + aBW / 2} y={aBot + 29} textAnchor="middle" fontSize={9} fill="#9CA3AF">
+                      <text x={x + aBW / 2} y={aBot + 17 + labelLines.length * 12 + 1} textAnchor="middle" fontSize={9} fill="#9CA3AF">
                         {b.sub}
                       </text>
                     )}
