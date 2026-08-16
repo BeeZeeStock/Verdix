@@ -445,13 +445,13 @@ function getYearNote(notes: string | undefined, yearKey: string): string | undef
 
 function BillingModelBadge({ model }: { model: 'fixed' | 'hybrid' | 'consumption' }) {
   const map = {
-    fixed:       { label: 'Fixed — Subscription',        bg: '#EEF9F2', color: '#1A3D2B', border: 'rgba(74,124,89,0.25)' },
-    hybrid:      { label: 'Hybrid — Fixed + Consumption', bg: '#EFF6FF', color: '#1E40AF', border: 'rgba(59,130,246,0.25)' },
-    consumption: { label: 'Consumption',                  bg: '#FEF9C3', color: '#854D0E', border: 'rgba(234,179,8,0.4)' },
+    fixed:       { label: 'Fixed — Subscription',        bg: '#EEF9F2', color: '#1A3D2B' },
+    hybrid:      { label: 'Hybrid — Fixed + Consumption', bg: '#EFF6FF', color: '#1E40AF' },
+    consumption: { label: 'Consumption',                  bg: '#FEF9C3', color: '#854D0E' },
   }[model]
   return (
     <span className="text-[10px] font-semibold px-3 py-1.5 rounded-full"
-      style={{ background: map.bg, color: map.color, border: `1px solid ${map.border}` }}>
+      style={{ background: map.bg, color: map.color }}>
       {map.label}
     </span>
   )
@@ -900,6 +900,34 @@ const ITEM_KIND_TO_RULE_TYPE: Partial<Record<ItemKind, RuleType>> = {
   escalator_interpretation: 'escalator',
 }
 
+// Reverse-maps a previously approved interpretation back to the structured
+// option the reviewer most likely picked — so "Edit interpretation" can
+// pre-select it instead of defaulting to nothing. Best-effort only; if the
+// approved rule doesn't cleanly match one of the structured choices (e.g.
+// it came from free text alone), falls back to 'other' rather than guessing.
+function deriveSelectedOption(ruleType: RuleType, approved: Record<string, unknown> | undefined): string | null {
+  if (!approved) return null
+  if (ruleType === 'minimum_commitment') {
+    if (approved.mode === 'additive') return 'additive'
+    if (approved.mode === 'floor' && approved.included_allowance_interaction === 'before_allowance') return 'floor_before_allowance'
+    if (approved.mode === 'floor' && approved.included_allowance_interaction === 'after_allowance') return 'floor_after_allowance'
+    return 'other'
+  }
+  if (ruleType === 'escalator') {
+    if (approved.index === 'CPI' && approved.cap_pct != null) return 'cpi_capped'
+    if (approved.index === 'CPI') return 'cpi_uncapped'
+    if (approved.index === 'fixed_pct') return 'fixed_pct'
+    return 'other'
+  }
+  if (ruleType === 'partial_period') {
+    if (approved.prorate_partial_periods === false) return 'full'
+    if (approved.prorate_partial_periods === true && approved.proration_method === 'days') return 'prorate_days'
+    if (approved.prorate_partial_periods === true && approved.proration_method === 'months') return 'prorate_months'
+    return 'other'
+  }
+  return null
+}
+
 // ── Rule interpretation card ────────────────────────────────────────────────
 // Human input → AI interpretation → structured rule preview → human approval
 // → propagation, entirely in-panel — the reviewer never leaves this card to
@@ -911,6 +939,7 @@ type RulePhase = 'input' | 'loading' | 'missing' | 'proposal' | 'confirming' | '
 
 function RuleInterpretationCard({
   jobId, kind, contractUnitType, sourceClause, currency, meterMappingConfirmed, meterSuggestion, availableMeters, onApplied, onChangeMapping,
+  initialSelectedOption, initialFreeText,
 }: {
   jobId: string
   kind: ItemKind
@@ -922,12 +951,17 @@ function RuleInterpretationCard({
   availableMeters?: Array<{ meter_key: string; display_name: string }>
   onApplied: () => void
   onChangeMapping?: (meterKey: string) => void
+  // Re-opening an already-confirmed rule ("Edit interpretation") should show
+  // what was actually approved last time, not a blank form — the reviewer
+  // needs to see their prior choice before deciding whether to change it.
+  initialSelectedOption?: string | null
+  initialFreeText?: string
 }) {
   const ruleType = ITEM_KIND_TO_RULE_TYPE[kind] ?? 'minimum_commitment'
   const options = optionsForRuleType(ruleType)
   const [phase, setPhase] = useState<RulePhase>('input')
-  const [selectedOption, setSelectedOption] = useState<string | null>(null)
-  const [freeText, setFreeText] = useState('')
+  const [selectedOption, setSelectedOption] = useState<string | null>(initialSelectedOption ?? null)
+  const [freeText, setFreeText] = useState(initialFreeText ?? '')
   const [proposal, setProposal] = useState<Record<string, unknown> | null>(null)
   const [whatWillChange, setWhatWillChange] = useState<Array<{ component: string; change: string }>>([])
   const [missingQuestions, setMissingQuestions] = useState<string[]>([])
@@ -1027,6 +1061,9 @@ function RuleInterpretationCard({
                 {missingQuestions.map((q, i) => <li key={i}>• {q}</li>)}
               </ul>
             </div>
+          )}
+          {(initialSelectedOption || initialFreeText) && phase === 'input' && (
+            <p className="text-[11px] text-stone -mt-1">Showing the previously confirmed choice and comment — change either, or just re-generate to confirm it again.</p>
           )}
           <p className="text-[10px] font-bold uppercase tracking-widest text-stone">How should this rule be applied?</p>
           <div className="space-y-1.5">
@@ -1161,6 +1198,10 @@ function ReviewPanel({
   contractEndDate,
   numberFormat = 'dot',
   onViewSource,
+  cur,
+  isConfigured,
+  contractBillingFrequency,
+  onMeterMappingsConfirmedChange,
 }: {
   items: LineItem[]
   corrections: Record<string, { value: string; remember: boolean }>
@@ -1174,6 +1215,10 @@ function ReviewPanel({
   contractEndDate?: string
   numberFormat?: 'dot' | 'comma'
   onViewSource?: (section?: string) => void
+  cur?: string
+  isConfigured?: boolean
+  contractBillingFrequency?: string | null
+  onMeterMappingsConfirmedChange?: (confirmed: boolean) => void
 }) {
   const [saving,    setSaving]    = useState<string | null>(null)
   const [resolved,  setResolved]  = useState<Record<string, 'confirmed' | 'corrected'>>({})
@@ -1425,6 +1470,21 @@ function ReviewPanel({
 
         {/* Item list */}
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+          {/* Meter mapping — "where does this metric's usage data come from"
+              is a review item like any other, so it lives here rather than
+              as a separate section on the main page. Collapses itself once
+              every metric is confirmed (existing MeterMappingPanel behavior),
+              and every rule-interpretation card's own usage-source dependency
+              check reads the same confirmed state. */}
+          {(overageTiers?.length ?? 0) > 0 && (
+            <MeterMappingPanel
+              jobId={jobId}
+              currency={cur ?? 'EUR'}
+              isConfigured={isConfigured}
+              onConfirmedChange={c => onMeterMappingsConfirmedChange?.(c)}
+              contractBillingFrequency={contractBillingFrequency}
+            />
+          )}
           {Object.entries(groups).map(([section, groupItems]) => (
             <div key={section}>
               {/* Section header from contract */}
@@ -1827,7 +1887,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // contract_terms only holds the current operational value, not who
   // approved it or when. Resilient to the audit table not existing yet.
   type RuleInterpretationRecord = {
-    rule_type: string; contract_unit_type: string | null; source_clause: string | null
+    rule_type: string; contract_unit_type: string | null; source_clause: string | null; reviewer_input: string | null
     approved_interpretation: Record<string, unknown>; reviewer_email: string; reviewer_name: string | null; created_at: string
   }
   const [ruleInterpretations, setRuleInterpretations] = useState<RuleInterpretationRecord[]>([])
@@ -2507,6 +2567,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       {Array.from(confirmedMinimums.entries()).map(([unitType, t]) => {
                         const mc = t.minimum_commitment!
                         const editKey = `min:${unitType}`
+                        const audit = findAudit('minimum_commitment', unitType)
                         if (editingRule === editKey) {
                           return (
                             <div key={unitType} className="rounded-xl p-4 col-span-2" style={{ background: '#FFFDF7', border: '1px solid #FDE68A' }}>
@@ -2518,15 +2579,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                                 jobId={id}
                                 kind="minimum_commitment"
                                 contractUnitType={unitType}
-                                sourceClause={findAudit('minimum_commitment', unitType)?.source_clause ?? `${unitType} minimum commitment`}
+                                sourceClause={audit?.source_clause ?? `${unitType} minimum commitment`}
                                 currency={cur}
                                 meterMappingConfirmed={true}
+                                initialSelectedOption={deriveSelectedOption('minimum_commitment', audit?.approved_interpretation)}
+                                initialFreeText={audit?.reviewer_input ?? undefined}
                                 onApplied={() => { setEditingRule(null); fetchRuleInterpretations(); fetchJob() }}
                               />
                             </div>
                           )
                         }
-                        const audit = findAudit('minimum_commitment', unitType)
                         return (
                           <div key={unitType} className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
                             <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">{modeLabel[mc.mode] ?? mc.mode}</p>
@@ -2552,6 +2614,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       })}
                       {confirmedEscalators.map((e, i) => {
                         const editKey = `esc:${i}`
+                        const audit = findAudit('escalator', null)
                         if (editingRule === editKey) {
                           return (
                             <div key={i} className="rounded-xl p-4 col-span-2" style={{ background: '#FFFDF7', border: '1px solid #FDE68A' }}>
@@ -2562,22 +2625,36 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                               <RuleInterpretationCard
                                 jobId={id}
                                 kind="escalator_interpretation"
-                                sourceClause={findAudit('escalator', null)?.source_clause ?? e.description ?? 'Price escalator'}
+                                sourceClause={audit?.source_clause ?? e.description ?? 'Price escalator'}
                                 currency={cur}
+                                initialSelectedOption={deriveSelectedOption('escalator', audit?.approved_interpretation)}
+                                initialFreeText={audit?.reviewer_input ?? undefined}
                                 onApplied={() => { setEditingRule(null); fetchRuleInterpretations(); fetchJob() }}
                               />
                             </div>
                           )
                         }
-                        const audit = findAudit('escalator', null)
+                        // index === 'other' with no cap/effective-date is the AI's
+                        // honest "reviewer declined to set real parameters" case
+                        // (e.g. explicitly told to disregard the clause) — showing
+                        // the literal word "other" as the headline number reads as
+                        // broken, so label it for what it actually is instead.
+                        const unresolvedEscalator = e.interpretation!.index === 'other' && e.interpretation!.cap_pct == null && !e.interpretation!.effective_date
                         return (
                           <div key={i} className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
                             <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">Price escalation</p>
-                            <p className="text-lg font-semibold text-ink mb-1">
-                              {e.interpretation!.index}{e.interpretation!.cap_pct != null ? `, capped ${e.interpretation!.cap_pct}%` : ''}
-                            </p>
+                            {unresolvedEscalator ? (
+                              <p className="text-lg font-semibold text-ink mb-1">Terms not set</p>
+                            ) : (
+                              <p className="text-lg font-semibold text-ink mb-1">
+                                {e.interpretation!.index}{e.interpretation!.cap_pct != null ? `, capped ${e.interpretation!.cap_pct}%` : e.interpretation!.index !== 'other' ? ', uncapped' : ''}
+                              </p>
+                            )}
                             <p className="text-[11px] text-stone">{e.interpretation!.calculation_method}</p>
                             <p className="text-[11px] text-stone">Frequency: <span className="font-medium text-ink">{e.interpretation!.frequency}</span></p>
+                            {e.interpretation!.effective_date && (
+                              <p className="text-[11px] text-stone">Effective: <span className="font-medium text-ink">{fmtDate(e.interpretation!.effective_date)}</span></p>
+                            )}
                             <p className="text-[10px] text-stone/60 mt-2">
                               Status: <span className="font-medium" style={{ color: '#0B5C36' }}>Confirmed</span>
                               {audit && <> by {audit.reviewer_name ?? audit.reviewer_email} · {fmtDate(audit.created_at)}</>}
@@ -3298,22 +3375,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
-            {/* ── Meter mapping (enterprise contracts with overage tiers) ──
-                 Stays visible after the job is configured/pushed to billing —
-                 mappings can be added or changed later (new meters, missed
-                 confirmations), and real usage-based billing depends on them
-                 regardless of whether the base fee was already approved. */}
-            {tiers.length > 0 && (
-              <div id="meter-mapping-panel">
-                <MeterMappingPanel
-                  jobId={id}
-                  currency={cur}
-                  isConfigured={isConfigured}
-                  onConfirmedChange={setMeterMappingsConfirmed}
-                  contractBillingFrequency={terms?.billing_frequency ?? null}
-                />
-              </div>
-            )}
+            {/* Meter mapping now lives inside the Review panel (the single
+                review control surface) rather than as its own section here —
+                see ReviewPanel below. */}
 
             {/* ── Fixed fees + Approve footer ── */}
             <div className="bg-white rounded-2xl border border-forest/10 px-7 py-5 flex items-center justify-between gap-8">
@@ -3430,9 +3494,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       </p>
                     )}
                     {tiers.length > 0 && !meterMappingsConfirmed && needsReview === 0 && scheduleBlockers.length === 0 && (
-                      <p className="text-[10px] text-amber-600">
-                        Confirm billing meter mappings above first
-                      </p>
+                      <button onClick={() => setReviewPanelOpen(true)} className="text-[10px] text-amber-600 underline underline-offset-2 hover:text-amber-700">
+                        Confirm billing meter mappings in Review panel
+                      </button>
                     )}
                     {approveError && <p className="text-[10px] text-red-500 max-w-xs">{approveError}</p>}
                   </div>
@@ -3460,6 +3524,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           contractEndDate={terms?.contract_end_date}
           numberFormat={terms?.number_format ?? 'dot'}
           onViewSource={openPDF}
+          cur={cur}
+          isConfigured={isConfigured}
+          contractBillingFrequency={terms?.billing_frequency ?? null}
+          onMeterMappingsConfirmedChange={setMeterMappingsConfirmed}
         />
       )}
 

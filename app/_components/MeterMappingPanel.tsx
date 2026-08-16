@@ -204,11 +204,15 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
   const hasUnsaved = Object.keys(edits).length > 0
 
   return (
-    <div className="bg-white border border-amber-200/70 rounded-2xl overflow-hidden"
-      style={{ background: '#FFFDF7' }}>
+    <div className="rounded-2xl border overflow-hidden transition-colors"
+      style={{
+        borderColor: allConfirmed ? 'rgba(11,92,54,0.2)' : '#FAC775',
+        background:  allConfirmed ? '#F8FDF9' : 'white',
+      }}>
       {/* Header */}
       <div
-        className="px-7 py-4 border-b border-amber-100 flex items-center justify-between gap-4 cursor-pointer"
+        className="px-7 py-4 flex items-center justify-between gap-4 cursor-pointer"
+        style={collapsed ? undefined : { borderBottom: '1px solid rgba(26,61,43,0.07)' }}
         onClick={() => setCollapsed(c => !c)}
         role="button"
         tabIndex={0}
@@ -251,7 +255,7 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
           )}
           <button
             onClick={handleSave}
-            disabled={saving || (!hasUnsaved && !allConfirmed)}
+            disabled={saving || !hasUnsaved}
             className="text-xs font-semibold px-4 py-1.5 rounded-lg bg-forest text-white hover:bg-sage transition-colors disabled:opacity-40"
           >
             {saving ? 'Saving…' : 'Save'}
@@ -282,7 +286,7 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
       )}
 
       {/* Mapping rows */}
-      <div className="divide-y divide-amber-50">
+      <div className="divide-y divide-forest/6">
         {suggestions.map(s => {
           const meterKey     = get(s.contract_unit_type, 'meter_key', s.meter_key)
           const confirmed    = get(s.contract_unit_type, 'confirmed', s.confirmed)

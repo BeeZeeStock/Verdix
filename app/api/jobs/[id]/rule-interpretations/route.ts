@@ -27,7 +27,7 @@ export async function GET(
 
   const { data, error } = await supabaseServer
     .from('commercial_rule_interpretations')
-    .select('rule_type, contract_unit_type, source_clause, approved_interpretation, reviewer_email, reviewer_name, created_at, propagation_status')
+    .select('rule_type, contract_unit_type, source_clause, reviewer_input, approved_interpretation, reviewer_email, reviewer_name, created_at, propagation_status')
     .eq('job_id', jobId)
     .eq('is_current', true)
     .order('created_at', { ascending: false })
