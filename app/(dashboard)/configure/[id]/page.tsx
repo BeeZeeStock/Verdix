@@ -1641,6 +1641,7 @@ function ReviewPanel({
   isConfigured,
   contractBillingFrequency,
   onMeterMappingsConfirmedChange,
+  refreshSignal,
 }: {
   items: LineItem[]
   corrections: Record<string, { value: string; remember: boolean }>
@@ -1659,6 +1660,11 @@ function ReviewPanel({
   isConfigured?: boolean
   contractBillingFrequency?: string | null
   onMeterMappingsConfirmedChange?: (confirmed: boolean) => void
+  // Bumped by the parent whenever its own job/terms data refreshes, so the
+  // embedded MeterMappingPanel (which manages its own independent fetch)
+  // re-syncs after a rule interpretation confirmed elsewhere in this same
+  // panel — otherwise it keeps showing stale "unconfirmed" state until reload.
+  refreshSignal?: number
 }) {
   const [saving,    setSaving]    = useState<string | null>(null)
   const [resolved,  setResolved]  = useState<Record<string, 'confirmed' | 'corrected'>>({})
@@ -1919,10 +1925,10 @@ function ReviewPanel({
           {(overageTiers?.length ?? 0) > 0 && (
             <MeterMappingPanel
               jobId={jobId}
-              currency={cur ?? 'EUR'}
               isConfigured={isConfigured}
               onConfirmedChange={c => onMeterMappingsConfirmedChange?.(c)}
               contractBillingFrequency={contractBillingFrequency}
+              refreshSignal={refreshSignal}
             />
           )}
 
@@ -2326,6 +2332,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [billingEdit, setBillingEdit] = useState<{ itemId: string; field: 'quantity' | 'unit_price' | 'billing_period'; value: string } | null>(null)
   const [approved, setApproved]       = useState<{ stripeSubscriptionId: string; dashboardUrl?: string; customerId?: string } | null>(null)
   const [meterMappingsConfirmed, setMeterMappingsConfirmed] = useState(false)
+  // Bumped on every fetchJob() so components that manage their own
+  // independent data fetch (MeterMappingPanel) know to re-sync — otherwise a
+  // rule confirmed via RuleInterpretationCard (which writes through
+  // /confirm-rule, not that panel's own save path) leaves it showing stale
+  // "unconfirmed" state until the page is reloaded.
+  const [refreshSignal, setRefreshSignal] = useState(0)
   const [drawer, setDrawer]   = useState<{ open: boolean; section?: string }>({ open: false })
   const [pdfUrl, setPdfUrl]   = useState<string | null>(null)
   const [pdfUrlError, setPdfUrlError] = useState(false)
@@ -2415,6 +2427,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     const data = await res.json()
     setJob(data)
     if (data.line_items?.length) setItems(data.line_items)
+    setRefreshSignal(s => s + 1)
 
     // Auto-sync: if line_items have corrected overage rates that are still zero
     // in contract_terms.overage_tiers, patch terms immediately.
@@ -4005,10 +4018,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             {tiers.length > 0 && (
               <MeterMappingPanel
                 jobId={id}
-                currency={cur}
                 isConfigured={isConfigured}
                 onConfirmedChange={setMeterMappingsConfirmed}
                 contractBillingFrequency={terms?.billing_frequency ?? null}
+                refreshSignal={refreshSignal}
               />
             )}
 
@@ -4149,7 +4162,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           corrections={corrections}
           onCorrect={(itemId, value) => setCorr(itemId, value)}
           onClose={() => setReviewPanelOpen(false)}
-          onRefresh={fetchJob}
+          onRefresh={() => { fetchJob(); fetchRuleInterpretations() }}
           jobId={id}
           overageTiers={terms?.overage_tiers}
           escalators={terms?.escalators}
@@ -4162,6 +4175,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           isConfigured={isConfigured}
           contractBillingFrequency={terms?.billing_frequency ?? null}
           onMeterMappingsConfirmedChange={setMeterMappingsConfirmed}
+          refreshSignal={refreshSignal}
         />
       )}
 

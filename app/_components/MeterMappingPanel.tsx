@@ -30,24 +30,23 @@ type AvailableMeter = { meter_key: string; display_name: string; unit_label: str
 
 interface Props {
   jobId: string
-  currency: string
   isConfigured?: boolean
   onConfirmedChange: (allConfirmed: boolean) => void
   /** The contract's own overall billing_frequency — used to detect a metric
    *  measuring on a different cadence and surface the "Mixed" schedule note. */
   contractBillingFrequency?: string | null
+  /** Bumped by the parent whenever ITS OWN data refreshes (e.g. a minimum
+   *  commitment or tier-calculation method confirmed via the Review panel's
+   *  RuleInterpretationCard, which writes through /confirm-rule, not this
+   *  component's own save path) — this panel manages its own independent
+   *  fetch of /meter-mappings, so without this signal it would keep showing
+   *  an ambiguity as unresolved even after it was actually resolved
+   *  elsewhere, until the page was reloaded. */
+  refreshSignal?: number
 }
 
 const CYCLE_LABELS: Record<string, string> = {
   monthly: 'Monthly', quarterly: 'Quarterly', 'semi-annual': 'Semi-annual', yearly: 'Yearly', annual: 'Annual',
-}
-
-const MIN_COMMITMENT_MODE_LABELS: Record<MinimumCommitment['mode'], string> = {
-  floor: 'Usage floor — bill the greater of usage or the minimum',
-  additive: 'Additive — minimum charged on top of usage',
-  minimum_spend: 'Spend commitment — shortfall billed as a true-up',
-  prepaid_commitment: 'Prepaid — usage draws down from the minimum',
-  minimum_quantity: 'Minimum quantity — a take-or-pay unit commitment',
 }
 
 // Matches configure/[id]/page.tsx's ReviewPanel vocabulary — a single
@@ -55,7 +54,7 @@ const MIN_COMMITMENT_MODE_LABELS: Record<MinimumCommitment['mode'], string> = {
 // rather than a three-tier confidence scale with raw percentages.
 const NEEDS_CONFIRMATION_THRESHOLD = 0.85
 
-export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedChange, contractBillingFrequency }: Props) {
+export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, contractBillingFrequency, refreshSignal }: Props) {
   const [suggestions, setSuggestions] = useState<MeterSuggestion[]>([])
   const [meters, setMeters]           = useState<AvailableMeter[]>([])
   const [loading, setLoading]         = useState(true)
@@ -64,12 +63,6 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
 
   // Local edits before save
   const [edits, setEdits] = useState<Record<string, Partial<MeterSuggestion>>>({})
-  // Reviewer's chosen interpretation + note for an ambiguous minimum
-  // commitment, keyed by contract_unit_type — held separately from `edits`
-  // since it drives a nested field inside overage_tiers rather than a
-  // top-level MeterSuggestion field.
-  const [mcInteraction, setMcInteraction] = useState<Record<string, 'before_allowance' | 'after_allowance'>>({})
-  const [mcNote, setMcNote]               = useState<Record<string, string>>({})
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/jobs/${jobId}/meter-mappings`).then(r => r.json()).catch(() => null)
@@ -89,7 +82,7 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
         setLoading(false)
       })
       .catch(() => setLoading(false))
-  }, [jobId])
+  }, [jobId, refreshSignal])
 
   const get = <K extends keyof MeterSuggestion>(unitType: string, field: K, fallback: MeterSuggestion[K]) =>
     ((edits[unitType] as Partial<MeterSuggestion>)?.[field] as MeterSuggestion[K]) ?? fallback
@@ -97,23 +90,19 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
   const setEdit = (unitType: string, field: keyof MeterSuggestion, value: unknown) =>
     setEdits(prev => ({ ...prev, [unitType]: { ...prev[unitType], [field]: value } }))
 
+  // Whether this metric's minimum commitment is still ambiguous — read-only
+  // here. Resolving it is exclusively the Review panel's RuleInterpretationCard
+  // job now (POST /confirm-rule, which writes the full structured mode/period/
+  // etc. and mirrors into contract_meter_mappings AND contract_terms). This
+  // panel used to offer its own inline before/after-allowance mini-resolution,
+  // but that path only ever wrote to contract_meter_mappings — contract_terms
+  // (what the Commercial Terms view and every other ambiguity check reads)
+  // never updated, so the flag would reappear even after a reviewer thought
+  // they'd resolved it here. Never re-add a second write path for the same fact.
   const resolveMinimumCommitment = (s: MeterSuggestion): MinimumCommitment | null => {
     const tiers = get(s.contract_unit_type, 'overage_tiers', s.overage_tiers)
     for (const t of tiers) if (t.minimum_commitment) return t.minimum_commitment
     return null
-  }
-
-  // Writes the reviewer's chosen interpretation into the metric's tiers and
-  // clears requires_confirmation — never done automatically, only on an
-  // explicit click, and only once a before/after choice has actually been made.
-  const confirmMinimumCommitment = (s: MeterSuggestion) => {
-    const choice = mcInteraction[s.contract_unit_type]
-    if (!choice) return
-    const tiers = get(s.contract_unit_type, 'overage_tiers', s.overage_tiers)
-    const nextTiers = tiers.map(t => t.minimum_commitment
-      ? { ...t, minimum_commitment: { ...t.minimum_commitment, included_allowance_interaction: choice, requires_confirmation: false } }
-      : t)
-    setEdit(s.contract_unit_type, 'overage_tiers', nextTiers)
   }
 
   const allConfirmed = suggestions.length > 0 && suggestions.every(s =>
@@ -165,7 +154,6 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
       overage_tiers:      get(s.contract_unit_type, 'overage_tiers', s.overage_tiers),
       billing_cycle:      get(s.contract_unit_type, 'billing_cycle', s.billing_cycle),
       confidence:         s.confidence,
-      minimum_commitment_note: mcNote[s.contract_unit_type] ?? null,
     }))
 
     const res = await fetch(`/api/jobs/${jobId}/meter-mappings`, {
@@ -298,7 +286,6 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
           const confirmed    = get(s.contract_unit_type, 'confirmed', s.confirmed)
           const needsConfirmation = s.confidence < NEEDS_CONFIRMATION_THRESHOLD
           const matchedMeter = meters.find(m => m.meter_key === meterKey)
-          const minCommitment = resolveMinimumCommitment(s)
 
           return (
             <div key={s.contract_unit_type}>
@@ -367,55 +354,19 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
               </div>
             </div>
 
-            {/* Minimum commitment — only surfaced when extraction flagged an
-                ambiguous interaction with this metric's included allowance.
-                Never auto-resolved; a reviewer must pick before/after. */}
-            {minCommitment?.requires_confirmation && (
-              <div className="mx-7 mb-4 rounded-xl p-3.5" style={{ background: '#FFFBEB', border: '1px solid #FDE68A' }}>
-                <p className="text-[10px] font-bold uppercase tracking-widest mb-1.5 flex items-center gap-1.5" style={{ color: '#92400E' }}>
-                  <i className="ti ti-alert-triangle" style={{ fontSize: 12 }} />
-                  Minimum commitment needs confirmation
-                </p>
-                <p className="text-xs leading-relaxed mb-1" style={{ color: '#78350F' }}>
-                  {minCommitment.confirmation_reason
-                    ?? `This metric has a ${minCommitment.amount.toLocaleString()} ${currency} minimum and an included allowance, but the contract doesn't say how they interact.`}
-                </p>
-                <p className="text-[11px] mb-2.5" style={{ color: '#92400E' }}>
-                  {MIN_COMMITMENT_MODE_LABELS[minCommitment.mode]}
-                </p>
-                <div className="flex flex-wrap gap-2 mb-2.5">
-                  {(['before_allowance', 'after_allowance'] as const).map(choice => (
-                    <button
-                      key={choice}
-                      onClick={() => setMcInteraction(prev => ({ ...prev, [s.contract_unit_type]: choice }))}
-                      className="text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors"
-                      style={mcInteraction[s.contract_unit_type] === choice
-                        ? { background: '#1A3D2B', borderColor: '#1A3D2B', color: 'white' }
-                        : { background: 'white', borderColor: '#FDE68A', color: '#78350F' }}
-                    >
-                      {choice === 'before_allowance' ? 'Applies before allowance' : 'Applies after allowance'}
-                    </button>
-                  ))}
-                </div>
-                <textarea
-                  value={mcNote[s.contract_unit_type] ?? ''}
-                  onChange={e => setMcNote(prev => ({ ...prev, [s.contract_unit_type]: e.target.value }))}
-                  placeholder="Optional note — why this interpretation, or who confirmed it"
-                  rows={2}
-                  className="w-full text-xs border rounded-lg px-2.5 py-2 outline-none mb-2.5"
-                  style={{ borderColor: '#FDE68A', background: '#FFFDF5' }}
-                />
-                <button
-                  onClick={() => confirmMinimumCommitment(s)}
-                  disabled={!mcInteraction[s.contract_unit_type]}
-                  className="text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40"
-                  style={{ background: '#1A3D2B', color: 'white' }}
-                >
-                  <i className="ti ti-check mr-1" style={{ fontSize: 11 }} />
-                  Confirm minimum commitment
-                </button>
-                <p className="text-[10px] mt-2" style={{ color: '#92400E' }}>
-                  Until confirmed, this minimum is excluded from Committed contract value and from real invoices — usage-based charges still bill normally.
+            {/* Minimum commitment — read-only pointer to where this actually
+                gets resolved (the Review panel's own rule-interpretation
+                card for this metric, further down this same panel), never a
+                second interactive widget here. Resolving it in THIS panel
+                used to only ever write to contract_meter_mappings — the
+                Commercial Terms view and every other ambiguity check read
+                contract_terms, which never updated, so the flag reappeared
+                even after a reviewer thought they'd already confirmed it. */}
+            {resolveMinimumCommitment(s)?.requires_confirmation && (
+              <div className="mx-7 mb-4 rounded-xl p-3" style={{ background: '#FFFBEB', border: '1px solid #FDE68A' }}>
+                <p className="text-[11px] font-medium flex items-center gap-1.5" style={{ color: '#92400E' }}>
+                  <i className="ti ti-alert-triangle flex-shrink-0" style={{ fontSize: 12 }} />
+                  This metric also has a minimum commitment awaiting interpretation — resolve it in the rule card below, not here.
                 </p>
               </div>
             )}
