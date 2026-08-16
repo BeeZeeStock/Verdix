@@ -3375,9 +3375,24 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
-            {/* Meter mapping now lives inside the Review panel (the single
-                review control surface) rather than as its own section here —
-                see ReviewPanel below. */}
+            {/* ── Meter mapping (enterprise contracts with overage tiers) ──
+                 Resolved from the Review panel (the single review control
+                 surface — see ReviewPanel below), but also shown here as a
+                 collapsed, always-visible status card so the confirmed
+                 mapping stays glanceable/alterable from the main Commercial
+                 GUI without reopening the drawer — the main page is a
+                 downstream reflection of the approved model, not just the
+                 resolution surface. Same component, same live state either
+                 way (confirming here confirms there too). */}
+            {tiers.length > 0 && (
+              <MeterMappingPanel
+                jobId={id}
+                currency={cur}
+                isConfigured={isConfigured}
+                onConfirmedChange={setMeterMappingsConfirmed}
+                contractBillingFrequency={terms?.billing_frequency ?? null}
+              />
+            )}
 
             {/* ── Fixed fees + Approve footer ── */}
             <div className="bg-white rounded-2xl border border-forest/10 px-7 py-5 flex items-center justify-between gap-8">
