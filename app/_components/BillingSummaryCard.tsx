@@ -77,6 +77,7 @@ type CommercialRuleEvent = {
   id: string; meterKey: string; mode: string; amount: number; currency: string
   cadence: string; windowStart: string; windowEnd: string
   partialPeriod: { isPartial: boolean; needsConfirmation: boolean; prorated: boolean } | null
+  isDeterministic: boolean
 }
 
 const COMMITMENT_MODE_LABEL: Record<string, string> = {
@@ -340,7 +341,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
           quantity?: number | null; unitPrice?: number | null; errorMessage?: string | null
           // commercial-rule only: a confirmed metric-level commitment whose
           // cadence window hasn't closed yet, so no real invoice row exists.
-          commercialRule?: { meterKey: string; mode: string; cadence: string; windowEnd: string; partialPeriod: CommercialRuleEvent['partialPeriod'] }
+          commercialRule?: { meterKey: string; mode: string; cadence: string; windowEnd: string; partialPeriod: CommercialRuleEvent['partialPeriod']; isDeterministic: boolean }
         }
         const entries: TLEntry[] = []
 
@@ -472,17 +473,21 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
               ? `${windowStart.getFullYear()}`
               : windowStart.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
           entries.push({
-            id: ev.id, label: `${cadenceLabel} · ${ev.meterKey} commercial charge`,
+            id: ev.id, label: `${cadenceLabel} · ${ev.meterKey} usage`,
             // The API only emits events whose window hasn't closed yet
             // (windowEnd >= today), so anchoring on windowEnd — roughly when
             // the arrears charge actually gets invoiced — guarantees this
             // always sorts into "upcoming", never "past", even for a window
             // already in progress (windowStart before today).
-            dateLabel: 'Scheduled', date: windowEnd,
+            // A floor/minimum_spend/etc. commitment isn't a promised invoice
+            // amount — max(usage, threshold) isn't knowable until usage is
+            // pulled — so this never claims "Scheduled" the way a
+            // deterministic additive fee or a real draft invoice can.
+            dateLabel: ev.isDeterministic ? 'Scheduled' : 'Awaiting usage', date: windowEnd,
             amount: ev.amount, currency: ev.currency,
             status: 'scheduled', kind: 'commercial-rule',
             baseAmount: 0, overageLineItems: [], overageTotal: 0,
-            commercialRule: { meterKey: ev.meterKey, mode: ev.mode, cadence: ev.cadence, windowEnd: ev.windowEnd, partialPeriod: ev.partialPeriod },
+            commercialRule: { meterKey: ev.meterKey, mode: ev.mode, cadence: ev.cadence, windowEnd: ev.windowEnd, partialPeriod: ev.partialPeriod, isDeterministic: ev.isDeterministic },
           })
         }
 
@@ -566,9 +571,20 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
                 </div>
                 <div className="flex flex-col items-end gap-1 flex-shrink-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-[13px] font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                      {fmt(e.amount, e.currency)}
-                    </span>
+                    {/* A floor/minimum_spend/etc. threshold is not the final
+                        billed amount — max(usage, threshold) isn't known
+                        until usage is pulled, so this must never read like a
+                        promised invoice total the way a deterministic
+                        additive fee or a real draft invoice does. */}
+                    {e.kind === 'commercial-rule' && e.commercialRule && !e.commercialRule.isDeterministic ? (
+                      <span className="text-[11px] font-medium" style={{ color: '#B9802F' }} title={`${COMMITMENT_MODE_LABEL[e.commercialRule.mode] ?? e.commercialRule.mode}: ${fmt(e.amount, e.currency)} · amount pending usage`}>
+                        Pending usage
+                      </span>
+                    ) : (
+                      <span className="text-[13px] font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                        {fmt(e.amount, e.currency)}
+                      </span>
+                    )}
                     <StatusBadge status={effectiveStatus} />
                     {e.pdfUrl && (
                       <a href={e.pdfUrl} target="_blank" rel="noreferrer" onClick={ev => ev.stopPropagation()}
@@ -646,21 +662,49 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
                         </>
                       ) : e.kind === 'commercial-rule' && e.commercialRule ? (
                         <>
-                          <tr>
-                            <td className="px-3 py-2 text-ink">{COMMITMENT_MODE_LABEL[e.commercialRule.mode] ?? e.commercialRule.mode}</td>
-                            <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>1</td>
-                            <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</td>
-                            <td className="px-3 py-2 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</td>
-                          </tr>
-                          <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
-                            <td className="px-3 py-2 text-stone" colSpan={4}>
-                              variable {e.commercialRule.meterKey} usage · {e.commercialRule.cadence} in arrears
-                            </td>
-                          </tr>
+                          {e.commercialRule.isDeterministic ? (
+                            <>
+                              <tr>
+                                <td className="px-3 py-2 text-ink">{COMMITMENT_MODE_LABEL[e.commercialRule.mode] ?? e.commercialRule.mode}</td>
+                                <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>1</td>
+                                <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</td>
+                                <td className="px-3 py-2 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</td>
+                              </tr>
+                              <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                                <td className="px-3 py-2 text-stone" colSpan={4}>
+                                  + variable {e.commercialRule.meterKey} usage · {e.commercialRule.cadence} in arrears, added on top
+                                </td>
+                              </tr>
+                            </>
+                          ) : (
+                            // A floor/minimum_spend/etc. rule isn't a fixed line
+                            // item — the final billed amount is max(usage,
+                            // threshold), unknown until usage is pulled at
+                            // period close. Showing the threshold as a "Total"
+                            // here would misrepresent it as the final invoice
+                            // amount, which is exactly the confusion this
+                            // table exists to prevent.
+                            <>
+                              <tr>
+                                <td className="px-3 py-2 text-ink" colSpan={2}>{COMMITMENT_MODE_LABEL[e.commercialRule.mode] ?? e.commercialRule.mode}</td>
+                                <td className="px-3 py-2 text-right text-stone" colSpan={2} style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</td>
+                              </tr>
+                              <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                                <td className="px-3 py-2 text-stone" colSpan={2}>Usage charge — {e.commercialRule.cadence} in arrears</td>
+                                <td className="px-3 py-2 text-right text-stone/50 italic" colSpan={2}>Pending usage</td>
+                              </tr>
+                              <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                                <td className="px-3 py-2 font-medium text-ink" colSpan={2}>Billable amount</td>
+                                <td className="px-3 py-2 text-right font-medium italic" colSpan={2} style={{ color: '#B9802F' }}>
+                                  Pending usage — at least {fmt(e.amount, e.currency)}
+                                </td>
+                              </tr>
+                            </>
+                          )}
                           {e.commercialRule.partialPeriod?.isPartial && (
                             <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
                               <td className="px-3 py-2" colSpan={4} style={{ color: e.commercialRule.partialPeriod.needsConfirmation ? '#B45309' : '#6B7280' }}>
-                                Partial-quarter treatment: {e.commercialRule.partialPeriod.needsConfirmation ? 'Needs confirmation' : e.commercialRule.partialPeriod.prorated ? 'Prorated' : 'Full amount charged'}
+                                Partial-quarter treatment: {e.commercialRule.partialPeriod.needsConfirmation ? 'Needs confirmation' : e.commercialRule.partialPeriod.prorated ? 'Prorated by days' : 'Full amount charged'}
                               </td>
                             </tr>
                           )}

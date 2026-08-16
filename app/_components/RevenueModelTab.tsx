@@ -32,6 +32,7 @@ type Tier      = {
   measurement_period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
   minimum_commitment?: MinimumCommitment | null
   reset_anchor?: 'contract_start' | 'calendar' | null
+  tier_calculation?: { method: 'graduated' | 'volume' | 'block' | 'custom'; requires_confirmation: boolean } | null
 }
 type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null; description?: string | null }
 type RampStep = { start_date: string; end_date: string; monthly_fee: number; label?: string }
@@ -110,6 +111,10 @@ function wrapBarLabel(label: string, maxCharsPerLine = 16): string[] {
     lines[1] = lines[1].slice(0, maxCharsPerLine - 1) + '…'
   }
   return lines.filter(Boolean)
+}
+
+const TIER_METHOD_DISPLAY: Record<string, string> = {
+  graduated: 'Graduated / staircase', volume: 'Volume / all-units', block: 'Block-based', custom: 'Custom',
 }
 
 function commitmentModeShortLabel(mode: string): string {
@@ -395,6 +400,11 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
     const mc = resolveMinimumCommitment(metricTiers as OverageTier[])
     return mc && !mc.requires_confirmation ? mc : null
   })()
+  // The confirmed graduated/volume/block reading for this metric's own tier
+  // table — a separate confirmable fact from the minimum commitment itself,
+  // surfaced alongside it in the Confirmed Commercial Rule summary since a
+  // reviewer resolving one usually wants to see the other too.
+  const confirmedGenericTierMethod = sortedMetricTiers.find(t => t.tier_calculation && !t.tier_calculation.requires_confirmation)?.tier_calculation?.method ?? null
   const genericCommitmentAnchor: CadenceAnchorMode =
     sortedMetricTiers.find(t => t.reset_anchor)?.reset_anchor === 'calendar' ? 'calendar' : 'contract_start'
   // Partial-period-aware total across the whole term — never a naive
@@ -1444,7 +1454,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
         type KpiCard = { label: string; value: number | null; needsConfirmation?: boolean; sub: string; color: string; isCredit?: boolean; bold?: boolean }
 
         const layer1Cards: KpiCard[] = [
-          { label: 'Base recurring revenue', value: totalSub, sub: `${fmt(combinedBase, cur)}/month · contracted recurring`, color: '#1A3D2B' },
+          { label: 'Base recurring fees', value: totalSub, sub: `${fmt(combinedBase, cur)}/month · contracted recurring`, color: '#1A3D2B' },
           ...(oneTimeFees > 0 ? [{ label: 'One-time fees', value: oneTimeFees, sub: posOneTime.map(f => f.label).join(', ') || 'One-time', color: '#6B6660' }] : []),
           ...(creditTotal < 0 ? [{ label: 'Credits', value: creditTotal, sub: creditLabels || 'Contract credits', color: '#B45309', isCredit: true }] : []),
           { label: 'Fixed fees', value: fixedFeesTotal, sub: 'Base recurring + one-time', color: '#1A3D2B', bold: true },
@@ -1597,16 +1607,24 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               }
               if (expected > 0) displayAmount = expected
             }
-            rawEvents.push({ label: `Year ${inv.yearNum} recurring`, date: scheduleDate(inv.yearNum, inv), amount: displayAmount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
+            // "Base recurring fees" — not "Year N recurring": this is
+            // specifically the fixed base subscription, distinct from a
+            // recurring commercial rule (e.g. a quarterly minimum) that
+            // also recurs but isn't a fixed fee. "Year N" prefix only
+            // matters once there's more than one year bar to tell apart
+            // (the date-range sub-label already disambiguates otherwise).
+            const baseLabel = sortedDrafts.length > 1 ? `Year ${inv.yearNum} base recurring fees` : 'Base recurring fees'
+            rawEvents.push({ label: baseLabel, date: scheduleDate(inv.yearNum, inv), amount: displayAmount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
           }
         } else {
           // Legacy (annual billing): Year 1 from first subscription invoice, Year 2+ from drafts
           const firstInv = billingData.invoices[0]
+          const multiYear = sortedDrafts.length > 0
           if (firstInv) {
-            rawEvents.push({ label: 'Year 1 recurring', date: scheduleDate(1, firstInv), amount: firstInv.amount, currency: firstInv.currency, status: firstInv.status ?? 'unknown', hostedUrl: firstInv.hostedUrl })
+            rawEvents.push({ label: multiYear ? 'Year 1 base recurring fees' : 'Base recurring fees', date: scheduleDate(1, firstInv), amount: firstInv.amount, currency: firstInv.currency, status: firstInv.status ?? 'unknown', hostedUrl: firstInv.hostedUrl })
           }
           for (const inv of sortedDrafts) {
-            rawEvents.push({ label: `Year ${inv.yearNum} recurring`, date: scheduleDate(inv.yearNum, inv), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
+            rawEvents.push({ label: `Year ${inv.yearNum} base recurring fees`, date: scheduleDate(inv.yearNum, inv), amount: inv.amount, currency: inv.currency, status: inv.status ?? 'draft', hostedUrl: inv.hostedUrl })
           }
         }
 
@@ -1663,8 +1681,12 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
           }
         })
         const configuredTotal = cum
-        // Configured total bar — spans full height from 0
-        wBars.push({ label: 'Configured total', sub: '', from: 0, to: configuredTotal, amount: configuredTotal, status: 'total', kind: 'total' })
+        // This waterfall only ever reflects fixed fees (base recurring +
+        // one-time) actually pushed to the billing platform — a confirmed
+        // commercial rule (e.g. a minimum floor) is computed at invoice
+        // time, not pre-configured as its own line item, so this total must
+        // never be labeled as if the whole agreement were configured here.
+        wBars.push({ label: 'Fixed fees configured', sub: '', from: 0, to: configuredTotal, amount: configuredTotal, status: 'total', kind: 'total' })
 
         const n = wBars.length
         const bScale = configuredTotal > 0 ? configuredTotal : 1
@@ -1824,6 +1846,14 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                       {genericMetricLabel ?? 'Usage'} {commitmentModeShortLabel(confirmedGenericCommitment.mode)} · {fmt(confirmedGenericCommitment.amount, cur)} / {confirmedGenericCommitment.period ?? genericPeriodLabel}
                     </p>
                     <p className="text-[10px] text-stone/60 mt-0.5">Billing: {genericPeriodLabel} in arrears</p>
+                    {confirmedGenericCommitment.prorate_partial_periods !== undefined && (
+                      <p className="text-[10px] text-stone/60 mt-0.5">
+                        Partial-period treatment: {confirmedGenericCommitment.prorate_partial_periods === true ? 'Prorated by days' : confirmedGenericCommitment.prorate_partial_periods === false ? 'Full amount charged' : 'Needs confirmation'}
+                      </p>
+                    )}
+                    {confirmedGenericTierMethod && (
+                      <p className="text-[10px] text-stone/60 mt-0.5">Tier method: {TIER_METHOD_DISPLAY[confirmedGenericTierMethod] ?? confirmedGenericTierMethod}</p>
+                    )}
                     <p className="text-[10px] text-stone/60 mt-0.5">
                       {commitmentNeedsConfirmation
                         ? 'Minimum commitment over initial term: needs confirmation'
@@ -1833,8 +1863,13 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                 )}
               </div>
               {actualTcv > 0 && isMatch && (
+                // Not "Matches contract" — the source clause required human
+                // interpretation (e.g. a minimum-floor rule, a proration
+                // policy), so this configuration isn't a literal match to
+                // the contract text; it's the source clause plus an
+                // approved operational reading of it.
                 <div className="flex items-center gap-1.5 text-[11px] font-medium text-green-700 bg-green-50 px-3 py-1.5 rounded-lg">
-                  <i className="ti ti-circle-check-filled" style={{ fontSize: 13 }} /> Matches contract
+                  <i className="ti ti-circle-check-filled" style={{ fontSize: 13 }} /> Source-linked &amp; approved
                 </div>
               )}
               {actualTcv > 0 && !isMatch && (
@@ -2111,7 +2146,10 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
         return (
           <div className="bg-white border border-forest/10 rounded-2xl p-6">
             <div className="flex items-center justify-between mb-1">
-              <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Revenue actuals — billed to date</h3>
+              {/* Not "Revenue actuals" — this section now mixes real billed
+                  amounts with contractual commitments (fixed fees remaining,
+                  an unbilled minimum), not actuals alone. */}
+              <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Contract value &amp; billing progress</h3>
               <div className="flex items-center gap-3 text-[10px] text-stone/60">
                 <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Billed to date</span>
                 <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm border border-dashed" style={{ background: '#C8E6D4', borderColor: '#4A7C59' }} /> {confirmedGenericCommitment ? 'Remaining fixed fees' : 'Remaining committed value'}</span>
@@ -2181,7 +2219,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
             </svg>
             {confirmedGenericCommitment && (
               <p className="text-[10px] text-stone/60 mt-1">
-                * Committed contract value includes the confirmed {(genericMetricLabel ?? 'usage').toLowerCase()} minimum commitment over the initial term, subject to its confirmed partial-period treatment — actual contract value can be higher based on usage.
+                * Committed contract value includes the confirmed {(genericMetricLabel ?? 'usage').toLowerCase()} minimum commitment over the initial term, based on the confirmed partial-period treatment. Actual contract value can be higher based on usage.
               </p>
             )}
 

@@ -7,6 +7,7 @@ import {
   findCadenceWindowContaining,
   isPartialWindow,
   computeMinimumCommitmentSchedule,
+  resolveWindowMinimum,
 } from './tariff'
 import type { OverageTier, MinimumCommitment, TierCalculationMethod } from './types'
 
@@ -213,6 +214,67 @@ describe('computeMinimumCommitmentSchedule — partial-period proration', () => 
     expect(result.requiresConfirmation).toBe(false)
     expect(result.partialWindowCount).toBe(0)
     expect(result.total).toBe(20000) // exactly 4 full contract-anchored quarters
+  })
+
+  // Per-window figures — what the billing timeline shows for one specific
+  // quarter, not the term total. Must use the exact same math as the
+  // aggregate above (resolveWindowMinimum is the function both share), so a
+  // partial quarter's timeline event is never shown as the full SEK 5,000.
+  describe('resolveWindowMinimum — per-window figures for the billing timeline', () => {
+    const q3_2026 = { start: new Date(2026, 6, 1), end: new Date(2026, 8, 30) }  // Jul 1 – Sep 30 2026
+    const q4_2026 = { start: new Date(2026, 9, 1), end: new Date(2026, 11, 31) } // Oct 1 – Dec 31 2026
+    const q3_2027 = { start: new Date(2027, 6, 1), end: new Date(2027, 8, 30) }  // Jul 1 – Sep 30 2027
+
+    it('the first partial quarter prorates to ≈2,771.74, not the full 5,000', () => {
+      const wm = resolveWindowMinimum(q3_2026, contractStart, contractEnd, 'calendar', { ...mc5k, prorate_partial_periods: true })
+      expect(wm.isPartial).toBe(true)
+      expect(wm.amount).toBeCloseTo(2771.74, 2)
+    })
+
+    it('the final partial quarter prorates to ≈2,228.26', () => {
+      const wm = resolveWindowMinimum(q3_2027, contractStart, contractEnd, 'calendar', { ...mc5k, prorate_partial_periods: true })
+      expect(wm.isPartial).toBe(true)
+      expect(wm.amount).toBeCloseTo(2228.26, 2)
+    })
+
+    it('a full quarter in the middle of the term is never prorated', () => {
+      const wm = resolveWindowMinimum(q4_2026, contractStart, contractEnd, 'calendar', { ...mc5k, prorate_partial_periods: true })
+      expect(wm.isPartial).toBe(false)
+      expect(wm.amount).toBe(5000)
+    })
+
+    it('unclear proration on a partial window: amount is null and requiresConfirmation is true, never a guessed figure', () => {
+      const wm = resolveWindowMinimum(q3_2026, contractStart, contractEnd, 'calendar', { ...mc5k, prorate_partial_periods: 'unclear' })
+      expect(wm.amount).toBeNull()
+      expect(wm.requiresConfirmation).toBe(true)
+    })
+  })
+})
+
+// Section 18 of the commercial-rule spec — explicit acceptance-test cases.
+describe('spec acceptance cases — minimum floor vs additive fee', () => {
+  it('A. full-quarter minimum floor: raw usage 3,000 below the 5,000 floor bills 5,000', () => {
+    const tiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'floor', amount: 5000 }) })]
+    expect(computeMetricOverage(3000, tiers, 0).amount).toBe(5000)
+  })
+
+  it('B. full-quarter usage exceeds floor: raw usage 7,000 above the 5,000 floor bills 7,000', () => {
+    const tiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'floor', amount: 5000 }) })]
+    expect(computeMetricOverage(7000, tiers, 0).amount).toBe(7000)
+  })
+
+  it('E. additive fee is a distinct calculation from minimum floor: 5,000 additive + 7,000 usage = 12,000', () => {
+    const tiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'additive', amount: 5000 }) })]
+    const result = computeMetricOverage(7000, tiers, 0)
+    expect(result.amount).toBe(12000) // NOT max(usage, minimum) = 7000
+    expect(result.usageAmount).toBe(7000)
+  })
+
+  it('a floor and an additive rule with identical usage produce different totals — the mode, not just the amount, determines the calculation', () => {
+    const floorTiers    = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'floor', amount: 5000 }) })]
+    const additiveTiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'additive', amount: 5000 }) })]
+    expect(computeMetricOverage(3000, floorTiers, 0).amount).toBe(5000)     // max(3000, 5000)
+    expect(computeMetricOverage(3000, additiveTiers, 0).amount).toBe(8000) // 3000 + 5000
   })
 })
 

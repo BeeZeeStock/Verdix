@@ -400,14 +400,75 @@ export interface MinimumCommitmentSchedule {
   partialWindowCount: number
 }
 
+// Every cadence window the contract touches — shared enumeration between
+// computeMinimumCommitmentSchedule (term total) and any caller needing the
+// individual windows themselves (e.g. one billing-timeline event per
+// window, each showing that window's own applicable minimum). Padding the
+// scan range by one extra cadence period matters here: enumerateCadenceWindows
+// filters by each window's END falling within the range — correct for its
+// real-billing callers (usage-pull.ts: "only fully-closed windows within
+// this scan"), but the contract's own FINAL touched window's calendar end
+// almost always extends past the contract's actual end date (that's
+// precisely what makes it partial), so passing contractEndDate as rangeEnd
+// directly would silently drop it. Filtering by each window's START falling
+// on/before the contract's end date is what correctly determines which
+// windows the contract actually touches.
+export function enumerateContractWindows(
+  contractStartDate: Date,
+  contractEndDate: Date,
+  cadence: string | null | undefined,
+  anchor: CadenceAnchorMode,
+): Array<{ start: Date; end: Date }> {
+  const months    = CADENCE_MONTHS[cadence ?? 'monthly'] ?? 1
+  const paddedEnd = new Date(contractEndDate.getFullYear(), contractEndDate.getMonth() + months, contractEndDate.getDate())
+  return enumerateCadenceWindows(contractStartDate, cadence, contractStartDate, paddedEnd, anchor)
+    .filter(w => w.start <= contractEndDate)
+}
+
+export interface WindowMinimum {
+  /** The applicable minimum for this one window — prorated when the window
+   *  is partial and the confirmed treatment prorates by days, the full
+   *  amount when the window is partial but still bills in full, or null
+   *  when the treatment is still unconfirmed for a partial window (never
+   *  guessed — see requiresConfirmation). */
+  amount: number | null
+  isPartial: boolean
+  requiresConfirmation: boolean
+}
+
+// The applicable minimum for ONE cadence window — shared by
+// computeMinimumCommitmentSchedule (term total, sums every window) and any
+// caller needing a single window's figure (a billing-timeline event for
+// that specific quarter), so the two can never disagree about the same window.
+export function resolveWindowMinimum(
+  window: { start: Date; end: Date },
+  contractStartDate: Date,
+  contractEndDate: Date,
+  anchor: CadenceAnchorMode,
+  mc: Pick<MinimumCommitment, 'amount' | 'prorate_partial_periods'>,
+): WindowMinimum {
+  const partial = anchor === 'calendar' && isPartialWindow(window, contractStartDate, contractEndDate)
+  if (!partial) return { amount: mc.amount, isPartial: false, requiresConfirmation: false }
+  if (mc.prorate_partial_periods === true) {
+    // Prorate by the number of days the contract actually overlaps this window.
+    const overlapStart = window.start < contractStartDate ? contractStartDate : window.start
+    const overlapEnd   = window.end   > contractEndDate   ? contractEndDate   : window.end
+    const overlapDays  = Math.max(0, Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 86_400_000) + 1)
+    const windowDays   = Math.max(1, Math.round((window.end.getTime() - window.start.getTime()) / 86_400_000) + 1)
+    return { amount: Math.round(mc.amount * (overlapDays / windowDays) * 100) / 100, isPartial: true, requiresConfirmation: false }
+  }
+  if (mc.prorate_partial_periods === false) return { amount: mc.amount, isPartial: true, requiresConfirmation: false }
+  return { amount: null, isPartial: true, requiresConfirmation: true }
+}
+
 // Sums a confirmed minimum commitment's amount across every cadence window
 // the contract touches, respecting the confirmed partial-period proration
 // treatment — reuses the same window engine real billing uses
-// (enumerateCadenceWindows/isPartialWindow) rather than a parallel
-// date calculation. A quarterly SEK 5,000 commitment on a contract that
-// starts mid-quarter is NOT simply (quarters touched) × amount — the two
-// edge quarters are only partially covered, and whether that partial
-// coverage still bills the full amount, a prorated share, or is genuinely
+// (enumerateCadenceWindows/isPartialWindow) rather than a parallel date
+// calculation. A quarterly SEK 5,000 commitment on a contract that starts
+// mid-quarter is NOT simply (quarters touched) × amount — the two edge
+// quarters are only partially covered, and whether that partial coverage
+// still bills the full amount, a prorated share, or is genuinely
 // undetermined is exactly what prorate_partial_periods records.
 export function computeMinimumCommitmentSchedule(
   contractStartDate: Date,
@@ -416,44 +477,16 @@ export function computeMinimumCommitmentSchedule(
   anchor: CadenceAnchorMode,
   mc: Pick<MinimumCommitment, 'amount' | 'prorate_partial_periods'>,
 ): MinimumCommitmentSchedule {
-  // enumerateCadenceWindows filters by each window's END falling within the
-  // given range — correct for its real-billing callers (usage-pull.ts:
-  // "only fully-closed windows within this scan"), but wrong here: the
-  // contract's own FINAL touched window's calendar end almost always
-  // extends past the contract's actual end date (that's precisely what
-  // makes it partial), so passing contractEndDate as rangeEnd directly
-  // would silently drop it. Padding the range by one extra cadence period
-  // guarantees that window's calendar end is captured, then filtering by
-  // each window's START falling on/before the contract's end date is what
-  // correctly determines which windows the contract actually touches.
-  const months     = CADENCE_MONTHS[cadence ?? 'monthly'] ?? 1
-  const paddedEnd  = new Date(contractEndDate.getFullYear(), contractEndDate.getMonth() + months, contractEndDate.getDate())
-  const windows    = enumerateCadenceWindows(contractStartDate, cadence, contractStartDate, paddedEnd, anchor)
-    .filter(w => w.start <= contractEndDate)
+  const windows = enumerateContractWindows(contractStartDate, contractEndDate, cadence, anchor)
   let total = 0
   let fullCount = 0, partialCount = 0
   let requiresConfirmation = false
 
   for (const w of windows) {
-    const partial = anchor === 'calendar' && isPartialWindow(w, contractStartDate, contractEndDate)
-    if (!partial) {
-      total += mc.amount
-      fullCount++
-      continue
-    }
-    partialCount++
-    if (mc.prorate_partial_periods === true) {
-      // Prorate by the number of days the contract actually overlaps this window.
-      const overlapStart = w.start < contractStartDate ? contractStartDate : w.start
-      const overlapEnd   = w.end   > contractEndDate   ? contractEndDate   : w.end
-      const overlapDays  = Math.max(0, Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 86_400_000) + 1)
-      const windowDays   = Math.max(1, Math.round((w.end.getTime() - w.start.getTime()) / 86_400_000) + 1)
-      total += mc.amount * (overlapDays / windowDays)
-    } else if (mc.prorate_partial_periods === false) {
-      total += mc.amount
-    } else {
-      requiresConfirmation = true
-    }
+    const wm = resolveWindowMinimum(w, contractStartDate, contractEndDate, anchor, mc)
+    if (wm.isPartial) partialCount++; else fullCount++
+    if (wm.requiresConfirmation) { requiresConfirmation = true; continue }
+    total += wm.amount ?? 0
   }
 
   return {

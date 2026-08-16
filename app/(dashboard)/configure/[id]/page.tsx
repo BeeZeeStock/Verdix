@@ -3128,9 +3128,25 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                                   {fmt(mc.amount, cur)} added to the {t.measurement_period ?? ''} {unitType} usage charge, independent of the included allowance
                                 </span>
                               </p>
-                            ) : mc.included_allowance_interaction && (
-                              <p className="text-[11px] text-stone">Allowance: <span className="font-medium text-ink">{mc.included_allowance_interaction.replace(/_/g, ' ')}</span></p>
-                            )}
+                            ) : mc.included_allowance_interaction && (() => {
+                              // Plain business language, not the raw enum — "after allowance"
+                              // exposes an internal field name rather than saying what it
+                              // means for billing. Reuses the metric's own $0-rate tier
+                              // (not a separate calculation) for the included-unit count.
+                              const freeTier = tiers.find(ft => ft.unit_type === unitType && (ft.rate_per_unit ?? 0) === 0)
+                              const includedCount = freeTier?.to_unit
+                              const interaction = mc.included_allowance_interaction
+                              const text = interaction === 'unclear'
+                                ? "Needs confirmation — the contract doesn't state whether the minimum applies before or after the included allowance."
+                                : interaction === 'before_allowance'
+                                  ? `The minimum applies to all usage, including the ${includedCount != null ? `first ${includedCount.toLocaleString()} ` : ''}included units.`
+                                  : includedCount != null
+                                    ? `First ${includedCount.toLocaleString()} ${unitType} included before minimum evaluation.`
+                                    : 'The included allowance is applied before the minimum is evaluated.'
+                              return (
+                                <p className="text-[11px] text-stone">Allowance treatment: <span className="font-medium text-ink">{text}</span></p>
+                              )
+                            })()}
                             {/* Partial-quarter (etc.) treatment is only a live question under
                                 calendar anchoring — contract_start anchoring never produces a
                                 partial window at all, so this line only appears when it can
@@ -3172,12 +3188,21 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         // "unresolved"/"pending" language the way the old heuristic
                         // (guessing from empty index/cap) sometimes did.
                         const notApplied = e.interpretation!.treatment === 'not_applied'
+                        // What the extraction found is preserved and shown even
+                        // when the reviewer excluded it — Verdix keeps what the
+                        // agreement contained distinct from what actually runs.
+                        const sourceTerm = e.escalator_type
+                          ? `${e.escalator_type.replace(/_/g, ' ').replace(/\bcpi\b/i, 'CPI')}-linked escalation detected`
+                          : e.description || null
                         return (
                           <div key={i} className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
                             <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">Price escalation</p>
                             {notApplied ? (
                               <>
-                                <p className="text-lg font-semibold text-ink mb-1">Not applied</p>
+                                {sourceTerm && (
+                                  <p className="text-[11px] text-stone">Source term: <span className="font-medium text-ink">{sourceTerm}</span></p>
+                                )}
+                                <p className="text-lg font-semibold text-ink mb-1 mt-1">Operational treatment: Not applied</p>
                                 <p className="text-[11px] text-stone">Reviewer decision: exclude the escalation clause.</p>
                               </>
                             ) : (
@@ -3394,11 +3419,24 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       const note  = e.effective_date
                         ? `Effective ${fmtDate(e.effective_date)}${e.cap_pct ? ` · capped at ${e.cap_pct}%` : ''}`
                         : e.description ?? undefined
+                      // The reviewer's confirmed decision governs what actually
+                      // runs (see the Confirmed rules card above) — when that
+                      // decision was "not applied", this raw extracted row must
+                      // never look like an active billing parameter, since
+                      // nothing here re-checks the confirmed state on its own.
+                      const confirmedInactive = e.interpretation?.treatment === 'not_applied' && !e.interpretation.requires_confirmation
                       return (
                         <div key={i} className="rounded-xl p-4 transition-all"
-                          style={isEditing ? { background: '#FFFBEB', border: '1px solid #F59E0B' } : { background: 'transparent' }}>
+                          style={isEditing ? { background: '#FFFBEB', border: '1px solid #F59E0B' } : confirmedInactive ? { background: '#FAFAF9', opacity: 0.6 } : { background: 'transparent' }}>
                           <div className="flex items-center justify-between mb-2">
-                            <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em]">{label}</p>
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em]">{label}</p>
+                              {confirmedInactive && (
+                                <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full uppercase tracking-wide" style={{ background: '#F5F5F4', color: '#78716C' }}>
+                                  Source extraction · inactive
+                                </span>
+                              )}
+                            </div>
                             {!isEditing && (
                               <button onClick={() => { setEscEditValue(e.escalator_pct != null ? `${e.escalator_pct}` : ''); setEscEditing(i) }}
                                 title="Edit this value" className="text-stone/35 hover:text-forest transition-colors">
@@ -4024,6 +4062,69 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 refreshSignal={refreshSignal}
               />
             )}
+
+            {/* ── Consolidated commercial-rule confirmation summary ──
+                 Never implies the contract is fully reviewed while any
+                 dependency (a minimum commitment, a tier-calculation method,
+                 escalation, or a usage meter) is still unresolved — this
+                 only renders once every one of those is actually confirmed. */}
+            {(() => {
+              const hasUnresolvedMinimumCommitment = tiers.some(t => t.minimum_commitment?.requires_confirmation)
+              const escalator = terms?.escalators?.[0]
+              const escalatorInterp = escalator?.interpretation
+              const escalatorUnresolved = !!escalator && (
+                !escalatorInterp || escalatorInterp.requires_confirmation
+                || (escalatorInterp.treatment !== 'applies' && escalatorInterp.treatment !== 'not_applied')
+              )
+              const meterMappingsOk = tiers.length === 0 || meterMappingsConfirmed
+              const allCommercialRulesConfirmed =
+                !hasUnresolvedMinimumCommitment && !hasUnresolvedTierCalculation && !escalatorUnresolved && meterMappingsOk
+              if (!allCommercialRulesConfirmed) return null
+
+              const modeLabel: Record<string, string> = {
+                floor: 'minimum floor', additive: 'additive fee', minimum_spend: 'spend commitment',
+                prepaid_commitment: 'prepaid commitment', minimum_quantity: 'minimum quantity',
+              }
+              const confirmedRuleLines: { label: string; value: string }[] = []
+              for (const [unitType, tierList] of chargingGroups.entries()) {
+                const mc = tierList.find(({ tier: t }) => t.minimum_commitment)?.tier.minimum_commitment
+                if (!mc) continue
+                confirmedRuleLines.push({
+                  label: 'Minimum rule',
+                  value: `${fmt(mc.amount, cur)} ${ruleCadenceLabel(mc.period, tierList[0]?.tier.reset_anchor) ?? ''} ${modeLabel[mc.mode] ?? mc.mode} · ${unitType}`.trim(),
+                })
+                if (mc.prorate_partial_periods !== undefined && tierList[0]?.tier.reset_anchor === 'calendar') {
+                  confirmedRuleLines.push({
+                    label: 'Partial-period treatment',
+                    value: mc.prorate_partial_periods === true ? 'Prorated by days' : mc.prorate_partial_periods === false ? 'Full amount charged' : 'Not applicable',
+                  })
+                }
+                const tierCalc = tierList.find(({ tier: t }) => t.tier_calculation)?.tier.tier_calculation
+                if (tierCalc) {
+                  confirmedRuleLines.push({ label: 'Tier calculation', value: TIER_METHOD_DISPLAY[tierCalc.method] ?? tierCalc.method })
+                }
+              }
+              confirmedRuleLines.push({
+                label: 'Escalation',
+                value: !escalator ? 'None in contract' : escalatorInterp!.treatment === 'not_applied' ? 'Not applied' : (escalatorInterp!.index ?? 'Applies'),
+              })
+              if (tiers.length > 0) {
+                confirmedRuleLines.push({ label: 'Usage meter', value: 'Confirmed' })
+              }
+
+              return (
+                <div className="bg-white rounded-2xl border px-7 py-5" style={{ borderColor: 'rgba(11,92,54,0.2)', background: '#F8FDF9' }}>
+                  <p className="text-sm font-semibold flex items-center gap-1.5 mb-3" style={{ color: '#0B5C36' }}>
+                    <i className="ti ti-circle-check-filled" style={{ fontSize: 15 }} /> All commercial rules confirmed
+                  </p>
+                  <div className="grid gap-x-8 gap-y-1.5 text-[12px]" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+                    {confirmedRuleLines.map((line, i) => (
+                      <p key={i}><span className="text-stone">{line.label}:</span> <span className="font-medium text-ink">{line.value}</span></p>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
 
             {/* ── Fixed fees + Approve footer ── */}
             <div className="bg-white rounded-2xl border border-forest/10 px-7 py-5 flex items-center justify-between gap-8">

@@ -3,7 +3,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { billingInterval } from '@/lib/stripe-meter'
 import { remembillAppUrl } from '@/lib/billing-writer'
-import { enumerateCadenceWindows, isPartialWindow } from '@/lib/tariff'
+import { enumerateContractWindows, resolveWindowMinimum } from '@/lib/tariff'
 import type { ContractTerms } from '@/lib/types'
 
 export async function GET(
@@ -406,15 +406,22 @@ async function handlePlannedInvoicesPath({
 
   // ── commercialRuleEvents: confirmed metric-level commitments (additive fees,
   // minimum floors, etc.) that haven't closed yet, so no real planned_invoices
-  // row exists for them — a confirmed SEK 5,000/quarter additive fee must
-  // still show on the schedule before the quarter closes, or the timeline
-  // silently contradicts the Commercial Terms card that says it's confirmed.
-  // Reuses the same cadence-window engine usage-pull.ts uses for real
-  // billing (lib/tariff.ts) rather than a parallel date calculation.
+  // row exists for them — a confirmed rule must still show on the schedule
+  // before the window closes, or the timeline silently contradicts the
+  // Commercial Terms card that says it's confirmed. Reuses the same
+  // cadence-window engine and per-window proration math usage-pull.ts /
+  // computeMinimumCommitmentSchedule use for real billing (lib/tariff.ts)
+  // rather than a parallel date calculation.
   type CommercialRuleEvent = {
     id: string; meterKey: string; mode: string; amount: number; currency: string
     cadence: string; windowStart: string; windowEnd: string
     partialPeriod: { isPartial: boolean; needsConfirmation: boolean; prorated: boolean } | null
+    // Only an additive fee is a deterministic charge independent of usage —
+    // floor/minimum_spend/prepaid_commitment are max(usage, X)-style rules
+    // whose final billed amount isn't known until usage is pulled, so
+    // `amount` here is the applicable THRESHOLD, not a promised invoice
+    // total. The UI must never present it as final for those modes.
+    isDeterministic: boolean
   }
   const commercialRuleEvents: CommercialRuleEvent[] = []
   if (terms?.overage_tiers?.length && terms.contract_start_date) {
@@ -431,30 +438,37 @@ async function handlePlannedInvoicesPath({
       const mc = t.minimum_commitment
       const cadence = t.measurement_period ?? 'monthly'
       const anchor: 'calendar' | 'contract_start' = t.reset_anchor === 'calendar' ? 'calendar' : 'contract_start'
-      // Never schedule further out than the contract itself runs; fall back
-      // to a 12-month horizon for an open-ended contract with no end date.
+      // A window past the contract's own end date doesn't exist to schedule
+      // — enumerateContractWindows already scopes to the confirmed term
+      // when an end date is known; an open-ended contract needs its own
+      // bounded horizon so this doesn't scan forever.
       const horizonEnd = contractEndDate ?? new Date(today.getFullYear(), today.getMonth() + 12, today.getDate())
 
-      const windows = enumerateCadenceWindows(contractStartDate, cadence, contractStartDate, horizonEnd, anchor)
+      const windows = enumerateContractWindows(contractStartDate, horizonEnd, cadence, anchor)
       for (const w of windows) {
         // A window that has already closed either already has a real overage
         // line item (once invoice-scheduler processes it) or is about to —
         // this synthetic entry exists only to cover the gap before that,
         // never to duplicate or contradict the real invoiced amount.
         if (w.end < today) continue
-        const isPartial = anchor === 'calendar' && isPartialWindow(w, contractStartDate, contractEndDate)
+        const wm = resolveWindowMinimum(w, contractStartDate, contractEndDate ?? horizonEnd, anchor, mc)
         commercialRuleEvents.push({
           id:        `commercial-${t.unit_type}-${dateOnly(w.start)}`,
           meterKey:  t.unit_type,
           mode:      mc.mode,
-          amount:    mc.amount,
+          // wm.amount is null only when a partial window's proration is
+          // still unconfirmed — fall back to the raw amount for display,
+          // but partialPeriod.needsConfirmation (below) keeps it flagged
+          // rather than silently presenting an unconfirmed figure.
+          amount:    wm.amount ?? mc.amount,
           currency:  terms.currency ?? 'EUR',
           cadence,
           windowStart: dateOnly(w.start),
           windowEnd:   dateOnly(w.end),
-          partialPeriod: isPartial
-            ? { isPartial: true, needsConfirmation: mc.prorate_partial_periods === 'unclear', prorated: mc.prorate_partial_periods === true }
+          partialPeriod: wm.isPartial
+            ? { isPartial: true, needsConfirmation: wm.requiresConfirmation, prorated: mc.prorate_partial_periods === true }
             : null,
+          isDeterministic: mc.mode === 'additive',
         })
       }
     }
