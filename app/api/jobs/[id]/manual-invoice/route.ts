@@ -131,7 +131,7 @@ export async function POST(
       unit_type:     body.meterKey!,
       tier_calculation: t.tier_calculation ?? null,
     }))
-    const overageResult = tiers.length > 0 ? computeMetricOverage(body.usage, tiers, includedUnits) : { amount: 0, method: 'graduated' as const, requiresConfirmation: false }
+    const overageResult = tiers.length > 0 ? computeMetricOverage(body.usage, tiers, includedUnits) : { amount: 0, method: 'graduated' as const, requiresConfirmation: false, usageAmount: 0, minimumApplied: false }
     if (overageResult.requiresConfirmation) {
       return NextResponse.json({
         error: `Meter '${body.meterKey}' has more than one price tier and its calculation method (graduated vs. volume vs. block) hasn't been confirmed yet. Resolve it in the Review panel before invoicing this usage.`,

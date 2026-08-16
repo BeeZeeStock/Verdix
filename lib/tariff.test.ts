@@ -6,6 +6,7 @@ import {
   enumerateCadenceWindows,
   findCadenceWindowContaining,
   isPartialWindow,
+  computeMinimumCommitmentSchedule,
 } from './tariff'
 import type { OverageTier, MinimumCommitment, TierCalculationMethod } from './types'
 
@@ -150,6 +151,68 @@ describe('tier calculation method — graduated vs volume vs block', () => {
     expect(result.method).toBe('graduated')
     expect(result.amount).toBe(1400)
     expect(result.requiresConfirmation).toBe(false)
+  })
+})
+
+describe('computeMetricOverage — usage/minimum breakdown', () => {
+  it('exposes the pure usage-tier charge separately from a floor-adjusted amount', () => {
+    const tiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'floor', amount: 5000 }) })]
+    const result = computeMetricOverage(10, tiers, 0)
+    expect(result.usageAmount).toBe(10) // pure usage, before the floor
+    expect(result.amount).toBe(5000)    // floor wins
+    expect(result.minimumApplied).toBe(true)
+  })
+
+  it('minimumApplied is false when usage alone already exceeds the floor', () => {
+    const tiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'floor', amount: 5000 }) })]
+    const result = computeMetricOverage(10000, tiers, 0)
+    expect(result.usageAmount).toBe(10000)
+    expect(result.amount).toBe(10000)
+    expect(result.minimumApplied).toBe(false)
+  })
+
+  it('additive: usageAmount is the usage-only component, amount includes the additive charge on top', () => {
+    const tiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'additive', amount: 5000 }) })]
+    const result = computeMetricOverage(100, tiers, 0)
+    expect(result.usageAmount).toBe(100)
+    expect(result.amount).toBe(5100)
+    expect(result.minimumApplied).toBe(true)
+  })
+})
+
+// Verifies the exact worked example from a real contract: an SEK 5,000/
+// calendar-quarter commitment on a 12-month agreement running 11 Aug 2026 –
+// 10 Aug 2027, which touches 5 calendar quarters (two of them partial).
+describe('computeMinimumCommitmentSchedule — partial-period proration', () => {
+  const contractStart = new Date(2026, 7, 11)  // 11 Aug 2026
+  const contractEnd   = new Date(2027, 7, 10)  // 10 Aug 2027
+  const mc5k = { amount: 5000 }
+
+  it('prorated by days: the two partial quarters sum to exactly one full quarter (≈20,000 total)', () => {
+    const result = computeMinimumCommitmentSchedule(contractStart, contractEnd, 'quarterly', 'calendar', { ...mc5k, prorate_partial_periods: true })
+    expect(result.requiresConfirmation).toBe(false)
+    expect(result.total).toBe(20000)
+    expect(result.windowCount).toBe(5)
+    expect(result.partialWindowCount).toBe(2)
+    expect(result.fullWindowCount).toBe(3)
+  })
+
+  it('full amount for any touched window: 5 quarters × 5,000 = 25,000', () => {
+    const result = computeMinimumCommitmentSchedule(contractStart, contractEnd, 'quarterly', 'calendar', { ...mc5k, prorate_partial_periods: false })
+    expect(result.total).toBe(25000)
+  })
+
+  it('unclear proration treatment: never silently computed — total is null, requiresConfirmation is true', () => {
+    const result = computeMinimumCommitmentSchedule(contractStart, contractEnd, 'quarterly', 'calendar', { ...mc5k, prorate_partial_periods: 'unclear' })
+    expect(result.total).toBeNull()
+    expect(result.requiresConfirmation).toBe(true)
+  })
+
+  it('contract_start anchoring never produces a partial window, so proration treatment never matters', () => {
+    const result = computeMinimumCommitmentSchedule(contractStart, contractEnd, 'quarterly', 'contract_start', { ...mc5k, prorate_partial_periods: 'unclear' })
+    expect(result.requiresConfirmation).toBe(false)
+    expect(result.partialWindowCount).toBe(0)
+    expect(result.total).toBe(20000) // exactly 4 full contract-anchored quarters
   })
 })
 

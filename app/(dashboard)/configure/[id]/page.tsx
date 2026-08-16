@@ -53,7 +53,7 @@ type Tier       = {
   minimum_commitment?: {
     mode: 'floor' | 'additive' | 'minimum_spend' | 'prepaid_commitment' | 'minimum_quantity'
     amount: number
-    period?: string | null
+    period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
     included_allowance_interaction?: 'before_allowance' | 'after_allowance' | 'unclear'
     prorate_partial_periods?: boolean | 'unclear'
     requires_confirmation: boolean

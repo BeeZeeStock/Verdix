@@ -1,14 +1,38 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { computeUserOverage, computeMetricOverage } from '@/lib/tariff'
+import { computeUserOverage, computeMetricOverage, resolveMinimumCommitment, computeMinimumCommitmentSchedule, type CadenceAnchorMode } from '@/lib/tariff'
 import type { OverageTier } from '@/lib/types'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Escalator = { escalator_pct?: number; effective_date?: string; escalator_type?: string; cap_pct?: number; description?: string }
+// Mirrors lib/types.ts's MinimumCommitment/EscalatorInterpretation shapes
+// with slightly looser field types (e.g. `period` as a plain string) —
+// matching the same local-type convention used by every other component
+// that receives this data as plain JSON (configure/[id]/page.tsx,
+// MeterMappingPanel.tsx), so it isn't structurally incompatible with what
+// those already pass down as `terms`.
+type MinimumCommitment = {
+  mode: 'floor' | 'additive' | 'minimum_spend' | 'prepaid_commitment' | 'minimum_quantity'
+  amount: number
+  period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
+  included_allowance_interaction?: 'before_allowance' | 'after_allowance' | 'unclear'
+  prorate_partial_periods?: boolean | 'unclear'
+  requires_confirmation: boolean
+  confirmation_reason?: string | null
+}
+type EscalatorInterpretation = {
+  treatment: 'applies' | 'not_applied'
+  requires_confirmation: boolean
+}
+type Escalator = { escalator_pct?: number; effective_date?: string; escalator_type?: string; cap_pct?: number; description?: string; interpretation?: EscalatorInterpretation | null }
 type Discount  = { discount_pct?: number; start_date?: string; end_date?: string }
-type Tier      = { tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string; measurement_period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null }
+type Tier      = {
+  tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string
+  measurement_period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
+  minimum_commitment?: MinimumCommitment | null
+  reset_anchor?: 'contract_start' | 'calendar' | null
+}
 type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null; description?: string | null }
 type RampStep = { start_date: string; end_date: string; monthly_fee: number; label?: string }
 type Terms = {
@@ -64,6 +88,17 @@ function shortMonthYear(d: Date) {
   return d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' })
 }
 
+function commitmentModeShortLabel(mode: string): string {
+  switch (mode) {
+    case 'floor': return 'minimum'
+    case 'additive': return 'additive'
+    case 'minimum_spend': return 'spend commitment'
+    case 'prepaid_commitment': return 'prepaid'
+    case 'minimum_quantity': return 'minimum quantity'
+    default: return 'minimum'
+  }
+}
+
 // computeUserOverage and computeTransactionalOverage are imported from @/lib/tariff
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -99,20 +134,32 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   const sortedApiTiers    = [...apiTiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
   const sortedMetricTiers = [...metricTiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
 
-  // Included seats for users (derived from first user tier's from_unit)
-  const includedUsers = sortedUserTiers.length > 0
-    ? Math.max(0, (sortedUserTiers[0].from_unit ?? 1) - 1)
-    : 0
+  // Included units for a metric's tier table. Two extraction patterns exist:
+  // an explicit $0 "included" tier (from_unit:1, to_unit:<allowance>,
+  // rate_per_unit:0) — the allowance is that tier's to_unit — or tiers that
+  // start directly at the first PAID band with no $0 row, where the
+  // allowance is (from_unit - 1). Assuming the second pattern unconditionally
+  // (tiers[0].from_unit - 1) silently reads 0 whenever the first pattern is
+  // used instead, since an explicit $0 tier's own from_unit is 1 — which
+  // showed as "No free allowance" even when 500 units were genuinely included.
+  function resolveIncludedUnits(sorted: Tier[]): number {
+    const freeTier = sorted.find(t => (t.rate_per_unit ?? 0) === 0)
+    if (freeTier) return Math.max(0, freeTier.to_unit ?? 0)
+    return sorted.length > 0 ? Math.max(0, (sorted[0].from_unit ?? 1) - 1) : 0
+  }
+
+  // Included seats for users
+  const includedUsers = sortedUserTiers.length > 0 ? resolveIncludedUnits(sortedUserTiers) : 0
 
   // Included units for API/transactional metrics — from tier boundary or explicit field
   const includedApiCalls = sortedApiTiers.length > 0
-    ? Math.max(0, (sortedApiTiers[0].from_unit ?? 1) - 1)
+    ? resolveIncludedUnits(sortedApiTiers)
     : (apiTiers.length > 0 ? (terms.included_units ?? 0) : 0)
 
   // Generic metric (e.g. Agreement Syncs) — included units and label
   const genericMetricLabel    = sortedMetricTiers[0]?.unit_type ?? terms.included_unit_type ?? null
   const includedGenericMetric = sortedMetricTiers.length > 0
-    ? Math.max(0, (sortedMetricTiers[0].from_unit ?? 1) - 1)
+    ? resolveIncludedUnits(sortedMetricTiers)
     : (metricTiers.length === 0 && apiTiers.length === 0 ? (terms.included_units ?? 0) : 0)
 
   // Billing period unit for scenario input and overage computation. Each
@@ -136,6 +183,13 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
 
   const escalators     = terms.escalators ?? []
   const contractEscPct = escalators[0]?.escalator_pct ?? 0
+  // A reviewer's confirmed "do not apply this escalation clause" decision is
+  // the contract's own interpretation, not a blank slate — the scenario
+  // simulator must start from it, not silently default every escalator to
+  // "On" regardless of what was actually confirmed.
+  const escalatorInterp = escalators[0]?.interpretation
+  const escalatorConfirmedNotApplied = escalatorInterp?.treatment === 'not_applied' && !escalatorInterp.requires_confirmation
+  const escalatorDefaultOn = !escalatorConfirmedNotApplied
   const yearPricing    = terms.year_pricing   // e.g. {year1: 54000, year2: 57240, year3: 60675}
   const rampSchedule   = terms.ramp_schedule && terms.ramp_schedule.length > 0 ? terms.ramp_schedule : null
   const baseAnnual     = terms.base_annual_fee ?? 0
@@ -182,7 +236,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   // Overage per billing period — hoisted so JSX can reference it
   // (recomputed from state below, before the early-return guard)
 
-  const [applyEscalator,   setApplyEscalator]   = useState(true)
+  const [applyEscalator,   setApplyEscalator]   = useState(() => escalatorDefaultOn)
   const [applyDiscount,    setApplyDiscount]    = useState(true)
   // One entry per annual escalation period (compound, each year × previous year's rate)
   const [escPerYear, setEscPerYear] = useState<number[]>(() =>
@@ -302,8 +356,46 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
 
   const periodApiOvg     = computeMetricOverage(scenarioApiCalls, apiTiers as OverageTier[], includedApiCalls).amount
   const monthlyApiOvg    = periodApiOvg / monthsPerPeriod
-  const periodGenericOvg = computeMetricOverage(scenarioGenericMetric, metricTiers as OverageTier[], includedGenericMetric).amount
+  const genericOverageResult = computeMetricOverage(scenarioGenericMetric, metricTiers as OverageTier[], includedGenericMetric)
+  const periodGenericOvg = genericOverageResult.amount
   const monthlyGenericOvg = periodGenericOvg / genericMonthsPerPeriod
+
+  // ── Recurring commercial commitment (e.g. a quarterly SMS minimum) ────────
+  // Distinct from a plain fixed fee: a floor/minimum_spend commitment is
+  // conditional (max(usage, floor) — real revenue can exceed it), while an
+  // additive commitment is charged on top of usage regardless. Neither is
+  // "overage" — that word means usage beyond an allowance, not a contractual
+  // minimum. Scoped to the generic metric (the pattern this models — e.g.
+  // SMS reminders); user/API tiers aren't extended to this yet.
+  const confirmedGenericCommitment: MinimumCommitment | null = (() => {
+    const mc = resolveMinimumCommitment(metricTiers as OverageTier[])
+    return mc && !mc.requires_confirmation ? mc : null
+  })()
+  const genericCommitmentAnchor: CadenceAnchorMode =
+    sortedMetricTiers.find(t => t.reset_anchor)?.reset_anchor === 'calendar' ? 'calendar' : 'contract_start'
+  // Partial-period-aware total across the whole term — never a naive
+  // (windows touched) × amount; the contract's first/last cadence window can
+  // be partial under calendar anchoring, and whether that partial window
+  // bills in full, prorated, or is still undecided is exactly what the
+  // confirmed prorate_partial_periods treatment records.
+  const commitmentSchedule = confirmedGenericCommitment
+    ? computeMinimumCommitmentSchedule(start, end, genericCadence, genericCommitmentAnchor, confirmedGenericCommitment)
+    : null
+
+  // Usage sitting on top of (or independent of) the commitment, for the
+  // current scenario — mode-aware:
+  //  additive: the full usage-tier charge (the commitment is a separate,
+  //   deterministic add-on, not a cap on it).
+  //  floor / minimum_spend: only the amount BY WHICH usage exceeds the floor
+  //   — if usage produces less than the floor, the customer simply pays the
+  //   floor; there is no separate "upside" to show.
+  //  other modes: the resulting computed amount already nets out the
+  //   commitment, so it doubles as the upside figure.
+  const genericUsageUpside = !confirmedGenericCommitment
+    ? periodGenericOvg
+    : confirmedGenericCommitment.mode === 'floor' || confirmedGenericCommitment.mode === 'minimum_spend'
+      ? Math.max(0, genericOverageResult.usageAmount - confirmedGenericCommitment.amount)
+      : genericOverageResult.usageAmount
 
   // ── Build per-month model data ────────────────────────────────────────────
 
@@ -398,6 +490,33 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   const creditTotal  = negOneTime.reduce((s, ot) => s + ot.amount, 0)   // negative value
   const grossTcv     = totalSub + totalUserOvg + totalApiOvg + totalGenericOvg + oneTimeFees
   const totalTcv     = grossTcv + creditTotal
+
+  // ── Three-layer contract economics: fixed / recurring commitment / usage ──
+  // "Fixed fees" is what's genuinely fixed regardless of usage or any
+  // commercial-rule outcome — base subscription + one-time fees only. A
+  // confirmed minimum commitment is NOT folded in here even though it
+  // recurs: a floor/minimum_spend commitment is conditional (max(usage,
+  // floor) — real revenue can exceed it), so it belongs in its own layer,
+  // not blended into "fixed" or mislabeled as "overage" (overage means
+  // usage beyond an allowance, not a contractual minimum).
+  const fixedFeesTotal = totalSub + oneTimeFees
+
+  // Usage-upside term total, amortized the same way totalUserOvg/totalApiOvg
+  // already are (a constant per-period value spread across total months) —
+  // kept separate from totalGenericOvg (commitment+usage combined), which
+  // still feeds the monthly trend chart's stacked bars only, not summary totals.
+  const totalGenericUsageUpside = (genericUsageUpside / genericMonthsPerPeriod) * n
+
+  // Only a firm number when BOTH the commitment and its partial-period
+  // proration treatment are confirmed — never a naive (periods touched) ×
+  // amount guess when the proration treatment is still ambiguous.
+  const minimumCommittedValue = confirmedGenericCommitment && commitmentSchedule?.total != null
+    ? fixedFeesTotal + commitmentSchedule.total
+    : null
+  const commitmentNeedsConfirmation = !!confirmedGenericCommitment && !!commitmentSchedule?.requiresConfirmation
+
+  // Fixed fees + confirmed commitment (when resolved) + scenario usage upside.
+  const projectedContractValue = fixedFeesTotal + (commitmentSchedule?.total ?? 0) + totalGenericUsageUpside
 
   // ── Actuals (from planned_invoices, period rows only) ───────────────
   const baseBilledToDate = modelMonths.filter(m => m.isPast).reduce((s, m) => s + m.sub, 0)
@@ -569,20 +688,47 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   // ── Waterfall bars ────────────────────────────────────────────────────────
   // Recurring-only: one-time fees are excluded, so the total is the sum of
   // the per-year recurring buckets, not the contract's full TCV.
-  type WBar = { label: string; sub?: string; amount: number; kind: 'period' | 'total'; color: string; tooltip: string }
+  type WBar = { label: string; sub?: string; amount: number; kind: 'period' | 'total'; color: string; tooltip: string; needsConfirmation?: boolean }
   const wfBars: WBar[] = []
-  annualBuckets.forEach((b, i) => {
-    const colors = ['#73C99B', '#27AE60', '#1F7A4A', '#0F2D1A']
-    const creditNote = b.creditNetted < 0 ? ` incl. ${fmt(b.creditNetted, cur)} credit` : ''
-    wfBars.push({ label: b.label, sub: b.dateRange, amount: b.total, kind: 'period', color: colors[Math.min(i, colors.length - 1)], tooltip: `${b.label} (${b.dateRange}): ${fmt(b.total, cur)}${creditNote}` })
-  })
+  let waterfallTotal: number
+
+  if (confirmedGenericCommitment) {
+    // "Minimum recurring contract value" — base recurring + the confirmed
+    // commitment's own term total, not year-by-year buckets (a quarterly
+    // commitment doesn't map cleanly onto calendar-year buckets anyway).
+    // This is the guaranteed floor over the whole term, distinct from fixed
+    // fees alone — never a naive (periods touched) × amount guess; see
+    // commitmentSchedule (lib/tariff.ts's computeMinimumCommitmentSchedule).
+    wfBars.push({ label: 'Base recurring', amount: totalSub, kind: 'period', color: '#73C99B', tooltip: `Base recurring: ${fmt(totalSub, cur)}` })
+    const commitAmount = commitmentSchedule?.total ?? 0
+    const commitLabel = `${genericMetricLabel ?? 'Usage'} minimum commitment`
+    wfBars.push({
+      label: commitLabel, amount: commitAmount, kind: 'period', color: '#B9802F',
+      needsConfirmation: commitmentNeedsConfirmation,
+      tooltip: commitmentNeedsConfirmation
+        ? `${commitLabel}: needs confirmation — partial-period treatment unresolved`
+        : `${commitLabel}: ${fmt(commitAmount, cur)}`,
+    })
+    waterfallTotal = totalSub + commitAmount
+    wfBars.push({ label: 'Minimum recurring value', amount: waterfallTotal, kind: 'total', color: '#1A3D2B', tooltip: `Minimum recurring value: ${fmt(waterfallTotal, cur)}` })
+  } else {
+    annualBuckets.forEach((b, i) => {
+      const colors = ['#73C99B', '#27AE60', '#1F7A4A', '#0F2D1A']
+      const creditNote = b.creditNetted < 0 ? ` incl. ${fmt(b.creditNetted, cur)} credit` : ''
+      wfBars.push({ label: b.label, sub: b.dateRange, amount: b.total, kind: 'period', color: colors[Math.min(i, colors.length - 1)], tooltip: `${b.label} (${b.dateRange}): ${fmt(b.total, cur)}${creditNote}` })
+    })
+    waterfallTotal = totalTcv - oneTimeFees
+    wfBars.push({ label: 'Total', amount: waterfallTotal, kind: 'total', color: '#1A3D2B', tooltip: `Total recurring revenue: ${fmt(waterfallTotal, cur)}` })
+  }
+  // Kept distinct from waterfallTotal — this is what the KPI cards' no-
+  // commitment "Projected recurring revenue" fallback and other summary
+  // figures use, regardless of which bars the waterfall itself is showing.
   const totalRecurring = totalTcv - oneTimeFees
-  wfBars.push({ label: 'Total', amount: totalRecurring, kind: 'total', color: '#1A3D2B', tooltip: `Total recurring revenue: ${fmt(totalRecurring, cur)}` })
 
   let wfCum = 0
   const wfPositioned = wfBars.map(b => {
     const from = b.kind === 'total' ? 0 : wfCum
-    const to   = b.kind === 'total' ? totalRecurring : wfCum + b.amount
+    const to   = b.kind === 'total' ? waterfallTotal : wfCum + b.amount
     if (b.kind !== 'total') wfCum = to
     return { ...b, from, to }
   })
@@ -594,7 +740,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   const wGap   = 20
   const wBW    = Math.min(140, (ww - wGap * (wBarsN - 1)) / wBarsN)
   const wStartX = wx1 + (ww - (wBW * wBarsN + wGap * (wBarsN - 1))) / 2
-  const wScale   = totalRecurring > 0 ? totalRecurring : 1
+  const wScale   = waterfallTotal > 0 ? waterfallTotal : 1
   const wyOf     = (v: number) => wBottom - (v / wScale) * wPlotH
   const wGridSteps = [0, 0.5, 1].map(f => f * wScale)
 
@@ -621,7 +767,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               setScenarioUsers(includedUsers)
               setScenarioApiCalls(0)
               setScenarioGenericMetric(0)
-              setApplyEscalator(true)
+              setApplyEscalator(escalatorDefaultOn)
               setApplyDiscount(true)
               setEscPerYear(Array.from({ length: numEscYears }, () => contractEscPct))
               setSaved(false)
@@ -738,6 +884,11 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                     <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${applyEscalator ? 'left-4' : 'left-0.5'}`} />
                   </button>
                   <span className="text-xs text-stone">{applyEscalator ? 'On' : 'Off'}</span>
+                  {applyEscalator === escalatorDefaultOn ? (
+                    <span className="text-[10px] text-stone/50">· contract interpretation</span>
+                  ) : (
+                    <span className="text-[10px] font-medium" style={{ color: '#B9802F' }}>· scenario override</span>
+                  )}
                 </div>
                 {applyEscalator && (
                   <div className="space-y-2">
@@ -1041,10 +1192,10 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
         </div>
       </div>
 
-      {/* ── Monthly recurring revenue breakdown ──────────────────────────── */}
+      {/* ── Revenue profile ────────────────────────────────────────────── */}
       <div className="bg-white border border-forest/10 rounded-2xl p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Monthly recurring revenue breakdown</h3>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Revenue profile</h3>
           <div className="flex items-center gap-5">
             {[
               { color: '#B8E0CC', label: 'Discounted' },
@@ -1062,6 +1213,25 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Rate components, each in its own actual billing cadence — the
+            chart below still buckets everything into monthly bars for trend
+            visibility, but a quarterly commercial rule is not itself a
+            monthly rate, and this line says so explicitly rather than
+            letting the chart imply it is. */}
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 mb-4 text-[11px] text-stone">
+          <span>Base subscription: <span className="font-medium text-ink">{fmt(combinedBase, cur)}/month</span></span>
+          {confirmedGenericCommitment && (
+            <span>
+              {genericMetricLabel ?? 'Usage'} commercial rule: <span className="font-medium text-ink">
+                {fmt(confirmedGenericCommitment.amount, cur)} {commitmentModeShortLabel(confirmedGenericCommitment.mode)} / {confirmedGenericCommitment.period ?? genericPeriodLabel}
+              </span>
+            </span>
+          )}
+          {metricTiers.length > 0 && (
+            <span>{confirmedGenericCommitment ? 'Usage above minimum' : `${genericMetricLabel ?? 'Usage'}`}: <span className="font-medium text-ink">based on scenario</span></span>
+          )}
         </div>
 
         <svg viewBox={`0 0 ${CW} ${CH}`} className="w-full" style={{ height: 230 }}>
@@ -1169,9 +1339,16 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
         </svg>
       </div>
 
-      {/* ── Waterfall: yearly recurring revenue ──────────────────────── */}
+      {/* ── Waterfall: minimum recurring contract value (or yearly, if no commitment) ── */}
       <div className="bg-white border border-forest/10 rounded-2xl p-6">
-        <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-4">Yearly recurring revenue</h3>
+        <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-1">
+          {confirmedGenericCommitment ? 'Minimum recurring contract value' : 'Yearly recurring revenue'}
+        </h3>
+        {confirmedGenericCommitment && (
+          <p className="text-[11px] text-stone mb-3">
+            Actual {(genericMetricLabel ?? 'usage').toLowerCase()} revenue can exceed the minimum based on usage.
+          </p>
+        )}
         <svg viewBox={`0 0 ${WW} ${WH}`} className="w-full" style={{ height: 215 }}>
           {wGridSteps.map((v, i) => {
             const yy = wyOf(v)
@@ -1201,10 +1378,10 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
             return (
               <g key={i}>
                 <title>{b.tooltip}</title>
-                <rect x={x} y={yTop} width={wBW} height={h} rx={3} fill={b.color} />
-                <text x={x + wBW / 2} y={yTop - 8} textAnchor="middle" fontSize={11}
-                  fontWeight={b.kind === 'total' ? 700 : 600} fill="#3A3A38">
-                  {fmt(b.amount, cur, true)}
+                <rect x={x} y={yTop} width={wBW} height={h} rx={3} fill={b.color} opacity={b.needsConfirmation ? 0.25 : 1} />
+                <text x={x + wBW / 2} y={yTop - 8} textAnchor="middle" fontSize={b.needsConfirmation ? 9 : 11}
+                  fontWeight={b.kind === 'total' ? 700 : 600} fill={b.needsConfirmation ? '#B9802F' : '#3A3A38'}>
+                  {b.needsConfirmation ? 'Needs confirmation' : fmt(b.amount, cur, true)}
                 </text>
                 <text x={x + wBW / 2} y={wBottom + 18} textAnchor="middle" fontSize={11}
                   fill={b.kind === 'total' ? '#1A3D2B' : '#6B6660'}
@@ -1220,67 +1397,125 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
             )
           })}
         </svg>
+        {confirmedGenericCommitment && (
+          <p className="text-[10px] text-stone/60 mt-2">
+            * {commitmentNeedsConfirmation
+              ? 'The contract spans a partial first and/or final cadence window, and the confirmed rule doesn’t yet state whether those partial windows bill in full, prorated, or are excluded — resolve it in the Review panel to see a total here.'
+              : `Assumes the confirmed partial-period treatment (${confirmedGenericCommitment.prorate_partial_periods === true ? 'prorated by days' : confirmedGenericCommitment.prorate_partial_periods === false ? 'full amount for any touched window' : 'no partial windows in this term'}) across all ${commitmentSchedule?.windowCount ?? 0} ${genericPeriodLabel} windows this contract touches.`}
+          </p>
+        )}
       </div>
 
-      {/* ── KPI cards ─────────────────────────────────────────────────── */}
+      {/* ── Contract economics: fixed / recurring commitment / usage upside ──
+           Three distinct layers, never blended into one undifferentiated
+           total. A confirmed minimum commitment is neither a fixed fee (a
+           floor/minimum_spend commitment is conditional — max(usage, floor),
+           so real revenue can exceed it) nor "overage" (overage means usage
+           beyond an allowance, not a contractual minimum) — it gets its own
+           layer, labeled by its actual mode. */}
       {(() => {
-        const kpiCards = [
+        type KpiCard = { label: string; value: number | null; needsConfirmation?: boolean; sub: string; color: string; isCredit?: boolean; bold?: boolean }
+
+        const layer1Cards: KpiCard[] = [
+          { label: 'Base recurring revenue', value: totalSub, sub: `${fmt(combinedBase, cur)}/month · contracted recurring`, color: '#1A3D2B' },
+          ...(oneTimeFees > 0 ? [{ label: 'One-time fees', value: oneTimeFees, sub: posOneTime.map(f => f.label).join(', ') || 'One-time', color: '#6B6660' }] : []),
+          ...(creditTotal < 0 ? [{ label: 'Credits', value: creditTotal, sub: creditLabels || 'Contract credits', color: '#B45309', isCredit: true }] : []),
+          { label: 'Fixed fees', value: fixedFeesTotal, sub: 'Base recurring + one-time', color: '#1A3D2B', bold: true },
+        ]
+
+        const commitmentModeLabel: Record<string, string> = {
+          floor: 'Minimum floor — actual revenue may be higher',
+          additive: 'Additive — charged on top of usage regardless',
+          minimum_spend: 'Spend commitment — shortfall billed as a true-up',
+          prepaid_commitment: 'Prepaid — usage draws down from this pool',
+          minimum_quantity: 'Minimum quantity commitment',
+        }
+        const layer2Cards: KpiCard[] = confirmedGenericCommitment ? [
           {
-            label: 'Base recurring revenue',
-            value: totalSub,
-            sub: 'Contracted recurring',
-            color: '#1A3D2B',
+            label: `${genericMetricLabel ?? 'Usage'} minimum commitment`,
+            value: commitmentSchedule?.total ?? null,
+            needsConfirmation: commitmentNeedsConfirmation,
+            sub: `${fmt(confirmedGenericCommitment.amount, cur)} / ${confirmedGenericCommitment.period ?? genericPeriodLabel} · ${commitmentModeLabel[confirmedGenericCommitment.mode] ?? confirmedGenericCommitment.mode}`,
+            color: '#B9802F',
           },
-          ...(creditTotal < 0 ? [{
-            label: 'Credits',
-            value: creditTotal,
-            sub: creditLabels || 'Contract credits',
-            color: '#B45309',
-            isCredit: true,
-          }] : []),
+          {
+            label: 'Minimum committed contract value',
+            value: minimumCommittedValue,
+            needsConfirmation: commitmentNeedsConfirmation,
+            sub: `Fixed fees + confirmed ${(genericMetricLabel ?? 'usage').toLowerCase()} minimum`,
+            color: '#1A3D2B',
+            bold: true,
+          },
+        ] : []
+
+        const layer3Cards: KpiCard[] = [
           ...(userTiers.length > 0 ? [{
-            label: 'User overage',
-            value: totalUserOvg,
+            label: 'User overage', value: totalUserOvg,
             sub: `${Math.max(0, scenarioUsers - includedUsers)} extra users × ${n} mo`,
             color: '#4A7C59',
           }] : []),
           ...(apiTiers.length > 0 ? [{
-            label: 'API overage',
-            value: totalApiOvg,
+            label: 'API overage', value: totalApiOvg,
             sub: `${scenarioApiCalls.toLocaleString()} calls/${apiCallPeriodLabel} · ${includedApiCalls > 0 ? `${includedApiCalls.toLocaleString()} included` : 'no allowance'}`,
             color: '#52C48A',
           }] : []),
           ...(metricTiers.length > 0 ? [{
-            label: `${genericMetricLabel ?? 'Usage'} overage`,
-            value: totalGenericOvg,
-            sub: `${scenarioGenericMetric.toLocaleString()} / ${genericPeriodLabel}${includedGenericMetric > 0 ? ` · ${includedGenericMetric.toLocaleString()} included` : ''}`,
+            label: confirmedGenericCommitment ? `${genericMetricLabel ?? 'Usage'} above minimum` : `${genericMetricLabel ?? 'Usage'} overage`,
+            value: totalGenericUsageUpside,
+            sub: `${scenarioGenericMetric.toLocaleString()} / ${genericPeriodLabel}${confirmedGenericCommitment ? ' · based on scenario' : includedGenericMetric > 0 ? ` · ${includedGenericMetric.toLocaleString()} included` : ''}`,
             color: '#3DAA7F',
           }] : []),
           {
-            label: 'Actual Recurring revenue',
-            value: totalRecurring,
-            sub: creditTotal < 0 ? 'Net after credits + overages' : 'Subscription + all overages',
+            label: confirmedGenericCommitment ? 'Projected contract value' : 'Projected recurring revenue',
+            value: confirmedGenericCommitment ? projectedContractValue : totalRecurring,
+            needsConfirmation: confirmedGenericCommitment ? commitmentNeedsConfirmation : false,
+            sub: confirmedGenericCommitment
+              ? 'Fixed fees + minimum commitment + usage upside'
+              : (creditTotal < 0 ? 'Net after credits + overages · scenario-based' : 'Subscription + all overages · scenario-based'),
             color: '#1A3D2B',
             bold: true,
           },
-        ] as { label: string; value: number; sub: string; color: string; isCredit?: boolean; bold?: boolean }[]
+        ]
+
+        const renderGroup = (title: string, cards: KpiCard[]) => cards.length > 0 && (
+          <div>
+            <p className="text-[10px] font-bold text-stone/60 uppercase tracking-[0.14em] mb-3">{title}</p>
+            <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${cards.length}, minmax(0, 1fr))` }}>
+              {cards.map(c => (
+                <div key={c.label}
+                  className="bg-white border rounded-2xl p-5"
+                  style={{ borderColor: c.isCredit ? 'rgba(180,83,9,0.2)' : 'rgba(26,61,43,0.1)', background: c.isCredit ? '#FFFBEB' : 'white' }}>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.1em] mb-2"
+                    style={{ color: c.isCredit ? '#B45309' : '#6B6660' }}>
+                    {c.label}
+                  </p>
+                  {c.needsConfirmation || c.value == null ? (
+                    <p className={`${c.bold ? 'text-[20px]' : 'text-base'} font-semibold leading-none`} style={{ color: '#B9802F' }}>
+                      Needs confirmation
+                    </p>
+                  ) : (
+                    <p className={`${c.bold ? 'text-[28px]' : 'text-2xl'} font-medium leading-none`}
+                      style={{ color: c.color, fontVariantNumeric: 'tabular-nums' }}>
+                      {fmt(c.value, cur)}
+                    </p>
+                  )}
+                  <p className="text-[10px] mt-1.5" style={{ color: c.isCredit ? '#B45309' : '#6B6660' }}>{c.sub}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+
         return (
-          <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${kpiCards.length}, minmax(0, 1fr))` }}>
-            {kpiCards.map(c => (
-              <div key={c.label}
-                className="bg-white border rounded-2xl p-5"
-                style={{ borderColor: c.isCredit ? 'rgba(180,83,9,0.2)' : 'rgba(26,61,43,0.1)', background: c.isCredit ? '#FFFBEB' : 'white' }}>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.1em] mb-2"
-                  style={{ color: c.isCredit ? '#B45309' : '#6B6660' }}>
-                  {c.label}
-                </p>
-                <p className={`${c.bold ? 'text-[28px]' : 'text-2xl'} font-medium leading-none`}
-                  style={{ color: c.color, fontVariantNumeric: 'tabular-nums' }}>
-                  {fmt(c.value, cur)}
-                </p>
-                <p className="text-[10px] mt-1.5" style={{ color: c.isCredit ? '#B45309' : '#6B6660' }}>{c.sub}</p>
-              </div>
-            ))}
+          <div className="space-y-5">
+            {renderGroup('Contracted fixed revenue', layer1Cards)}
+            {renderGroup('Recurring commercial commitment', layer2Cards)}
+            {commitmentNeedsConfirmation && (
+              <p className="text-[11px] text-amber-700 -mt-2">
+                * Partial-quarter proration for this commitment hasn&apos;t been confirmed yet — resolve it in the Review panel to see a firm total here.
+              </p>
+            )}
+            {renderGroup('Usage upside', layer3Cards)}
           </div>
         )
       })()}
@@ -1430,7 +1665,8 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                 {billingData.subscription.dashboardUrl && (
                   <a href={billingData.subscription.dashboardUrl} target="_blank" rel="noopener noreferrer"
                     className="text-[10px] text-stone/50 hover:text-forest transition-colors flex items-center gap-1">
-                    <i className="ti ti-external-link" style={{ fontSize: 10 }} /> Stripe
+                    <i className="ti ti-external-link" style={{ fontSize: 10 }} />
+                    {billingData.billingPlatform === 'remembill' ? 'Remembill' : billingData.billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
                   </a>
                 )}
               </div>
@@ -1501,7 +1737,14 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               <div className="flex items-center gap-8">
                 <div>
                   <div className="flex items-center gap-1.5 mb-1">
-                    <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50">Configured in</p>
+                    {/* Only fixed fees actually get a distinct pushed line item —
+                        a minimum commitment is computed at invoice time, not
+                        pre-configured as its own row, so this must never imply
+                        the whole agreement (including the commercial rule) is
+                        configured when only the fixed fees genuinely are. */}
+                    <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50">
+                      {confirmedGenericCommitment ? 'Fixed fees configured in' : 'Configured in'}
+                    </p>
                     {billingData.billingPlatform === 'remembill' ? (
                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wide" style={{ background: '#E8F4FD', color: '#0077B6' }}>
                         <svg width="9" height="9" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="10" fill="#0077B6"/><text x="10" y="14" textAnchor="middle" fontSize="11" fontWeight="bold" fill="white" fontFamily="sans-serif">R</text></svg>
@@ -1542,6 +1785,20 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                         </div>
                       </>
                     )}
+                  </div>
+                )}
+                {confirmedGenericCommitment && (
+                  <div>
+                    <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Confirmed commercial rule</p>
+                    <p className="text-[13px] font-medium text-ink leading-tight">
+                      {genericMetricLabel ?? 'Usage'} {commitmentModeShortLabel(confirmedGenericCommitment.mode)} · {fmt(confirmedGenericCommitment.amount, cur)} / {confirmedGenericCommitment.period ?? genericPeriodLabel}
+                    </p>
+                    <p className="text-[10px] text-stone/60 mt-0.5">Billing: {genericPeriodLabel} in arrears</p>
+                    <p className="text-[10px] text-stone/60 mt-0.5">
+                      {commitmentNeedsConfirmation
+                        ? 'Minimum commitment over initial term: needs confirmation'
+                        : `Minimum commitment over initial term: ${fmt(commitmentSchedule?.total ?? 0, cur)}*`}
+                    </p>
                   </div>
                 )}
               </div>
@@ -1782,16 +2039,28 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
         const totalBilled = actualSubBilled + actualAnnualDraftBilled + actualOneTimeBilled
         const elapsedMonths = modelMonths.filter(m => m.isPast).length
         const actualsRemaining = Math.max(0, actualTcv - totalBilled)
-        type ABar = { label: string; sub?: string; amount: number; kind: 'segment' | 'total'; color: string; dashed?: boolean }
+        // A confirmed minimum commitment is contractually committed even
+        // though nothing's been invoiced against it yet — folding it into
+        // "Committed contract value" here (not "billed to date", which stays
+        // strictly what real invoices show) is what makes that figure
+        // actually reflect the full committed value rather than fixed fees
+        // alone understating it.
+        const unbilledCommitment = confirmedGenericCommitment ? (commitmentSchedule?.total ?? 0) : 0
+        const actualsTotal = confirmedGenericCommitment ? actualTcv + unbilledCommitment : actualTcv
+        type ABar = { label: string; sub?: string; amount: number; kind: 'segment' | 'total'; color: string; dashed?: boolean; needsConfirmation?: boolean }
         const aBars: ABar[] = [
           { label: 'Billed to date', sub: elapsedMonths > 0 ? `${elapsedMonths} mo elapsed` : undefined, amount: totalBilled, kind: 'segment', color: '#27AE60' },
-          { label: 'Remaining committed value', sub: 'contracted', amount: actualsRemaining, kind: 'segment', color: '#C8E6D4', dashed: true },
-          { label: 'Committed contract value', amount: actualTcv, kind: 'total', color: '#1A3D2B' },
+          { label: confirmedGenericCommitment ? 'Remaining fixed fees' : 'Remaining committed value', sub: 'contracted', amount: actualsRemaining, kind: 'segment', color: '#C8E6D4', dashed: true },
+          ...(confirmedGenericCommitment ? [{
+            label: 'Unbilled minimum commitment', amount: unbilledCommitment, kind: 'segment' as const, color: '#F5D9A8', dashed: true,
+            needsConfirmation: commitmentNeedsConfirmation,
+          }] : []),
+          { label: 'Committed contract value', amount: actualsTotal, kind: 'total', color: '#1A3D2B' },
         ]
         let cum = 0
         const aPos = aBars.map(b => {
           const from = b.kind === 'total' ? 0 : cum
-          const to   = b.kind === 'total' ? actualTcv : cum + b.amount
+          const to   = b.kind === 'total' ? actualsTotal : cum + b.amount
           if (b.kind !== 'total') cum = to
           return { ...b, from, to }
         })
@@ -1803,7 +2072,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
         const aGap = 24
         const aBW  = Math.min(140, (aw - aGap * (aN - 1)) / aN)
         const aStartX = ax1 + (aw - (aBW * aN + aGap * (aN - 1))) / 2
-        const aScale  = actualTcv > 0 ? actualTcv : 1
+        const aScale  = actualsTotal > 0 ? actualsTotal : 1
         const ayOf    = (v: number) => aBot - (v / aScale) * aPlotH
         const aGrid   = [0, 0.5, 1].map(f => f * aScale)
 
@@ -1813,7 +2082,10 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               <h3 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Revenue actuals — billed to date</h3>
               <div className="flex items-center gap-3 text-[10px] text-stone/60">
                 <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#27AE60' }} /> Billed to date</span>
-                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm border border-dashed" style={{ background: '#C8E6D4', borderColor: '#4A7C59' }} /> Remaining committed value</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm border border-dashed" style={{ background: '#C8E6D4', borderColor: '#4A7C59' }} /> {confirmedGenericCommitment ? 'Remaining fixed fees' : 'Remaining committed value'}</span>
+                {confirmedGenericCommitment && (
+                  <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm border border-dashed" style={{ background: '#F5D9A8', borderColor: '#B9802F' }} /> Unbilled minimum commitment</span>
+                )}
                 <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#1A3D2B' }} /> Committed contract value</span>
               </div>
             </div>
@@ -1849,14 +2121,14 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                 const h    = Math.max(2, yBot - yTop)
                 return (
                   <g key={i}>
-                    <title>{`${b.label}: ${fmt(b.amount, cur)}`}</title>
+                    <title>{b.needsConfirmation ? `${b.label}: needs confirmation` : `${b.label}: ${fmt(b.amount, cur)}`}</title>
                     <rect x={x} y={yTop} width={aBW} height={h} rx={3} fill={b.color}
-                      opacity={b.dashed ? 0.5 : 1}
+                      opacity={b.needsConfirmation ? 0.25 : b.dashed ? 0.5 : 1}
                       stroke={b.dashed ? '#4A7C59' : 'none'} strokeWidth={b.dashed ? 1.5 : 0}
                       strokeDasharray={b.dashed ? '5 3' : undefined} />
-                    <text x={x + aBW / 2} y={yTop - 7} textAnchor="middle" fontSize={11}
-                      fontWeight={b.kind === 'total' ? 700 : 600} fill="#3A3A38">
-                      {fmt(b.amount, cur, true)}
+                    <text x={x + aBW / 2} y={yTop - 7} textAnchor="middle" fontSize={b.needsConfirmation ? 9 : 11}
+                      fontWeight={b.kind === 'total' ? 700 : 600} fill={b.needsConfirmation ? '#B9802F' : '#3A3A38'}>
+                      {b.needsConfirmation ? 'Needs confirmation' : fmt(b.amount, cur, true)}
                     </text>
                     <text x={x + aBW / 2} y={aBot + 17} textAnchor="middle" fontSize={11}
                       fill={b.kind === 'total' ? '#1A3D2B' : '#6B6660'}
@@ -1872,6 +2144,11 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                 )
               })}
             </svg>
+            {confirmedGenericCommitment && (
+              <p className="text-[10px] text-stone/60 mt-1">
+                * Committed contract value includes the confirmed {(genericMetricLabel ?? 'usage').toLowerCase()} minimum commitment over the initial term, subject to its confirmed partial-period treatment — actual contract value can be higher based on usage.
+              </p>
+            )}
 
             {/* Overage invoice detail cards */}
             {ovgInvoices.length > 0 && (

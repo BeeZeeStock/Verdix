@@ -9,7 +9,7 @@ export type TierMethod = TierCalculationMethod['method']
 // A minimum commitment is stored per-metric (duplicated onto each tier of
 // that metric by extraction), not per-tier — take the first one present
 // rather than trying to merge conflicting values across tiers.
-function resolveMinimumCommitment(tiers: TierLike[]): MinimumCommitment | null {
+export function resolveMinimumCommitment(tiers: TierLike[]): MinimumCommitment | null {
   for (const t of tiers) {
     if (t.minimum_commitment) return t.minimum_commitment
   }
@@ -202,6 +202,15 @@ export interface MetricOverageResult {
    *  off `amount` while this is true (see lib/usage-pull.ts) — the same
    *  never-silently-bill rule already applied to minimum commitments. */
   requiresConfirmation: boolean
+  /** The pure usage-tier charge, before any minimum-commitment adjustment —
+   *  lets a caller decompose `amount` into "usage" vs. "minimum commitment"
+   *  components (e.g. distinguishing a deterministic additive fee from the
+   *  usage sitting on top of it, or showing how far usage exceeded a floor)
+   *  without re-deriving the tier calculation itself. */
+  usageAmount: number
+  /** True when a confirmed minimum commitment actually changed `amount`
+   *  from what pure usage tiers alone would have produced this period. */
+  minimumApplied: boolean
 }
 
 /**
@@ -232,7 +241,12 @@ export function computeMetricOverage(
   const tierCalc = resolveTierCalculationMethod(tiers)
   const method: TierMethod = tierCalc?.method ?? 'graduated'
   const requiresConfirmation = !!tierCalc?.requires_confirmation
-  const finalize = (amount: number): MetricOverageResult => ({ amount, method, requiresConfirmation })
+  let usageAmountForFinalize = 0
+  const finalize = (amount: number): MetricOverageResult => ({
+    amount, method, requiresConfirmation,
+    usageAmount: usageAmountForFinalize,
+    minimumApplied: amount !== usageAmountForFinalize,
+  })
 
   // minimum_quantity, once confirmed, is a take-or-pay clause: it raises the
   // billable quantity itself before tier rates apply, unlike the other four
@@ -247,6 +261,7 @@ export function computeMetricOverage(
     ? computeUserOverage(effectiveQuantity, includedUnits, tiers, method)
     // Subtract the contract's free allowance; tiers apply only to the excess
     : computeTransactionalOverage(Math.max(0, effectiveQuantity - includedUnits), tiers, method)
+  usageAmountForFinalize = computed
 
   if (!applyMinimumFloor) return finalize(computed)
 
@@ -370,6 +385,84 @@ export function isPartialWindow(
   if (contractStartDate && contractStartDate > window.start && contractStartDate <= window.end) return true
   if (contractEndDate && contractEndDate < window.end && contractEndDate >= window.start) return true
   return false
+}
+
+export interface MinimumCommitmentSchedule {
+  /** Total minimum-commitment value across the full contract term, given
+   *  the confirmed partial-period proration treatment. Null whenever any
+   *  touched partial window's treatment is still 'unclear' — never
+   *  silently averaged or guessed; the caller must surface a review item
+   *  rather than display a number. */
+  total: number | null
+  requiresConfirmation: boolean
+  windowCount: number
+  fullWindowCount: number
+  partialWindowCount: number
+}
+
+// Sums a confirmed minimum commitment's amount across every cadence window
+// the contract touches, respecting the confirmed partial-period proration
+// treatment — reuses the same window engine real billing uses
+// (enumerateCadenceWindows/isPartialWindow) rather than a parallel
+// date calculation. A quarterly SEK 5,000 commitment on a contract that
+// starts mid-quarter is NOT simply (quarters touched) × amount — the two
+// edge quarters are only partially covered, and whether that partial
+// coverage still bills the full amount, a prorated share, or is genuinely
+// undetermined is exactly what prorate_partial_periods records.
+export function computeMinimumCommitmentSchedule(
+  contractStartDate: Date,
+  contractEndDate: Date,
+  cadence: string | null | undefined,
+  anchor: CadenceAnchorMode,
+  mc: Pick<MinimumCommitment, 'amount' | 'prorate_partial_periods'>,
+): MinimumCommitmentSchedule {
+  // enumerateCadenceWindows filters by each window's END falling within the
+  // given range — correct for its real-billing callers (usage-pull.ts:
+  // "only fully-closed windows within this scan"), but wrong here: the
+  // contract's own FINAL touched window's calendar end almost always
+  // extends past the contract's actual end date (that's precisely what
+  // makes it partial), so passing contractEndDate as rangeEnd directly
+  // would silently drop it. Padding the range by one extra cadence period
+  // guarantees that window's calendar end is captured, then filtering by
+  // each window's START falling on/before the contract's end date is what
+  // correctly determines which windows the contract actually touches.
+  const months     = CADENCE_MONTHS[cadence ?? 'monthly'] ?? 1
+  const paddedEnd  = new Date(contractEndDate.getFullYear(), contractEndDate.getMonth() + months, contractEndDate.getDate())
+  const windows    = enumerateCadenceWindows(contractStartDate, cadence, contractStartDate, paddedEnd, anchor)
+    .filter(w => w.start <= contractEndDate)
+  let total = 0
+  let fullCount = 0, partialCount = 0
+  let requiresConfirmation = false
+
+  for (const w of windows) {
+    const partial = anchor === 'calendar' && isPartialWindow(w, contractStartDate, contractEndDate)
+    if (!partial) {
+      total += mc.amount
+      fullCount++
+      continue
+    }
+    partialCount++
+    if (mc.prorate_partial_periods === true) {
+      // Prorate by the number of days the contract actually overlaps this window.
+      const overlapStart = w.start < contractStartDate ? contractStartDate : w.start
+      const overlapEnd   = w.end   > contractEndDate   ? contractEndDate   : w.end
+      const overlapDays  = Math.max(0, Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 86_400_000) + 1)
+      const windowDays   = Math.max(1, Math.round((w.end.getTime() - w.start.getTime()) / 86_400_000) + 1)
+      total += mc.amount * (overlapDays / windowDays)
+    } else if (mc.prorate_partial_periods === false) {
+      total += mc.amount
+    } else {
+      requiresConfirmation = true
+    }
+  }
+
+  return {
+    total: requiresConfirmation ? null : Math.round(total * 100) / 100,
+    requiresConfirmation,
+    windowCount: windows.length,
+    fullWindowCount: fullCount,
+    partialWindowCount: partialCount,
+  }
 }
 
 /**

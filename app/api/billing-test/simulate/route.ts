@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
       unit_type:     meter.meter_key,
       tier_calculation: t.tier_calculation ?? null,
     }))
-    const result = tiers.length > 0 ? computeMetricOverage(testValue, tiers, includedUnits) : { amount: 0, method: 'graduated' as const, requiresConfirmation: false }
+    const result = tiers.length > 0 ? computeMetricOverage(testValue, tiers, includedUnits) : { amount: 0, method: 'graduated' as const, requiresConfirmation: false, usageAmount: 0, minimumApplied: false }
     return {
       jobId:         m.job_id,
       customerName:  m.jobs?.contract_terms?.[0]?.customer_name ?? null,
