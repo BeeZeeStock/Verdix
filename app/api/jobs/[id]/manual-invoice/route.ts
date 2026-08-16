@@ -122,19 +122,26 @@ export async function POST(
     }
 
     const includedUnits = (mapping.included_units as number) ?? 0
-    const rawTiers = (mapping.overage_tiers ?? []) as Array<{ from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number }>
+    const rawTiers = (mapping.overage_tiers ?? []) as Array<{ from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number; tier_calculation?: OverageTier['tier_calculation'] }>
     const tiers: OverageTier[] = rawTiers.map((t, i) => ({
       tier_label:    `Tier ${i + 1}`,
       from_unit:     t.from_unit ?? null,
       to_unit:       t.to_unit   ?? null,
       rate_per_unit: t.rate_per_unit ?? 0,
       unit_type:     body.meterKey!,
+      tier_calculation: t.tier_calculation ?? null,
     }))
-    const rawAmount = tiers.length > 0 ? computeMetricOverage(body.usage, tiers, includedUnits) : 0
+    const overageResult = tiers.length > 0 ? computeMetricOverage(body.usage, tiers, includedUnits) : { amount: 0, method: 'graduated' as const, requiresConfirmation: false }
+    if (overageResult.requiresConfirmation) {
+      return NextResponse.json({
+        error: `Meter '${body.meterKey}' has more than one price tier and its calculation method (graduated vs. volume vs. block) hasn't been confirmed yet. Resolve it in the Review panel before invoicing this usage.`,
+      }, { status: 409 })
+    }
+    const rawAmount = overageResult.amount
     const amount    = Math.round(rawAmount * 100) / 100
     const billable  = Math.max(0, body.usage - includedUnits)
     const rate      = tiers[0]?.rate_per_unit ?? (billable > 0 ? amount / billable : 0)
-    const description = describeTieredUsage(body.meterKey, body.usage, tiers, includedUnits)
+    const description = describeTieredUsage(body.meterKey, body.usage, tiers, includedUnits, true, overageResult.method)
 
     // A single line item at quantity 1 — usage spanning multiple tiers has no
     // single per-unit rate, so quantity × unitPrice must never be used here,

@@ -6,7 +6,7 @@
 import { supabaseServer } from '@/lib/supabase'
 import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining, isPartialWindow, type CadenceAnchorMode } from '@/lib/tariff'
 import { createRemembillUsageConnector } from '@/lib/connectors/usage/remembill'
-import type { ContractTerms, MinimumCommitment } from '@/lib/types'
+import type { ContractTerms, MinimumCommitment, TierCalculationMethod } from '@/lib/types'
 
 type MeterCfg = {
   meter_key: string
@@ -18,6 +18,7 @@ type MeterCfg = {
     minimum_period_amount?: number | null
     minimum_commitment?: MinimumCommitment | null
     reset_anchor?: 'contract_start' | 'calendar' | null
+    tier_calculation?: TierCalculationMethod | null
   }>
   billing_cycle: string | null
 }
@@ -246,6 +247,7 @@ export async function computeOverageForPeriod(params: {
           unit_type:     cfg.meter_key,
           minimum_period_amount: t.minimum_period_amount ?? null,
           minimum_commitment: t.minimum_commitment ?? null,
+          tier_calculation: t.tier_calculation ?? null,
         }))
         const includedUnits = cfg.included_units ?? 0
         // A minimum commitment guarantees a full cadence period's worth of
@@ -254,7 +256,15 @@ export async function computeOverageForPeriod(params: {
         // of (isPartial, calendar-anchored only). Usage-based charges still
         // bill either way; only the minimum-floor/additive/etc. amount is withheld.
         const applyMinimum = !window.isOpen && !window.isPartial
-        const overageEur    = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, applyMinimum) : 0
+        const overageResult = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, applyMinimum) : null
+        // A metric whose tier method (graduated/volume/block) isn't
+        // confirmed can't be invoiced off — the same rate table produces
+        // different totals under different methods, so there's no safe
+        // provisional amount to bill for real. Skip the metric entirely
+        // rather than guess; it stays visible as "needs interpretation" in
+        // the Review panel until a reviewer confirms it.
+        if (overageResult?.requiresConfirmation) continue
+        const overageEur = overageResult?.amount ?? 0
         if (overageEur <= 0 && !includeZeroUsage) continue
 
         // Whether a confirmed minimum commitment is what determined the
@@ -262,7 +272,7 @@ export async function computeOverageForPeriod(params: {
         // charge with no floor/additive/etc. applied, so the Consumption
         // timeline can show "Minimum floor applies: X" as a first-class
         // line instead of it being buried in the description tooltip only.
-        const rawUsageCharge = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, false) : 0
+        const rawUsageCharge = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, false).amount : 0
         const activeCommitment = tiers.find(t => t.minimum_commitment && !t.minimum_commitment.requires_confirmation)?.minimum_commitment
         const minimumFloorApplied = applyMinimum && overageEur !== rawUsageCharge
           && (activeCommitment ? (activeCommitment.mode === 'floor' || activeCommitment.mode === 'minimum_spend') : true)
@@ -293,7 +303,7 @@ export async function computeOverageForPeriod(params: {
         const windowSuffix = !matchesScanRange
           ? ` (${fmtRange(window.start, window.displayEnd)})`
           : ''
-        const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits, applyMinimum) + windowSuffix
+        const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits, applyMinimum, overageResult?.method ?? 'graduated') + windowSuffix
         items.push({
           meter_key: cfg.meter_key, total_units: totalUnits, included_units: includedUnits,
           billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,
@@ -339,10 +349,12 @@ export async function computeOverageForPeriod(params: {
   const includedUnits  = terms.included_units ?? 0
   if (aggregateUnits <= 0) return items
 
-  const overageAmount = Math.round(computeMetricOverage(aggregateUnits, terms.overage_tiers ?? [], includedUnits) * 100) / 100
+  const legacyResult = computeMetricOverage(aggregateUnits, terms.overage_tiers ?? [], includedUnits)
+  if (legacyResult.requiresConfirmation) return items
+  const overageAmount = Math.round(legacyResult.amount * 100) / 100
   if (overageAmount <= 0) return items
 
-  const overageDesc = describeTieredUsage('Usage', aggregateUnits, terms.overage_tiers ?? [], includedUnits)
+  const overageDesc = describeTieredUsage('Usage', aggregateUnits, terms.overage_tiers ?? [], includedUnits, true, legacyResult.method)
   items.push({
     meter_key: 'usage', total_units: aggregateUnits, included_units: includedUnits,
     billable_units: Math.max(0, aggregateUnits - includedUnits), rate_per_unit: terms.overage_tiers?.[0]?.rate_per_unit ?? 0,

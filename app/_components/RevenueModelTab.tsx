@@ -286,9 +286,9 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
 
   // ── Overage amounts (computed once from scenario state) ───────────────────
 
-  const periodApiOvg     = computeMetricOverage(scenarioApiCalls, apiTiers as OverageTier[], includedApiCalls)
+  const periodApiOvg     = computeMetricOverage(scenarioApiCalls, apiTiers as OverageTier[], includedApiCalls).amount
   const monthlyApiOvg    = periodApiOvg / monthsPerPeriod
-  const periodGenericOvg = computeMetricOverage(scenarioGenericMetric, metricTiers as OverageTier[], includedGenericMetric)
+  const periodGenericOvg = computeMetricOverage(scenarioGenericMetric, metricTiers as OverageTier[], includedGenericMetric).amount
   const monthlyGenericOvg = periodGenericOvg / monthsPerPeriod
 
   // ── Build per-month model data ────────────────────────────────────────────

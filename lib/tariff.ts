@@ -1,8 +1,10 @@
-import type { MinimumCommitment, OverageTier } from './types'
+import type { MinimumCommitment, OverageTier, TierCalculationMethod } from './types'
 
 // Structural minimum accepted by the computation functions —
 // compatible with both OverageTier and the local Tier type in RevenueModelTab.
 type TierLike = Partial<OverageTier>
+
+export type TierMethod = TierCalculationMethod['method']
 
 // A minimum commitment is stored per-metric (duplicated onto each tier of
 // that metric by extraction), not per-tier — take the first one present
@@ -10,6 +12,17 @@ type TierLike = Partial<OverageTier>
 function resolveMinimumCommitment(tiers: TierLike[]): MinimumCommitment | null {
   for (const t of tiers) {
     if (t.minimum_commitment) return t.minimum_commitment
+  }
+  return null
+}
+
+// Same per-metric storage convention as minimum_commitment — duplicated
+// across a metric's tier rows, take the first present rather than merge.
+// Null means this data predates tier_calculation entirely (see
+// OverageTier.tier_calculation) and the caller falls back to 'graduated'.
+export function resolveTierCalculationMethod(tiers: TierLike[]): TierCalculationMethod | null {
+  for (const t of tiers) {
+    if (t.tier_calculation) return t.tier_calculation
   }
   return null
 }
@@ -25,58 +38,102 @@ export function slugifyMetricCode(unitType: string): string {
     .replace(/^_|_$/g, '')
 }
 
+// Graduated/staircase: each band's rate applies only to the units that fall
+// within it — the original (and, until now, only) calculation this engine
+// supported.
+function graduatedAmount(total: number, tiers: TierLike[]): number {
+  if (total <= 0 || tiers.length === 0) return 0
+  const sorted = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
+  let amount = 0, counted = 0
+  for (const t of sorted) {
+    if (counted >= total) break
+    const tierStart = t.from_unit ?? 1
+    const tierCap   = t.to_unit != null ? (t.to_unit - tierStart + 1) : total - counted
+    const here      = Math.min(total - counted, tierCap)
+    amount  += here * (t.rate_per_unit ?? 0)
+    counted += here
+  }
+  return amount
+}
+
+// Volume/all-units: the single band containing the full total sets the rate
+// for every qualifying unit. Crossing a threshold re-rates everything, not
+// just the units past it — the same rate table as graduated can produce a
+// materially different total (1-100@10 + 101-200@8, 150 units: graduated
+// = 1,400, volume = 150 * 8 = 1,200).
+function volumeAmount(total: number, tiers: TierLike[]): number {
+  if (total <= 0 || tiers.length === 0) return 0
+  const sorted = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
+  let applicable = sorted[0]
+  for (const t of sorted) {
+    if (total >= (t.from_unit ?? 1)) applicable = t
+    else break
+  }
+  return total * (applicable?.rate_per_unit ?? 0)
+}
+
+// Block: reaching a band charges a flat fee for that band, not a per-unit
+// rate — every band whose start has been reached contributes its
+// rate_per_unit once, in full, regardless of how far into the band usage
+// actually reached.
+function blockAmount(total: number, tiers: TierLike[]): number {
+  if (total <= 0 || tiers.length === 0) return 0
+  const sorted = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
+  let amount = 0
+  for (const t of sorted) {
+    if (total >= (t.from_unit ?? 1)) amount += (t.rate_per_unit ?? 0)
+    else break
+  }
+  return amount
+}
+
+// 'custom' has no safe generic calculation by definition — it's previewed
+// using graduated math (never fabricated as something else) while
+// requiresConfirmation (surfaced separately by computeMetricOverage) keeps
+// real invoicing from relying on that preview.
+function amountForMethod(total: number, tiers: TierLike[], method: TierMethod): number {
+  switch (method) {
+    case 'volume': return volumeAmount(total, tiers)
+    case 'block':  return blockAmount(total, tiers)
+    default:       return graduatedAmount(total, tiers)
+  }
+}
+
 /**
  * Computes the overage charge for seat/user-based metrics.
- * Applies graduated tiers only to units above the included allowance.
+ * Applies tiers only to units above the included allowance, using the given
+ * calculation method (defaults to graduated for backward compatibility).
  */
 export function computeUserOverage(
   totalUsers: number,
   included: number,
   tiers: TierLike[],
+  method: TierMethod = 'graduated',
 ): number {
   const extra = Math.max(0, totalUsers - included)
-  if (extra <= 0 || tiers.length === 0) return 0
-  const sorted = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
-  let total = 0, counted = 0
-  for (const t of sorted) {
-    if (counted >= extra) break
-    const cap  = t.to_unit != null ? (t.to_unit - (t.from_unit ?? 1) + 1) : extra - counted
-    const here = Math.min(extra - counted, cap)
-    total  += here * (t.rate_per_unit ?? 0)
-    counted += here
-  }
-  return total
+  return amountForMethod(extra, tiers, method)
 }
 
 /**
- * Computes the overage charge for transactional metrics (API calls, tokens, etc.).
- * Applies graduated tiers across the full usage quantity.
+ * Computes the overage charge for transactional metrics (API calls, tokens, etc.)
+ * across the full billable quantity, using the given calculation method
+ * (defaults to graduated for backward compatibility).
  */
 export function computeTransactionalOverage(
   quantity: number,
   tiers: TierLike[],
+  method: TierMethod = 'graduated',
 ): number {
-  if (quantity <= 0 || tiers.length === 0) return 0
-  const sorted = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
-  let total = 0, counted = 0
-  for (const t of sorted) {
-    if (counted >= quantity) break
-    const tierStart = t.from_unit ?? 1
-    const tierCap   = t.to_unit != null ? (t.to_unit - tierStart + 1) : quantity - counted
-    const here      = Math.min(quantity - counted, tierCap)
-    total  += here * (t.rate_per_unit ?? 0)
-    counted += here
-  }
-  return total
+  return amountForMethod(quantity, tiers, method)
 }
 
 /**
  * Human-readable breakdown of exactly which tiers a quantity consumed and at
- * what rate — mirrors computeTransactionalOverage's tier-walk so the text
- * shown to a user always matches the amount actually computed. A quantity
- * spanning multiple tiers (the common case) must never be described as a
- * single flat "@ rate/unit", or the total will look wrong even when it's
- * correct.
+ * what rate — mirrors the calculation functions' tier-walk for the given
+ * method so the text shown to a user always matches the amount actually
+ * computed. A quantity spanning multiple graduated tiers must never be
+ * described as a single flat "@ rate/unit", or the total will look wrong
+ * even when it's correct.
  */
 export function describeTieredUsage(
   meterLabel: string,
@@ -84,21 +141,46 @@ export function describeTieredUsage(
   tiers: TierLike[],
   includedUnits: number,
   applyMinimumFloor: boolean = true,
+  method: TierMethod = 'graduated',
 ): string {
   const billable = Math.max(0, quantity - includedUnits)
   const base = `${meterLabel} — ${quantity.toLocaleString()} total, ${includedUnits.toLocaleString()} included, ${billable.toLocaleString()} billable`
-
   const sorted = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
-  const parts: string[] = []
-  let counted = 0
+
+  let tierText = base
   let tierAmount = 0
-  for (const t of sorted) {
-    if (counted >= billable) break
-    const tierStart = t.from_unit ?? 1
-    const tierCap   = t.to_unit != null ? (t.to_unit - tierStart + 1) : billable - counted
-    const here      = Math.min(billable - counted, tierCap)
-    if (here > 0) { parts.push(`${here.toLocaleString()} @ ${t.rate_per_unit ?? 0}`); tierAmount += here * (t.rate_per_unit ?? 0) }
-    counted += here
+
+  if (billable > 0 && tiers.length > 0) {
+    if (method === 'volume') {
+      let applicable = sorted[0]
+      for (const t of sorted) {
+        if (billable >= (t.from_unit ?? 1)) applicable = t
+        else break
+      }
+      tierAmount = billable * (applicable?.rate_per_unit ?? 0)
+      tierText = `${base}: ${billable.toLocaleString()} @ ${applicable?.rate_per_unit ?? 0}/unit (volume — tier "${applicable?.tier_label ?? ''}" applies to all billable units)`
+    } else if (method === 'block') {
+      const parts: string[] = []
+      for (const t of sorted) {
+        if (billable < (t.from_unit ?? 1)) break
+        parts.push(`${t.tier_label ?? t.from_unit} @ ${t.rate_per_unit ?? 0} flat`)
+        tierAmount += (t.rate_per_unit ?? 0)
+      }
+      tierText = parts.length > 0 ? `${base}: ${parts.join(' + ')} (block pricing)` : base
+    } else {
+      // graduated, and 'custom' previewed as graduated
+      const parts: string[] = []
+      let counted = 0
+      for (const t of sorted) {
+        if (counted >= billable) break
+        const tierStart = t.from_unit ?? 1
+        const tierCap   = t.to_unit != null ? (t.to_unit - tierStart + 1) : billable - counted
+        const here      = Math.min(billable - counted, tierCap)
+        if (here > 0) { parts.push(`${here.toLocaleString()} @ ${t.rate_per_unit ?? 0}`); tierAmount += here * (t.rate_per_unit ?? 0) }
+        counted += here
+      }
+      tierText = parts.length > 1 ? `${base}: ${parts.join(' + ')}` : `${base} @ ${sorted[0]?.rate_per_unit ?? 0}/unit`
+    }
   }
 
   // The period minimum only actually binds when it's higher than what the
@@ -106,16 +188,27 @@ export function describeTieredUsage(
   // would be misleading once real usage grows past it.
   const floor = applyMinimumFloor ? tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0) : 0
   const floorNote = floor > tierAmount ? ` (period minimum of ${floor.toLocaleString()} applies)` : ''
-
-  if (billable <= 0 || tiers.length === 0) return base + floorNote
-  const tierText = parts.length > 1 ? `${base}: ${parts.join(' + ')}` : `${base} @ ${sorted[0]?.rate_per_unit ?? 0}/unit`
   return tierText + floorNote
 }
 
+export interface MetricOverageResult {
+  amount: number
+  /** The tier-calculation method actually used for `amount`. When
+   *  requiresConfirmation is true, this is 'graduated' used only as a
+   *  provisional preview — not a confirmed reading of the contract. */
+  method: TierMethod
+  /** True when the metric's tier_calculation is missing/ambiguous and a
+   *  reviewer hasn't confirmed a method yet. Real invoicing must not bill
+   *  off `amount` while this is true (see lib/usage-pull.ts) — the same
+   *  never-silently-bill rule already applied to minimum commitments. */
+  requiresConfirmation: boolean
+}
+
 /**
- * Resolves the correct overage computation based on aggregation_type.
+ * Resolves the correct overage computation based on aggregation_type and the
+ * metric's confirmed (or defaulted) tier-calculation method.
  * max_agg metrics (e.g. active user seats) use seat-style logic;
- * everything else uses transactional graduated tiers.
+ * everything else uses transactional tiers.
  */
 export function computeMetricOverage(
   quantity: number,
@@ -131,10 +224,15 @@ export function computeMetricOverage(
   // hit the floor, the period just isn't over. Callers previewing an open
   // window must pass false here.
   applyMinimumFloor: boolean = true,
-): number {
+): MetricOverageResult {
   const aggType = (tiers[0] as unknown as Record<string, unknown>)?.['aggregation_type'] as string | undefined
   const mc = resolveMinimumCommitment(tiers)
   const mcActive = !!mc && !mc.requires_confirmation
+
+  const tierCalc = resolveTierCalculationMethod(tiers)
+  const method: TierMethod = tierCalc?.method ?? 'graduated'
+  const requiresConfirmation = !!tierCalc?.requires_confirmation
+  const finalize = (amount: number): MetricOverageResult => ({ amount, method, requiresConfirmation })
 
   // minimum_quantity, once confirmed, is a take-or-pay clause: it raises the
   // billable quantity itself before tier rates apply, unlike the other four
@@ -146,37 +244,37 @@ export function computeMetricOverage(
   }
 
   const computed = aggType === 'max_agg'
-    ? computeUserOverage(effectiveQuantity, includedUnits, tiers)
+    ? computeUserOverage(effectiveQuantity, includedUnits, tiers, method)
     // Subtract the contract's free allowance; tiers apply only to the excess
-    : computeTransactionalOverage(Math.max(0, effectiveQuantity - includedUnits), tiers)
+    : computeTransactionalOverage(Math.max(0, effectiveQuantity - includedUnits), tiers, method)
 
-  if (!applyMinimumFloor) return computed
+  if (!applyMinimumFloor) return finalize(computed)
 
   if (mc) {
     // Ambiguous minimum (e.g. unclear interaction with an included
     // allowance) — never silently applied. Usage-based charges still bill;
     // the commitment itself is surfaced for reviewer confirmation
     // separately (getReviewContext/ReviewPanel), not guessed here.
-    if (!mcActive) return computed
+    if (!mcActive) return finalize(computed)
     switch (mc.mode) {
       case 'floor':
       case 'minimum_spend':
-        return Math.max(computed, mc.amount)
+        return finalize(Math.max(computed, mc.amount))
       case 'additive':
-        return computed + mc.amount
+        return finalize(computed + mc.amount)
       case 'prepaid_commitment':
         // The commitment amount was already collected up front; only usage
         // beyond that prepaid pool is billed here.
-        return Math.max(0, computed - mc.amount)
+        return finalize(Math.max(0, computed - mc.amount))
       case 'minimum_quantity':
-        return computed // already folded into effectiveQuantity above
+        return finalize(computed) // already folded into effectiveQuantity above
     }
   }
 
   // No structured commitment on this metric — legacy scalar-floor behavior,
   // preserved for data extracted before the minimum_commitment model existed.
   const floor = tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0)
-  return Math.max(computed, floor)
+  return finalize(Math.max(computed, floor))
 }
 
 const CADENCE_MONTHS: Record<string, number> = { monthly: 1, quarterly: 3, 'semi-annual': 6, annual: 12 }

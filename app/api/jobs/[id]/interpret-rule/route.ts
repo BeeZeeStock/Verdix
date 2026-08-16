@@ -19,6 +19,8 @@ import {
   buildMinimumCommitmentPrompt,
   buildPartialPeriodPrompt,
   buildEscalatorPrompt,
+  buildDiscountPrompt,
+  buildTierCalculationPrompt,
   parseRuleInterpretationResponse,
   describeMissingFieldQuestions,
   describeWhatWillChange,
@@ -26,6 +28,8 @@ import {
   type MinimumCommitmentContext,
   type PartialPeriodContext,
   type EscalatorContext,
+  type DiscountContext,
+  type TierCalculationContext,
 } from '@/lib/rule-interpretation'
 
 type TierRow = {
@@ -56,13 +60,20 @@ export async function POST(
     // what gets written, so it isn't a trust boundary the way contract
     // financial fields are).
     sourceClause?: string
+    // Which discount this interpretation targets, when ruleType is
+    // 'discount' — a contract can have several independently-interpretable
+    // discounts, so array position alone is never enough to address one.
+    discountId?: string
   }
 
-  const { ruleType, contractUnitType, selectedOption, freeText, sourceClause } = body
+  const { ruleType, contractUnitType, selectedOption, freeText, sourceClause, discountId } = body
   const reviewerInput = (freeText ?? '').trim()
   if (!ruleType) return NextResponse.json({ error: 'ruleType is required' }, { status: 400 })
   if (!reviewerInput && (!selectedOption || selectedOption === 'other')) {
     return NextResponse.json({ error: 'Describe how this rule should work, or pick a structured option.' }, { status: 400 })
+  }
+  if (ruleType === 'discount' && !discountId) {
+    return NextResponse.json({ error: 'discountId is required for discount interpretation' }, { status: 400 })
   }
 
   // Context is built entirely from this job's own stored data — never from
@@ -70,7 +81,7 @@ export async function POST(
   // "facts" about the contract into the AI prompt.
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('id, org_id, contract_terms ( currency, overage_tiers, escalators, contract_start_date, contract_end_date )')
+    .select('id, org_id, contract_terms ( currency, overage_tiers, escalators, discounts, contract_start_date, contract_end_date )')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .single()
@@ -80,6 +91,7 @@ export async function POST(
     currency: string | null
     overage_tiers: TierRow[] | null
     escalators: Array<{ escalator_pct: number | null; cap_pct: number | null; effective_date: string | null; applies_from_year: number | null; description: string }> | null
+    discounts: Array<{ discount_rule_id?: string; discount_pct: number | null; discount_amount: number | null; discount_type: string | null; applies_to: string | null; description: string | null }> | null
     contract_start_date: string | null
     contract_end_date: string | null
   }>)?.[0]
@@ -129,6 +141,36 @@ export async function POST(
       appliesFromYear: escalator?.applies_from_year ?? null,
     }
     prompt = buildEscalatorPrompt(context, reviewerInput, selectedOption)
+  } else if (ruleType === 'discount') {
+    // Each discount is addressed by its stable discount_rule_id, not array
+    // position — a contract can have several independently-interpretable
+    // discounts (onboarding, volume, reseller, ...) and only the targeted
+    // one should be touched. Falls back to index-matching for a legacy
+    // discount row that predates discount_rule_id.
+    const discounts = terms.discounts ?? []
+    const discount = discounts.find(d => d.discount_rule_id === discountId)
+      ?? (Number.isInteger(Number(discountId)) ? discounts[Number(discountId)] : undefined)
+    if (!discount) return NextResponse.json({ error: `Discount '${discountId}' not found on this job` }, { status: 404 })
+    const context: DiscountContext = {
+      sourceClause: sourceClause ?? null,
+      description: discount.description ?? '',
+      currency,
+      existingPct: discount.discount_pct ?? null,
+      existingAmount: discount.discount_amount ?? null,
+      extractedType: discount.discount_type ?? null,
+      appliesTo: discount.applies_to ?? null,
+    }
+    prompt = buildDiscountPrompt(context, reviewerInput, selectedOption)
+  } else if (ruleType === 'tier_calculation') {
+    if (!contractUnitType) return NextResponse.json({ error: 'contractUnitType is required for tier_calculation' }, { status: 400 })
+    const tiers = (terms.overage_tiers ?? []).filter(t => t.unit_type === contractUnitType && (t.rate_per_unit ?? 0) > 0)
+    const context: TierCalculationContext = {
+      contractUnitType,
+      sourceClause: sourceClause ?? null,
+      currency,
+      tiers: tiers.map(t => ({ tier_label: t.tier_label, from_unit: t.from_unit, to_unit: t.to_unit, rate_per_unit: t.rate_per_unit })),
+    }
+    prompt = buildTierCalculationPrompt(context, reviewerInput, selectedOption)
   } else {
     return NextResponse.json({ error: `Unknown ruleType: ${ruleType}` }, { status: 400 })
   }
@@ -170,10 +212,37 @@ export async function POST(
     dependency = { meterMappingConfirmed: !!mapping?.confirmed, meterKey: mapping?.meter_key ?? null }
   }
 
+  // Historical impact: has this metric already appeared on an invoice that
+  // was actually sent or paid? Changing the rule going forward is always
+  // safe; changing it for a period that already billed is not something to
+  // silently recalculate — surfaced here so the reviewer sees it before
+  // approving, never applied automatically to issued invoices. Scoped to
+  // metric-level rules (minimum_commitment/partial_period) where the
+  // confirmed meter_key lets this be checked precisely; escalator changes
+  // are job-level and much harder to attribute to a specific invoice, so
+  // this check is skipped for that rule type rather than guessed at.
+  let historicalImpact: { affectedCount: number; periods: string[] } | null = null
+  if (contractUnitType && dependency?.meterKey) {
+    const { data: sentRows } = await supabaseServer
+      .from('planned_invoices')
+      .select('period_start, period_end, overage_line_items')
+      .eq('job_id', jobId)
+      .eq('invoice_type', 'period')
+      .in('status', ['sent', 'paid'])
+    type SentRow = { period_start: string; period_end: string; overage_line_items: Array<{ meter_key?: string }> | null }
+    const affected = ((sentRows ?? []) as SentRow[]).filter(r =>
+      (r.overage_line_items ?? []).some(it => it.meter_key === dependency!.meterKey)
+    )
+    if (affected.length > 0) {
+      historicalImpact = { affectedCount: affected.length, periods: affected.map(r => `${r.period_start} – ${r.period_end}`) }
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     proposal: parsed.proposal,
     whatWillChange: describeWhatWillChange(ruleType, contractUnitType ?? null, dependency),
     dependency,
+    historicalImpact,
   })
 }

@@ -157,7 +157,10 @@ export async function runBillingForOrg(
 
       const tiers      = toOverageTiers(cfg.overage_tiers ?? [], cfg.meter_key)
       const included   = cfg.included_units ?? 0
-      const overageAmt = tiers.length > 0 ? computeMetricOverage(count, tiers, included) : 0
+      // org_billing_config tiers are admin-configured, not AI-extracted from
+      // a contract, so they never carry tier_calculation — resolves to the
+      // 'graduated' default with requiresConfirmation always false here.
+      const overageAmt = tiers.length > 0 ? computeMetricOverage(count, tiers, included).amount : 0
       const overage    = Math.max(0, count - included)
 
       if (overageAmt > 0) {

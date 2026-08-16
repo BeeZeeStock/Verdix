@@ -1,12 +1,16 @@
 /**
  * GET /api/jobs/[id]/rule-interpretations
  *
- * Read-only: the current (is_current=true) approved interpretation for every
- * commercial rule confirmed on this job, so downstream views (Commercial
- * Terms' "Confirmed rules" card) can show who confirmed it and when, and
- * link back to the source clause / re-open the interpretation flow — without
- * duplicating that bookkeeping into contract_terms/contract_meter_mappings,
- * which only hold the current operational value, not the audit trail.
+ * Read-only: every revision (current and historical) of every commercial
+ * rule confirmed on this job, so downstream views (Commercial Terms'
+ * "Confirmed rules" card, the Edit-commercial-rule drawer) can show who
+ * confirmed the current interpretation and when, link back to the source
+ * clause, and browse prior versions — without duplicating that bookkeeping
+ * into contract_terms/contract_meter_mappings, which only hold the current
+ * operational value, not the audit trail. Returns every row (not just
+ * is_current) so callers can group by (rule_type, contract_unit_type) and
+ * separate "current" from "history" themselves, which is what "View
+ * previous version" needs.
  *
  * Resilient to the audit table not existing yet (pending migration) — this
  * is a read for a nice-to-have enrichment, not the write path, so a missing
@@ -27,10 +31,9 @@ export async function GET(
 
   const { data, error } = await supabaseServer
     .from('commercial_rule_interpretations')
-    .select('rule_type, contract_unit_type, source_clause, reviewer_input, approved_interpretation, reviewer_email, reviewer_name, created_at, propagation_status')
+    .select('rule_type, contract_unit_type, revision_number, is_current, source_clause, reviewer_input, approved_interpretation, reviewer_email, reviewer_name, created_at, propagation_status')
     .eq('job_id', jobId)
-    .eq('is_current', true)
-    .order('created_at', { ascending: false })
+    .order('revision_number', { ascending: false })
 
   if (error) {
     if (error.message.includes('commercial_rule_interpretations')) return NextResponse.json({ interpretations: [] })

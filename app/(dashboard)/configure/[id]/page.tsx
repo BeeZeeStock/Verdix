@@ -11,7 +11,7 @@ import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCa
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, contractLifecycleStatus } from '@/lib/contract-tcv-calc'
 import { findCadenceWindowContaining, isPartialWindow } from '@/lib/tariff'
-import { optionsForRuleType, type RuleType } from '@/lib/rule-interpretation'
+import { optionsForRuleType, optionsForEdit, type RuleType, type StructuredOption } from '@/lib/rule-interpretation'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
@@ -20,16 +20,32 @@ const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: fa
 type Escalator = {
   escalator_pct?: number; escalator_type?: string; effective_date?: string; description?: string; cap_pct?: number
   interpretation?: {
-    index: 'CPI' | 'fixed_pct' | 'other'
-    frequency: 'annual' | 'monthly' | 'quarterly'
+    treatment: 'applies' | 'not_applied'
+    index: 'CPI' | 'fixed_pct' | 'other' | null
+    frequency: 'annual' | 'monthly' | 'quarterly' | null
     effective_date: string | null
     cap_pct: number | null
-    calculation_method: string
+    calculation_method: string | null
     requires_confirmation: boolean
     confirmation_reason?: string | null
   } | null
 }
-type Discount   = { discount_pct?: number; discount_amount?: number; discount_type?: string; start_date?: string; end_date?: string; duration_months?: number; applies_to?: string; description?: string }
+type Discount   = {
+  discount_rule_id?: string
+  discount_pct?: number; discount_amount?: number; discount_type?: string; start_date?: string; end_date?: string; duration_months?: number; applies_to?: string; description?: string
+  interpretation?: {
+    discount_type: 'flat_percentage' | 'flat_amount' | 'tiered_discount' | 'volume_discount' | 'component_specific' | 'time_ramp' | 'custom'
+    discount_basis: 'percentage' | 'amount'
+    tier_method: 'graduated' | 'volume' | 'block' | 'custom' | null
+    tiers: Array<{ from_unit: number | null; to_unit: number | null; value: number }> | null
+    applies_to: string | null
+    application_order: string | null
+    reset_period: string | null
+    worked_example: string | null
+    requires_confirmation: boolean
+    confirmation_reason?: string | null
+  } | null
+}
 type Tier       = {
   tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string
   measurement_period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
@@ -44,6 +60,12 @@ type Tier       = {
     confirmation_reason?: string | null
   } | null
   reset_anchor?: 'contract_start' | 'calendar' | null
+  tier_calculation?: {
+    method: 'graduated' | 'volume' | 'block' | 'custom'
+    source_clause?: string | null
+    requires_confirmation: boolean
+    confirmation_reason?: string | null
+  } | null
 }
 
 type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null; description?: string | null; manual_trigger?: boolean; metric_name?: string | null; rate_per_unit?: number | null }
@@ -291,8 +313,20 @@ function buildContractSummary(
   const dates    = terms.contract_start_date && terms.contract_end_date
     ? `, running ${fmtDate(terms.contract_start_date)} to ${fmtDate(terms.contract_end_date)}`
     : terms.contract_start_date ? `, starting ${fmtDate(terms.contract_start_date)}` : ''
-  const tcvStr   = tcv > 0 ? `, valued at ${fmt(tcv, cur)}` : ''
-  lines.push(`${duration}contract${customer}${dates} — ${pricing}${tcvStr}.`)
+
+  // One-time fees (setup/integration/onboarding) are named separately from
+  // the recurring subscription description — folding them into "valued at
+  // X" right after "subscription" reads as if X were the subscription's own
+  // value, when Fixed fees (tcv) is actually subscription + one-time combined.
+  const oneTimeFees = (terms.one_time_fees ?? []).filter(f => (f.amount ?? 0) > 0)
+  const oneTimeTotal = oneTimeFees.reduce((s, f) => s + Number(f.amount ?? 0), 0)
+  const oneTimeStr = oneTimeFees.length === 1
+    ? ` and ${fmt(oneTimeFees[0].amount, cur)} one-time ${oneTimeFees[0].fee_label.toLowerCase()}`
+    : oneTimeFees.length > 1
+      ? ` and ${fmt(oneTimeTotal, cur)} in one-time fees`
+      : ''
+  const tcvStr = tcv > 0 ? ` Fixed fees over the initial term: ${fmt(tcv, cur)}.` : ''
+  lines.push(`${duration}contract${customer}${dates} — ${pricing}${oneTimeStr}.${tcvStr}`)
 
   // ── Sentence 2: billing cadence · payment terms · auto-renewal ───────────
   const bits: string[] = []
@@ -672,7 +706,10 @@ function SectionHeader({ title, section, onSection }: { title: string; section?:
 
 // ── Review panel helpers ───────────────────────────────────────────────────
 
-type ItemKind = 'overage_tier' | 'escalator' | 'escalator_interpretation' | 'base_fee' | 'user_seat' | 'one_time' | 'minimum_commitment' | 'partial_period' | 'unknown'
+// 'discount' is never produced by classifyItem (discounts aren't LineItems)
+// — it exists purely so RuleInterpretationCard's kind→ruleType mapping can
+// be reused for the Review panel's dedicated Discounts section below.
+type ItemKind = 'overage_tier' | 'escalator' | 'escalator_interpretation' | 'base_fee' | 'user_seat' | 'one_time' | 'minimum_commitment' | 'partial_period' | 'tier_calculation' | 'discount' | 'unknown'
 
 // A tier and its rendered LineItem share a tier_label — buildLineItems
 // (execute route) sets product_name from tier_label, optionally with a
@@ -745,6 +782,15 @@ function classifyItem(item: LineItem, tiers: Tier[] = [], escalators: Escalator[
   // (etc.) at the contract's edges is a second, narrower ambiguity on the
   // same commitment — surfaced as its own card, not bundled into the first.
   if (matchedTier?.unit_type && partialPeriodMetrics.has(matchedTier.unit_type)) return 'partial_period'
+
+  // A metric with 2+ paid tiers whose calculation method (graduated/volume/
+  // block) isn't confirmed can't have its overage safely billed at all — see
+  // that ambiguity before treating this as an ordinary rate-confirmation
+  // tier below. A single-tier metric has no such ambiguity to raise.
+  if (matchedTier?.tier_calculation?.requires_confirmation) {
+    const paidTierCount = tiers.filter(t => t.unit_type === matchedTier.unit_type && (t.rate_per_unit ?? 0) > 0).length
+    if (paidTierCount >= 2) return 'tier_calculation'
+  }
 
   // Usage/overage pricing tiers always carry quantity 0 from extraction (no
   // usage confirmed yet) — a structural signal, unlike matching "overage"/
@@ -831,6 +877,19 @@ function getReviewContext(item: LineItem, kind: ItemKind, numberFormat: 'dot' | 
         whyFlagged:         "The agreement begins or ends part-way through a calendar period, but the minimum resets on calendar boundaries. No explicit proration rule was identified.",
       }
     }
+    case 'tier_calculation': {
+      const tc = findTierForItem(item, tiers)?.tier_calculation
+      return {
+        typeLabel:          'Tier calculation method',
+        typeIcon:           'ti-stairs',
+        primaryField:       'unit_price',
+        primaryLabel:       'Calculation method',
+        primaryPlaceholder: '',
+        whatToCheck:        `Confirm whether ${item.product_name}'s price tiers apply per-band (graduated) or re-rate all units once a threshold is reached (volume).`,
+        whyFlagged:         tc?.confirmation_reason
+          ?? 'This metric has more than one price tier; the contract does not state whether crossing a threshold re-rates all units or only the units above it.',
+      }
+    }
     case 'escalator_interpretation':
       return {
         typeLabel:          'Price escalation',
@@ -898,6 +957,8 @@ const ITEM_KIND_TO_RULE_TYPE: Partial<Record<ItemKind, RuleType>> = {
   minimum_commitment: 'minimum_commitment',
   partial_period: 'partial_period',
   escalator_interpretation: 'escalator',
+  tier_calculation: 'tier_calculation',
+  discount: 'discount',
 }
 
 // Reverse-maps a previously approved interpretation back to the structured
@@ -905,29 +966,6 @@ const ITEM_KIND_TO_RULE_TYPE: Partial<Record<ItemKind, RuleType>> = {
 // pre-select it instead of defaulting to nothing. Best-effort only; if the
 // approved rule doesn't cleanly match one of the structured choices (e.g.
 // it came from free text alone), falls back to 'other' rather than guessing.
-function deriveSelectedOption(ruleType: RuleType, approved: Record<string, unknown> | undefined): string | null {
-  if (!approved) return null
-  if (ruleType === 'minimum_commitment') {
-    if (approved.mode === 'additive') return 'additive'
-    if (approved.mode === 'floor' && approved.included_allowance_interaction === 'before_allowance') return 'floor_before_allowance'
-    if (approved.mode === 'floor' && approved.included_allowance_interaction === 'after_allowance') return 'floor_after_allowance'
-    return 'other'
-  }
-  if (ruleType === 'escalator') {
-    if (approved.index === 'CPI' && approved.cap_pct != null) return 'cpi_capped'
-    if (approved.index === 'CPI') return 'cpi_uncapped'
-    if (approved.index === 'fixed_pct') return 'fixed_pct'
-    return 'other'
-  }
-  if (ruleType === 'partial_period') {
-    if (approved.prorate_partial_periods === false) return 'full'
-    if (approved.prorate_partial_periods === true && approved.proration_method === 'days') return 'prorate_days'
-    if (approved.prorate_partial_periods === true && approved.proration_method === 'months') return 'prorate_months'
-    return 'other'
-  }
-  return null
-}
-
 // ── Rule interpretation card ────────────────────────────────────────────────
 // Human input → AI interpretation → structured rule preview → human approval
 // → propagation, entirely in-panel — the reviewer never leaves this card to
@@ -938,12 +976,16 @@ function deriveSelectedOption(ruleType: RuleType, approved: Record<string, unkno
 type RulePhase = 'input' | 'loading' | 'missing' | 'proposal' | 'confirming' | 'applied' | 'partial' | 'error'
 
 function RuleInterpretationCard({
-  jobId, kind, contractUnitType, sourceClause, currency, meterMappingConfirmed, meterSuggestion, availableMeters, onApplied, onChangeMapping,
+  jobId, kind, contractUnitType, discountId, sourceClause, currency, meterMappingConfirmed, meterSuggestion, availableMeters, onApplied, onChangeMapping,
   initialSelectedOption, initialFreeText,
 }: {
   jobId: string
   kind: ItemKind
   contractUnitType?: string
+  // Which discount this card resolves, when kind maps to ruleType 'discount'
+  // — a contract can have several independent discounts, each addressed by
+  // its own stable id rather than array position.
+  discountId?: string
   sourceClause: string
   currency: string
   meterMappingConfirmed?: boolean
@@ -975,7 +1017,7 @@ function RuleInterpretationCard({
       const res = await fetch(`/api/jobs/${jobId}/interpret-rule`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ruleType, contractUnitType, selectedOption: selectedOption ?? undefined, freeText, sourceClause }),
+        body: JSON.stringify({ ruleType, contractUnitType, discountId, selectedOption: selectedOption ?? undefined, freeText, sourceClause }),
       })
       const data = await res.json()
       if (!res.ok) { setErrorMsg(data.error ?? 'Verdix could not interpret this rule.'); setPhase('input'); return }
@@ -1001,7 +1043,7 @@ function RuleInterpretationCard({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ruleType, contractUnitType, sourceClause, reviewerInput: freeText,
+          ruleType, contractUnitType, discountId, sourceClause, reviewerInput: freeText,
           aiProposedInterpretation: proposal, approvedInterpretation: proposal,
         }),
       })
@@ -1183,6 +1225,357 @@ function RuleInterpretationCard({
   )
 }
 
+// ── Edit commercial rule drawer ─────────────────────────────────────────────
+// Revising an already-approved commercial rule is a distinct experience from
+// first-time review: it starts from what Verdix is executing today, offers
+// changes framed relative to that ("Keep as X" / "Change to Y"), shows the
+// proposed change as a diff with a plain-English summary, and — critically —
+// flags when the change would touch a period that's already been invoiced,
+// before the reviewer can approve it. Never routes back through the initial
+// Review panel (that review is done); this is its own right-side drawer.
+type RuleInterpretationRecord = {
+  rule_type: string; contract_unit_type: string | null; source_clause: string | null; reviewer_input: string | null
+  approved_interpretation: Record<string, unknown>; reviewer_email: string; reviewer_name: string | null; created_at: string
+  revision_number: number; is_current: boolean
+}
+
+const FIELD_LABELS: Record<string, string> = {
+  mode: 'Rule type', amount: 'Amount', period: 'Period', included_allowance_interaction: 'Allowance treatment',
+  prorate_partial_periods: 'Partial-period proration', treatment: 'Treatment', index: 'Index', frequency: 'Frequency',
+  cap_pct: 'Cap', effective_date: 'Effective date', calculation_method: 'Calculation', calculation_summary: 'Calculation',
+  discount_type: 'Rule type', discount_basis: 'Discount basis', tier_method: 'Tier method', tiers: 'Tier schedule',
+  applies_to: 'Applies to', application_order: 'Application order', reset_period: 'Reset',
+  method: 'Calculation method', worked_example: 'Worked example',
+}
+
+const RULE_MODE_DISPLAY: Record<string, string> = {
+  floor: 'Minimum charge floor', additive: 'Additive charge', minimum_spend: 'Spend commitment',
+  prepaid_commitment: 'Prepaid commitment', minimum_quantity: 'Minimum quantity',
+  flat_percentage: 'Flat percentage discount', flat_amount: 'Flat amount discount', tiered_discount: 'Tiered discount',
+  volume_discount: 'Volume discount', component_specific: 'Component-specific discount', time_ramp: 'Time/ramp discount',
+}
+
+const TIER_METHOD_DISPLAY: Record<string, string> = {
+  graduated: 'Graduated / staircase', volume: 'Volume / all-units', block: 'Block-based', custom: 'Custom',
+}
+
+function formatFieldValue(field: string, value: unknown, currency: string): string {
+  if (value == null) return '—'
+  if (field === 'amount' && typeof value === 'number') return fmt(value, currency)
+  if ((field === 'mode' || field === 'discount_type') && typeof value === 'string') return RULE_MODE_DISPLAY[value] ?? value
+  if (field === 'included_allowance_interaction' && typeof value === 'string') return value.replace(/_/g, ' ')
+  if (field === 'tier_method' && typeof value === 'string') return TIER_METHOD_DISPLAY[value] ?? value
+  if (field === 'effective_date' && typeof value === 'string') return fmtDate(value)
+  if (field === 'tiers' && Array.isArray(value)) {
+    return (value as Array<{ from_unit: number | null; to_unit: number | null; value: number }>)
+      .map(t => `${t.from_unit ?? 1}–${t.to_unit ?? '∞'}: ${t.value}`).join(' · ')
+  }
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  return String(value)
+}
+
+function EditCommercialRuleDrawer({
+  jobId, ruleType, contractUnitType, discountId, ruleTitle, currency, currentRecord, historyRecords, onClose, onApplied,
+}: {
+  jobId: string
+  ruleType: RuleType
+  contractUnitType?: string
+  // Which discount this drawer edits, when ruleType is 'discount' — required
+  // so a contract with several discounts only ever touches the one being edited.
+  discountId?: string
+  ruleTitle: string
+  currency: string
+  currentRecord: RuleInterpretationRecord | null
+  historyRecords: RuleInterpretationRecord[]
+  onClose: () => void
+  onApplied: () => void
+}) {
+  // "Change to X" only makes sense once something is already confirmed —
+  // a rule with no currentRecord yet (e.g. a discount's first interpretation,
+  // which has no separate first-time Review-panel trigger) gets the plain,
+  // unbiased option labels instead of a "change" framing.
+  const options = currentRecord ? optionsForEdit(ruleType, currentRecord.approved_interpretation) : optionsForRuleType(ruleType)
+  const [phase, setPhase] = useState<RulePhase>('input')
+  const [selectedOption, setSelectedOption] = useState<string | null>(null)
+  const [freeText, setFreeText] = useState('')
+  const [proposal, setProposal] = useState<Record<string, unknown> | null>(null)
+  const [whatWillChange, setWhatWillChange] = useState<Array<{ component: string; change: string }>>([])
+  const [historicalImpact, setHistoricalImpact] = useState<{ affectedCount: number; periods: string[] } | null>(null)
+  const [missingQuestions, setMissingQuestions] = useState<string[]>([])
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [propagation, setPropagation] = useState<Record<string, string> | null>(null)
+  const [showHistory, setShowHistory] = useState(false)
+
+  const generate = async () => {
+    setPhase('loading')
+    setErrorMsg(null)
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/interpret-rule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ruleType, contractUnitType, discountId, selectedOption: selectedOption ?? undefined, freeText, sourceClause: currentRecord?.source_clause ?? ruleTitle }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setErrorMsg(data.error ?? 'Verdix could not interpret this change.'); setPhase('input'); return }
+      if (!data.ok) {
+        setMissingQuestions(data.questions ?? ['Verdix needs more detail to operationalize this change.'])
+        setPhase('missing')
+        return
+      }
+      setProposal(data.proposal)
+      setWhatWillChange(data.whatWillChange ?? [])
+      setHistoricalImpact(data.historicalImpact ?? null)
+      setPhase('proposal')
+    } catch {
+      setErrorMsg('Verdix could not reach the AI interpretation service. Try again.')
+      setPhase('input')
+    }
+  }
+
+  const confirmAndApply = async () => {
+    if (!proposal) return
+    setPhase('confirming')
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ruleType, contractUnitType, discountId, sourceClause: currentRecord?.source_clause ?? ruleTitle, reviewerInput: freeText,
+          aiProposedInterpretation: proposal, approvedInterpretation: proposal,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok && !data.propagation) { setErrorMsg(data.error ?? 'Approval failed.'); setPhase('proposal'); return }
+      setPropagation(data.propagation ?? {})
+      const anyFailed = Object.values(data.propagation ?? {}).includes('failed')
+      if (anyFailed) { setPhase('partial') } else { setPhase('applied'); onApplied() }
+    } catch {
+      setErrorMsg('Verdix could not save this approval. Try again.')
+      setPhase('proposal')
+    }
+  }
+
+  // Fields the proposal actually changes vs. the current interpretation —
+  // shown as a diff rather than a flat list, per field. calculation_summary
+  // and worked_example are narrative fields shown in their own blocks below,
+  // not as a row in the field-by-field diff.
+  const NARRATIVE_FIELDS = ['calculation_summary', 'worked_example']
+  const changedFields = proposal
+    ? Object.keys(proposal).filter(f => !NARRATIVE_FIELDS.includes(f) && JSON.stringify(proposal[f]) !== JSON.stringify(currentRecord?.approved_interpretation?.[f]))
+    : []
+  const meaningSentence = (proposal?.calculation_summary as string | undefined) ?? (proposal?.calculation_method as string | undefined) ?? null
+  // A concrete numeric walkthrough — the thing that lets a Finance reviewer
+  // validate "graduated vs volume" without decoding internal field names,
+  // per the explicit product ask for this. Distinct from meaningSentence:
+  // one states the rule, the other demonstrates it with real numbers.
+  const workedExample = (proposal?.worked_example as string | undefined) ?? null
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+      <div className="relative h-full bg-white shadow-2xl flex flex-col" style={{ width: 480 }}>
+        <div className="flex-shrink-0 px-6 py-4 border-b border-forest/10 flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Edit commercial rule</p>
+            <p className="text-sm font-semibold text-ink mt-0.5">{ruleTitle}</p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-cream text-stone hover:text-ink transition-colors">
+            <i className="ti ti-x" style={{ fontSize: 14 }} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+          {/* State 1: current approved interpretation, always visible */}
+          {currentRecord && (
+            <div className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-stone/60">Current interpretation</p>
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ background: '#D4EAD9', color: '#1A3D2B' }}>Confirmed</span>
+              </div>
+              <dl className="space-y-1">
+                {Object.entries(currentRecord.approved_interpretation)
+                  .filter(([f]) => !NARRATIVE_FIELDS.includes(f) && f !== 'requires_confirmation' && f !== 'confirmation_reason')
+                  .map(([field, value]) => (
+                    <div key={field} className="flex justify-between gap-3 text-xs">
+                      <dt className="text-stone flex-shrink-0">{FIELD_LABELS[field] ?? field.replace(/_/g, ' ')}</dt>
+                      <dd className="font-medium text-ink text-right">{formatFieldValue(field, value, currency)}</dd>
+                    </div>
+                  ))}
+              </dl>
+              <p className="text-[10px] text-stone/60 mt-2">
+                Confirmed by {currentRecord.reviewer_name ?? currentRecord.reviewer_email} · {fmtDate(currentRecord.created_at)}
+                {currentRecord.revision_number > 1 && <> · Version {currentRecord.revision_number}</>}
+              </p>
+              {historyRecords.length > 0 && (
+                <button onClick={() => setShowHistory(h => !h)} className="text-[11px] font-medium text-forest hover:underline mt-1">
+                  {showHistory ? 'Hide' : 'View'} previous version{historyRecords.length > 1 ? 's' : ''} ({historyRecords.length})
+                </button>
+              )}
+              {showHistory && (
+                <div className="mt-2 space-y-2 border-t pt-2" style={{ borderColor: 'rgba(74,124,89,0.15)' }}>
+                  {historyRecords.map(h => (
+                    <div key={h.revision_number} className="text-[11px] text-stone">
+                      <span className="font-medium text-ink">Version {h.revision_number}</span> — {formatFieldValue('mode', h.approved_interpretation.mode ?? h.approved_interpretation.treatment, currency)}
+                      {' · '}{h.reviewer_name ?? h.reviewer_email} · {fmtDate(h.created_at)}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {phase === 'partial' && (
+            <div className="rounded-xl p-3" style={{ background: '#FFFBEB', border: '1px solid #FDE68A' }}>
+              <p className="text-sm font-medium" style={{ color: '#92400E' }}>Confirmed — propagation incomplete</p>
+              <ul className="text-[11px] mt-1 space-y-0.5" style={{ color: '#78350F' }}>
+                {Object.entries(propagation ?? {}).map(([component, status]) => <li key={component}>{component.replace(/_/g, ' ')}: {status}</li>)}
+              </ul>
+              <button onClick={confirmAndApply} className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-lg" style={{ background: '#1A3D2B', color: 'white' }}>
+                Retry propagation
+              </button>
+            </div>
+          )}
+
+          {phase === 'applied' && (
+            <div className="rounded-xl p-3" style={{ background: '#F0FDF4', border: '1px solid rgba(11,92,54,0.2)' }}>
+              <p className="text-sm font-medium flex items-center gap-1.5" style={{ color: '#0B5C36' }}>
+                <i className="ti ti-circle-check-filled" style={{ fontSize: 15 }} /> Change confirmed and applied
+              </p>
+              <p className="text-[11px] text-stone mt-1">Updated: Commercial Terms · Billing Configuration · Billing Schedule</p>
+            </div>
+          )}
+
+          {/* State 2: how should this rule change */}
+          {(phase === 'input' || phase === 'loading' || phase === 'missing') && (
+            <>
+              {phase === 'missing' && (
+                <div className="rounded-xl p-3" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
+                  <p className="text-xs font-semibold mb-1" style={{ color: '#991B1B' }}>Verdix needs more detail to operationalize this change.</p>
+                  <ul className="text-[11px] space-y-0.5" style={{ color: '#7F1D1D' }}>
+                    {missingQuestions.map((q, i) => <li key={i}>• {q}</li>)}
+                  </ul>
+                </div>
+              )}
+              <p className="text-[10px] font-bold uppercase tracking-widest text-stone">{currentRecord ? 'How should this rule change?' : 'How should this rule be applied?'}</p>
+              <div className="space-y-1.5">
+                {options.map((opt: StructuredOption) => (
+                  <label key={opt.id} className="flex items-start gap-2 p-2 rounded-lg cursor-pointer transition-colors"
+                    style={{ background: selectedOption === opt.id ? '#F0FDF4' : 'transparent', border: `1px solid ${selectedOption === opt.id ? 'rgba(11,92,54,0.3)' : 'rgba(26,61,43,0.1)'}` }}>
+                    <input type="radio" name={`edit-rule-option-${contractUnitType ?? 'escalator'}`} className="mt-0.5" checked={selectedOption === opt.id} onChange={() => setSelectedOption(opt.id)} />
+                    <span>
+                      <span className="block text-xs font-semibold text-ink">{opt.label}</span>
+                      <span className="block text-[11px] text-stone">{opt.description}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-widest text-stone block mb-1">Or describe the change in your own words</label>
+                <textarea
+                  value={freeText}
+                  onChange={e => setFreeText(e.target.value)}
+                  placeholder="e.g. Treat the amount as an additional quarterly fee rather than a minimum floor. Apply the full amount even for partial quarters."
+                  rows={3}
+                  className="w-full text-xs border rounded-xl px-3 py-2 outline-none"
+                  style={{ borderColor: 'rgba(26,61,43,0.15)', background: '#FAFAF9' }}
+                />
+              </div>
+              {errorMsg && <p className="text-xs" style={{ color: '#DC2626' }}>{errorMsg}</p>}
+              <button
+                onClick={generate}
+                disabled={phase === 'loading' || (!selectedOption && !freeText.trim())}
+                className="w-full py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
+                style={{ background: '#1A3D2B', color: 'white' }}
+              >
+                {phase === 'loading' ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : 'Generate proposed change'}
+              </button>
+            </>
+          )}
+
+          {/* State 3 + 4: proposed change diff, what this means, impact, approval */}
+          {(phase === 'proposal' || phase === 'confirming') && proposal && (
+            <>
+              <div className="rounded-xl p-3" style={{ background: '#F0FDF4', border: '1px solid rgba(11,92,54,0.2)' }}>
+                <p className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: '#0B5C36' }}>Proposed interpretation</p>
+                <dl className="space-y-1.5">
+                  {Object.entries(proposal).filter(([f]) => !NARRATIVE_FIELDS.includes(f)).map(([field, value]) => {
+                    const oldValue = currentRecord?.approved_interpretation?.[field]
+                    const changed = changedFields.includes(field)
+                    return (
+                      <div key={field} className="flex justify-between gap-3 text-xs">
+                        <dt className="text-stone flex-shrink-0">{FIELD_LABELS[field] ?? field.replace(/_/g, ' ')}</dt>
+                        <dd className="font-medium text-ink text-right">
+                          {changed && currentRecord ? (
+                            <span className="text-stone/50">{formatFieldValue(field, oldValue, currency)} → </span>
+                          ) : null}
+                          <span className={changed ? 'text-ink' : ''}>{formatFieldValue(field, value, currency)}</span>
+                        </dd>
+                      </div>
+                    )
+                  })}
+                </dl>
+                {meaningSentence && (
+                  <p className="text-xs text-stone leading-relaxed mt-3 pt-3" style={{ borderTop: '1px solid rgba(74,124,89,0.15)' }}>
+                    <span className="font-semibold text-ink">What this means: </span>{meaningSentence}
+                  </p>
+                )}
+              </div>
+
+              {/* Worked example — a concrete numeric walkthrough, distinct from
+                  the plain-English rule statement above. This is what actually
+                  lets a Finance reviewer catch a graduated-vs-volume mistake
+                  before it reaches a real invoice, not internal field names. */}
+              {workedExample && (
+                <div className="rounded-xl p-3" style={{ background: '#EFF6FF', border: '1px solid rgba(59,130,246,0.25)' }}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest mb-1.5" style={{ color: '#1E40AF' }}>Worked example</p>
+                  <p className="text-xs text-stone leading-relaxed">{workedExample}</p>
+                </div>
+              )}
+
+              <div className="rounded-xl p-3" style={{ background: '#FFFDF5', border: '1px solid rgba(217,167,90,0.35)' }}>
+                <p className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: '#92400E' }}>What will change</p>
+                <ul className="space-y-1">
+                  {whatWillChange.map((c, i) => (
+                    <li key={i} className="text-[11px]" style={{ color: c.component === 'Usage Source' ? '#B45309' : '#78350F' }}>
+                      <span className="font-semibold">{c.component}</span> — {c.change}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              {historicalImpact && (
+                <div className="rounded-xl p-3" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
+                  <p className="text-xs font-semibold mb-1" style={{ color: '#991B1B' }}>
+                    <i className="ti ti-alert-triangle mr-1" style={{ fontSize: 12 }} /> Historical impact detected
+                  </p>
+                  <p className="text-[11px]" style={{ color: '#7F1D1D' }}>
+                    This interpretation would also affect {historicalImpact.affectedCount} already-billed period{historicalImpact.affectedCount > 1 ? 's' : ''} ({historicalImpact.periods.join(', ')}). Existing issued invoices will not be changed automatically.
+                  </p>
+                </div>
+              )}
+
+              {errorMsg && <p className="text-xs" style={{ color: '#DC2626' }}>{errorMsg}</p>}
+              <div className="flex gap-2">
+                <button
+                  onClick={confirmAndApply}
+                  disabled={phase === 'confirming'}
+                  className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
+                  style={{ background: '#1A3D2B', color: 'white' }}
+                >
+                  {phase === 'confirming' ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : 'Confirm & apply change'}
+                </button>
+                <button onClick={() => setPhase('input')} className="px-4 py-2 rounded-xl text-sm text-stone hover:text-ink border transition-colors" style={{ borderColor: 'rgba(26,61,43,0.15)' }}>
+                  Continue editing
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Review panel ──────────────────────────────────────────────────────────
 
 function ReviewPanel({
@@ -1194,6 +1587,7 @@ function ReviewPanel({
   jobId,
   overageTiers,
   escalators,
+  discounts,
   contractStartDate,
   contractEndDate,
   numberFormat = 'dot',
@@ -1211,6 +1605,7 @@ function ReviewPanel({
   jobId: string
   overageTiers?: Tier[]
   escalators?: Escalator[]
+  discounts?: Discount[]
   contractStartDate?: string
   contractEndDate?: string
   numberFormat?: 'dot' | 'comma'
@@ -1485,6 +1880,52 @@ function ReviewPanel({
               contractBillingFrequency={contractBillingFrequency}
             />
           )}
+
+          {/* Discounts — each resolved independently, keyed by its own
+              discount_rule_id rather than bundled into a single "primary
+              discount" ambiguity. A contract can have several (onboarding,
+              volume, reseller...) and only the unresolved ones surface here. */}
+          {(() => {
+            const unresolvedDiscounts = (discounts ?? []).filter(d => !d.interpretation || d.interpretation.requires_confirmation)
+            if (unresolvedDiscounts.length === 0) return null
+            return (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Discounts</p>
+                  <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                </div>
+                <div className="space-y-3">
+                  {unresolvedDiscounts.map((d, i) => {
+                    const discountId = d.discount_rule_id ?? String((discounts ?? []).indexOf(d))
+                    const label = d.description || d.applies_to || `Discount ${i + 1}`
+                    return (
+                      <div key={discountId} className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FAC775', background: 'white' }}>
+                        <div className="px-4 pt-4 pb-3">
+                          <div className="flex items-center gap-1.5 mb-2.5">
+                            <i className="ti ti-discount-2 text-stone" style={{ fontSize: 12 }} />
+                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Discount structure</span>
+                          </div>
+                          <p className="text-sm font-medium text-ink leading-snug mb-3">{label}</p>
+                          <p className="text-[11px] text-stone leading-relaxed mb-3">
+                            <span className="font-medium">Why review: </span>
+                            {d.interpretation?.confirmation_reason ?? '"Applies to" alone can\'t tell a staircase tier schedule from a volume schedule — the same rate table produces different totals under each.'}
+                          </p>
+                          <RuleInterpretationCard
+                            jobId={jobId}
+                            kind="discount"
+                            discountId={discountId}
+                            sourceClause={d.description ?? label}
+                            currency={cur ?? 'EUR'}
+                            onApplied={onRefresh}
+                          />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })()}
           {Object.entries(groups).map(([section, groupItems]) => (
             <div key={section}>
               {/* Section header from contract */}
@@ -1508,7 +1949,7 @@ function ReviewPanel({
                   const kind        = classifyItem(item, overageTiers ?? [], escalators ?? [], partialPeriodMetrics)
                   const ctx         = getReviewContext(item, kind, numberFormat, overageTiers ?? [])
                   const isResolved  = !!(resolved[item.id] || item.id in corrections)
-                  const isRuleInterpretation = kind === 'minimum_commitment' || kind === 'partial_period' || kind === 'escalator_interpretation'
+                  const isRuleInterpretation = kind === 'minimum_commitment' || kind === 'partial_period' || kind === 'escalator_interpretation' || kind === 'tier_calculation'
                   const ruleUnitType   = isRuleInterpretation ? findTierForItem(item, overageTiers ?? [])?.unit_type : undefined
                   const ruleMeterSuggestion = ruleUnitType ? meterSuggestions.find(s => s.contract_unit_type === ruleUnitType) : undefined
                   const ruleMeter      = ruleMeterSuggestion ? availableMeters.find(m => m.meter_key === ruleMeterSuggestion.meter_key) : undefined
@@ -1886,11 +2327,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // "Confirmed rules" card beyond what contract_terms alone can show, since
   // contract_terms only holds the current operational value, not who
   // approved it or when. Resilient to the audit table not existing yet.
-  type RuleInterpretationRecord = {
-    rule_type: string; contract_unit_type: string | null; source_clause: string | null; reviewer_input: string | null
-    approved_interpretation: Record<string, unknown>; reviewer_email: string; reviewer_name: string | null; created_at: string
-  }
+  // Every revision, current and historical — the GET route returns them all
+  // so "View previous version" can browse history without a second endpoint.
   const [ruleInterpretations, setRuleInterpretations] = useState<RuleInterpretationRecord[]>([])
+  // Which confirmed rule (by "min:{unitType}" / "esc:{index}" key) has its
+  // Edit-commercial-rule drawer open — a real right-side drawer now, not an
+  // inline-expanding card, since this is a revision to an already-approved
+  // rule and should feel distinct from first-time review.
   const [editingRule, setEditingRule] = useState<string | null>(null)
   const fetchRuleInterpretations = () => {
     fetch(`/api/jobs/${id}/rule-interpretations`)
@@ -2205,6 +2648,19 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
   const tiers = terms?.overage_tiers ?? []
 
+  // A metric measured on a different cadence than the contract's own
+  // billing_frequency makes "Billing cycle: Monthly" a flatly wrong answer
+  // for the contract as a whole — Contract Overview must agree with the
+  // "Billing schedule: Mixed" indicator shown lower on this same page
+  // (MeterMappingPanel), not contradict it. Uses each tier's own extracted
+  // measurement_period rather than requiring meter-mapping confirmation
+  // first, since this is a display-only summary, not a billing decision.
+  const contractCycleLower = (terms?.billing_frequency ?? '').toLowerCase()
+  const distinctMetricCycles = Array.from(new Set(
+    tiers.filter(t => t.unit_type && t.measurement_period).map(t => t.measurement_period!.toLowerCase())
+  ))
+  const mixedBillingSchedule = !!contractCycleLower && distinctMetricCycles.some(c => c !== contractCycleLower)
+
   // Group overage tiers by unit_type for dynamic display; preserve original index for edits
   const chargingGroups = new Map<string, Array<{ tier: Tier; origIdx: number }>>()
   for (let i = 0; i < tiers.length; i++) {
@@ -2503,9 +2959,17 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
                 <EditableStat
                   label="Billing cycle"
-                  value={terms?.billing_frequency
-                    ? terms.billing_frequency.charAt(0).toUpperCase() + terms.billing_frequency.slice(1)
-                    : null}
+                  value={mixedBillingSchedule
+                    ? 'Mixed'
+                    : terms?.billing_frequency
+                      ? terms.billing_frequency.charAt(0).toUpperCase() + terms.billing_frequency.slice(1)
+                      : null}
+                  sub={mixedBillingSchedule
+                    ? `Base fee: ${terms?.billing_frequency} · ${Array.from(chargingGroups.keys()).map(unitType => {
+                        const cycle = chargingGroups.get(unitType)?.find(({ tier }) => tier.measurement_period)?.tier.measurement_period
+                        return cycle && cycle.toLowerCase() !== contractCycleLower ? `${unitType}: ${cycle}` : null
+                      }).filter(Boolean).join(' · ')}`
+                    : undefined}
                   placeholder="e.g. monthly, annual"
                   onSave={v => saveField('billing_frequency', v)}
                 />
@@ -2568,27 +3032,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         const mc = t.minimum_commitment!
                         const editKey = `min:${unitType}`
                         const audit = findAudit('minimum_commitment', unitType)
-                        if (editingRule === editKey) {
-                          return (
-                            <div key={unitType} className="rounded-xl p-4 col-span-2" style={{ background: '#FFFDF7', border: '1px solid #FDE68A' }}>
-                              <div className="flex items-center justify-between mb-2">
-                                <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Editing: {unitType}</p>
-                                <button onClick={() => setEditingRule(null)} className="text-[11px] text-stone hover:text-ink underline underline-offset-2">Cancel</button>
-                              </div>
-                              <RuleInterpretationCard
-                                jobId={id}
-                                kind="minimum_commitment"
-                                contractUnitType={unitType}
-                                sourceClause={audit?.source_clause ?? `${unitType} minimum commitment`}
-                                currency={cur}
-                                meterMappingConfirmed={true}
-                                initialSelectedOption={deriveSelectedOption('minimum_commitment', audit?.approved_interpretation)}
-                                initialFreeText={audit?.reviewer_input ?? undefined}
-                                onApplied={() => { setEditingRule(null); fetchRuleInterpretations(); fetchJob() }}
-                              />
-                            </div>
-                          )
-                        }
                         return (
                           <div key={unitType} className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
                             <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">{modeLabel[mc.mode] ?? mc.mode}</p>
@@ -2615,45 +3058,31 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       {confirmedEscalators.map((e, i) => {
                         const editKey = `esc:${i}`
                         const audit = findAudit('escalator', null)
-                        if (editingRule === editKey) {
-                          return (
-                            <div key={i} className="rounded-xl p-4 col-span-2" style={{ background: '#FFFDF7', border: '1px solid #FDE68A' }}>
-                              <div className="flex items-center justify-between mb-2">
-                                <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Editing: Price escalation</p>
-                                <button onClick={() => setEditingRule(null)} className="text-[11px] text-stone hover:text-ink underline underline-offset-2">Cancel</button>
-                              </div>
-                              <RuleInterpretationCard
-                                jobId={id}
-                                kind="escalator_interpretation"
-                                sourceClause={audit?.source_clause ?? e.description ?? 'Price escalator'}
-                                currency={cur}
-                                initialSelectedOption={deriveSelectedOption('escalator', audit?.approved_interpretation)}
-                                initialFreeText={audit?.reviewer_input ?? undefined}
-                                onApplied={() => { setEditingRule(null); fetchRuleInterpretations(); fetchJob() }}
-                              />
-                            </div>
-                          )
-                        }
-                        // index === 'other' with no cap/effective-date is the AI's
-                        // honest "reviewer declined to set real parameters" case
-                        // (e.g. explicitly told to disregard the clause) — showing
-                        // the literal word "other" as the headline number reads as
-                        // broken, so label it for what it actually is instead.
-                        const unresolvedEscalator = e.interpretation!.index === 'other' && e.interpretation!.cap_pct == null && !e.interpretation!.effective_date
+                        // treatment is an explicit reviewer decision, not inferred
+                        // from empty fields — 'not_applied' means "confirmed: this
+                        // clause does not run," never shown alongside contradictory
+                        // "unresolved"/"pending" language the way the old heuristic
+                        // (guessing from empty index/cap) sometimes did.
+                        const notApplied = e.interpretation!.treatment === 'not_applied'
                         return (
                           <div key={i} className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
                             <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">Price escalation</p>
-                            {unresolvedEscalator ? (
-                              <p className="text-lg font-semibold text-ink mb-1">Terms not set</p>
+                            {notApplied ? (
+                              <>
+                                <p className="text-lg font-semibold text-ink mb-1">Not applied</p>
+                                <p className="text-[11px] text-stone">Reviewer decision: exclude the escalation clause.</p>
+                              </>
                             ) : (
-                              <p className="text-lg font-semibold text-ink mb-1">
-                                {e.interpretation!.index}{e.interpretation!.cap_pct != null ? `, capped ${e.interpretation!.cap_pct}%` : e.interpretation!.index !== 'other' ? ', uncapped' : ''}
-                              </p>
-                            )}
-                            <p className="text-[11px] text-stone">{e.interpretation!.calculation_method}</p>
-                            <p className="text-[11px] text-stone">Frequency: <span className="font-medium text-ink">{e.interpretation!.frequency}</span></p>
-                            {e.interpretation!.effective_date && (
-                              <p className="text-[11px] text-stone">Effective: <span className="font-medium text-ink">{fmtDate(e.interpretation!.effective_date)}</span></p>
+                              <>
+                                <p className="text-lg font-semibold text-ink mb-1">
+                                  {e.interpretation!.index}{e.interpretation!.cap_pct != null ? `, capped ${e.interpretation!.cap_pct}%` : e.interpretation!.index !== 'other' ? ', uncapped' : ''}
+                                </p>
+                                <p className="text-[11px] text-stone">{e.interpretation!.calculation_method}</p>
+                                <p className="text-[11px] text-stone">Frequency: <span className="font-medium text-ink">{e.interpretation!.frequency}</span></p>
+                                {e.interpretation!.effective_date && (
+                                  <p className="text-[11px] text-stone">Effective: <span className="font-medium text-ink">{fmtDate(e.interpretation!.effective_date)}</span></p>
+                                )}
+                              </>
                             )}
                             <p className="text-[10px] text-stone/60 mt-2">
                               Status: <span className="font-medium" style={{ color: '#0B5C36' }}>Confirmed</span>
@@ -2702,6 +3131,44 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       )
                     })}
                   </div>
+                  {/* Tier/volume structure interpretation, per discount — "before/
+                      after usage tiers" alone can't distinguish a staircase from a
+                      volume schedule, and each discount is resolved independently
+                      (a contract can have several: onboarding, volume, reseller...),
+                      never bundled into a single "primary discount" interpretation. */}
+                  <div className="mt-4 pt-4 space-y-3" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
+                    {terms!.discounts!.map((d, i) => {
+                      const discountId = d.discount_rule_id ?? String(i)
+                      const editKey = `disc:${discountId}`
+                      const interp = d.interpretation
+                      const label = d.description || d.applies_to || `Discount ${i + 1}`
+                      if (interp && !interp.requires_confirmation) {
+                        return (
+                          <div key={discountId} className="flex items-start justify-between gap-4">
+                            <div className="text-[11px] text-stone space-y-0.5 min-w-0">
+                              <p className="font-medium text-ink truncate">{label}</p>
+                              {interp.tier_method && (
+                                <p>Tier method: <span className="font-medium text-ink">{TIER_METHOD_DISPLAY[interp.tier_method] ?? interp.tier_method}</span></p>
+                              )}
+                              {interp.worked_example && <p className="text-stone/80 italic">{interp.worked_example}</p>}
+                            </div>
+                            <button onClick={() => setEditingRule(editKey)} className="text-[11px] font-medium text-stone hover:text-ink flex-shrink-0">Edit interpretation</button>
+                          </div>
+                        )
+                      }
+                      return (
+                        <div key={discountId} className="flex items-center justify-between gap-4">
+                          <p className="text-[11px] text-amber-700 min-w-0">
+                            <i className="ti ti-alert-triangle mr-1" style={{ fontSize: 11 }} />
+                            <span className="font-medium">{label}</span> — structure not yet interpreted; &quot;applies to&quot; alone can&apos;t tell a staircase from a volume schedule.
+                          </p>
+                          <button onClick={() => setEditingRule(editKey)} className="text-[11px] font-semibold px-3 py-1.5 rounded-lg flex-shrink-0" style={{ background: '#1A3D2B', color: 'white' }}>
+                            Resolve interpretation
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
               )}
 
@@ -2710,9 +3177,30 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
                   <SectionHeader title="Charging parameters" section={src.overage_tiers} onSection={openPDF} />
                   <div className="space-y-6">
-                    {Array.from(chargingGroups.entries()).map(([unitType, tierList]) => (
+                    {Array.from(chargingGroups.entries()).map(([unitType, tierList]) => {
+                      const paidTiers = tierList.filter(({ tier: t }) => (t.rate_per_unit ?? 0) > 0)
+                      const tierCalc = tierList.find(({ tier: t }) => t.tier_calculation)?.tier.tier_calculation
+                      // Only a metric with 2+ paid tiers has a graduated-vs-volume
+                      // distinction to resolve at all — a single flat rate has
+                      // nothing to disambiguate.
+                      const needsTierMethod = paidTiers.length >= 2
+                      return (
                       <div key={unitType}>
-                        <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-3 capitalize">{unitType}</p>
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] capitalize">{unitType}</p>
+                          {needsTierMethod && (
+                            tierCalc && !tierCalc.requires_confirmation ? (
+                              <button onClick={() => setEditingRule(`tier:${unitType}`)} className="text-[10px] font-medium text-stone hover:text-ink">
+                                Calculation: <span className="font-semibold text-ink">{TIER_METHOD_DISPLAY[tierCalc.method] ?? tierCalc.method}</span>
+                              </button>
+                            ) : (
+                              <button onClick={() => setEditingRule(`tier:${unitType}`)} className="text-[10px] font-semibold px-2.5 py-1 rounded-lg" style={{ background: '#FEF3C7', color: '#92400E' }}>
+                                <i className="ti ti-alert-triangle mr-1" style={{ fontSize: 10 }} />
+                                Needs interpretation
+                              </button>
+                            )
+                          )}
+                        </div>
                         <div className="grid grid-cols-3 gap-8">
                           {tierList.map(({ tier: t, origIdx }) => {
                             const isEditingTier = tierEditing === origIdx
@@ -2767,7 +3255,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           })}
                         </div>
                       </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               )}
@@ -3079,7 +3568,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 const partialPeriodMetricsForConfig = computePartialPeriodMetrics(terms?.contract_start_date, terms?.contract_end_date, tiers)
                 const groupOf = (item: LineItem): 'Variable pricing' | 'Fixed line items' => {
                   const k = classifyItem(item, tiers, terms?.escalators ?? [], partialPeriodMetricsForConfig)
-                  return (k === 'overage_tier' || k === 'minimum_commitment' || k === 'partial_period') ? 'Variable pricing' : 'Fixed line items'
+                  return (k === 'overage_tier' || k === 'minimum_commitment' || k === 'partial_period' || k === 'tier_calculation') ? 'Variable pricing' : 'Fixed line items'
                 }
                 const groupOrder = ['Fixed line items', 'Variable pricing'] as const
                 const orderedItems = groupOrder.flatMap(g => items.filter(i => groupOf(i) === g))
@@ -3110,8 +3599,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           const rowKind = classifyItem(item, tiers, terms?.escalators ?? [], partialPeriodMetricsForConfig)
                           const isEscalator = rowKind === 'escalator'
                           const isEscalatorUnresolved = rowKind === 'escalator_interpretation'
-                          const isVariableTier = rowKind === 'overage_tier' || rowKind === 'minimum_commitment' || rowKind === 'partial_period'
+                          const isVariableTier = rowKind === 'overage_tier' || rowKind === 'minimum_commitment' || rowKind === 'partial_period' || rowKind === 'tier_calculation'
+                          // A metric whose tier method (graduated/volume/block) isn't
+                          // confirmed has no single safe Total to show — the same
+                          // rate table can legitimately produce different totals
+                          // under each method (see lib/tariff.ts) — real invoicing
+                          // already refuses to bill it (lib/usage-pull.ts).
+                          const isTierCalcUnresolved = rowKind === 'tier_calculation'
                           const isVariable  = rowKind === 'one_time' && item.total_amount === 0
+                          // A reviewer's explicit "do not apply this escalator"
+                          // decision must never render as "0%", which reads as a
+                          // real configured rate rather than a deliberate exclusion.
+                          const escalatorNotApplied = isEscalator && (terms?.escalators ?? []).some(e => e.interpretation?.treatment === 'not_applied')
                           // Both resolved and unresolved escalators get the same
                           // non-editable-numeric-cell treatment (Qty/Unit price are
                           // meaningless for a % rate either way) — only the Total
@@ -3164,7 +3663,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             {/* Unit price — editable */}
                             <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums', minWidth: 96 }}>
                               {isEscalatorLike ? (
-                                <span>{isEscalatorUnresolved ? <span className="text-amber-600">Pending interpretation</span> : item.unit_price != null ? `${item.unit_price}%` : '—'}</span>
+                                <span>
+                                  {isEscalatorUnresolved
+                                    ? <span className="text-amber-600">Pending interpretation</span>
+                                    : escalatorNotApplied
+                                      ? <span className="text-stone/50">Not applied</span>
+                                      : item.unit_price != null ? `${item.unit_price}%` : '—'}
+                                </span>
                               ) : billingEdit?.itemId === item.id && billingEdit.field === 'unit_price' ? (
                                 <input autoFocus type="number" min="0" step="any"
                                   className={editCellStyle}
@@ -3207,9 +3712,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
                               {isEscalatorUnresolved
                                 ? <span className="text-amber-600 font-normal text-[11px]">Pending interpretation</span>
-                                : isEscalator
-                                  ? <span>{item.total_amount != null ? `${item.total_amount}%` : '—'}</span>
-                                  : isVariable
+                                : escalatorNotApplied
+                                  ? <span className="text-stone/50 font-normal text-[11px]">Not applied</span>
+                                  : isEscalator
+                                    ? <span>{item.total_amount != null ? `${item.total_amount}%` : '—'}</span>
+                                    : isTierCalcUnresolved
+                                    ? <span className="text-amber-600 font-normal text-[11px]">Pending interpretation</span>
+                                    : isVariable
                                     ? <span className="text-amber-600 font-normal text-[11px]">Variable — on delivery</span>
                                     : isVariableTier && item.quantity === 0
                                       ? <span className="text-stone/50 font-normal text-[11px]">Usage-based — not yet billed</span>
@@ -3535,6 +4044,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           jobId={id}
           overageTiers={terms?.overage_tiers}
           escalators={terms?.escalators}
+          discounts={terms?.discounts}
           contractStartDate={terms?.contract_start_date}
           contractEndDate={terms?.contract_end_date}
           numberFormat={terms?.number_format ?? 'dot'}
@@ -3545,6 +4055,45 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           onMeterMappingsConfirmedChange={setMeterMappingsConfirmed}
         />
       )}
+
+      {/* ── Edit commercial rule drawer ────────────────────────────────────
+           Editing an already-confirmed rule from the main Commercial Terms
+           view — a distinct experience from first-time review, not a return
+           trip to the Review panel (see EditCommercialRuleDrawer above). */}
+      {editingRule && (() => {
+        const isMin = editingRule.startsWith('min:')
+        const isTier = editingRule.startsWith('tier:')
+        const isDiscount = editingRule.startsWith('disc:')
+        const ruleType: RuleType = isMin ? 'minimum_commitment' : isTier ? 'tier_calculation' : isDiscount ? 'discount' : 'escalator'
+        const unitType = isMin ? editingRule.slice(4) : isTier ? editingRule.slice(5) : undefined
+        const discountId = isDiscount ? editingRule.slice(5) : undefined
+        // Discounts address their audit history via a synthetic
+        // 'discount:{id}' key in contract_unit_type (see confirm-rule) —
+        // reuses the column rather than needing a dedicated one.
+        const auditUnitKey = isDiscount ? `discount:${discountId}` : (unitType ?? null)
+        const records = ruleInterpretations.filter(r => r.rule_type === ruleType && r.contract_unit_type === auditUnitKey)
+        const currentRecord = records.find(r => r.is_current) ?? null
+        const historyRecords = records.filter(r => !r.is_current).sort((a, b) => b.revision_number - a.revision_number)
+        const minCadence = unitType ? tiers.find(t => t.unit_type === unitType)?.minimum_commitment?.period : null
+        const ruleTitle = isMin
+          ? `${unitType} · ${minCadence ? minCadence.charAt(0).toUpperCase() + minCadence.slice(1) : ''} minimum`.replace('  ', ' ')
+          : isTier ? `${unitType} · Tier calculation method`
+          : isDiscount ? 'Discount structure' : 'Price escalation'
+        return (
+          <EditCommercialRuleDrawer
+            jobId={id}
+            ruleType={ruleType}
+            contractUnitType={unitType}
+            discountId={discountId}
+            ruleTitle={ruleTitle}
+            currency={cur}
+            currentRecord={currentRecord}
+            historyRecords={historyRecords}
+            onClose={() => setEditingRule(null)}
+            onApplied={() => { setEditingRule(null); fetchRuleInterpretations(); fetchJob() }}
+          />
+        )
+      })()}
 
       {/* ── PDF Drawer ──────────────────────────────────────────────────── */}
       {/* When the review panel is also open, stop short of its 480px width

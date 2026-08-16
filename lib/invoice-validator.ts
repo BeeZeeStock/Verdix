@@ -94,8 +94,16 @@ export function validateInvoice(
     const tiers = matchingTiers.length > 0 ? matchingTiers : (terms.overage_tiers ?? []) as OverageTier[]
     if (tiers.length === 0 || tiers.every(t => !t.rate_per_unit)) continue
 
-    // Re-derive using the same graduated-tier function the webhook used
-    const expectedAmount = computeMetricOverage(totalQty, tiers, includedQty)
+    // Re-derive using the same tier-calculation function the webhook used.
+    // An unconfirmed tier method has no single "expected" amount to compare
+    // against (graduated vs. volume can legitimately diverge), so skip the
+    // check rather than flag a spurious mismatch — real invoicing already
+    // refuses to bill this metric until the method is confirmed (see
+    // lib/usage-pull.ts), so a sent invoice line for it would only exist
+    // from data predating this field, not a live gap to catch here.
+    const overageResult = computeMetricOverage(totalQty, tiers, includedQty)
+    if (overageResult.requiresConfirmation) continue
+    const expectedAmount = overageResult.amount
     if (expectedAmount <= 0) continue
 
     const diff = Math.abs(line.amount - expectedAmount)

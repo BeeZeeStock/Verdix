@@ -49,6 +49,12 @@ Rules:
     - confirmation_reason: a short plain-English note on what specifically is ambiguous (e.g. "Contract states a SEK 5,000 minimum per line but does not say whether it applies before or after the 200 included lines"), or null when requires_confirmation is false.
   - For graduated/incremental tiers: each call falls into exactly one bracket and is billed at that bracket's rate. Encode as distinct non-overlapping from_unit/to_unit ranges.
   - For volume tiers (all-or-nothing): if the contract specifies a single rate that applies to the entire volume once a threshold is hit, set from_unit to the threshold and to_unit:null for each tier.
+  - tier_calculation: REQUIRED whenever a metric has 2 or more paid (non-zero rate_per_unit) tiers — a rate table alone does not say HOW it is evaluated once usage spans more than one band, and graduated vs. volume can produce materially different totals from the identical table (example: tiers 1–100 @ 10 and 101–200 @ 8; at 150 units, graduated = 100×10 + 50×8 = 1,400, but volume/all-units = 150×8 = 1,200 because the whole quantity re-rates once the threshold is crossed). Populate the SAME structured object on every tier row for that metric: { "method": "graduated" | "volume" | "block" | "custom", "source_clause": "<verbatim or paraphrased clause, or null>", "requires_confirmation": <boolean>, "confirmation_reason": "<string or null>" }.
+    - method: "graduated" when the contract language describes each bracket applying only to units within it ("for the first X units... for units above X..."). "volume" when the contract says the whole quantity is re-rated once a threshold is reached ("once volume exceeds X, all units are billed at..."). "block" when reaching a band charges one flat fee for that band rather than a per-unit rate. "custom" when the mechanism doesn't map cleanly onto any of the three.
+    - requires_confirmation: set to true whenever the contract text does not clearly establish which method applies — this is the common case; graduated must NEVER be assumed as a silent default just because it is the more familiar convention. Set to false only when the contract text is unambiguous about the mechanism.
+    - confirmation_reason: a short plain-English note on what's ambiguous (e.g. "Contract states tiered per-unit rates for API calls but does not specify whether crossing a threshold re-rates all units or only the units above it"), or null when requires_confirmation is false.
+    - A metric with only ONE paid tier (a single flat rate) has no graduated-vs-volume distinction to make — omit tier_calculation (or set it to null) for single-tier metrics.
+    - This exact same method vocabulary and ambiguity rule applies to tiered/volume DISCOUNTS (see discounts below) — do not use a different standard for discount tiers than for pricing tiers.
   - CRITICAL — rate_per_unit decimal parsing: rates written as "€0.0500", "€0.035", "€0.02" are NOT zero. They are decimal fractions: 0.0500 = 0.05, 0.035, 0.02. Extract the full numeric value including leading-zero decimals. NEVER set rate_per_unit to 0 when a non-zero rate is stated in the contract.
   - TIER LABEL RULE: tier_label must describe the volume range. NEVER label a paid tier "Base Allowance" or "Included Units" — these phrases imply the tier is free. Use descriptive range labels like "Lines 1–50,000", "Up to 50,000", "50,001–250,000". Only use "Base Allowance" or "Included" language when those units are genuinely charged at zero (free). If the first tier has a non-zero rate, all tiers are paid — label them accordingly.
 - one_time_fees: non-recurring charges paid once (e.g. onboarding, implementation, setup, migration, professional services). Each entry: fee_label (short name), amount (number), due_date (ISO date or null), description (brief note or null), manual_trigger (boolean), metric_name (string or null), rate_per_unit (number or null).
@@ -104,9 +110,9 @@ Output:
   "escalators": [{"escalator_pct": 5, "escalator_type": "fixed_pct", "applies_from_year": 2, "effective_date": "2025-02-01", "cap_pct": null, "description": "5% fixed annual price increase"}],
   "discounts": [{"discount_pct": 20, "discount_amount": null, "discount_type": "introductory", "start_date": "2024-02-01", "end_date": "2024-07-31", "duration_months": 6, "applies_to": "base subscription", "description": "20% introductory discount months 1-6"}],
   "overage_tiers": [
-    {"tier_label": "Calls 1–10,000", "from_unit": 1, "to_unit": 10000, "rate_per_unit": 0.02, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null},
-    {"tier_label": "Calls 10,001–100,000", "from_unit": 10001, "to_unit": 100000, "rate_per_unit": 0.015, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null},
-    {"tier_label": "Calls 100,001+", "from_unit": 100001, "to_unit": null, "rate_per_unit": 0.01, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null}
+    {"tier_label": "Calls 1–10,000", "from_unit": 1, "to_unit": 10000, "rate_per_unit": 0.02, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null, "tier_calculation": {"method": "graduated", "source_clause": null, "requires_confirmation": true, "confirmation_reason": "Contract states per-call rates for each tier but does not specify whether crossing a threshold re-rates all calls or only the calls above it."}},
+    {"tier_label": "Calls 10,001–100,000", "from_unit": 10001, "to_unit": 100000, "rate_per_unit": 0.015, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null, "tier_calculation": {"method": "graduated", "source_clause": null, "requires_confirmation": true, "confirmation_reason": "Contract states per-call rates for each tier but does not specify whether crossing a threshold re-rates all calls or only the calls above it."}},
+    {"tier_label": "Calls 100,001+", "from_unit": 100001, "to_unit": null, "rate_per_unit": 0.01, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null, "tier_calculation": {"method": "graduated", "source_clause": null, "requires_confirmation": true, "confirmation_reason": "Contract states per-call rates for each tier but does not specify whether crossing a threshold re-rates all calls or only the calls above it."}}
   ],
   "additional_recurring_fees": [],
   "one_time_fees": [{"fee_label": "Onboarding fee", "amount": 5000, "due_date": "2024-02-01", "description": "One-time onboarding and implementation fee due at contract start"}],
@@ -287,8 +293,46 @@ function mergeExtractions(results: ContractTerms[]): ContractTerms {
   }
 
   merged.overage_tiers = flagAmbiguousMinimumCommitments(merged.overage_tiers)
+  merged.overage_tiers = flagAmbiguousTierCalculation(merged.overage_tiers)
+  merged.discounts = assignDiscountRuleIds(merged.discounts)
 
   return merged
+}
+
+// Every discount must be independently addressable (review, interpretation,
+// audit trail) rather than only ever reachable via array position — assigned
+// once at extraction time so it's stable for the lifetime of the job.
+function assignDiscountRuleIds<T extends { discount_rule_id?: string }>(discounts: T[]): T[] {
+  return discounts.map(d => d.discount_rule_id ? d : { ...d, discount_rule_id: crypto.randomUUID().slice(0, 8) })
+}
+
+// Safety net: force requires_confirmation=true whenever a metric has 2+ paid
+// tiers and the model didn't explicitly populate tier_calculation — a rate
+// table's graduated-vs-volume-vs-block evaluation is never inferred from the
+// mere presence of a table, same principle as flagAmbiguousMinimumCommitments
+// just above. A single-tier metric is excluded: one flat rate has no
+// graduated/volume distinction to make.
+function flagAmbiguousTierCalculation(tiers: OverageTier[]): OverageTier[] {
+  const paidTierCountByMetric = new Map<string, number>()
+  for (const t of tiers) {
+    if ((t.rate_per_unit ?? 0) > 0) {
+      paidTierCountByMetric.set(t.unit_type, (paidTierCountByMetric.get(t.unit_type) ?? 0) + 1)
+    }
+  }
+  return tiers.map(t => {
+    if ((t.rate_per_unit ?? 0) <= 0) return t
+    if ((paidTierCountByMetric.get(t.unit_type) ?? 0) < 2) return t
+    if (t.tier_calculation) return t
+    return {
+      ...t,
+      tier_calculation: {
+        method: 'graduated' as const,
+        source_clause: null,
+        requires_confirmation: true,
+        confirmation_reason: 'This metric has more than one price tier but the extraction did not determine whether crossing a threshold re-rates all units or only the units above it.',
+      },
+    }
+  })
 }
 
 // Safety net: force requires_confirmation=true whenever a metric structurally

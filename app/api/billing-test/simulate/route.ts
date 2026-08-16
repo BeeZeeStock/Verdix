@@ -25,7 +25,7 @@ import { requireOrg } from '@/lib/org'
 import { requireAdmin } from '@/lib/admin'
 import { getOrgSubscription, getPlan } from '@/lib/billing'
 import { computeMetricOverage, describeTieredUsage } from '@/lib/tariff'
-import type { OverageTier } from '@/lib/types'
+import type { OverageTier, TierCalculationMethod } from '@/lib/types'
 
 async function resolveOrgId(req: NextRequest, bodyOrgId: string | undefined): Promise<string | Response> {
   if (bodyOrgId) {
@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
   type MappingRow = {
     job_id: string
     included_units: number | null
-    overage_tiers: Array<{ from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number }>
+    overage_tiers: Array<{ from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number; tier_calculation?: TierCalculationMethod | null }>
     jobs: { id: string; org_id: string; contract_terms: { customer_name: string | null; currency: string | null }[] } | null
   }
 
@@ -93,8 +93,9 @@ export async function POST(req: NextRequest) {
       to_unit:       t.to_unit   ?? null,
       rate_per_unit: t.rate_per_unit ?? 0,
       unit_type:     meter.meter_key,
+      tier_calculation: t.tier_calculation ?? null,
     }))
-    const amount = tiers.length > 0 ? computeMetricOverage(testValue, tiers, includedUnits) : 0
+    const result = tiers.length > 0 ? computeMetricOverage(testValue, tiers, includedUnits) : { amount: 0, method: 'graduated' as const, requiresConfirmation: false }
     return {
       jobId:         m.job_id,
       customerName:  m.jobs?.contract_terms?.[0]?.customer_name ?? null,
@@ -103,8 +104,13 @@ export async function POST(req: NextRequest) {
       currency:      m.jobs?.contract_terms?.[0]?.currency ?? 'EUR',
       includedUnits,
       billableUnits: Math.max(0, testValue - includedUnits),
-      amount:        Math.round(amount * 100) / 100,
-      description:   describeTieredUsage(meter.display_name, testValue, tiers, includedUnits),
+      amount:        Math.round(result.amount * 100) / 100,
+      description:   describeTieredUsage(meter.display_name, testValue, tiers, includedUnits, true, result.method),
+      // Surfaced so this preview never claims more certainty than the real
+      // cron does — an unconfirmed tier method is skipped for actual
+      // billing (lib/usage-pull.ts), so this simulator flags the same gap
+      // rather than silently showing a graduated-guess amount as final.
+      requiresTierConfirmation: result.requiresConfirmation,
     }
   })
 

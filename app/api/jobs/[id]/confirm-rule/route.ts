@@ -24,7 +24,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
 import type { RuleType } from '@/lib/rule-interpretation'
-import type { MinimumCommitment, EscalatorInterpretation } from '@/lib/types'
+import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod } from '@/lib/types'
 
 type Body = {
   ruleType: RuleType
@@ -33,6 +33,17 @@ type Body = {
   reviewerInput: string
   aiProposedInterpretation: Record<string, unknown> | null
   approvedInterpretation: Record<string, unknown>
+  // Which discount this confirmation targets, when ruleType is 'discount'.
+  discountId?: string
+}
+
+function buildTierCalculation(approved: Record<string, unknown>): TierCalculationMethod {
+  return {
+    method: (approved.method as TierCalculationMethod['method']) ?? 'graduated',
+    source_clause: (approved.source_clause as string | undefined) ?? null,
+    requires_confirmation: false,
+    confirmation_reason: null,
+  }
 }
 
 type PropagationStatus = Record<string, 'applied' | 'failed' | 'skipped'>
@@ -61,11 +72,21 @@ export async function POST(
 
   const { id: jobId } = await params
   const body = await req.json() as Body
-  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation } = body
+  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId } = body
 
   if (!ruleType || !approvedInterpretation) {
     return NextResponse.json({ error: 'ruleType and approvedInterpretation are required' }, { status: 400 })
   }
+  if (ruleType === 'discount' && !discountId) {
+    return NextResponse.json({ error: 'discountId is required for discount interpretation' }, { status: 400 })
+  }
+
+  // The audit table's contract_unit_type column doubles as the addressing
+  // key for job-level rules (null for a singular escalator). Discounts are
+  // no longer singular, so a discount's audit history is addressed via a
+  // synthetic 'discount:{discount_rule_id}' key in that same column —
+  // reuses the existing schema rather than requiring another migration.
+  const auditUnitKey = ruleType === 'discount' ? `discount:${discountId}` : (contractUnitType ?? null)
 
   const session = await auth()
   const reviewerEmail = session?.user?.email ?? org.userEmail ?? 'unknown'
@@ -84,8 +105,8 @@ export async function POST(
     .eq('job_id', jobId)
     .eq('rule_type', ruleType)
     .eq('is_current', true)
-  const { data: priorCurrent } = await (contractUnitType
-    ? priorCurrentQuery.eq('contract_unit_type', contractUnitType)
+  const { data: priorCurrent } = await (auditUnitKey
+    ? priorCurrentQuery.eq('contract_unit_type', auditUnitKey)
     : priorCurrentQuery.is('contract_unit_type', null)
   ).maybeSingle()
 
@@ -94,7 +115,7 @@ export async function POST(
   const { error: auditError } = await supabaseServer.from('commercial_rule_interpretations').insert({
     job_id: jobId,
     rule_type: ruleType,
-    contract_unit_type: contractUnitType ?? null,
+    contract_unit_type: auditUnitKey,
     revision_number: nextRevision,
     is_current: true,
     source_clause: sourceClause ?? null,
@@ -130,7 +151,7 @@ export async function POST(
   // ── Step 2: contract_terms ───────────────────────────────────────────────
   const { data: termsRow } = await supabaseServer
     .from('contract_terms')
-    .select('id, overage_tiers, escalators')
+    .select('id, overage_tiers, escalators, discounts')
     .eq('job_id', jobId)
     .maybeSingle()
 
@@ -153,24 +174,86 @@ export async function POST(
   } else if (ruleType === 'escalator') {
     type Esc = { interpretation?: EscalatorInterpretation | null; [k: string]: unknown }
     const escalators = (termsRow.escalators ?? []) as Esc[]
-    const interpretation: EscalatorInterpretation = {
-      index: (approvedInterpretation.index as EscalatorInterpretation['index']) ?? 'other',
-      frequency: (approvedInterpretation.frequency as EscalatorInterpretation['frequency']) ?? 'annual',
-      effective_date: (approvedInterpretation.effective_date as string | null) ?? null,
-      cap_pct: (approvedInterpretation.cap_pct as number | null) ?? null,
-      calculation_method: (approvedInterpretation.calculation_method as string) ?? '',
-      requires_confirmation: false,
-      confirmation_reason: null,
-    }
+    const treatment: EscalatorInterpretation['treatment'] = approvedInterpretation.treatment === 'not_applied' ? 'not_applied' : 'applies'
+    const interpretation: EscalatorInterpretation = treatment === 'not_applied'
+      ? {
+          treatment: 'not_applied',
+          index: null, frequency: null, effective_date: null, cap_pct: null, calculation_method: null,
+          requires_confirmation: false,
+          confirmation_reason: (approvedInterpretation.confirmation_reason as string | null) ?? null,
+        }
+      : {
+          treatment: 'applies',
+          index: (approvedInterpretation.index as EscalatorInterpretation['index']) ?? 'other',
+          frequency: (approvedInterpretation.frequency as EscalatorInterpretation['frequency']) ?? 'annual',
+          effective_date: (approvedInterpretation.effective_date as string | null) ?? null,
+          cap_pct: (approvedInterpretation.cap_pct as number | null) ?? null,
+          calculation_method: (approvedInterpretation.calculation_method as string) ?? '',
+          requires_confirmation: false,
+          confirmation_reason: null,
+        }
     const newEscalators = escalators.length > 0
       ? escalators.map((e, i) => (i === 0 ? { ...e, interpretation } : e))
       : [{ escalator_pct: null, escalator_type: 'CPI_cap', effective_date: interpretation.effective_date, applies_from_year: null, cap_pct: interpretation.cap_pct, description: '', interpretation }]
     const { error } = await supabaseServer.from('contract_terms').update({ escalators: newEscalators }).eq('id', termsRow.id)
     propagation['contract_terms'] = error ? 'failed' : 'applied'
+  } else if (ruleType === 'discount') {
+    // Addressed by discount_rule_id, not array position, so a contract with
+    // several independent discounts only has the targeted one touched — the
+    // others keep whatever interpretation (or lack of one) they already had.
+    type Disc = { discount_rule_id?: string; interpretation?: DiscountInterpretation | null; [k: string]: unknown }
+    const discounts = (termsRow.discounts ?? []) as Disc[]
+    const isTiered = approvedInterpretation.discount_type === 'tiered_discount' || approvedInterpretation.discount_type === 'volume_discount'
+    const interpretation: DiscountInterpretation = {
+      discount_type: (approvedInterpretation.discount_type as DiscountInterpretation['discount_type']) ?? 'custom',
+      discount_basis: (approvedInterpretation.discount_basis as DiscountInterpretation['discount_basis']) ?? 'percentage',
+      tier_method: isTiered ? ((approvedInterpretation.tier_method as DiscountInterpretation['tier_method']) ?? null) : null,
+      tiers: isTiered ? ((approvedInterpretation.tiers as DiscountInterpretation['tiers']) ?? null) : null,
+      applies_to: (approvedInterpretation.applies_to as string | null) ?? null,
+      application_order: (approvedInterpretation.application_order as string | null) ?? null,
+      reset_period: (approvedInterpretation.reset_period as DiscountInterpretation['reset_period']) ?? null,
+      worked_example: (approvedInterpretation.worked_example as string | null) ?? null,
+      requires_confirmation: false,
+      confirmation_reason: null,
+    }
+    const targetIndex = discounts.findIndex(d => d.discount_rule_id === discountId)
+    const fallbackIndex = targetIndex === -1 && Number.isInteger(Number(discountId)) ? Number(discountId) : -1
+    let newDiscounts: Disc[]
+    if (targetIndex !== -1) {
+      newDiscounts = discounts.map((d, i) => (i === targetIndex ? { ...d, interpretation } : d))
+    } else if (fallbackIndex !== -1 && discounts[fallbackIndex]) {
+      // Legacy discount row addressed positionally, predates discount_rule_id
+      // — backfill the id now so future confirmations address it directly.
+      newDiscounts = discounts.map((d, i) => (i === fallbackIndex ? { ...d, discount_rule_id: d.discount_rule_id ?? discountId, interpretation } : d))
+    } else if (discounts.length === 0) {
+      newDiscounts = [{ discount_rule_id: discountId, discount_pct: null, discount_amount: null, discount_type: 'other', start_date: null, end_date: null, duration_months: null, applies_to: interpretation.applies_to ?? '', description: '', interpretation }]
+    } else {
+      newDiscounts = discounts
+      propagation['contract_terms'] = 'failed'
+    }
+    if (propagation['contract_terms'] !== 'failed') {
+      const { error } = await supabaseServer.from('contract_terms').update({ discounts: newDiscounts }).eq('id', termsRow.id)
+      propagation['contract_terms'] = error ? 'failed' : 'applied'
+    }
+  } else if (ruleType === 'tier_calculation') {
+    if (!contractUnitType) {
+      propagation['contract_terms'] = 'failed'
+    } else {
+      type Tier = { unit_type: string; tier_calculation?: TierCalculationMethod | null; [k: string]: unknown }
+      const tiers = (termsRow.overage_tiers ?? []) as Tier[]
+      const newTiers = tiers.map(t =>
+        t.unit_type === contractUnitType
+          ? { ...t, tier_calculation: buildTierCalculation(approvedInterpretation) }
+          : t
+      )
+      const { error } = await supabaseServer.from('contract_terms').update({ overage_tiers: newTiers }).eq('id', termsRow.id)
+      propagation['contract_terms'] = error ? 'failed' : 'applied'
+    }
   }
 
   // ── Step 3: contract_meter_mappings (mirror, when a confirmed mapping exists) ──
-  if ((ruleType === 'minimum_commitment' || ruleType === 'partial_period') && contractUnitType) {
+  const mirrorsToMeterMapping = ruleType === 'minimum_commitment' || ruleType === 'partial_period' || ruleType === 'tier_calculation'
+  if (mirrorsToMeterMapping && contractUnitType) {
     const { data: mapping } = await supabaseServer
       .from('contract_meter_mappings')
       .select('id, overage_tiers, confirmed')
@@ -181,9 +264,11 @@ export async function POST(
     if (!mapping) {
       propagation['contract_meter_mappings'] = 'skipped' // no meter mapping exists yet — nothing to mirror into
     } else {
-      type Tier = { minimum_commitment?: MinimumCommitment | null; [k: string]: unknown }
+      type Tier = { minimum_commitment?: MinimumCommitment | null; tier_calculation?: TierCalculationMethod | null; [k: string]: unknown }
       const tiers = (mapping.overage_tiers ?? []) as Tier[]
-      const newTiers = tiers.map(t => ({ ...t, minimum_commitment: buildMinimumCommitment(approvedInterpretation, t.minimum_commitment) }))
+      const newTiers = ruleType === 'tier_calculation'
+        ? tiers.map(t => ({ ...t, tier_calculation: buildTierCalculation(approvedInterpretation) }))
+        : tiers.map(t => ({ ...t, minimum_commitment: buildMinimumCommitment(approvedInterpretation, t.minimum_commitment) }))
       const { error } = await supabaseServer.from('contract_meter_mappings').update({ overage_tiers: newTiers }).eq('id', mapping.id)
       propagation['contract_meter_mappings'] = error ? 'failed' : 'applied'
     }
@@ -199,8 +284,8 @@ export async function POST(
     .eq('job_id', jobId)
     .eq('rule_type', ruleType)
     .eq('revision_number', nextRevision)
-  await (contractUnitType
-    ? statusUpdateQuery.eq('contract_unit_type', contractUnitType)
+  await (auditUnitKey
+    ? statusUpdateQuery.eq('contract_unit_type', auditUnitKey)
     : statusUpdateQuery.is('contract_unit_type', null))
 
   const anyFailed = Object.values(propagation).includes('failed')
