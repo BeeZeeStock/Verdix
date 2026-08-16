@@ -222,10 +222,16 @@ export function MeterMappingPanel({ jobId, currency, isConfigured, onConfirmedCh
           <div className="flex items-center gap-2 mb-0.5">
             <i className={`ti ti-chevron-right text-stone/50 transition-transform ${collapsed ? '' : 'rotate-90'}`} style={{ fontSize: 12 }} />
             <i className="ti ti-plug-connected text-amber-700" style={{ fontSize: 15 }} />
-            <span className="text-sm font-medium text-ink">Configure billing meters</span>
+            {/* "Usage mappings" — not "billing configured" — this panel only
+                confirms which meter feeds each metric's usage data. It says
+                nothing about whether that metric's commercial rules (tier
+                calculation method, minimum commitments, etc.) are resolved,
+                so its "All confirmed" must never be read as "billing fully
+                configured" when other ambiguities remain elsewhere. */}
+            <span className="text-sm font-medium text-ink">Usage mappings</span>
             {allConfirmed && (
               <span className="inline-flex items-center gap-1 text-[10px] font-semibold" style={{ color: '#4A7C59' }}>
-                <i className="ti ti-check" style={{ fontSize: 10 }} /> All confirmed
+                · <i className="ti ti-check" style={{ fontSize: 10 }} /> All confirmed
               </span>
             )}
             {!allConfirmed && (

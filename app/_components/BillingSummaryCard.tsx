@@ -73,11 +73,23 @@ type ParkedInvoiceSummary = {
   description: string | null
 }
 
+type CommercialRuleEvent = {
+  id: string; meterKey: string; mode: string; amount: number; currency: string
+  cadence: string; windowStart: string; windowEnd: string
+  partialPeriod: { isPartial: boolean; needsConfirmation: boolean; prorated: boolean } | null
+}
+
+const COMMITMENT_MODE_LABEL: Record<string, string> = {
+  floor: 'Minimum floor', additive: 'Additive fee', minimum_spend: 'Spend commitment',
+  prepaid_commitment: 'Prepaid commitment', minimum_quantity: 'Minimum quantity',
+}
+
 type Summary = {
   subscription: SubscriptionInfo
   invoices: InvoiceInfo[]
   annualDraftInvoices: InvoiceInfo[]
   oneTimeInvoices: InvoiceInfo[]
+  commercialRuleEvents?: CommercialRuleEvent[]
   parkedInvoices?: ParkedInvoiceSummary[]
   paymentSchedule: YearPayment[] | null
   oneTimeFees: OneTimeFee[]
@@ -129,6 +141,10 @@ function StatusBadge({ status }: { status: string | null }) {
     canceled:      { icon: 'ti-circle-x',      color: '#9CA3AF', label: 'Canceled' },
     pending:       { icon: 'ti-circle-dashed', color: '#9CA3AF', label: 'Pending' },
     failed:        { icon: 'ti-alert-triangle', color: '#DC2626', label: 'Push failed' },
+    // A confirmed commercial rule whose cadence window hasn't closed yet —
+    // deliberately distinct from "Draft" (an actual invoice row awaiting
+    // issue): there's nothing to invoice yet, just a known future charge.
+    scheduled:     { icon: 'ti-calendar-time', color: '#9CA3AF', label: 'Scheduled' },
   }
   const s = status ?? 'unknown'
   const style = map[s] ?? { icon: 'ti-circle-dashed', color: '#9CA3AF', label: s }
@@ -258,7 +274,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
 
   if (!summary) return null
 
-  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, paymentSchedule, oneTimeFees, currency, paymentTermsDays, contractStart, hasOverageTerms, overageMeterTypes } = summary
+  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, commercialRuleEvents, paymentSchedule, oneTimeFees, currency, paymentTermsDays, contractStart, hasOverageTerms, overageMeterTypes } = summary
   const meterTypes = overageMeterTypes ?? []
 
 
@@ -319,9 +335,12 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
         // Merge all invoices (subscription + one-time) into a unified chronological timeline
         type TLEntry = {
           id: string; label: string; dateLabel: string; date: Date; amount: number; currency: string
-          status: string | null; hostedUrl?: string | null; pdfUrl?: string | null; kind: 'subscription' | 'one-time' | 'pending-setup'
+          status: string | null; hostedUrl?: string | null; pdfUrl?: string | null; kind: 'subscription' | 'one-time' | 'pending-setup' | 'commercial-rule'
           baseAmount: number; overageLineItems: OverageLineItem[]; overageTotal: number; description?: string | null
           quantity?: number | null; unitPrice?: number | null; errorMessage?: string | null
+          // commercial-rule only: a confirmed metric-level commitment whose
+          // cadence window hasn't closed yet, so no real invoice row exists.
+          commercialRule?: { meterKey: string; mode: string; cadence: string; windowEnd: string; partialPeriod: CommercialRuleEvent['partialPeriod'] }
         }
         const entries: TLEntry[] = []
 
@@ -439,6 +458,34 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
           }
         }
 
+        // Commercial-rule events — a confirmed additive/floor/etc. commitment
+        // whose cadence window hasn't closed yet, so no real planned_invoices
+        // row exists for it (real billing only writes one once the period
+        // closes). Without this, the timeline silently contradicts a
+        // Commercial Terms card that already says the rule is confirmed.
+        for (const ev of commercialRuleEvents ?? []) {
+          const windowStart = new Date(ev.windowStart + 'T00:00:00')
+          const windowEnd   = new Date(ev.windowEnd   + 'T00:00:00')
+          const cadenceLabel = ev.cadence === 'quarterly'
+            ? `Q${Math.floor(windowStart.getMonth() / 3) + 1} ${windowStart.getFullYear()}`
+            : ev.cadence === 'annual'
+              ? `${windowStart.getFullYear()}`
+              : windowStart.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
+          entries.push({
+            id: ev.id, label: `${cadenceLabel} · ${ev.meterKey} commercial charge`,
+            // The API only emits events whose window hasn't closed yet
+            // (windowEnd >= today), so anchoring on windowEnd — roughly when
+            // the arrears charge actually gets invoiced — guarantees this
+            // always sorts into "upcoming", never "past", even for a window
+            // already in progress (windowStart before today).
+            dateLabel: 'Scheduled', date: windowEnd,
+            amount: ev.amount, currency: ev.currency,
+            status: 'scheduled', kind: 'commercial-rule',
+            baseAmount: 0, overageLineItems: [], overageTotal: 0,
+            commercialRule: { meterKey: ev.meterKey, mode: ev.mode, cadence: ev.cadence, windowEnd: ev.windowEnd, partialPeriod: ev.partialPeriod },
+          })
+        }
+
         if (entries.length === 0) return null
 
         // Sort chronologically
@@ -456,6 +503,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
           if (status === 'failed')  return { icon: 'ti-alert-triangle', color: '#DC2626' }
           if (status === 'draft')   return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
           if (status === 'pending') return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
+          if (status === 'scheduled') return { icon: 'ti-calendar-time', color: '#9CA3AF' }
           return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
         }
 
@@ -478,7 +526,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
           // Past date + Stripe open/paid = Issued (sent to customer, awaiting payment)
           // Past date + Stripe paid      = Paid
           // Future date                  = Draft (not yet issued, regardless of Stripe status)
-          const effectiveStatus = isPast ? e.status : 'draft'
+          const effectiveStatus = e.kind === 'commercial-rule' ? 'scheduled' : (isPast ? e.status : 'draft')
           const canPark = !isPast && e.kind === 'one-time'
           const isOpen = expanded.has(e.id)
           return (
@@ -595,6 +643,27 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
                               </tr>
                             ))
                           ) : null}
+                        </>
+                      ) : e.kind === 'commercial-rule' && e.commercialRule ? (
+                        <>
+                          <tr>
+                            <td className="px-3 py-2 text-ink">{COMMITMENT_MODE_LABEL[e.commercialRule.mode] ?? e.commercialRule.mode}</td>
+                            <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>1</td>
+                            <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</td>
+                            <td className="px-3 py-2 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</td>
+                          </tr>
+                          <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                            <td className="px-3 py-2 text-stone" colSpan={4}>
+                              variable {e.commercialRule.meterKey} usage · {e.commercialRule.cadence} in arrears
+                            </td>
+                          </tr>
+                          {e.commercialRule.partialPeriod?.isPartial && (
+                            <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                              <td className="px-3 py-2" colSpan={4} style={{ color: e.commercialRule.partialPeriod.needsConfirmation ? '#B45309' : '#6B7280' }}>
+                                Partial-quarter treatment: {e.commercialRule.partialPeriod.needsConfirmation ? 'Needs confirmation' : e.commercialRule.partialPeriod.prorated ? 'Prorated' : 'Full amount charged'}
+                              </td>
+                            </tr>
+                          )}
                         </>
                       ) : (
                         <tr>

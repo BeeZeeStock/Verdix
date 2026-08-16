@@ -20,6 +20,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { computeOverageForPeriod, type OverageLineItem } from '@/lib/usage-pull'
+import { isPartialWindow } from '@/lib/tariff'
 import type { ContractTerms } from '@/lib/types'
 
 type PeriodStatus = 'past' | 'current' | 'pending' | 'future'
@@ -76,10 +77,21 @@ export async function GET(
     // Confirmed minimum commitments a future period will eventually enforce
     // — a cheap, static read of the current contract model (no live usage
     // pull; the period hasn't started, so there's nothing to measure yet).
-    // Lets the timeline show "Minimum floor: X · awaiting period close" for
-    // a metric ahead of time, instead of only the generic "will be measured"
-    // message that gave no hint a floor was already confirmed.
-    let pendingMinimums: Array<{ meter_key: string; amount: number; currency: string }> = []
+    // Lets the timeline show a mode-accurate note ("Additive fee: X", not a
+    // blanket "Minimum floor: X" regardless of actual mode) for a metric
+    // ahead of time, instead of only the generic "will be measured" message
+    // that gave no hint a commercial rule was already confirmed.
+    let pendingMinimums: Array<{
+      meter_key: string
+      amount: number
+      currency: string
+      mode: string
+      // null when the commitment isn't calendar-anchored (contract_start
+      // anchoring never produces a partial window, so there's nothing to
+      // confirm); otherwise whether this specific period is a partial one
+      // and, if so, whether proration has actually been decided yet.
+      partialPeriod: { isPartial: boolean; needsConfirmation: boolean; prorated: boolean } | null
+    }> = []
 
     if (status === 'past' && nextRow) {
       overageItems = (nextRow.overage_line_items ?? []) as OverageLineItem[]
@@ -101,9 +113,25 @@ export async function GET(
       }).catch(() => [])
     } else if (status === 'future' && terms) {
       const seen = new Set<string>()
+      const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date + 'T00:00:00') : null
+      const contractEnd   = terms.contract_end_date   ? new Date(terms.contract_end_date   + 'T00:00:00') : null
       pendingMinimums = (terms.overage_tiers ?? [])
         .filter(t => t.unit_type && t.minimum_commitment && !t.minimum_commitment.requires_confirmation && !seen.has(t.unit_type) && seen.add(t.unit_type))
-        .map(t => ({ meter_key: t.unit_type!, amount: t.minimum_commitment!.amount, currency: row.currency ?? terms.currency ?? 'EUR' }))
+        .map(t => {
+          const mc = t.minimum_commitment!
+          const isCalendarAnchored = t.reset_anchor === 'calendar'
+          const window = { start: new Date(periodStart + 'T00:00:00'), end: new Date(periodEnd + 'T00:00:00') }
+          const isPartial = isCalendarAnchored && isPartialWindow(window, contractStart, contractEnd)
+          return {
+            meter_key: t.unit_type!,
+            amount: mc.amount,
+            currency: row.currency ?? terms.currency ?? 'EUR',
+            mode: mc.mode,
+            partialPeriod: isPartial
+              ? { isPartial: true, needsConfirmation: mc.prorate_partial_periods === 'unclear', prorated: mc.prorate_partial_periods === true }
+              : null,
+          }
+        })
     }
 
     return {

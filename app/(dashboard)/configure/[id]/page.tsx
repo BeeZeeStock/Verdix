@@ -284,12 +284,17 @@ function buildContractSummary(
   const lines: string[] = []
 
   // ── Sentence 1: pricing structure · customer · dates · TCV ───────────────
+  // "flat" specifically claims the entire bill is this one fixed number —
+  // false the moment any usage-based pricing exists on the contract, even if
+  // that usage hasn't been invoiced yet. A hybrid contract's base fee is
+  // still fixed and recurring, just not the whole story, hence "base" here.
+  const hasVariablePricing = (terms.overage_tiers?.length ?? 0) > 0
   let pricing: string
   if (terms.ramp_schedule && terms.ramp_schedule.length > 0) {
     const first = terms.ramp_schedule[0]
     const last  = terms.ramp_schedule[terms.ramp_schedule.length - 1]
     pricing = first.monthly_fee === last.monthly_fee
-      ? `flat ${fmt(first.monthly_fee, cur)}/month subscription`
+      ? `${hasVariablePricing ? 'base' : 'flat'} ${fmt(first.monthly_fee, cur)}/month subscription`
       : `${terms.ramp_schedule.length}-stage ramp (${fmt(first.monthly_fee, cur)} → ${fmt(last.monthly_fee, cur)}/mo)`
   } else if (terms.year_pricing && Object.keys(terms.year_pricing).length > 0) {
     const vals = Object.values(terms.year_pricing)
@@ -301,7 +306,7 @@ function buildContractSummary(
     const totalMonthly = terms.base_monthly_fee + addlMonthly
     pricing = addlMonthly > 0
       ? `combined ${fmt(totalMonthly, cur)}/month subscription`
-      : `flat ${fmt(terms.base_monthly_fee, cur)}/month subscription`
+      : `${hasVariablePricing ? 'base' : 'flat'} ${fmt(terms.base_monthly_fee, cur)}/month subscription`
   } else if (terms.base_annual_fee) {
     pricing = `${fmt(terms.base_annual_fee, cur)}/year subscription`
   } else {
@@ -321,16 +326,33 @@ function buildContractSummary(
   const oneTimeFees = (terms.one_time_fees ?? []).filter(f => (f.amount ?? 0) > 0)
   const oneTimeTotal = oneTimeFees.reduce((s, f) => s + Number(f.amount ?? 0), 0)
   const oneTimeStr = oneTimeFees.length === 1
-    ? ` and ${fmt(oneTimeFees[0].amount, cur)} one-time ${oneTimeFees[0].fee_label.toLowerCase()}`
+    ? ` plus a ${fmt(oneTimeFees[0].amount, cur)} one-time ${oneTimeFees[0].fee_label.toLowerCase()}`
     : oneTimeFees.length > 1
-      ? ` and ${fmt(oneTimeTotal, cur)} in one-time fees`
+      ? ` plus ${fmt(oneTimeTotal, cur)} in one-time fees`
       : ''
   const tcvStr = tcv > 0 ? ` Fixed fees over the initial term: ${fmt(tcv, cur)}.` : ''
   lines.push(`${duration}contract${customer}${dates} — ${pricing}${oneTimeStr}.${tcvStr}`)
 
   // ── Sentence 2: billing cadence · payment terms · auto-renewal ───────────
   const bits: string[] = []
-  if (terms.billing_frequency) bits.push(`billed ${terms.billing_frequency.toLowerCase()}`)
+  // A metric measured on a different cadence than the contract's own
+  // billing_frequency makes a flat "billed monthly" misleading — it reads as
+  // if everything on the contract invoices monthly, when usage/commercial
+  // rules on a different cadence won't. Mirrors the Contract Overview's own
+  // "Billing cycle: Mixed" detection (mixedBillingSchedule) so the two can
+  // never contradict each other.
+  const contractCycleLower = (terms.billing_frequency ?? '').toLowerCase()
+  const otherCycles = Array.from(new Set(
+    (terms.overage_tiers ?? [])
+      .filter(t => t.unit_type && t.measurement_period && t.measurement_period.toLowerCase() !== contractCycleLower)
+      .map(t => t.measurement_period!.toLowerCase())
+  ))
+  if (terms.billing_frequency && otherCycles.length > 0) {
+    bits.push(`Base fee billed ${terms.billing_frequency.toLowerCase()}`)
+    bits.push(`usage and applicable commercial rules evaluated ${otherCycles.join(' / ')}`)
+  } else if (terms.billing_frequency) {
+    bits.push(`billed ${terms.billing_frequency.toLowerCase()}`)
+  }
   if (terms.payment_terms_text) bits.push(terms.payment_terms_text)
   else if (terms.payment_terms_days) bits.push(`Net ${terms.payment_terms_days}`)
   if (terms.auto_renews === true) {
@@ -347,10 +369,21 @@ function buildContractSummary(
   const extras: string[] = []
   if (terms.escalators && terms.escalators.length > 0) {
     const e = terms.escalators[0]
-    const cap = e.cap_pct ? ` capped at ${e.cap_pct}%` : ''
-    extras.push(e.escalator_pct != null
-      ? `${e.escalator_pct}% annual escalator${cap}`
-      : 'price escalator — confirm rate from source clause')
+    const interp = e.interpretation
+    if (interp && !interp.requires_confirmation) {
+      // A reviewer's confirmed decision is stated as fact, never re-flagged
+      // as something still needing a rate confirmed from the source clause —
+      // that stale phrasing is exactly the kind of internal contradiction
+      // (confirmed vs. "needs review") this brief must not reintroduce.
+      extras.push(interp.treatment === 'not_applied'
+        ? 'price escalation not applied per confirmed reviewer interpretation'
+        : `${interp.index === 'CPI' ? 'CPI-linked' : interp.index === 'fixed_pct' ? 'fixed-percentage' : 'confirmed'} price escalation${interp.cap_pct != null ? `, capped at ${interp.cap_pct}%` : ''}`)
+    } else {
+      const cap = e.cap_pct ? ` capped at ${e.cap_pct}%` : ''
+      extras.push(e.escalator_pct != null
+        ? `${e.escalator_pct}% annual escalator${cap}`
+        : 'price escalator — needs interpretation')
+    }
   }
   if (terms.discounts && terms.discounts.length > 0) {
     const d    = terms.discounts[0]
@@ -768,7 +801,16 @@ function classifyItem(item: LineItem, tiers: Tier[] = [], escalators: Escalator[
     // A CPI-linked escalator with no resolved rate/interpretation needs the
     // same structured-interpretation flow as an ambiguous minimum — a plain
     // "confirm this value" doesn't make sense when there's no value yet.
-    const unresolved = escalators.some(e => e.escalator_pct == null && !e.interpretation)
+    // An interpretation that's present but still flagged requires_confirmation,
+    // or whose treatment isn't a recognized value (data predating the
+    // treatment field — the exact shape that produced a real "Confirmed" +
+    // "unresolved" contradiction), counts as unresolved too, not just an
+    // entirely absent interpretation.
+    const unresolved = escalators.some(e => e.escalator_pct == null && (
+      !e.interpretation
+      || e.interpretation.requires_confirmation
+      || (e.interpretation.treatment !== 'applies' && e.interpretation.treatment !== 'not_applied')
+    ))
     return unresolved ? 'escalator_interpretation' : 'escalator'
   }
 
@@ -786,8 +828,11 @@ function classifyItem(item: LineItem, tiers: Tier[] = [], escalators: Escalator[
   // A metric with 2+ paid tiers whose calculation method (graduated/volume/
   // block) isn't confirmed can't have its overage safely billed at all — see
   // that ambiguity before treating this as an ordinary rate-confirmation
-  // tier below. A single-tier metric has no such ambiguity to raise.
-  if (matchedTier?.tier_calculation?.requires_confirmation) {
+  // tier below. A single-tier metric has no such ambiguity to raise. Data
+  // extracted before tier_calculation existed (tier_calculation entirely
+  // absent) is just as unresolved as an explicit requires_confirmation:true —
+  // absence is never treated as "nothing to ask about" here.
+  if (matchedTier?.unit_type && (!matchedTier.tier_calculation || matchedTier.tier_calculation.requires_confirmation)) {
     const paidTierCount = tiers.filter(t => t.unit_type === matchedTier.unit_type && (t.rate_per_unit ?? 0) > 0).length
     if (paidTierCount >= 2) return 'tier_calculation'
   }
@@ -2673,6 +2718,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const userTiers  = tiers.filter(t => t.unit_type?.toLowerCase().includes('user'))
   const apiTiers   = tiers.filter(t => t.unit_type?.toLowerCase().includes('api') || t.unit_type?.toLowerCase().includes('call'))
 
+  // "Configured in X" claims the whole contract is set up in the billing
+  // platform — true for the fixed fees, not true while a metric's tier
+  // calculation method (graduated/volume/block) is still unresolved, since
+  // that metric can't be billed correctly (or at all — see lib/usage-pull.ts)
+  // until it's confirmed. Scoped explicitly rather than silently overclaiming.
+  const hasUnresolvedTierCalculation = Array.from(chargingGroups.values()).some(tierList => {
+    const paidCount = tierList.filter(({ tier: t }) => (t.rate_per_unit ?? 0) > 0).length
+    if (paidCount < 2) return false
+    const tierCalc = tierList.find(({ tier: t }) => t.tier_calculation)?.tier.tier_calculation
+    return !tierCalc || tierCalc.requires_confirmation
+  })
+
   // Classify one-time fees into services / hardware / credits / other
   const allFees      = terms?.one_time_fees ?? []
   const serviceFees  = allFees.filter(f => f.amount >= 0 && classifyFee(f.fee_label) === 'service')
@@ -2749,7 +2806,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           </div>
           {isConfigured ? (
             <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: '#4A7C59' }}>
-              <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> Configured in {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
+              <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> {hasUnresolvedTierCalculation ? 'Fixed fees configured in' : 'Configured in'} {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
             </span>
           ) : isFailed ? (
             <span className="text-xs font-medium flex items-center gap-1.5 text-red-500">
@@ -3016,7 +3073,15 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     confirmedMinimums.set(t.unit_type, t)
                   }
                 }
-                const confirmedEscalators = (terms?.escalators ?? []).filter(e => e.interpretation && !e.interpretation.requires_confirmation)
+                // Only a genuinely valid treatment ('applies' or 'not_applied') counts
+                // as confirmed here — an interpretation predating the treatment field
+                // (or otherwise missing it) is not safe to render as "Confirmed" even
+                // if requires_confirmation happens to be false; it needs to be
+                // re-resolved via "Edit interpretation" instead of displayed as-is.
+                const confirmedEscalators = (terms?.escalators ?? []).filter(e =>
+                  e.interpretation && !e.interpretation.requires_confirmation
+                  && (e.interpretation.treatment === 'applies' || e.interpretation.treatment === 'not_applied')
+                )
                 if (confirmedMinimums.size === 0 && confirmedEscalators.length === 0) return null
                 const modeLabel: Record<string, string> = {
                   floor: 'Minimum charge floor', additive: 'Additive fee', minimum_spend: 'Spend commitment',
@@ -3039,8 +3104,38 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                               {fmt(mc.amount, cur)}{ruleCadenceLabel(mc.period, t.reset_anchor) ? ` / ${ruleCadenceLabel(mc.period, t.reset_anchor)}` : ''}
                             </p>
                             <p className="text-[11px] text-stone">Applies to: <span className="font-medium text-ink">{unitType}</span></p>
-                            {mc.included_allowance_interaction && (
+                            {mc.mode === 'additive' ? (
+                              // An additive fee isn't itself "before/after the allowance" —
+                              // it's charged regardless of usage; the allowance only affects
+                              // whether the usage portion of the bill is zero or not. Stating
+                              // it as an allowance-interaction reads as if the fee's timing
+                              // depended on the allowance, which it doesn't.
+                              <p className="text-[11px] text-stone">
+                                Treatment: <span className="font-medium text-ink">
+                                  {fmt(mc.amount, cur)} added to the {t.measurement_period ?? ''} {unitType} usage charge, independent of the included allowance
+                                </span>
+                              </p>
+                            ) : mc.included_allowance_interaction && (
                               <p className="text-[11px] text-stone">Allowance: <span className="font-medium text-ink">{mc.included_allowance_interaction.replace(/_/g, ' ')}</span></p>
+                            )}
+                            {/* Partial-quarter (etc.) treatment is only a live question under
+                                calendar anchoring — contract_start anchoring never produces a
+                                partial window at all, so this line only appears when it can
+                                actually matter (mirrors computePartialPeriodMetrics exactly). */}
+                            {t.reset_anchor === 'calendar' && (
+                              mc.prorate_partial_periods === 'unclear' ? (
+                                <div className="mt-1.5 flex items-center justify-between gap-2">
+                                  <p className="text-[11px] text-amber-700">
+                                    <i className="ti ti-alert-triangle mr-1" style={{ fontSize: 10 }} />
+                                    Partial-quarter treatment: Needs confirmation
+                                  </p>
+                                  <button onClick={() => setEditingRule(`partial:${unitType}`)} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg flex-shrink-0" style={{ background: '#1A3D2B', color: 'white' }}>Resolve</button>
+                                </div>
+                              ) : (
+                                <p className="text-[11px] text-stone">
+                                  Partial-quarter treatment: <span className="font-medium text-ink">{mc.prorate_partial_periods === true ? 'Prorated' : 'Full amount charged'}</span>
+                                </p>
+                              )
                             )}
                             <p className="text-[10px] text-stone/60 mt-2">
                               Status: <span className="font-medium" style={{ color: '#0B5C36' }}>Confirmed</span>
@@ -3184,23 +3279,37 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       // distinction to resolve at all — a single flat rate has
                       // nothing to disambiguate.
                       const needsTierMethod = paidTiers.length >= 2
+                      const tierMethodResolved = !!tierCalc && !tierCalc.requires_confirmation
+                      const cadence = tierList.find(({ tier: t }) => t.measurement_period)?.tier.measurement_period ?? 'billing period'
                       return (
                       <div key={unitType}>
-                        <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center justify-between mb-1">
                           <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] capitalize">{unitType}</p>
-                          {needsTierMethod && (
-                            tierCalc && !tierCalc.requires_confirmation ? (
-                              <button onClick={() => setEditingRule(`tier:${unitType}`)} className="text-[10px] font-medium text-stone hover:text-ink">
-                                Calculation: <span className="font-semibold text-ink">{TIER_METHOD_DISPLAY[tierCalc.method] ?? tierCalc.method}</span>
-                              </button>
-                            ) : (
-                              <button onClick={() => setEditingRule(`tier:${unitType}`)} className="text-[10px] font-semibold px-2.5 py-1 rounded-lg" style={{ background: '#FEF3C7', color: '#92400E' }}>
-                                <i className="ti ti-alert-triangle mr-1" style={{ fontSize: 10 }} />
-                                Needs interpretation
-                              </button>
-                            )
+                          {needsTierMethod && tierMethodResolved && (
+                            <button onClick={() => setEditingRule(`tier:${unitType}`)} className="text-[10px] font-medium text-stone hover:text-ink">
+                              Calculation: <span className="font-semibold text-ink">{TIER_METHOD_DISPLAY[tierCalc!.method] ?? tierCalc!.method}</span>
+                            </button>
                           )}
                         </div>
+                        {/* The tier structure itself (e.g. the 1–500 included allowance below)
+                            is not what's uncertain here — it's HOW the paid bands are evaluated
+                            once usage spans more than one of them. A bare "Needs interpretation"
+                            chip sitting above the tier rows reads as if the allowance were in
+                            question, so this names the actual ambiguity explicitly instead. */}
+                        {needsTierMethod && !tierMethodResolved && (
+                          <div className="mb-3 rounded-lg p-2.5 flex items-center justify-between gap-3" style={{ background: '#FEF3C7' }}>
+                            <div>
+                              <p className="text-[10px] font-semibold" style={{ color: '#92400E' }}>{unitType} tier calculation method · Needs interpretation</p>
+                              <p className="text-[10px] mt-0.5" style={{ color: '#92400E' }}>
+                                Confirm whether rates apply progressively by tier, or whether total {cadence} volume selects one rate for all units.
+                              </p>
+                            </div>
+                            <button onClick={() => setEditingRule(`tier:${unitType}`)} className="text-[10px] font-semibold px-2.5 py-1 rounded-lg flex-shrink-0" style={{ background: '#1A3D2B', color: 'white' }}>
+                              Resolve
+                            </button>
+                          </div>
+                        )}
+                        {!(needsTierMethod && !tierMethodResolved) && <div className="mb-2" />}
                         <div className="grid grid-cols-3 gap-8">
                           {tierList.map(({ tier: t, origIdx }) => {
                             const isEditingTier = tierEditing === origIdx
@@ -3549,7 +3658,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     <span className="text-xs font-semibold px-3 py-2 rounded-xl flex items-center gap-1.5"
                       style={{ background: '#D4EAD9', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.3)' }}>
                       <i className="ti ti-circle-check" style={{ fontSize: 12 }} />
-                      Configured in {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
+                      {hasUnresolvedTierCalculation ? 'Fixed fees configured in' : 'Configured in'} {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
                     </span>
                   )}
                 </div>
@@ -4063,9 +4172,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       {editingRule && (() => {
         const isMin = editingRule.startsWith('min:')
         const isTier = editingRule.startsWith('tier:')
+        const isPartial = editingRule.startsWith('partial:')
         const isDiscount = editingRule.startsWith('disc:')
-        const ruleType: RuleType = isMin ? 'minimum_commitment' : isTier ? 'tier_calculation' : isDiscount ? 'discount' : 'escalator'
-        const unitType = isMin ? editingRule.slice(4) : isTier ? editingRule.slice(5) : undefined
+        const ruleType: RuleType = isMin ? 'minimum_commitment' : isTier ? 'tier_calculation' : isPartial ? 'partial_period' : isDiscount ? 'discount' : 'escalator'
+        const unitType = isMin ? editingRule.slice(4) : isTier ? editingRule.slice(5) : isPartial ? editingRule.slice(8) : undefined
         const discountId = isDiscount ? editingRule.slice(5) : undefined
         // Discounts address their audit history via a synthetic
         // 'discount:{id}' key in contract_unit_type (see confirm-rule) —
@@ -4078,6 +4188,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
         const ruleTitle = isMin
           ? `${unitType} · ${minCadence ? minCadence.charAt(0).toUpperCase() + minCadence.slice(1) : ''} minimum`.replace('  ', ' ')
           : isTier ? `${unitType} · Tier calculation method`
+          : isPartial ? `${unitType} · Partial-period treatment`
           : isDiscount ? 'Discount structure' : 'Price escalation'
         return (
           <EditCommercialRuleDrawer

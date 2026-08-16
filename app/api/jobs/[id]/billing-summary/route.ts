@@ -3,6 +3,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { billingInterval } from '@/lib/stripe-meter'
 import { remembillAppUrl } from '@/lib/billing-writer'
+import { enumerateCadenceWindows, isPartialWindow } from '@/lib/tariff'
 import type { ContractTerms } from '@/lib/types'
 
 export async function GET(
@@ -403,6 +404,62 @@ async function handlePlannedInvoicesPath({
   // ── oneTimeInvoices: one-time fees ─────────────────────────────────────────
   const oneTimeInvoices = oneTimeRows.map(mapPlanned)
 
+  // ── commercialRuleEvents: confirmed metric-level commitments (additive fees,
+  // minimum floors, etc.) that haven't closed yet, so no real planned_invoices
+  // row exists for them — a confirmed SEK 5,000/quarter additive fee must
+  // still show on the schedule before the quarter closes, or the timeline
+  // silently contradicts the Commercial Terms card that says it's confirmed.
+  // Reuses the same cadence-window engine usage-pull.ts uses for real
+  // billing (lib/tariff.ts) rather than a parallel date calculation.
+  type CommercialRuleEvent = {
+    id: string; meterKey: string; mode: string; amount: number; currency: string
+    cadence: string; windowStart: string; windowEnd: string
+    partialPeriod: { isPartial: boolean; needsConfirmation: boolean; prorated: boolean } | null
+  }
+  const commercialRuleEvents: CommercialRuleEvent[] = []
+  if (terms?.overage_tiers?.length && terms.contract_start_date) {
+    const seen = new Set<string>()
+    const contractStartDate = new Date(terms.contract_start_date + 'T00:00:00')
+    const contractEndDate   = terms.contract_end_date ? new Date(terms.contract_end_date + 'T00:00:00') : null
+    const today = new Date()
+    const dateOnly = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+    for (const t of terms.overage_tiers) {
+      if (!t.unit_type || !t.minimum_commitment || t.minimum_commitment.requires_confirmation) continue
+      if (seen.has(t.unit_type)) continue
+      seen.add(t.unit_type)
+      const mc = t.minimum_commitment
+      const cadence = t.measurement_period ?? 'monthly'
+      const anchor: 'calendar' | 'contract_start' = t.reset_anchor === 'calendar' ? 'calendar' : 'contract_start'
+      // Never schedule further out than the contract itself runs; fall back
+      // to a 12-month horizon for an open-ended contract with no end date.
+      const horizonEnd = contractEndDate ?? new Date(today.getFullYear(), today.getMonth() + 12, today.getDate())
+
+      const windows = enumerateCadenceWindows(contractStartDate, cadence, contractStartDate, horizonEnd, anchor)
+      for (const w of windows) {
+        // A window that has already closed either already has a real overage
+        // line item (once invoice-scheduler processes it) or is about to —
+        // this synthetic entry exists only to cover the gap before that,
+        // never to duplicate or contradict the real invoiced amount.
+        if (w.end < today) continue
+        const isPartial = anchor === 'calendar' && isPartialWindow(w, contractStartDate, contractEndDate)
+        commercialRuleEvents.push({
+          id:        `commercial-${t.unit_type}-${dateOnly(w.start)}`,
+          meterKey:  t.unit_type,
+          mode:      mc.mode,
+          amount:    mc.amount,
+          currency:  terms.currency ?? 'EUR',
+          cadence,
+          windowStart: dateOnly(w.start),
+          windowEnd:   dateOnly(w.end),
+          partialPeriod: isPartial
+            ? { isPartial: true, needsConfirmation: mc.prorate_partial_periods === 'unclear', prorated: mc.prorate_partial_periods === true }
+            : null,
+        })
+      }
+    }
+  }
+
   // ── parkedInvoices: service fees awaiting manual trigger ───────────────────
   type AnyFee = { fee_label: string; metric_name?: string | null; rate_per_unit?: number | null; description?: string | null }
   const termsFees = (terms?.one_time_fees ?? []) as AnyFee[]
@@ -445,6 +502,7 @@ async function handlePlannedInvoicesPath({
     invoices,
     annualDraftInvoices,
     oneTimeInvoices,
+    commercialRuleEvents,
     parkedInvoices,
     paymentSchedule,
     oneTimeFees:      terms?.one_time_fees ?? [],

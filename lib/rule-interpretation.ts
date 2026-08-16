@@ -361,12 +361,15 @@ export type ParsedRuleResponse =
   | { ok: true; proposal: Record<string, unknown> }
   | { ok: false; missingFields: string[] }
 
-// Validates Claude's JSON response has every field this rule type needs to
-// be actionable — never lets a partially-fabricated or incomplete object
-// through as if it were a complete proposal. A field genuinely absent from
-// the model's response (rather than present-but-null) is treated the same
-// as "the model wasn't confident enough to state it" — both count as
-// missing, never silently defaulted.
+// A live bug this caught: the model can respond with treatment:'applies'
+// while calculation_method itself describes disregarding/excluding the
+// clause — internally contradictory, and nothing about REQUIRED_FIELDS'
+// presence-only check would notice. Scans for language that only makes
+// sense if the clause is NOT running; if found alongside treatment:'applies',
+// the response is rejected as if treatment were missing entirely, forcing
+// the reviewer to clarify rather than silently confirming a contradiction.
+const NOT_APPLIED_LANGUAGE = /\b(disregard|do not apply|does not apply|excluded?|unresolved|not been established|left undefined|leaving .* undefined)\b/i
+
 export function parseRuleInterpretationResponse(ruleType: RuleType, rawText: string): ParsedRuleResponse {
   const jsonMatch = rawText.match(/\{[\s\S]*\}/)
   if (!jsonMatch) return { ok: false, missingFields: REQUIRED_FIELDS[ruleType] }
@@ -379,6 +382,10 @@ export function parseRuleInterpretationResponse(ruleType: RuleType, rawText: str
   const missing = REQUIRED_FIELDS[ruleType].filter(f => parsed[f] == null)
   if (ruleType === 'escalator' && parsed.treatment === 'applies') {
     missing.push(...ESCALATOR_APPLIES_FIELDS.filter(f => parsed[f] == null))
+    const calcMethod = typeof parsed.calculation_method === 'string' ? parsed.calculation_method : ''
+    if (calcMethod && NOT_APPLIED_LANGUAGE.test(calcMethod) && !missing.includes('treatment')) {
+      missing.push('treatment')
+    }
   }
   if (ruleType === 'discount' && (parsed.discount_type === 'tiered_discount' || parsed.discount_type === 'volume_discount')) {
     missing.push(...DISCOUNT_TIERED_FIELDS.filter(f => parsed[f] == null))

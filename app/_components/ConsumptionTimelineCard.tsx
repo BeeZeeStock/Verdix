@@ -18,7 +18,18 @@ type OverageItem = {
   minimumFloorAmount?:  number
 }
 
-type PendingMinimum = { meter_key: string; amount: number; currency: string }
+type PendingMinimum = {
+  meter_key: string
+  amount: number
+  currency: string
+  mode: string
+  partialPeriod: { isPartial: boolean; needsConfirmation: boolean; prorated: boolean } | null
+}
+
+const COMMITMENT_MODE_LABEL: Record<string, string> = {
+  floor: 'Minimum floor', additive: 'Additive fee', minimum_spend: 'Spend commitment',
+  prepaid_commitment: 'Prepaid commitment', minimum_quantity: 'Minimum quantity',
+}
 
 type Period = {
   id:           string
@@ -190,8 +201,13 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
                                 <td className="px-3 py-2 text-ink" colSpan={4}>
                                   {m.meter_key}
                                   <div className="text-[9px] font-medium mt-0.5" style={{ color: '#B45309' }}>
-                                    Minimum floor: {fmt(m.amount, m.currency)} · usage awaiting period close
+                                    {COMMITMENT_MODE_LABEL[m.mode] ?? m.mode}: {fmt(m.amount, m.currency)} · usage awaiting period close
                                   </div>
+                                  {m.partialPeriod?.isPartial && (
+                                    <div className="text-[9px] font-medium mt-0.5" style={{ color: m.partialPeriod.needsConfirmation ? '#B45309' : '#6B7280' }}>
+                                      Partial-quarter treatment: {m.partialPeriod.needsConfirmation ? 'Needs confirmation' : m.partialPeriod.prorated ? 'Prorated' : 'Full amount charged'}
+                                    </div>
+                                  )}
                                 </td>
                                 <td className="px-3 py-2 text-right text-stone/50 italic" style={{ fontSize: 11 }}>Pending</td>
                               </tr>
