@@ -8,7 +8,7 @@ import type { OverageTier } from '@/lib/types'
 
 type Escalator = { escalator_pct?: number; effective_date?: string; escalator_type?: string; cap_pct?: number; description?: string }
 type Discount  = { discount_pct?: number; start_date?: string; end_date?: string }
-type Tier      = { tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string }
+type Tier      = { tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string; measurement_period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null }
 type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null; description?: string | null }
 type RampStep = { start_date: string; end_date: string; monthly_fee: number; label?: string }
 type Terms = {
@@ -115,10 +115,24 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
     ? Math.max(0, (sortedMetricTiers[0].from_unit ?? 1) - 1)
     : (metricTiers.length === 0 && apiTiers.length === 0 ? (terms.included_units ?? 0) : 0)
 
-  // Billing period unit for scenario input and overage computation
-  const billingFreq        = terms.billing_frequency ?? 'monthly'
-  const monthsPerPeriod    = billingFreq === 'annual' ? 12 : billingFreq === 'quarterly' ? 3 : 1
-  const apiCallPeriodLabel = billingFreq === 'annual' ? 'year' : billingFreq === 'quarterly' ? 'quarter' : 'month'
+  // Billing period unit for scenario input and overage computation. Each
+  // metric can be measured on its own cadence, independent of the contract's
+  // overall billing_frequency (a common "mixed" pattern — base fee monthly,
+  // usage measured quarterly) — falls back to the contract-level cadence
+  // only when the tier itself doesn't specify one, mirroring the extraction
+  // convention (measurement_period defaults to billing_frequency when not
+  // separately stated). Using the contract-level cadence for every metric
+  // regardless of its own measurement_period previously meant a quarterly
+  // commitment got amortized as if it were monthly — a 3x inflation.
+  const billingFreq   = terms.billing_frequency ?? 'monthly'
+  const cadenceMonths = (c: string | undefined) => c === 'annual' ? 12 : c === 'quarterly' ? 3 : c === 'semi-annual' ? 6 : 1
+  const cadenceLabel  = (c: string | undefined) => c === 'annual' ? 'year' : c === 'quarterly' ? 'quarter' : c === 'semi-annual' ? 'half-year' : 'month'
+  const apiCadence     = sortedApiTiers[0]?.measurement_period ?? billingFreq
+  const genericCadence = sortedMetricTiers[0]?.measurement_period ?? billingFreq
+  const monthsPerPeriod       = cadenceMonths(apiCadence)
+  const apiCallPeriodLabel    = cadenceLabel(apiCadence)
+  const genericMonthsPerPeriod = cadenceMonths(genericCadence)
+  const genericPeriodLabel     = cadenceLabel(genericCadence)
 
   const escalators     = terms.escalators ?? []
   const contractEscPct = escalators[0]?.escalator_pct ?? 0
@@ -289,7 +303,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   const periodApiOvg     = computeMetricOverage(scenarioApiCalls, apiTiers as OverageTier[], includedApiCalls).amount
   const monthlyApiOvg    = periodApiOvg / monthsPerPeriod
   const periodGenericOvg = computeMetricOverage(scenarioGenericMetric, metricTiers as OverageTier[], includedGenericMetric).amount
-  const monthlyGenericOvg = periodGenericOvg / monthsPerPeriod
+  const monthlyGenericOvg = periodGenericOvg / genericMonthsPerPeriod
 
   // ── Build per-month model data ────────────────────────────────────────────
 
@@ -297,12 +311,25 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
     date: Date; sub: number; inDiscount: boolean; escalated: boolean
     discountPct: number; escalationMult: number; userOvg: number; apiOvg: number; genericOvg: number; total: number; isPast: boolean
   }
+  // Total monthly billing cycles the contract actually runs — contract_term_months
+  // is authoritative when extraction captured it; otherwise derived from the
+  // dates by rounding to the nearest whole month rather than truncating both
+  // ends to calendar-month-start and counting inclusively, which overcounts
+  // by one whenever the end date's day-of-month falls before the start
+  // date's (the common case: an N-month contract starting on day X ends on
+  // day X-1 the following period, one day short of a full extra month —
+  // e.g. 11 Aug 2026 – 10 Aug 2027 is exactly 12 months, not 13).
+  const totalContractMonths = terms.contract_term_months ?? (() => {
+    let months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth())
+    if (end.getDate() >= start.getDate()) months += 1
+    return Math.max(1, months)
+  })()
+
   const modelMonths: ModelMonth[] = []
   let cursor = new Date(start.getFullYear(), start.getMonth(), 1)
-  const endMonth = new Date(end.getFullYear(), end.getMonth(), 1)
   let loopIdx = 0
 
-  while (cursor <= endMonth) {
+  while (loopIdx < totalContractMonths) {
     const md = new Date(cursor)
     const effectiveBase = monthlyBaseFor(loopIdx, md)
     let inDiscount = false, discountPct = 0
@@ -666,7 +693,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               {showMetric && !showApi && (
                 <div>
                   <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">
-                    {genericMetricLabel ?? 'Usage metric'} / {apiCallPeriodLabel}
+                    {genericMetricLabel ?? 'Usage metric'} / {genericPeriodLabel}
                   </label>
                   <input
                     type="number" min={0} step={10} value={scenarioGenericMetric}
@@ -675,12 +702,12 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                   />
                   <p className="text-[10px] text-stone mt-1.5">
                     {includedGenericMetric > 0
-                      ? `${includedGenericMetric.toLocaleString()} included / ${apiCallPeriodLabel}`
+                      ? `${includedGenericMetric.toLocaleString()} included / ${genericPeriodLabel}`
                       : metricTiers.length > 0 ? 'No free allowance' : `Included: ${(terms.included_units ?? 0).toLocaleString()}`}
                   </p>
                   {metricTiers.length > 0 && scenarioGenericMetric > includedGenericMetric && (
                     <p className="text-[10px] text-[#B9802F] mt-0.5 font-medium">
-                      {(scenarioGenericMetric - includedGenericMetric).toLocaleString()} excess → {fmt(periodGenericOvg, cur)}/{apiCallPeriodLabel}
+                      {(scenarioGenericMetric - includedGenericMetric).toLocaleString()} excess → {fmt(periodGenericOvg, cur)}/{genericPeriodLabel}
                     </p>
                   )}
                   {metricTiers.length > 0 && scenarioGenericMetric <= includedGenericMetric && includedGenericMetric > 0 && (
@@ -693,7 +720,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               {!showApi && !showMetric && (terms.included_units ?? 0) > 0 && (
                 <div>
                   <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">
-                    {terms.included_unit_type ?? 'Included units'} / {apiCallPeriodLabel}
+                    {terms.included_unit_type ?? 'Included units'} / {genericPeriodLabel}
                   </label>
                   <p className="text-sm font-medium text-ink">
                     {(terms.included_units ?? 0).toLocaleString()} included
@@ -1226,7 +1253,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
           ...(metricTiers.length > 0 ? [{
             label: `${genericMetricLabel ?? 'Usage'} overage`,
             value: totalGenericOvg,
-            sub: `${scenarioGenericMetric.toLocaleString()} / ${apiCallPeriodLabel}${includedGenericMetric > 0 ? ` · ${includedGenericMetric.toLocaleString()} included` : ''}`,
+            sub: `${scenarioGenericMetric.toLocaleString()} / ${genericPeriodLabel}${includedGenericMetric > 0 ? ` · ${includedGenericMetric.toLocaleString()} included` : ''}`,
             color: '#3DAA7F',
           }] : []),
           {
