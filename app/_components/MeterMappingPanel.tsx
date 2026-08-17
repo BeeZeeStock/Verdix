@@ -156,20 +156,28 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
       confidence:         s.confidence,
     }))
 
-    const res = await fetch(`/api/jobs/${jobId}/meter-mappings`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ mappings }),
-    })
-    const data = await res.json()
-    if (res.ok) {
-      setSaveMsg({ ok: true, text: data.all_confirmed ? 'All meters confirmed ✓' : 'Saved ✓' })
-      await load()
-      setEdits({})
-    } else {
-      setSaveMsg({ ok: false, text: data.error ?? 'Save failed' })
+    // Without try/catch/finally here, a thrown fetch (network hiccup) or a
+    // non-JSON error response left `saving` stuck true forever — the button
+    // showed "Saving…" indefinitely with no error, no way to retry.
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/meter-mappings`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mappings }),
+      })
+      const data = await res.json().catch(() => ({ error: `Unexpected response (${res.status})` }))
+      if (res.ok) {
+        setSaveMsg({ ok: true, text: data.all_confirmed ? 'All meters confirmed ✓' : 'Saved ✓' })
+        await load()
+        setEdits({})
+      } else {
+        setSaveMsg({ ok: false, text: data.error ?? 'Save failed' })
+      }
+    } catch {
+      setSaveMsg({ ok: false, text: 'Save failed — check your connection and try again' })
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const confirmAll = () => {
