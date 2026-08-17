@@ -1,6 +1,13 @@
 import { ContractTerms } from './types'
 import { billingInterval } from './stripe-meter'
 import { supabaseServer } from './supabase'
+import { monthCursor } from './tariff'
+
+// Re-exported so existing importers of monthCursor from this file (e.g.
+// execute/route.ts) don't need to change their import path — the function
+// itself now lives in lib/tariff.ts so client components can share it too
+// without pulling in this file's supabaseServer import.
+export { monthCursor }
 
 // Compute all billing periods for the contract term with their base amounts
 // (base fee + additional recurring fees, no overages). Used at push time to
@@ -55,8 +62,27 @@ export function computeMonthlyBaseRate(terms: ContractTerms, globalMonthIdx: num
 export function computeEscalatorMultiplier(terms: ContractTerms, d: Date): number {
   if (terms.year_pricing || terms.ramp_schedule?.length) return 1
   for (const esc of terms.escalators ?? []) {
+    // A discretionary clause ("may be increased") must never silently
+    // compound — only an interpretation explicitly confirmed 'automatic'
+    // authorizes the calculation engine to apply it. Missing/undefined
+    // discretion (rows written before this field existed, or an escalator
+    // with no interpretation at all yet) reads as 'automatic' to preserve
+    // existing behavior for already-confirmed escalators.
+    const discretion = esc.interpretation?.discretion ?? 'automatic'
+    if (discretion !== 'automatic') continue
+
     const ed = esc.effective_date ? new Date(esc.effective_date + 'T00:00:00') : null
     if (ed && d >= ed) {
+      // Renewal-triggered indexation (e.g. "on renewal, HICP + cap") is a
+      // step applied once at each renewal event, not a recurring intra-term
+      // compound — the existing 12-month compounding below is only correct
+      // once d has actually reached a renewal boundary, which `d >= ed`
+      // already gates on (effective_date is the first possible renewal
+      // date). No additional cadence change needed here: renewal_triggered
+      // exists to keep effective_date from being misread as an ordinary
+      // annual-escalator start during the original term elsewhere in the
+      // pipeline (extraction/interpretation), not to alter this compounding
+      // math once a genuine renewal boundary has been confirmed reached.
       const ms = (d.getFullYear() - ed.getFullYear()) * 12 + (d.getMonth() - ed.getMonth())
       return Math.pow(1 + (esc.escalator_pct ?? 0) / 100, Math.floor(ms / 12) + 1)
     }
@@ -125,7 +151,7 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
     let baseAmount = 0
     for (let mi = 0; mi < monthsInThisPeriod; mi++) {
       const globalMonthIdx = monthsUsed + mi
-      const d    = new Date(cs.getFullYear(), cs.getMonth() + globalMonthIdx, 1)
+      const d    = monthCursor(cs, globalMonthIdx)
       const base    = computeMonthlyBaseRate(terms, globalMonthIdx, d)
       const escMult = computeEscalatorMultiplier(terms, d)
       const discMult = computeDiscountMultiplier(terms, d)

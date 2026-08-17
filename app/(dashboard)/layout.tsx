@@ -21,8 +21,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
   if (!consent || consent.terms_version !== TERMS_VERSION) redirect('/consent')
 
   const org = await getActiveOrg()
+  if (!org) redirect('/no-access')
 
-  const billing = org ? await getBillingContext(org.orgId).catch(() => null) : null
+  const billing = await getBillingContext(org.orgId).catch(() => null)
 
   return (
     <div className="flex flex-col md:flex-row md:h-screen bg-cream">

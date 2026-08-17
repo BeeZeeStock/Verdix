@@ -5,7 +5,7 @@ import { requireOrg } from '@/lib/org'
 import { extractContractTerms } from '@/lib/contract-extractor'
 import { resolveStorageUrl } from '@/lib/storage'
 import { maskText, restoreTokensInObject } from '@/lib/pii-detector'
-import { computeMonthlyBaseRate, computeEscalatorMultiplier, computeDiscountMultiplier } from '@/lib/billing-writer'
+import { computeMonthlyBaseRate, computeEscalatorMultiplier, computeDiscountMultiplier, monthCursor } from '@/lib/billing-writer'
 import { billingInterval } from '@/lib/stripe-meter'
 import { newAnthropicClient, isAIInfraError, AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
 
@@ -212,7 +212,7 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
       let amount = 0
       for (let mi = 0; mi < monthsInThisPeriod; mi++) {
         const globalMonthIdx = monthsUsed + mi
-        const d = new Date(contractStart.getFullYear(), contractStart.getMonth() + globalMonthIdx, 1)
+        const d = monthCursor(contractStart, globalMonthIdx)
         amount += computeMonthlyBaseRate(terms, globalMonthIdx, d) * computeEscalatorMultiplier(terms, d) * computeDiscountMultiplier(terms, d)
       }
       periodAmounts.push(amount)

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, use, Fragment } from 'react'
+import { useState, useEffect, useCallback, useRef, use, Fragment } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
@@ -11,7 +11,10 @@ import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCa
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, contractLifecycleStatus } from '@/lib/contract-tcv-calc'
 import { findCadenceWindowContaining, isPartialWindow } from '@/lib/tariff'
-import { optionsForRuleType, optionsForEdit, type RuleType, type StructuredOption } from '@/lib/rule-interpretation'
+import { ruleCadenceLabel, partialPeriodLabel, cadenceNoun } from '@/lib/cadence-labels'
+import { optionsForRuleType, optionsForEdit, deriveSelectedOption, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
+import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
+import { computeCommercialRuleWorkload } from '@/lib/commercial-rule-status'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
@@ -42,6 +45,24 @@ type Discount   = {
     application_order: string | null
     reset_period: string | null
     worked_example: string | null
+    requires_confirmation: boolean
+    confirmation_reason?: string | null
+  } | null
+}
+type ServiceCredit = {
+  credit_rule_id?: string
+  credit_type?: string; description?: string; source_clause?: string | null; stated_pct?: number | null; stated_amount?: number | null
+  interpretation?: {
+    trigger_type: 'sla_breach' | 'usage_threshold' | 'promotional' | 'earned_milestone' | 'other'
+    trigger_description: string | null
+    credit_basis: 'pct_of_period_fee' | 'pct_of_affected_component' | 'flat_amount' | 'usage_units'
+    basis_component: string | null
+    credit_value: number | null
+    cap_amount: number | null
+    cap_pct: number | null
+    settlement_period: string | null
+    cash_redeemable: boolean
+    interaction_note?: string | null
     requires_confirmation: boolean
     confirmation_reason?: string | null
   } | null
@@ -85,7 +106,7 @@ type Terms = {
   included_units?: number; included_unit_type?: string
   year_pricing?: Record<string, number>
   ramp_schedule?: { start_date: string; end_date: string; monthly_fee: number; label?: string }[]
-  escalators?: Escalator[]; discounts?: Discount[]; overage_tiers?: Tier[]
+  escalators?: Escalator[]; discounts?: Discount[]; service_credits?: ServiceCredit[]; overage_tiers?: Tier[]
   one_time_fees?: OneTimeFee[]
   additional_recurring_fees?: AdditionalRecurringFee[]
   field_sources?: Record<string, string>
@@ -154,18 +175,6 @@ function ruleModeShortLabel(mode: string): string {
   return labels[mode] ?? mode
 }
 
-const CADENCE_NOUN: Record<string, string> = { monthly: 'month', quarterly: 'quarter', 'semi-annual': 'half-year', annual: 'year' }
-
-// "calendar quarter" vs plain "quarter" — the reset_anchor distinction this
-// session's cadence-anchor fix introduced is exactly the kind of detail a
-// compact rule display must not silently drop, since it changes which real
-// dates the rule evaluates on.
-function ruleCadenceLabel(period: string | null | undefined, resetAnchor: 'contract_start' | 'calendar' | null | undefined): string | null {
-  if (!period) return null
-  const noun = CADENCE_NOUN[period] ?? period
-  return resetAnchor === 'calendar' ? `calendar ${noun}` : noun
-}
-
 function fmtShort(d: Date) {
   return d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' })
 }
@@ -175,100 +184,6 @@ function fmtShort(d: Date) {
 function parseLocalDate(s: string): Date {
   const [y, m, d] = s.split('-').map(Number)
   return new Date(y, (m || 1) - 1, d || 1)
-}
-
-// Computes true TCV from extracted contract terms: base fee × each calendar
-// month of the contract, with escalators and discounts applied per-period.
-// One-time fees from structured line items are added on top.
-// Math is deterministic code — LLM only extracts the raw values.
-function computeContractTCV(terms: Terms | undefined, lineItems: LineItem[]): number {
-  if (!terms?.contract_start_date || !terms.contract_end_date) return 0
-
-  // One-time fees are included regardless of whether recurring pricing exists.
-  const oneTimeFees = (terms.one_time_fees ?? []).reduce((s, f) => s + Number(f.amount ?? 0), 0)
-
-  const hasFee = terms.base_monthly_fee || terms.base_annual_fee || terms.year_pricing ||
-    (terms.ramp_schedule && terms.ramp_schedule.length > 0)
-  if (!hasFee) return oneTimeFees
-
-  const start        = parseLocalDate(terms.contract_start_date)
-  const end          = parseLocalDate(terms.contract_end_date)
-  const discounts    = terms.discounts   ?? []
-  const escalators   = terms.escalators  ?? []
-  const yearPricing  = terms.year_pricing
-  const rampSchedule = terms.ramp_schedule && terms.ramp_schedule.length > 0 ? terms.ramp_schedule : null
-  const baseMonthly = terms.base_monthly_fee ?? (terms.base_annual_fee ? terms.base_annual_fee / 12 : 0)
-
-  // additional_recurring_fees amounts are stored as monthly equivalents regardless
-  // of billing_frequency (billing_frequency only affects how often invoices are raised,
-  // not the per-month rate). The Revenue Model tab and the UI display both treat
-  // amount as monthly — match that here so TCV stays consistent.
-  const additionalMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => s + Number(f.amount ?? 0), 0)
-
-  function monthlyBaseFor(monthIdx: number, date: Date): number {
-    if (rampSchedule) {
-      for (const step of rampSchedule) {
-        const stepStart = parseLocalDate(step.start_date)
-        const stepEnd   = parseLocalDate(step.end_date)
-        if (date >= stepStart && date <= stepEnd) return step.monthly_fee
-      }
-      return rampSchedule[rampSchedule.length - 1].monthly_fee
-    }
-    if (yearPricing) {
-      const yearNum = Math.floor(monthIdx / 12) + 1
-      const key = `year${yearNum}`
-      const annual = yearPricing[key] ?? yearPricing[`year${Object.keys(yearPricing).length}`] ?? (terms?.base_annual_fee ?? 0)
-      return annual / 12
-    }
-    return baseMonthly
-  }
-
-  let total  = 0
-  let loopIdx = 0
-  let cursor = new Date(start.getFullYear(), start.getMonth(), 1)
-  const endMonth = new Date(end.getFullYear(), end.getMonth(), 1)
-
-  while (cursor <= endMonth) {
-    const md = new Date(cursor)
-    let amount = monthlyBaseFor(loopIdx, md) + additionalMonthly
-
-    // Skip escalators when ramp_schedule is present (rates already baked in)
-    if (!yearPricing && !rampSchedule) {
-      for (const e of escalators) {
-        const ed = e.effective_date ? parseLocalDate(e.effective_date) : null
-        if (ed && md >= ed && e.escalator_pct) {
-          const monthsSince  = (md.getFullYear() - ed.getFullYear()) * 12 + (md.getMonth() - ed.getMonth())
-          const timesApplied = 1 + Math.floor(monthsSince / 12)
-          amount *= Math.pow(1 + e.escalator_pct / 100, timesApplied)
-          break
-        }
-      }
-    }
-    for (const d of discounts) {
-      const ds = d.start_date ? parseLocalDate(d.start_date) : null
-      const de = d.end_date   ? parseLocalDate(d.end_date)   : null
-      if (ds && de && md >= ds && md <= de && d.discount_pct) { amount *= (1 - d.discount_pct / 100); break }
-    }
-
-    total += amount
-    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)
-    loopIdx++
-  }
-
-  // Add minimum consumption commitments for overage tiers that carry a floor payment.
-  // Each tier's minimum_period_amount is owed once per measurement_period regardless of usage.
-  const termMonths = loopIdx  // total months iterated above
-  for (const tier of (terms.overage_tiers ?? [])) {
-    if (!tier.minimum_period_amount) continue
-    const periodsPerYear = tier.measurement_period === 'quarterly' ? 4
-      : tier.measurement_period === 'semi-annual' ? 2
-      : tier.measurement_period === 'annual'      ? 1
-      : 12  // monthly or unspecified
-    const periodsInTerm = termMonths / (12 / periodsPerYear)
-    total += tier.minimum_period_amount * periodsInTerm
-  }
-
-  return total + oneTimeFees
 }
 
 // Builds 2–3 natural-language sentences summarising the contract for the
@@ -510,6 +425,32 @@ function getYearNote(notes: string | undefined, yearKey: string): string | undef
 
 // ── Sub-components ─────────────────────────────────────────────────────────
 
+// Lightweight, read-only status — opens the Review panel (where the single
+// live, editable MeterMappingPanel instance lives) rather than embedding a
+// second full editable panel on the main Terms tab.
+function MeterMappingStatusChip({ total, confirmed, onClick }: { total: number; confirmed: number; onClick: () => void }) {
+  const allConfirmed = total > 0 && confirmed >= total
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center justify-between gap-3 bg-white rounded-2xl border px-6 py-4 text-left transition-colors hover:bg-stone-50"
+      style={{ borderColor: allConfirmed ? 'rgba(11,92,54,0.2)' : '#FAC775' }}
+    >
+      <div className="flex items-center gap-2.5">
+        <i className={`ti ${allConfirmed ? 'ti-circle-check-filled' : 'ti-plug-connected'}`}
+          style={{ fontSize: 15, color: allConfirmed ? '#0B5C36' : '#D97706' }} />
+        <div>
+          <p className="text-sm font-medium text-ink">Usage mapping</p>
+          <p className="text-xs text-stone">
+            {total === 0 ? 'No metered usage to map' : `${confirmed}/${total} metric${total > 1 ? 's' : ''} confirmed`}
+          </p>
+        </div>
+      </div>
+      <span className="text-xs font-medium text-forest">{allConfirmed ? 'View' : 'Resolve'} →</span>
+    </button>
+  )
+}
+
 function BillingModelBadge({ model }: { model: 'fixed' | 'hybrid' | 'consumption' }) {
   const map = {
     fixed:       { label: 'Fixed — Subscription',        bg: '#EEF9F2', color: '#1A3D2B' },
@@ -742,7 +683,7 @@ function SectionHeader({ title, section, onSection }: { title: string; section?:
 // 'discount' is never produced by classifyItem (discounts aren't LineItems)
 // — it exists purely so RuleInterpretationCard's kind→ruleType mapping can
 // be reused for the Review panel's dedicated Discounts section below.
-type ItemKind = 'overage_tier' | 'escalator' | 'escalator_interpretation' | 'base_fee' | 'user_seat' | 'one_time' | 'minimum_commitment' | 'partial_period' | 'tier_calculation' | 'discount' | 'unknown'
+type ItemKind = 'overage_tier' | 'escalator' | 'escalator_interpretation' | 'base_fee' | 'user_seat' | 'one_time' | 'minimum_commitment' | 'partial_period' | 'tier_calculation' | 'discount' | 'service_credit' | 'rule_interaction' | 'unknown'
 
 // A tier and its rendered LineItem share a tier_label — buildLineItems
 // (execute route) sets product_name from tier_label, optionally with a
@@ -1004,6 +945,8 @@ const ITEM_KIND_TO_RULE_TYPE: Partial<Record<ItemKind, RuleType>> = {
   escalator_interpretation: 'escalator',
   tier_calculation: 'tier_calculation',
   discount: 'discount',
+  service_credit: 'service_credit',
+  rule_interaction: 'rule_interaction',
 }
 
 // Reverse-maps a previously approved interpretation back to the structured
@@ -1018,10 +961,15 @@ const ITEM_KIND_TO_RULE_TYPE: Partial<Record<ItemKind, RuleType>> = {
 // partial-period proration all share this one mechanism). No AI-proposed
 // interpretation ever reaches contract_terms/contract_meter_mappings without
 // the reviewer explicitly clicking "Confirm & apply" below.
-type RulePhase = 'input' | 'loading' | 'missing' | 'proposal' | 'confirming' | 'applied' | 'partial' | 'error'
+// 'proposing'/'proposed' sit BEFORE 'input' in the normal flow — Verdix
+// interprets first (propose-rule, no reviewer input yet), the reviewer only
+// ever reaches 'input' by clicking "Override" on a proposal, or directly
+// when the AI proposal itself is 'decision_required' (nothing to override,
+// there was never anything pre-selected).
+type RulePhase = 'proposing' | 'proposed' | 'input' | 'loading' | 'missing' | 'proposal' | 'confirming' | 'applied' | 'partial' | 'error'
 
 function RuleInterpretationCard({
-  jobId, kind, contractUnitType, discountId, sourceClause, currency, meterMappingConfirmed, meterSuggestion, availableMeters, onApplied, onChangeMapping,
+  jobId, kind, contractUnitType, discountId, creditId, interactionKey, cadenceLabel, sourceClause, currency, meterMappingConfirmed, meterSuggestion, onApplied,
   initialSelectedOption, initialFreeText,
 }: {
   jobId: string
@@ -1031,13 +979,19 @@ function RuleInterpretationCard({
   // — a contract can have several independent discounts, each addressed by
   // its own stable id rather than array position.
   discountId?: string
+  // Same addressing pattern as discountId, when kind maps to ruleType 'service_credit'.
+  creditId?: string
+  // Composite key from lib/rule-interactions.ts, when kind maps to ruleType 'rule_interaction'.
+  interactionKey?: string
+  // The metric's cadence noun (e.g. "month"/"quarter"/"year") — only
+  // meaningful for kind 'partial_period', where it drives "Full <cadence>
+  // minimum applies" instead of a hardcoded "quarterly".
+  cadenceLabel?: string
   sourceClause: string
   currency: string
   meterMappingConfirmed?: boolean
   meterSuggestion?: { meter_key: string; display_name?: string } | null
-  availableMeters?: Array<{ meter_key: string; display_name: string }>
   onApplied: () => void
-  onChangeMapping?: (meterKey: string) => void
   // Re-opening an already-confirmed rule ("Edit interpretation") should show
   // what was actually approved last time, not a blank form — the reviewer
   // needs to see their prior choice before deciding whether to change it.
@@ -1045,8 +999,12 @@ function RuleInterpretationCard({
   initialFreeText?: string
 }) {
   const ruleType = ITEM_KIND_TO_RULE_TYPE[kind] ?? 'minimum_commitment'
-  const options = optionsForRuleType(ruleType)
-  const [phase, setPhase] = useState<RulePhase>('input')
+  const options = optionsForRuleType(ruleType, cadenceLabel)
+  // Re-opening an already-confirmed rule ("Edit interpretation") starts from
+  // what's already approved, not a fresh AI proposal — only a first-time
+  // review runs the propose-first flow.
+  const isEditFlow = !!(initialSelectedOption || initialFreeText)
+  const [phase, setPhase] = useState<RulePhase>(isEditFlow ? 'input' : 'proposing')
   const [selectedOption, setSelectedOption] = useState<string | null>(initialSelectedOption ?? null)
   const [freeText, setFreeText] = useState(initialFreeText ?? '')
   const [proposal, setProposal] = useState<Record<string, unknown> | null>(null)
@@ -1054,6 +1012,60 @@ function RuleInterpretationCard({
   const [missingQuestions, setMissingQuestions] = useState<string[]>([])
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [propagation, setPropagation] = useState<Record<string, string> | null>(null)
+  const [aiProposal, setAiProposal] = useState<RuleProposal | null>(null)
+
+  useEffect(() => {
+    if (isEditFlow) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(`/api/jobs/${jobId}/propose-rule`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ruleType, contractUnitType, discountId, creditId, interactionKey, sourceClause }),
+        })
+        const data = await res.json()
+        if (cancelled) return
+        if (!res.ok || !data.ok) { setPhase('input'); return }
+        setAiProposal(data.proposal)
+        setPhase('proposed')
+        // Pre-select the recommended/clear option in the underlying
+        // structured-choice list so "Override" (or a decision_required item,
+        // which reuses the same form) starts from the right place rather
+        // than a blank slate — never pre-selected for decision_required.
+        if (data.proposal.state !== 'decision_required' && data.proposal.proposed_interpretation) {
+          setSelectedOption(deriveSelectedOption(ruleType, data.proposal.proposed_interpretation))
+        }
+      } catch {
+        if (!cancelled) setPhase('input')
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const confirmProposal = async () => {
+    if (!aiProposal?.proposed_interpretation) return
+    setPhase('confirming')
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ruleType, contractUnitType, discountId, creditId, interactionKey, sourceClause, reviewerInput: aiProposal.reasoning,
+          aiProposedInterpretation: aiProposal.proposed_interpretation, approvedInterpretation: aiProposal.proposed_interpretation,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok && !data.propagation) { setErrorMsg(data.error ?? 'Approval failed.'); setPhase('proposed'); return }
+      setPropagation(data.propagation ?? {})
+      const anyFailed = Object.values(data.propagation ?? {}).includes('failed')
+      if (anyFailed) { setPhase('partial') } else { setPhase('applied'); onApplied() }
+    } catch {
+      setErrorMsg('Verdix could not save this approval. Try again.')
+      setPhase('proposed')
+    }
+  }
 
   const generate = async () => {
     setPhase('loading')
@@ -1062,7 +1074,7 @@ function RuleInterpretationCard({
       const res = await fetch(`/api/jobs/${jobId}/interpret-rule`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ruleType, contractUnitType, discountId, selectedOption: selectedOption ?? undefined, freeText, sourceClause }),
+        body: JSON.stringify({ ruleType, contractUnitType, discountId, creditId, interactionKey, selectedOption: selectedOption ?? undefined, freeText, sourceClause }),
       })
       const data = await res.json()
       if (!res.ok) { setErrorMsg(data.error ?? 'Verdix could not interpret this rule.'); setPhase('input'); return }
@@ -1088,7 +1100,7 @@ function RuleInterpretationCard({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ruleType, contractUnitType, discountId, sourceClause, reviewerInput: freeText,
+          ruleType, contractUnitType, discountId, creditId, interactionKey, sourceClause, reviewerInput: freeText,
           aiProposedInterpretation: proposal, approvedInterpretation: proposal,
         }),
       })
@@ -1139,7 +1151,60 @@ function RuleInterpretationCard({
         </div>
       )}
 
-      {(phase === 'input' || phase === 'loading' || phase === 'missing') && (
+      {phase === 'proposing' && (
+        <div className="rounded-xl p-3 flex items-center gap-2" style={{ background: '#FAFAF9', border: '1px solid rgba(26,61,43,0.1)' }}>
+          <i className="ti ti-loader-2 animate-spin text-stone" style={{ fontSize: 14 }} />
+          <p className="text-xs text-stone">Verdix is reading the source clause and preparing an interpretation…</p>
+        </div>
+      )}
+
+      {(phase === 'proposed' || (phase === 'confirming' && !proposal)) && aiProposal && aiProposal.state !== 'decision_required' && aiProposal.proposed_interpretation && (
+        <>
+          <div className="rounded-xl p-3" style={{ background: aiProposal.state === 'clear_from_source' ? '#F0FDF4' : '#FFFDF5', border: `1px solid ${aiProposal.state === 'clear_from_source' ? 'rgba(11,92,54,0.2)' : 'rgba(217,167,90,0.35)'}` }}>
+            <span
+              className="inline-block text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full mb-2"
+              style={aiProposal.state === 'clear_from_source'
+                ? { background: 'rgba(11,92,54,0.12)', color: '#0B5C36' }
+                : { background: 'rgba(180,83,9,0.12)', color: '#92400E' }}
+            >
+              {aiProposal.state === 'clear_from_source' ? 'Clear from source' : 'Verdix recommendation'}
+            </span>
+            <p className="text-xs text-ink leading-relaxed">{aiProposal.reasoning}</p>
+            {!!aiProposal.calculation_preview?.length && (
+              <dl className="mt-2 space-y-1 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
+                {aiProposal.calculation_preview.map((row, i) => (
+                  <div key={i} className="flex justify-between gap-3 text-xs">
+                    <dt className="text-stone">{row.label}</dt>
+                    <dd className="font-medium text-ink text-right">{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </div>
+          {errorMsg && <p className="text-xs" style={{ color: '#DC2626' }}>{errorMsg}</p>}
+          <div className="flex gap-2">
+            <button
+              onClick={confirmProposal}
+              disabled={phase === 'confirming'}
+              className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
+              style={{ background: '#1A3D2B', color: 'white' }}
+            >
+              {phase === 'confirming' ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : 'Confirm & apply'}
+            </button>
+            <button
+              onClick={() => setPhase('input')}
+              disabled={phase === 'confirming'}
+              className="px-4 py-2 rounded-xl text-sm text-stone hover:text-ink border transition-colors disabled:opacity-40"
+              style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+            >
+              Override
+            </button>
+          </div>
+        </>
+      )}
+
+      {(phase === 'input' || phase === 'loading' || phase === 'missing'
+        || (phase === 'proposed' && aiProposal?.state === 'decision_required')) && (
         <>
           {phase === 'missing' && (
             <div className="rounded-xl p-3 mb-1" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
@@ -1147,6 +1212,12 @@ function RuleInterpretationCard({
               <ul className="text-[11px] space-y-0.5" style={{ color: '#7F1D1D' }}>
                 {missingQuestions.map((q, i) => <li key={i}>• {q}</li>)}
               </ul>
+            </div>
+          )}
+          {aiProposal?.state === 'decision_required' && (
+            <div className="rounded-xl p-3 mb-1" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
+              <p className="text-[9px] font-bold uppercase tracking-widest mb-1" style={{ color: '#991B1B' }}>Decision required</p>
+              <p className="text-xs" style={{ color: '#7F1D1D' }}>{aiProposal.reasoning || 'The agreement does not specify how this should be handled — nothing is preselected.'}</p>
             </div>
           )}
           {(initialSelectedOption || initialFreeText) && phase === 'input' && (
@@ -1236,34 +1307,24 @@ function RuleInterpretationCard({
         </>
       )}
 
-      {/* Meter-mapping dependency, resolvable without leaving the panel */}
+      {/* Meter-mapping dependency — read-only notice, not a second editing
+          surface. Confirming/changing a mapping happens in exactly one
+          place, the Meter mapping section above (id="meter-mapping-panel");
+          this card only says why it's blocked and jumps there. */}
       {contractUnitType && meterMappingConfirmed === false && (
         <div className="rounded-xl p-3" style={{ background: '#F5F5F4', border: '1px solid rgba(26,61,43,0.1)' }}>
           <p className="text-[10px] font-bold uppercase tracking-widest text-stone mb-1.5">Usage source</p>
           <p className="text-[11px] text-stone mb-2">
             Contract metric <span className="font-medium text-ink">&quot;{contractUnitType}&quot;</span> maps to{' '}
-            <span className="font-medium text-ink">{meterSuggestion?.display_name ?? meterSuggestion?.meter_key ?? 'a suggested meter'}</span>.
+            <span className="font-medium text-ink">{meterSuggestion?.display_name ?? meterSuggestion?.meter_key ?? 'a suggested meter'}</span>, not yet confirmed.
           </p>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => onChangeMapping?.(meterSuggestion?.meter_key ?? '')}
-              className="flex-1 text-xs font-semibold py-1.5 rounded-lg border transition-colors"
-              style={{ borderColor: 'rgba(26,61,43,0.25)', color: '#1A3D2B', background: '#F0FDF4' }}
-            >
-              Confirm mapping
-            </button>
-            {availableMeters && availableMeters.length > 1 && (
-              <select
-                onChange={e => onChangeMapping?.(e.target.value)}
-                defaultValue=""
-                className="text-xs border rounded-lg px-2 py-1.5"
-                style={{ borderColor: 'rgba(26,61,43,0.15)' }}
-              >
-                <option value="" disabled>Change mapping…</option>
-                {availableMeters.map(m => <option key={m.meter_key} value={m.meter_key}>{m.display_name}</option>)}
-              </select>
-            )}
-          </div>
+          <button
+            onClick={() => document.getElementById('meter-mapping-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+            className="text-xs font-semibold py-1.5 px-3 rounded-lg border transition-colors"
+            style={{ borderColor: 'rgba(26,61,43,0.25)', color: '#1A3D2B', background: '#F0FDF4' }}
+          >
+            Resolve in Meter mapping ↑
+          </button>
         </div>
       )}
     </div>
@@ -1320,7 +1381,7 @@ function formatFieldValue(field: string, value: unknown, currency: string): stri
 }
 
 function EditCommercialRuleDrawer({
-  jobId, ruleType, contractUnitType, discountId, ruleTitle, currency, currentRecord, historyRecords, onClose, onApplied,
+  jobId, ruleType, contractUnitType, discountId, creditId, cadenceLabel, ruleTitle, currency, currentRecord, historyRecords, onClose, onApplied,
 }: {
   jobId: string
   ruleType: RuleType
@@ -1328,6 +1389,10 @@ function EditCommercialRuleDrawer({
   // Which discount this drawer edits, when ruleType is 'discount' — required
   // so a contract with several discounts only ever touches the one being edited.
   discountId?: string
+  // Same addressing pattern as discountId, when ruleType is 'service_credit'.
+  creditId?: string
+  // Only meaningful for ruleType 'partial_period' — see RuleInterpretationCard.
+  cadenceLabel?: string
   ruleTitle: string
   currency: string
   currentRecord: RuleInterpretationRecord | null
@@ -1339,7 +1404,7 @@ function EditCommercialRuleDrawer({
   // a rule with no currentRecord yet (e.g. a discount's first interpretation,
   // which has no separate first-time Review-panel trigger) gets the plain,
   // unbiased option labels instead of a "change" framing.
-  const options = currentRecord ? optionsForEdit(ruleType, currentRecord.approved_interpretation) : optionsForRuleType(ruleType)
+  const options = currentRecord ? optionsForEdit(ruleType, currentRecord.approved_interpretation, cadenceLabel) : optionsForRuleType(ruleType, cadenceLabel)
   const [phase, setPhase] = useState<RulePhase>('input')
   const [selectedOption, setSelectedOption] = useState<string | null>(null)
   const [freeText, setFreeText] = useState('')
@@ -1358,7 +1423,7 @@ function EditCommercialRuleDrawer({
       const res = await fetch(`/api/jobs/${jobId}/interpret-rule`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ruleType, contractUnitType, discountId, selectedOption: selectedOption ?? undefined, freeText, sourceClause: currentRecord?.source_clause ?? ruleTitle }),
+        body: JSON.stringify({ ruleType, contractUnitType, discountId, creditId, selectedOption: selectedOption ?? undefined, freeText, sourceClause: currentRecord?.source_clause ?? ruleTitle }),
       })
       const data = await res.json()
       if (!res.ok) { setErrorMsg(data.error ?? 'Verdix could not interpret this change.'); setPhase('input'); return }
@@ -1385,7 +1450,7 @@ function EditCommercialRuleDrawer({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ruleType, contractUnitType, discountId, sourceClause: currentRecord?.source_clause ?? ruleTitle, reviewerInput: freeText,
+          ruleType, contractUnitType, discountId, creditId, sourceClause: currentRecord?.source_clause ?? ruleTitle, reviewerInput: freeText,
           aiProposedInterpretation: proposal, approvedInterpretation: proposal,
         }),
       })
@@ -1633,6 +1698,7 @@ function ReviewPanel({
   overageTiers,
   escalators,
   discounts,
+  serviceCredits,
   contractStartDate,
   contractEndDate,
   numberFormat = 'dot',
@@ -1652,6 +1718,7 @@ function ReviewPanel({
   overageTiers?: Tier[]
   escalators?: Escalator[]
   discounts?: Discount[]
+  serviceCredits?: ServiceCredit[]
   contractStartDate?: string
   contractEndDate?: string
   numberFormat?: 'dot' | 'comma'
@@ -1692,22 +1759,6 @@ function ReviewPanel({
       })
       .catch(() => {})
   }, [jobId])
-
-  const changeMeterMapping = async (contractUnitType: string, meterKey: string) => {
-    const suggestion = meterSuggestions.find(s => s.contract_unit_type === contractUnitType)
-    if (!suggestion) return
-    const mappings = meterSuggestions.map(s =>
-      s.contract_unit_type === contractUnitType
-        ? { ...s, meter_key: meterKey || s.meter_key, confirmed: true }
-        : s
-    )
-    await fetch(`/api/jobs/${jobId}/meter-mappings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mappings }),
-    })
-    setMeterSuggestions(mappings)
-  }
 
   const partialPeriodMetrics = computePartialPeriodMetrics(contractStartDate, contractEndDate, overageTiers ?? [])
 
@@ -1919,17 +1970,23 @@ function ReviewPanel({
           {/* Meter mapping — "where does this metric's usage data come from"
               is a review item like any other, so it lives here rather than
               as a separate section on the main page. Collapses itself once
-              every metric is confirmed (existing MeterMappingPanel behavior),
-              and every rule-interpretation card's own usage-source dependency
-              check reads the same confirmed state. */}
+              every metric is confirmed (existing MeterMappingPanel behavior).
+              This is the ONE place a mapping is actually confirmed/changed —
+              each rule-interpretation card below only shows a read-only
+              dependency notice pointing back here (a "Confirm mapping"
+              control used to be duplicated onto every card too, each backed
+              by its own independent fetch/POST, so two different pickers
+              could show or set different state for the same metric). */}
           {(overageTiers?.length ?? 0) > 0 && (
-            <MeterMappingPanel
-              jobId={jobId}
-              isConfigured={isConfigured}
-              onConfirmedChange={c => onMeterMappingsConfirmedChange?.(c)}
-              contractBillingFrequency={contractBillingFrequency}
-              refreshSignal={refreshSignal}
-            />
+            <div id="meter-mapping-panel">
+              <MeterMappingPanel
+                jobId={jobId}
+                isConfigured={isConfigured}
+                onConfirmedChange={c => onMeterMappingsConfirmedChange?.(c)}
+                contractBillingFrequency={contractBillingFrequency}
+                refreshSignal={refreshSignal}
+              />
+            </div>
           )}
 
           {/* Discounts — each resolved independently, keyed by its own
@@ -1977,6 +2034,99 @@ function ReviewPanel({
               </div>
             )
           })()}
+
+          {/* Service credits — SLA/availability credits, rebates, promotional
+              or earned/usage credits — same independent-addressing pattern as
+              Discounts, keyed by credit_rule_id rather than bundled. */}
+          {(() => {
+            const unresolvedCredits = (serviceCredits ?? []).filter(c => !c.interpretation || c.interpretation.requires_confirmation)
+            if (unresolvedCredits.length === 0) return null
+            return (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Service credits</p>
+                  <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                </div>
+                <div className="space-y-3">
+                  {unresolvedCredits.map((c, i) => {
+                    const creditId = c.credit_rule_id ?? String((serviceCredits ?? []).indexOf(c))
+                    const label = c.description || `Service credit ${i + 1}`
+                    return (
+                      <div key={creditId} className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FAC775', background: 'white' }}>
+                        <div className="px-4 pt-4 pb-3">
+                          <div className="flex items-center gap-1.5 mb-2.5">
+                            <i className="ti ti-receipt-refund text-stone" style={{ fontSize: 12 }} />
+                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Service credit basis</span>
+                          </div>
+                          <p className="text-sm font-medium text-ink leading-snug mb-3">{label}</p>
+                          <p className="text-[11px] text-stone leading-relaxed mb-3">
+                            <span className="font-medium">Why review: </span>
+                            {'The contract states a credit value but not what it is calculated from — resolving this determines the actual amount credited.'}
+                          </p>
+                          <RuleInterpretationCard
+                            jobId={jobId}
+                            kind="service_credit"
+                            creditId={creditId}
+                            sourceClause={c.source_clause ?? label}
+                            currency={cur ?? 'EUR'}
+                            onApplied={onRefresh}
+                          />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Rule interactions — two independently-extracted rules (e.g. a
+              service credit and an introductory discount) that reference the
+              same fee component. Surfaced only once the credit's own basis is
+              confirmed (confirm-rule needs somewhere to write the resolution
+              back onto) and hidden again once that resolution is recorded. */}
+          {(() => {
+            const candidates = detectRuleInteractionCandidates({ service_credits: serviceCredits, discounts, escalators })
+              .filter(cand => {
+                const credit = (serviceCredits ?? []).find(c => c.credit_rule_id === cand.creditId)
+                return !!credit?.interpretation && !credit.interpretation.requires_confirmation && !credit.interpretation.interaction_note
+              })
+            if (candidates.length === 0) return null
+            return (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Rule interactions</p>
+                  <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                </div>
+                <div className="space-y-3">
+                  {candidates.map(cand => (
+                    <div key={cand.interactionKey} className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FAC775', background: 'white' }}>
+                      <div className="px-4 pt-4 pb-3">
+                        <div className="flex items-center gap-1.5 mb-2.5">
+                          <i className="ti ti-arrows-cross text-stone" style={{ fontSize: 12 }} />
+                          <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Interaction to confirm</span>
+                        </div>
+                        <p className="text-sm font-medium text-ink leading-snug mb-3">{cand.creditLabel} × {cand.otherRule.label}</p>
+                        <p className="text-[11px] text-stone leading-relaxed mb-3">
+                          <span className="font-medium">Why review: </span>
+                          {cand.overlapReason}
+                        </p>
+                        <RuleInterpretationCard
+                          jobId={jobId}
+                          kind="rule_interaction"
+                          creditId={cand.creditId}
+                          interactionKey={cand.interactionKey}
+                          sourceClause={cand.overlapReason}
+                          currency={cur ?? 'EUR'}
+                          onApplied={onRefresh}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
           {Object.entries(groups).map(([section, groupItems]) => (
             <div key={section}>
               {/* Section header from contract */}
@@ -2001,7 +2151,8 @@ function ReviewPanel({
                   const ctx         = getReviewContext(item, kind, numberFormat, overageTiers ?? [])
                   const isResolved  = !!(resolved[item.id] || item.id in corrections)
                   const isRuleInterpretation = kind === 'minimum_commitment' || kind === 'partial_period' || kind === 'escalator_interpretation' || kind === 'tier_calculation'
-                  const ruleUnitType   = isRuleInterpretation ? findTierForItem(item, overageTiers ?? [])?.unit_type : undefined
+                  const ruleTier       = isRuleInterpretation ? findTierForItem(item, overageTiers ?? []) : undefined
+                  const ruleUnitType   = ruleTier?.unit_type
                   const ruleMeterSuggestion = ruleUnitType ? meterSuggestions.find(s => s.contract_unit_type === ruleUnitType) : undefined
                   const ruleMeter      = ruleMeterSuggestion ? availableMeters.find(m => m.meter_key === ruleMeterSuggestion.meter_key) : undefined
                   const isEditing   = editing === item.id
@@ -2091,12 +2242,11 @@ function ReviewPanel({
                             jobId={jobId}
                             kind={kind}
                             contractUnitType={ruleUnitType}
+                            cadenceLabel={cadenceNoun(ruleTier?.measurement_period)}
                             sourceClause={ctx.whatToCheck}
                             currency={item.currency}
                             meterMappingConfirmed={ruleMeterSuggestion?.confirmed}
                             meterSuggestion={ruleMeterSuggestion ? { meter_key: ruleMeterSuggestion.meter_key, display_name: ruleMeter?.display_name } : null}
-                            availableMeters={availableMeters}
-                            onChangeMapping={meterKey => ruleUnitType && changeMeterMapping(ruleUnitType, meterKey || (ruleMeterSuggestion?.meter_key ?? ''))}
                             onApplied={() => {
                               setResolved(r => ({ ...r, [item.id]: 'confirmed' }))
                               scrollToNextUnresolved(item.id)
@@ -2338,6 +2488,15 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // /confirm-rule, not that panel's own save path) leaves it showing stale
   // "unconfirmed" state until the page is reloaded.
   const [refreshSignal, setRefreshSignal] = useState(0)
+  // Stable reference — MeterMappingPanel re-runs its own onConfirmedChange
+  // effect whenever this callback's identity changes, so an inline arrow
+  // function here would re-trigger on every render and bump refreshSignal
+  // in an infinite loop (refreshSignal change -> panel refetch -> new
+  // inline callback -> effect fires -> bump refreshSignal -> ...).
+  const handleMeterMappingsConfirmedChange = useCallback((c: boolean) => {
+    setMeterMappingsConfirmed(c)
+    setRefreshSignal(s => s + 1)
+  }, [])
   const [drawer, setDrawer]   = useState<{ open: boolean; section?: string }>({ open: false })
   const [pdfUrl, setPdfUrl]   = useState<string | null>(null)
   const [pdfUrlError, setPdfUrlError] = useState(false)
@@ -2359,6 +2518,22 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
   const [activeTab, setActiveTab]       = useState<'terms' | 'model'>('terms')
   const [reviewPanelOpen, setReviewPanelOpen] = useState(false)
+
+  // Read-only summary for the main-tab meter-mapping status chip — the
+  // review-drawer's MeterMappingPanel mount (inside ReviewPanel) is the only
+  // place a mapping is actually confirmed/changed; this fetch never writes,
+  // so it can't diverge from that panel's own state the way two independent
+  // editable mounts of the same component previously could.
+  const [meterMappingSummary, setMeterMappingSummary] = useState<{ total: number; confirmed: number }>({ total: 0, confirmed: 0 })
+  useEffect(() => {
+    fetch(`/api/jobs/${id}/meter-mappings`)
+      .then(r => r.json())
+      .then((res: { suggestions?: Array<{ confirmed: boolean }> }) => {
+        const suggestions = res.suggestions ?? []
+        setMeterMappingSummary({ total: suggestions.length, confirmed: suggestions.filter(s => s.confirmed).length })
+      })
+      .catch(() => {})
+  }, [id, refreshSignal])
   const [escEditing,   setEscEditing]   = useState<number | null>(null)
   const [escEditValue, setEscEditValue] = useState('')
   const [escSaving,    setEscSaving]    = useState(false)
@@ -2743,6 +2918,25 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     return !tierCalc || tierCalc.requires_confirmation
   })
 
+  // Single shared workload computation (lib/commercial-rule-status.ts) — both
+  // the "items need review" breakdown and the "All commercial rules
+  // confirmed" gate below read from this one object so they can't disagree,
+  // and both now correctly count discounts/service credits/rule
+  // interactions (previously invisible to the old confidence-score-only
+  // needsReview count and the old hand-rolled allCommercialRulesConfirmed
+  // boolean, which never checked discounts at all).
+  const unresolvedInteractions = detectRuleInteractionCandidates({
+    service_credits: terms?.service_credits, discounts: terms?.discounts, escalators: terms?.escalators,
+  }).filter(cand => {
+    const credit = (terms?.service_credits ?? []).find(c => c.credit_rule_id === cand.creditId)
+    return !!credit?.interpretation && !credit.interpretation.requires_confirmation && !credit.interpretation.interaction_note
+  })
+  const commercialRuleWorkload = computeCommercialRuleWorkload(
+    terms ?? null,
+    { total: tiers.length > 0 ? 1 : 0, confirmed: tiers.length === 0 || meterMappingsConfirmed ? 1 : 0 },
+    unresolvedInteractions.length,
+  )
+
   // Classify one-time fees into services / hardware / credits / other
   const allFees      = terms?.one_time_fees ?? []
   const serviceFees  = allFees.filter(f => f.amount >= 0 && classifyFee(f.fee_label) === 'service')
@@ -2871,17 +3065,27 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
-            {/* ── Items need review callout ── */}
+            {/* ── Items need review callout ──
+                 Breakdown (not just a bare count) per item U — distinguishes
+                 items Verdix has already proposed a treatment for from
+                 genuine decision points and cross-rule interactions, and
+                 keeps "Usage mapping" its own separately-labeled line rather
+                 than folded into commercial-rule counts. */}
             {needsReview > 0 && (
               <div className="flex items-center justify-between gap-4 py-3 border-t border-b border-amber-200/60">
                 <div className="flex items-start gap-2.5">
                   <i className="ti ti-alert-triangle flex-shrink-0 mt-0.5" style={{ fontSize: 14, color: '#D97706' }} />
                   <div>
                     <p className="text-sm font-medium" style={{ color: '#92400E' }}>
-                      {needsReview} contract term{needsReview > 1 ? 's' : ''} need confirmation
+                      {needsReview} item{needsReview > 1 ? 's' : ''} to review
                     </p>
-                    <p className="text-xs mt-0.5" style={{ color: '#B45309' }}>
-                      Review these items against the source agreement before approving.
+                    <p className="text-xs mt-0.5 leading-relaxed" style={{ color: '#B45309' }}>
+                      {[
+                        commercialRuleWorkload.readyToConfirm > 0 && `${commercialRuleWorkload.readyToConfirm} interpretation${commercialRuleWorkload.readyToConfirm > 1 ? 's' : ''} ready to confirm`,
+                        commercialRuleWorkload.decisionRequired > 0 && `${commercialRuleWorkload.decisionRequired} decision${commercialRuleWorkload.decisionRequired > 1 ? 's' : ''} required`,
+                        commercialRuleWorkload.interactionsToConfirm > 0 && `${commercialRuleWorkload.interactionsToConfirm} interaction${commercialRuleWorkload.interactionsToConfirm > 1 ? 's' : ''} to confirm`,
+                        tiers.length > 0 && !meterMappingsConfirmed && 'usage mapping to confirm',
+                      ].filter(Boolean).join(' · ') || 'Review these items against the source agreement before approving.'}
                     </p>
                   </div>
                 </div>
@@ -3156,13 +3360,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                                 <div className="mt-1.5 flex items-center justify-between gap-2">
                                   <p className="text-[11px] text-amber-700">
                                     <i className="ti ti-alert-triangle mr-1" style={{ fontSize: 10 }} />
-                                    Partial-quarter treatment: Needs confirmation
+                                    {partialPeriodLabel(mc.period)}: Needs confirmation
                                   </p>
                                   <button onClick={() => setEditingRule(`partial:${unitType}`)} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg flex-shrink-0" style={{ background: '#1A3D2B', color: 'white' }}>Resolve</button>
                                 </div>
                               ) : (
                                 <p className="text-[11px] text-stone">
-                                  Partial-quarter treatment: <span className="font-medium text-ink">{mc.prorate_partial_periods === true ? 'Prorated' : 'Full amount charged'}</span>
+                                  {partialPeriodLabel(mc.period)}: <span className="font-medium text-ink">{mc.prorate_partial_periods === true ? 'Prorated' : 'Full amount charged'}</span>
                                 </p>
                               )
                             )}
@@ -4045,41 +4249,35 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             )}
 
             {/* ── Meter mapping (enterprise contracts with overage tiers) ──
-                 Resolved from the Review panel (the single review control
-                 surface — see ReviewPanel below), but also shown here as a
-                 collapsed, always-visible status card so the confirmed
-                 mapping stays glanceable/alterable from the main Commercial
-                 GUI without reopening the drawer — the main page is a
-                 downstream reflection of the approved model, not just the
-                 resolution surface. Same component, same live state either
-                 way (confirming here confirms there too). */}
+                 Resolved from the Review panel (the single place a mapping
+                 is actually confirmed/changed — see ReviewPanel's
+                 MeterMappingPanel mount below). This is a glanceable,
+                 read-only status chip on the main Commercial GUI, not a
+                 second editable panel — two independent full MeterMappingPanel
+                 mounts here previously meant two independent fetches and two
+                 independent confirm actions for the same underlying data. */}
             {tiers.length > 0 && (
-              <MeterMappingPanel
-                jobId={id}
-                isConfigured={isConfigured}
-                onConfirmedChange={setMeterMappingsConfirmed}
-                contractBillingFrequency={terms?.billing_frequency ?? null}
-                refreshSignal={refreshSignal}
+              <MeterMappingStatusChip
+                total={meterMappingSummary.total}
+                confirmed={meterMappingSummary.confirmed}
+                onClick={() => setReviewPanelOpen(true)}
               />
             )}
 
             {/* ── Consolidated commercial-rule confirmation summary ──
                  Never implies the contract is fully reviewed while any
                  dependency (a minimum commitment, a tier-calculation method,
-                 escalation, or a usage meter) is still unresolved — this
-                 only renders once every one of those is actually confirmed. */}
+                 escalation, a discount, a service credit, a rule interaction,
+                 or a usage meter) is still unresolved — this only renders
+                 once every one of those is actually confirmed, per the single
+                 shared lib/commercial-rule-status.ts workload computation
+                 (previously this gate never checked discounts/service
+                 credits/interactions at all, so it could show "confirmed"
+                 with an unresolved introductory discount). */}
             {(() => {
-              const hasUnresolvedMinimumCommitment = tiers.some(t => t.minimum_commitment?.requires_confirmation)
               const escalator = terms?.escalators?.[0]
               const escalatorInterp = escalator?.interpretation
-              const escalatorUnresolved = !!escalator && (
-                !escalatorInterp || escalatorInterp.requires_confirmation
-                || (escalatorInterp.treatment !== 'applies' && escalatorInterp.treatment !== 'not_applied')
-              )
-              const meterMappingsOk = tiers.length === 0 || meterMappingsConfirmed
-              const allCommercialRulesConfirmed =
-                !hasUnresolvedMinimumCommitment && !hasUnresolvedTierCalculation && !escalatorUnresolved && meterMappingsOk
-              if (!allCommercialRulesConfirmed) return null
+              if (commercialRuleWorkload.status !== 'all_commercial_rules_confirmed') return null
 
               const modeLabel: Record<string, string> = {
                 floor: 'minimum floor', additive: 'additive fee', minimum_spend: 'spend commitment',
@@ -4108,6 +4306,14 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 label: 'Escalation',
                 value: !escalator ? 'None in contract' : escalatorInterp!.treatment === 'not_applied' ? 'Not applied' : (escalatorInterp!.index ?? 'Applies'),
               })
+              for (const d of terms?.discounts ?? []) {
+                if (!d.interpretation) continue
+                confirmedRuleLines.push({ label: 'Discount', value: d.description || d.applies_to || d.interpretation.discount_type })
+              }
+              for (const c of terms?.service_credits ?? []) {
+                if (!c.interpretation) continue
+                confirmedRuleLines.push({ label: 'Service credit', value: c.description || c.interpretation.credit_basis })
+              }
               if (tiers.length > 0) {
                 confirmedRuleLines.push({ label: 'Usage meter', value: 'Confirmed' })
               }
@@ -4268,6 +4474,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           overageTiers={terms?.overage_tiers}
           escalators={terms?.escalators}
           discounts={terms?.discounts}
+          serviceCredits={terms?.service_credits}
           contractStartDate={terms?.contract_start_date}
           contractEndDate={terms?.contract_end_date}
           numberFormat={terms?.number_format ?? 'dot'}
@@ -4275,7 +4482,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           cur={cur}
           isConfigured={isConfigured}
           contractBillingFrequency={terms?.billing_frequency ?? null}
-          onMeterMappingsConfirmedChange={setMeterMappingsConfirmed}
+          onMeterMappingsConfirmedChange={handleMeterMappingsConfirmedChange}
           refreshSignal={refreshSignal}
         />
       )}
@@ -4300,6 +4507,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
         const currentRecord = records.find(r => r.is_current) ?? null
         const historyRecords = records.filter(r => !r.is_current).sort((a, b) => b.revision_number - a.revision_number)
         const minCadence = unitType ? tiers.find(t => t.unit_type === unitType)?.minimum_commitment?.period : null
+        const partialCadence = unitType ? tiers.find(t => t.unit_type === unitType)?.measurement_period : null
         const ruleTitle = isMin
           ? `${unitType} · ${minCadence ? minCadence.charAt(0).toUpperCase() + minCadence.slice(1) : ''} minimum`.replace('  ', ' ')
           : isTier ? `${unitType} · Tier calculation method`
@@ -4311,6 +4519,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             ruleType={ruleType}
             contractUnitType={unitType}
             discountId={discountId}
+            cadenceLabel={cadenceNoun(partialCadence)}
             ruleTitle={ruleTitle}
             currency={cur}
             currentRecord={currentRecord}

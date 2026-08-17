@@ -1,5 +1,6 @@
 import { auth } from './auth'
 import { supabaseServer } from './supabase'
+import { isSelfServiceSignupEnabled, shouldAutoCreateOrg } from './feature-flags'
 
 export type OrgRole = 'owner' | 'admin' | 'member'
 
@@ -109,8 +110,9 @@ export async function getActiveOrg(): Promise<OrgContext | null> {
   const email = session.user.email
   let data = await fetchMembership(email)
 
-  if (!data) {
-    // Auto-create org — handles new Google OAuth users and any missed signup paths
+  if (shouldAutoCreateOrg(!!data, await isSelfServiceSignupEnabled())) {
+    // Auto-create org — handles new Google OAuth users and any missed signup paths.
+    // Only reachable while self-service signup is enabled; see shouldAutoCreateOrg.
     const company = email.split('@')[1]?.split('.')[0] ?? email.split('@')[0]
     try {
       console.log('[org] no membership found for', email, '— auto-creating org')
@@ -143,8 +145,9 @@ export async function requireOrg(minRole: OrgRole = 'member'): Promise<OrgContex
   const email = session.user.email
   let data = await fetchMembership(email)
 
-  if (!data) {
-    // Auto-create org so API routes also work for brand-new users
+  if (shouldAutoCreateOrg(!!data, await isSelfServiceSignupEnabled())) {
+    // Auto-create org so API routes also work for brand-new users.
+    // Only reachable while self-service signup is enabled; see shouldAutoCreateOrg.
     const company = email.split('@')[1]?.split('.')[0] ?? email.split('@')[0]
     try {
       await createOrg(company, email)
@@ -155,7 +158,7 @@ export async function requireOrg(minRole: OrgRole = 'member'): Promise<OrgContex
   }
 
   if (!data) {
-    throw new Response(JSON.stringify({ error: 'No organization found' }), { status: 403 })
+    throw new Response(JSON.stringify({ error: 'Access by invitation only' }), { status: 403 })
   }
 
   const role = data.role as OrgRole
@@ -176,8 +179,17 @@ export function hasRole(userRole: OrgRole, minRole: OrgRole): boolean {
   return roleRank[userRole] >= roleRank[minRole]
 }
 
-/** Create an org and owner membership. Returns the new org id. */
-export async function createOrg(name: string, ownerEmail: string): Promise<string> {
+/**
+ * Create an org and an initial membership. Returns the new org id.
+ * `opts` defaults preserve the original self-service behavior (owner, active)
+ * for the two existing call sites; admin provisioning passes an explicit
+ * `status: 'invited'` since the initial admin hasn't set a password yet.
+ */
+export async function createOrg(
+  name: string,
+  ownerEmail: string,
+  opts: { status?: 'active' | 'invited'; role?: OrgRole; createdBy?: string; allowedDomain?: string | null } = {},
+): Promise<string> {
   const slug = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -188,7 +200,12 @@ export async function createOrg(name: string, ownerEmail: string): Promise<strin
 
   const { data: org, error: orgErr } = await supabaseServer
     .from('organizations')
-    .insert({ name, slug: uniqueSlug })
+    .insert({
+      name,
+      slug: uniqueSlug,
+      ...(opts.createdBy ? { created_by: opts.createdBy } : {}),
+      ...(opts.allowedDomain ? { allowed_domain: opts.allowedDomain } : {}),
+    })
     .select('id')
     .single()
 
@@ -196,7 +213,12 @@ export async function createOrg(name: string, ownerEmail: string): Promise<strin
 
   const { error: memberErr } = await supabaseServer
     .from('org_memberships')
-    .insert({ org_id: org.id, user_email: ownerEmail, role: 'owner', status: 'active' })
+    .insert({
+      org_id: org.id,
+      user_email: ownerEmail,
+      role: opts.role ?? 'owner',
+      status: opts.status ?? 'active',
+    })
 
   if (memberErr) throw new Error(`Failed to create membership: ${memberErr.message}`)
 

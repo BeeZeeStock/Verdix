@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { VerdixLogo } from '@/components/VerdixLogo'
+import { isSelfServiceSignupEnabled } from '@/lib/feature-flags'
 
 export const metadata = {
   title: 'Why bespoke enterprise contracts are still difficult to bill | Verdix',
@@ -7,7 +8,13 @@ export const metadata = {
     'Bespoke SaaS contracts enable flexible enterprise deals, but they create complex billing work across Finance, RevOps and Product. Here is why.',
 }
 
-export default function BlogPost() {
+// Re-check the self-service flag periodically rather than baking it in at
+// build time — keeps static generation while still letting the admin
+// toggle propagate without a redeploy.
+export const revalidate = 60
+
+export default async function BlogPost() {
+  const selfServiceEnabled = await isSelfServiceSignupEnabled()
   return (
     <div className="min-h-screen" style={{ background: '#FAF8F4' }}>
 
@@ -21,9 +28,11 @@ export default function BlogPost() {
           <div className="flex items-center gap-5 text-sm">
             <Link href="/blog" className="text-stone hover:text-forest transition-colors">Blog</Link>
             <Link href="/login" className="text-stone hover:text-forest transition-colors">Sign in</Link>
-            <Link href="/signup" className="bg-forest text-white font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors" style={{ fontSize: 13 }}>
-              Get started
-            </Link>
+            {selfServiceEnabled && (
+              <Link href="/signup" className="bg-forest text-white font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors" style={{ fontSize: 13 }}>
+                Get started
+              </Link>
+            )}
           </div>
         </div>
       </header>
@@ -213,13 +222,15 @@ export default function BlogPost() {
             See how Verdix turns a signed agreement into an approved billing schedule.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <Link
-              href="/signup"
-              className="inline-block text-white font-medium px-7 py-3 rounded-xl text-sm transition-colors"
-              style={{ background: '#27AE60' }}
-            >
-              Automate your first agreement →
-            </Link>
+            {selfServiceEnabled && (
+              <Link
+                href="/signup"
+                className="inline-block text-white font-medium px-7 py-3 rounded-xl text-sm transition-colors"
+                style={{ background: '#27AE60' }}
+              >
+                Automate your first agreement →
+              </Link>
+            )}
             <a
               href="/demos/contract-to-billing.html"
               target="_blank"

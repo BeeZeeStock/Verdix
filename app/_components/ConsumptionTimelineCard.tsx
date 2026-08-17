@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import { partialPeriodLabel } from '@/lib/cadence-labels'
 
 type OverageItem = {
   meter_key:      string
@@ -23,6 +24,7 @@ type PendingMinimum = {
   amount: number
   currency: string
   mode: string
+  period?: string | null
   partialPeriod: { isPartial: boolean; needsConfirmation: boolean; prorated: boolean } | null
 }
 
@@ -205,7 +207,7 @@ export function ConsumptionTimelineCard({ jobId }: { jobId: string }) {
                                   </div>
                                   {m.partialPeriod?.isPartial && (
                                     <div className="text-[9px] font-medium mt-0.5" style={{ color: m.partialPeriod.needsConfirmation ? '#B45309' : '#6B7280' }}>
-                                      Partial-quarter treatment: {m.partialPeriod.needsConfirmation ? 'Needs confirmation' : m.partialPeriod.prorated ? 'Prorated' : 'Full amount charged'}
+                                      {partialPeriodLabel(m.period)}: {m.partialPeriod.needsConfirmation ? 'Needs confirmation' : m.partialPeriod.prorated ? 'Prorated' : 'Full amount charged'}
                                     </div>
                                   )}
                                 </td>

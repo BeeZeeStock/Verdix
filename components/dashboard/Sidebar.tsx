@@ -53,7 +53,7 @@ const ADMIN_EMAILS = ['bilal.zahoor@yahoo.com', 'bilal@lynoraai.com']
 
 const adminItems = [
   { href: '/admin/billing', icon: 'ti-building-store', label: 'Packages & pricing', exact: false },
-  { href: '/admin/customers', icon: 'ti-users-group', label: 'Customers', exact: false },
+  { href: '/admin/customers', icon: 'ti-users-group', label: 'Organizations', exact: false },
   { href: '/admin/design-partners', icon: 'ti-star', label: 'Design partners', exact: false },
   { href: '/admin/meters',       icon: 'ti-antenna',  label: 'Meters',       exact: false },
   { href: '/settings/learned-rules', icon: 'ti-brain', label: 'Learned rules', exact: false },

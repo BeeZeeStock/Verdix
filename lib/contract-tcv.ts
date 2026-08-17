@@ -20,7 +20,8 @@
 // — this is billed_to_date under a different label once nothing further
 // will ever be invoiced against it; see contractLifecycleStatus.
 import { supabaseServer } from '@/lib/supabase'
-import { computeBaseTcv, computeCommittedContractValue, type ConfirmedMinimumCommitment } from '@/lib/contract-tcv-calc'
+import { computeBaseTcv } from '@/lib/contract-tcv-calc'
+import { computeContractValueModel, type ContractValueTier } from '@/lib/contract-value'
 export { computeBaseTcv, computeCommittedContractValue, contractLifecycleStatus, isEscalatorItem } from '@/lib/contract-tcv-calc'
 export type { BaseTcvItem, ContractLifecycleStatus } from '@/lib/contract-tcv-calc'
 
@@ -90,24 +91,38 @@ export async function getContractSummaries(jobIds: string[]): Promise<Record<str
     billedByJob[row.job_id] = (billedByJob[row.job_id] ?? 0) + Number(row.base_amount ?? 0)
   }
 
+  // One entry per METRIC (unit_type), not per raw tier row — a metric's
+  // minimum_commitment/measurement_period/reset_anchor are duplicated onto
+  // every tier row extraction wrote for it, so grouping by unit_type and
+  // taking the first row avoids counting the same commitment's term-wide
+  // schedule (see computeContractValueModel) more than once per metric.
+  type MeterMappingTier = {
+    unit_type?: string | null
+    measurement_period?: string | null
+    reset_anchor?: 'contract_start' | 'calendar' | null
+    minimum_commitment?: { amount: number; prorate_partial_periods?: boolean | 'unclear'; requires_confirmation: boolean } | null
+  }
   type MeterMappingRow = {
     job_id: string
     minimum_commitment_mode: string | null
     minimum_commitment_requires_confirmation: boolean | null
-    overage_tiers: Array<{ minimum_commitment?: { amount: number } | null; minimum_period_amount?: number | null }> | null
+    overage_tiers: MeterMappingTier[] | null
   }
-  const minimumsByJob: Record<string, ConfirmedMinimumCommitment[]> = {}
+  const metricsByJob: Record<string, ContractValueTier[]> = {}
   for (const row of (meterMappingsData ?? []) as MeterMappingRow[]) {
     if (!row.minimum_commitment_mode) continue
-    const amount = (row.overage_tiers ?? []).reduce(
-      (max, t) => Math.max(max, t.minimum_commitment?.amount ?? t.minimum_period_amount ?? 0),
-      0,
-    )
-    if (amount <= 0) continue
-    ;(minimumsByJob[row.job_id] ??= []).push({
-      amount,
-      requires_confirmation: row.minimum_commitment_requires_confirmation ?? false,
-    })
+    const seenUnitTypes = new Set<string>()
+    for (const t of row.overage_tiers ?? []) {
+      if (!t.minimum_commitment) continue
+      const key = t.unit_type ?? ''
+      if (seenUnitTypes.has(key)) continue
+      seenUnitTypes.add(key)
+      ;(metricsByJob[row.job_id] ??= []).push({
+        measurement_period: t.measurement_period,
+        reset_anchor: t.reset_anchor,
+        minimum_commitment: t.minimum_commitment,
+      })
+    }
   }
 
   const map: Record<string, ContractSummary> = {}
@@ -121,12 +136,21 @@ export async function getContractSummaries(jobIds: string[]): Promise<Record<str
       return s + ((!matchingItem || (matchingItem.total_amount ?? 0) === 0) ? inv.base_amount : 0)
     }, 0)
 
+    const billedToDate = billedByJob[row.job_id] ?? 0
+    const model = computeContractValueModel({
+      items: jobItems,
+      metrics: metricsByJob[row.job_id] ?? [],
+      contractStartDate: (row.contract_start_date as string | null) ?? null,
+      contractEndDate: (row.contract_end_date as string | null) ?? null,
+      billedToDate,
+    })
+
     map[row.job_id] = {
       customer_name: (row.customer_name as string | null) ?? null,
       tcv,
       actualTcv: tcv + additionsTotal,
-      billedToDate: billedByJob[row.job_id] ?? 0,
-      committedContractValue: computeCommittedContractValue(jobItems, minimumsByJob[row.job_id] ?? []),
+      billedToDate,
+      committedContractValue: model.committedContractValue ?? tcv,
       currency: (row.currency as string | null) ?? 'EUR',
     }
   }

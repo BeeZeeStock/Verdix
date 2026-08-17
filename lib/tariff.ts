@@ -292,6 +292,21 @@ export function computeMetricOverage(
   return finalize(Math.max(computed, floor))
 }
 
+// Builds the per-month comparison cursor used when walking a contract's
+// billing months (rate/escalator/discount lookups) — preserves the
+// contract's actual day-of-month (e.g. day 11 for a contract starting
+// 2026-08-11) rather than pinning to day 1. Dates like discount.start_date
+// or a ramp step's start_date are the contract's real dates, so comparing
+// them against a day-1 cursor made month 0 fail its own `d >= start` check
+// whenever the contract didn't start on the 1st — discounts/ramp steps
+// appeared to begin one period late (and end one period early). Lives here
+// (not lib/billing-writer.ts, which imports supabaseServer) so client
+// components like RevenueModelTab can share it without pulling in
+// server-only code — billing-writer.ts re-exports it for its own callers.
+export function monthCursor(contractStart: Date, globalMonthIdx: number): Date {
+  return new Date(contractStart.getFullYear(), contractStart.getMonth() + globalMonthIdx, contractStart.getDate())
+}
+
 const CADENCE_MONTHS: Record<string, number> = { monthly: 1, quarterly: 3, 'semi-annual': 6, annual: 12 }
 
 export type CadenceAnchorMode = 'contract_start' | 'calendar'

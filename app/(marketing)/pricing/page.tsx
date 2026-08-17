@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { VerdixLogo } from '@/components/VerdixLogo'
+import { isSelfServiceSignupEnabled } from '@/lib/feature-flags'
 
 const plans = [
   {
@@ -90,7 +91,18 @@ const plans = [
   },
 ]
 
-export default function PricingPage() {
+// Re-check the self-service flag periodically rather than baking it in at
+// build time — keeps static generation for this page while still letting
+// the admin toggle propagate without a redeploy.
+export const revalidate = 60
+
+export default async function PricingPage() {
+  const selfServiceEnabled = await isSelfServiceSignupEnabled()
+  const resolvedPlans = plans.map(plan => {
+    if (selfServiceEnabled || plan.id === 'enterprise') return plan
+    return { ...plan, cta: 'Talk to us', ctaHref: '/design-partner' }
+  })
+
   return (
     <div className="min-h-screen bg-cream">
       {/* Nav */}
@@ -102,9 +114,11 @@ export default function PricingPage() {
           </Link>
           <div className="flex items-center gap-4">
             <Link href="/login" className="text-sm text-stone hover:text-forest transition-colors">Sign in</Link>
-            <Link href="/signup" className="bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors">
-              Get started
-            </Link>
+            {selfServiceEnabled && (
+              <Link href="/signup" className="bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors">
+                Get started
+              </Link>
+            )}
           </div>
         </div>
       </header>
@@ -125,7 +139,7 @@ export default function PricingPage() {
 
         {/* Plan grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
-          {plans.map(plan => (
+          {resolvedPlans.map(plan => (
             <div
               key={plan.id}
               className="bg-white rounded-2xl border flex flex-col overflow-hidden transition-shadow hover:shadow-md"

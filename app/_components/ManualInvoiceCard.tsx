@@ -7,6 +7,23 @@ type Meter = {
   includedUnits: number
   overageTiers:  Array<{ from_unit: number | null; to_unit: number | null; rate_per_unit: number }>
   billingCycle:  string
+  tierCalculationMethod?: 'graduated' | 'volume' | 'block' | 'custom' | null
+}
+
+const TIER_METHOD_COPY: Record<string, string> = {
+  graduated: 'graduated tier', volume: 'volume-based', block: 'block-based', custom: 'tiered',
+}
+
+// Generic across whatever tier-calculation method(s) this job's metrics
+// actually use — never hardcodes one method (e.g. "volume-based") for every
+// contract regardless of how its tiers are actually structured.
+function verificationCopy(meters: Meter[]): string {
+  const methods = new Set(meters.map(m => m.tierCalculationMethod).filter((m): m is NonNullable<Meter['tierCalculationMethod']> => !!m))
+  if (methods.size === 0) return 'Verify pricing against this agreement'
+  if (methods.size > 1) return 'Verify tiered/volume pricing against this agreement'
+  const method = [...methods][0]
+  const label = (method && TIER_METHOD_COPY[method]) ?? 'tiered'
+  return `Verify ${label} pricing against this agreement`
 }
 
 type PresetFee = {
@@ -186,7 +203,7 @@ export function ManualInvoiceCard({ jobId }: { jobId: string }) {
             <i className="ti ti-calculator" style={{ fontSize: 13, color: '#1A3D2B' }} />
             Manual invoice
           </h2>
-          <p className="text-[11px] text-stone mt-1">Verify volume-based pricing against this agreement, then optionally push a one-off invoice</p>
+          <p className="text-[11px] text-stone mt-1">{verificationCopy(meters)}, then optionally push a one-off invoice</p>
         </div>
         <i className={`ti ${expanded ? 'ti-chevron-up' : 'ti-chevron-down'} text-stone flex-shrink-0`} style={{ fontSize: 14 }} />
       </button>

@@ -24,7 +24,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
 import type { RuleType } from '@/lib/rule-interpretation'
-import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod } from '@/lib/types'
+import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation } from '@/lib/types'
 
 type Body = {
   ruleType: RuleType
@@ -35,12 +35,35 @@ type Body = {
   approvedInterpretation: Record<string, unknown>
   // Which discount this confirmation targets, when ruleType is 'discount'.
   discountId?: string
+  // Same addressing pattern as discountId, for ruleType 'service_credit'.
+  creditId?: string
+  // Composite key from lib/rule-interactions.ts, for ruleType 'rule_interaction'.
+  interactionKey?: string
 }
 
 function buildTierCalculation(approved: Record<string, unknown>): TierCalculationMethod {
   return {
     method: (approved.method as TierCalculationMethod['method']) ?? 'graduated',
     source_clause: (approved.source_clause as string | undefined) ?? null,
+    requires_confirmation: false,
+    confirmation_reason: null,
+  }
+}
+
+function buildServiceCreditInterpretation(approved: Record<string, unknown>, existing: ServiceCreditInterpretation | null | undefined): ServiceCreditInterpretation {
+  return {
+    trigger_type: (approved.trigger_type as ServiceCreditInterpretation['trigger_type']) ?? existing?.trigger_type ?? 'other',
+    trigger_description: (approved.trigger_description as string | null) ?? existing?.trigger_description ?? null,
+    credit_basis: (approved.credit_basis as ServiceCreditInterpretation['credit_basis']) ?? existing?.credit_basis ?? 'flat_amount',
+    basis_component: (approved.basis_component as string | null) ?? existing?.basis_component ?? null,
+    credit_value: typeof approved.credit_value === 'number' ? approved.credit_value : existing?.credit_value ?? null,
+    currency: existing?.currency ?? null,
+    cap_amount: (approved.cap_amount as number | null) ?? existing?.cap_amount ?? null,
+    cap_pct: (approved.cap_pct as number | null) ?? existing?.cap_pct ?? null,
+    settlement_period: (approved.settlement_period as ServiceCreditInterpretation['settlement_period']) ?? existing?.settlement_period ?? null,
+    cash_redeemable: typeof approved.cash_redeemable === 'boolean' ? approved.cash_redeemable : existing?.cash_redeemable ?? false,
+    interaction_note: existing?.interaction_note ?? null,
+    source_clause: (approved.source_clause as string | undefined) ?? existing?.source_clause ?? null,
     requires_confirmation: false,
     confirmation_reason: null,
   }
@@ -72,7 +95,7 @@ export async function POST(
 
   const { id: jobId } = await params
   const body = await req.json() as Body
-  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId } = body
+  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey } = body
 
   if (!ruleType || !approvedInterpretation) {
     return NextResponse.json({ error: 'ruleType and approvedInterpretation are required' }, { status: 400 })
@@ -80,20 +103,35 @@ export async function POST(
   if (ruleType === 'discount' && !discountId) {
     return NextResponse.json({ error: 'discountId is required for discount interpretation' }, { status: 400 })
   }
+  if (ruleType === 'service_credit' && !creditId) {
+    return NextResponse.json({ error: 'creditId is required for service_credit interpretation' }, { status: 400 })
+  }
+  if (ruleType === 'rule_interaction' && !interactionKey) {
+    return NextResponse.json({ error: 'interactionKey is required for rule_interaction interpretation' }, { status: 400 })
+  }
 
   // The audit table's contract_unit_type column doubles as the addressing
-  // key for job-level rules (null for a singular escalator). Discounts are
-  // no longer singular, so a discount's audit history is addressed via a
-  // synthetic 'discount:{discount_rule_id}' key in that same column —
-  // reuses the existing schema rather than requiring another migration.
-  const auditUnitKey = ruleType === 'discount' ? `discount:${discountId}` : (contractUnitType ?? null)
+  // key for job-level rules (null for a singular escalator). Discounts,
+  // service credits, and rule interactions aren't singular, so their audit
+  // history is addressed via a synthetic 'discount:{id}'/'credit:{id}'/
+  // 'interaction:{key}' key in that same column — reuses the existing schema
+  // rather than requiring another migration.
+  const auditUnitKey = ruleType === 'discount' ? `discount:${discountId}`
+    : ruleType === 'service_credit' ? `credit:${creditId}`
+    : ruleType === 'rule_interaction' ? `interaction:${interactionKey}`
+    : (contractUnitType ?? null)
 
   const session = await auth()
   const reviewerEmail = session?.user?.email ?? org.userEmail ?? 'unknown'
   const reviewerName = session?.user?.name ?? null
 
   const propagation: PropagationStatus = {}
-  const affectedComponents = ['Commercial Terms', 'Billing Configuration', 'Billing Engine', 'Billing Schedule']
+  // A rule interaction never touches Billing Configuration/Schedule directly
+  // — it only resolves which basis the referencing service credit's own
+  // (separately-confirmed) interpretation should use.
+  const affectedComponents = ruleType === 'rule_interaction'
+    ? ['Commercial Terms', 'Billing Engine']
+    : ['Commercial Terms', 'Billing Configuration', 'Billing Engine', 'Billing Schedule']
 
   // ── Step 1: audit row (append-only) ─────────────────────────────────────
   // contract_unit_type is null for job-level rules (escalators) — PostgREST's
@@ -112,6 +150,30 @@ export async function POST(
 
   const nextRevision = (priorCurrent?.revision_number ?? 0) + 1
 
+  // Fetched before any write this request makes, so original_extraction is a
+  // true "before" snapshot — the specific sub-object this confirmation is
+  // about to overwrite, not a post-hoc reconstruction. Reused by Step 2
+  // below rather than queried twice.
+  const { data: termsRow } = await supabaseServer
+    .from('contract_terms')
+    .select('id, overage_tiers, escalators, discounts, service_credits')
+    .eq('job_id', jobId)
+    .maybeSingle()
+
+  const originalExtraction: unknown = !termsRow ? null
+    : ruleType === 'minimum_commitment' || ruleType === 'partial_period'
+      ? (termsRow.overage_tiers as Array<{ unit_type?: string }> ?? []).find(t => t.unit_type === contractUnitType) ?? null
+    : ruleType === 'tier_calculation'
+      ? (termsRow.overage_tiers as Array<{ unit_type?: string }> ?? []).find(t => t.unit_type === contractUnitType) ?? null
+    : ruleType === 'discount'
+      ? (termsRow.discounts as Array<{ discount_rule_id?: string }> ?? []).find(d => d.discount_rule_id === discountId) ?? null
+    : ruleType === 'service_credit'
+      ? (termsRow.service_credits as Array<{ credit_rule_id?: string }> ?? []).find(c => c.credit_rule_id === creditId) ?? null
+    : ruleType === 'rule_interaction'
+      ? (termsRow.service_credits as Array<{ credit_rule_id?: string; interpretation?: unknown }> ?? [])
+          .find(c => c.credit_rule_id === (interactionKey ?? '').split('|').find(p => p.startsWith('service_credit:'))?.split(':')[1])?.interpretation ?? null
+    : (termsRow.escalators as unknown[] ?? [])[0] ?? null
+
   const { error: auditError } = await supabaseServer.from('commercial_rule_interpretations').insert({
     job_id: jobId,
     rule_type: ruleType,
@@ -119,6 +181,8 @@ export async function POST(
     revision_number: nextRevision,
     is_current: true,
     source_clause: sourceClause ?? null,
+    source_text: sourceClause ?? null,
+    original_extraction: originalExtraction,
     reviewer_input: reviewerInput ?? null,
     ai_proposed_interpretation: aiProposedInterpretation,
     approved_interpretation: approvedInterpretation,
@@ -149,11 +213,6 @@ export async function POST(
   propagation['audit_trail'] = 'applied'
 
   // ── Step 2: contract_terms ───────────────────────────────────────────────
-  const { data: termsRow } = await supabaseServer
-    .from('contract_terms')
-    .select('id, overage_tiers, escalators, discounts')
-    .eq('job_id', jobId)
-    .maybeSingle()
 
   if (!termsRow) {
     propagation['contract_terms'] = 'failed'
@@ -178,17 +237,24 @@ export async function POST(
     const interpretation: EscalatorInterpretation = treatment === 'not_applied'
       ? {
           treatment: 'not_applied',
-          index: null, frequency: null, effective_date: null, cap_pct: null, calculation_method: null,
+          index: null, index_name: null, frequency: null, effective_date: null, cap_pct: null, calculation_method: null,
+          discretion: 'not_exercised', renewal_triggered: false,
           requires_confirmation: false,
           confirmation_reason: (approvedInterpretation.confirmation_reason as string | null) ?? null,
         }
       : {
           treatment: 'applies',
           index: (approvedInterpretation.index as EscalatorInterpretation['index']) ?? 'other',
+          index_name: (approvedInterpretation.index_name as string | null) ?? null,
           frequency: (approvedInterpretation.frequency as EscalatorInterpretation['frequency']) ?? 'annual',
           effective_date: (approvedInterpretation.effective_date as string | null) ?? null,
           cap_pct: (approvedInterpretation.cap_pct as number | null) ?? null,
           calculation_method: (approvedInterpretation.calculation_method as string) ?? '',
+          // A discretionary clause must never silently default to
+          // 'automatic' here — only persist 'automatic' when the reviewer's
+          // structured/free-text interpretation actually said so.
+          discretion: (approvedInterpretation.discretion as EscalatorInterpretation['discretion']) ?? 'requires_renewal_approval',
+          renewal_triggered: (approvedInterpretation.renewal_triggered as boolean) ?? false,
           requires_confirmation: false,
           confirmation_reason: null,
         }
@@ -247,6 +313,53 @@ export async function POST(
           : t
       )
       const { error } = await supabaseServer.from('contract_terms').update({ overage_tiers: newTiers }).eq('id', termsRow.id)
+      propagation['contract_terms'] = error ? 'failed' : 'applied'
+    }
+  } else if (ruleType === 'service_credit') {
+    // Same addressing pattern as discount: stable credit_rule_id, not array
+    // position, with the same legacy-row positional fallback + backfill.
+    type Credit = { credit_rule_id?: string; interpretation?: ServiceCreditInterpretation | null; [k: string]: unknown }
+    const credits = (termsRow.service_credits ?? []) as Credit[]
+    const interpretation = buildServiceCreditInterpretation(approvedInterpretation, credits.find(c => c.credit_rule_id === creditId)?.interpretation)
+    const targetIndex = credits.findIndex(c => c.credit_rule_id === creditId)
+    const fallbackIndex = targetIndex === -1 && Number.isInteger(Number(creditId)) ? Number(creditId) : -1
+    let newCredits: Credit[]
+    if (targetIndex !== -1) {
+      newCredits = credits.map((c, i) => (i === targetIndex ? { ...c, interpretation } : c))
+    } else if (fallbackIndex !== -1 && credits[fallbackIndex]) {
+      newCredits = credits.map((c, i) => (i === fallbackIndex ? { ...c, credit_rule_id: c.credit_rule_id ?? creditId, interpretation } : c))
+    } else if (credits.length === 0) {
+      newCredits = [{ credit_rule_id: creditId, credit_type: 'other', description: '', source_clause: null, stated_pct: null, stated_amount: null, interpretation }]
+    } else {
+      newCredits = credits
+      propagation['contract_terms'] = 'failed'
+    }
+    if (propagation['contract_terms'] !== 'failed') {
+      const { error } = await supabaseServer.from('contract_terms').update({ service_credits: newCredits }).eq('id', termsRow.id)
+      propagation['contract_terms'] = error ? 'failed' : 'applied'
+    }
+  } else if (ruleType === 'rule_interaction') {
+    // No natural contract_terms field for the interaction itself — the
+    // resolution is written back onto the referencing service credit's own
+    // interpretation.interaction_note, so the calculation engine and any
+    // standalone display of that credit sees the resolved basis without
+    // joining the separate interaction audit row.
+    const parsedCreditId = (interactionKey ?? '').split('|').find(p => p.startsWith('service_credit:'))?.split(':')[1]
+    type Credit = { credit_rule_id?: string; interpretation?: ServiceCreditInterpretation | null; [k: string]: unknown }
+    const credits = (termsRow.service_credits ?? []) as Credit[]
+    const targetIndex = credits.findIndex(c => c.credit_rule_id === parsedCreditId)
+    if (targetIndex === -1 || !credits[targetIndex].interpretation) {
+      // The credit's own basis interpretation must exist before an
+      // interaction resolution can be attached to it — surfaced as
+      // 'skipped', not 'failed', since this isn't an error, just an
+      // ordering dependency the reviewer needs to resolve first.
+      propagation['contract_terms'] = 'skipped'
+    } else {
+      const note = (approvedInterpretation.note as string | null) ?? null
+      const newCredits = credits.map((c, i) =>
+        i === targetIndex ? { ...c, interpretation: { ...c.interpretation!, interaction_note: note } } : c
+      )
+      const { error } = await supabaseServer.from('contract_terms').update({ service_credits: newCredits }).eq('id', termsRow.id)
       propagation['contract_terms'] = error ? 'failed' : 'applied'
     }
   }

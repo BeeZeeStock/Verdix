@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { partialPeriodLabel } from '@/lib/cadence-labels'
 
 type SubscriptionInfo = {
   id: string
@@ -704,7 +705,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
                           {e.commercialRule.partialPeriod?.isPartial && (
                             <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
                               <td className="px-3 py-2" colSpan={4} style={{ color: e.commercialRule.partialPeriod.needsConfirmation ? '#B45309' : '#6B7280' }}>
-                                Partial-quarter treatment: {e.commercialRule.partialPeriod.needsConfirmation ? 'Needs confirmation' : e.commercialRule.partialPeriod.prorated ? 'Prorated by days' : 'Full amount charged'}
+                                {partialPeriodLabel(e.commercialRule.cadence)}: {e.commercialRule.partialPeriod.needsConfirmation ? 'Needs confirmation' : e.commercialRule.partialPeriod.prorated ? 'Prorated by days' : 'Full amount charged'}
                               </td>
                             </tr>
                           )}

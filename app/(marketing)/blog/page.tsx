@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { VerdixLogo } from '@/components/VerdixLogo'
+import { isSelfServiceSignupEnabled } from '@/lib/feature-flags'
 
 export const metadata = {
   title: 'Blog | Verdix',
@@ -137,7 +138,13 @@ const posts = [
   },
 ]
 
-export default function BlogIndex() {
+// Re-check the self-service flag periodically rather than baking it in at
+// build time — keeps static generation while still letting the admin
+// toggle propagate without a redeploy.
+export const revalidate = 60
+
+export default async function BlogIndex() {
+  const selfServiceEnabled = await isSelfServiceSignupEnabled()
   return (
     <div className="min-h-screen" style={{ background: '#FAF8F4' }}>
 
@@ -150,9 +157,11 @@ export default function BlogIndex() {
           </Link>
           <div className="flex items-center gap-5 text-sm">
             <Link href="/login" className="text-stone hover:text-forest transition-colors">Sign in</Link>
-            <Link href="/signup" className="bg-forest text-white font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors" style={{ fontSize: 13 }}>
-              Get started
-            </Link>
+            {selfServiceEnabled && (
+              <Link href="/signup" className="bg-forest text-white font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors" style={{ fontSize: 13 }}>
+                Get started
+              </Link>
+            )}
           </div>
         </div>
       </header>

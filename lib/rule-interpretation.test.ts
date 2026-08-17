@@ -5,6 +5,11 @@ import {
   buildEscalatorPrompt,
   buildDiscountPrompt,
   buildTierCalculationPrompt,
+  buildMinimumCommitmentProposalPrompt,
+  buildTierCalculationProposalPrompt,
+  buildEscalatorProposalPrompt,
+  buildPartialPeriodProposalPrompt,
+  validateProposalState,
   parseRuleInterpretationResponse,
   describeMissingFieldQuestions,
   describeWhatWillChange,
@@ -16,6 +21,7 @@ import {
   type EscalatorContext,
   type DiscountContext,
   type TierCalculationContext,
+  type RuleProposal,
 } from './rule-interpretation'
 
 const minCommitmentContext: MinimumCommitmentContext = {
@@ -200,10 +206,10 @@ describe('describeMissingFieldQuestions', () => {
 })
 
 describe('describeWhatWillChange', () => {
-  it('lists Commercial Terms, Billing Configuration, Billing Engine, and Billing Schedule for a minimum commitment', () => {
+  it('lists Commercial Terms, Billing Configuration, Billing Engine, Billing Schedule, Contract Value, and Graphical View for a minimum commitment', () => {
     const items = describeWhatWillChange('minimum_commitment', 'SMS reminder')
     const components = items.map(i => i.component)
-    expect(components).toEqual(['Commercial Terms', 'Billing Configuration', 'Billing Engine', 'Billing Schedule'])
+    expect(components).toEqual(['Commercial Terms', 'Billing Configuration', 'Billing Engine', 'Billing Schedule', 'Contract Value', 'Graphical View'])
   })
 
   it('adds a Usage Source dependency warning when the meter mapping is unconfirmed', () => {
@@ -388,5 +394,141 @@ describe('deriveSelectedOption / optionsForEdit for discount', () => {
     const other = options.find(o => o.id === 'volume')!
     expect(current.label).toMatch(/^Keep as /)
     expect(other.label).toMatch(/^Change to /)
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// The propose pipeline — Verdix interprets first, the human confirms.
+// ══════════════════════════════════════════════════════════════════════════
+
+function proposal(overrides: Partial<RuleProposal> = {}): RuleProposal {
+  return {
+    state: 'clear_from_source',
+    proposed_interpretation: { mode: 'floor', amount: 2000 },
+    reasoning: 'The contract describes this as a "minimum processing charge" applied as a floor.',
+    ...overrides,
+  }
+}
+
+describe('buildMinimumCommitmentProposalPrompt — scenario: monthly AI processing minimum', () => {
+  it('surfaces "minimum charge" framing as textual support for a floor recommendation', () => {
+    const prompt = buildMinimumCommitmentProposalPrompt({
+      contractUnitType: 'AI processing',
+      sourceClause: 'A minimum processing charge of SEK 2,000 per calendar month applies to AI processing usage.',
+      currency: 'SEK',
+      includedUnits: 100000,
+      tiers: [{ tier_label: 'Tier 1', from_unit: 100001, to_unit: null, rate_per_unit: 0.02 }],
+      existingMinimumAmount: 2000,
+      measurementPeriod: 'monthly',
+    })
+    expect(prompt).toContain('minimum charge')
+    expect(prompt).toContain('AI processing')
+    expect(prompt).toMatch(/"state":/)
+    expect(prompt).toMatch(/clear_from_source/)
+  })
+
+  it('never claims clear_from_source is the only allowed state — decision_required and verdix_recommends are always offered', () => {
+    const prompt = buildMinimumCommitmentProposalPrompt({
+      contractUnitType: 'AI processing', sourceClause: null, currency: 'SEK', includedUnits: 0, tiers: [], existingMinimumAmount: null, measurementPeriod: null,
+    })
+    expect(prompt).toContain('verdix_recommends')
+    expect(prompt).toContain('decision_required')
+  })
+})
+
+describe('buildTierCalculationProposalPrompt — scenario: graduated pricing explicit in source', () => {
+  it('instructs clear_from_source for explicit "each band applies only to requests falling within that band" language', () => {
+    const prompt = buildTierCalculationProposalPrompt({
+      contractUnitType: 'API request',
+      sourceClause: 'Each pricing band applies only to requests falling within that band.',
+      currency: 'SEK',
+      tiers: [{ tier_label: 'Tier 1', from_unit: 1, to_unit: 1000, rate_per_unit: 1 }],
+    })
+    expect(prompt).toContain('each band applies only to requests falling within that band')
+    expect(prompt).toMatch(/graduated\/staircase language.*clear_from_source/i)
+  })
+
+  it('never treats a bare rate table with no mechanism language as a safe default to graduated', () => {
+    const prompt = buildTierCalculationProposalPrompt({
+      contractUnitType: 'API request', sourceClause: '(no language describing mechanism)', currency: 'SEK',
+      tiers: [{ tier_label: 'Tier 1', from_unit: 1, to_unit: 1000, rate_per_unit: 1 }],
+    })
+    expect(prompt).toMatch(/never a safe default/i)
+  })
+})
+
+describe('buildEscalatorProposalPrompt — scenario: HICP renewal indexation with discretion', () => {
+  it('preserves the literal index name (HICP) and instructs it is never normalized to CPI', () => {
+    const prompt = buildEscalatorProposalPrompt({
+      sourceClause: 'On renewal, the platform subscription may be increased by the annual change in HICP, subject to a maximum increase of 4%.',
+      description: 'HICP renewal indexation',
+      capPct: 4,
+      effectiveDate: '2027-08-17',
+      appliesFromYear: null,
+    })
+    expect(prompt).toContain('HICP')
+    expect(prompt).toMatch(/NEVER normalize a named index like "HICP" to "CPI"/)
+  })
+
+  it('treats discretionary "may be increased" language as textual support for requiring renewal approval, not silence', () => {
+    const prompt = buildEscalatorProposalPrompt({
+      sourceClause: 'may be increased by the annual change in HICP, subject to a maximum increase of 4%.',
+      description: 'HICP renewal indexation', capPct: 4, effectiveDate: '2027-08-17', appliesFromYear: null,
+    })
+    expect(prompt).toMatch(/"may be increased"[\s\S]*requires_renewal_approval/)
+    expect(prompt).not.toMatch(/default.*automatic/i)
+  })
+
+  it('distinguishes renewal-triggered indexation from an ordinary recurring annual escalator', () => {
+    const prompt = buildEscalatorProposalPrompt({
+      sourceClause: 'On renewal, the fee may be increased by HICP.', description: 'HICP renewal indexation',
+      capPct: 4, effectiveDate: '2027-08-17', appliesFromYear: null,
+    })
+    expect(prompt).toMatch(/renewal_triggered.*true only when/i)
+  })
+})
+
+describe('buildPartialPeriodProposalPrompt — scenario: contract silent on partial-month treatment', () => {
+  it('instructs decision_required as the default absent explicit partial-period language', () => {
+    const prompt = buildPartialPeriodProposalPrompt({
+      contractUnitType: 'AI processing', sourceClause: 'SEK 2,000/month minimum.', currency: 'SEK',
+      contractStartDate: '2026-08-17', contractEndDate: '2027-08-16', measurementPeriod: 'monthly', minimumAmount: 2000,
+    })
+    expect(prompt).toMatch(/you MUST use "decision_required"/)
+    expect(prompt).toMatch(/silence on partial-period treatment is silence, not evidence for either answer/i)
+  })
+})
+
+describe('validateProposalState — safety net, only ever downgrades', () => {
+  it('leaves a well-formed clear_from_source proposal untouched when a source clause is available', () => {
+    const result = validateProposalState(proposal({ state: 'clear_from_source' }), true)
+    expect(result.state).toBe('clear_from_source')
+    expect(result.proposed_interpretation).not.toBeNull()
+  })
+
+  it('downgrades clear_from_source to verdix_recommends when no source clause is available', () => {
+    const result = validateProposalState(proposal({ state: 'clear_from_source' }), false)
+    expect(result.state).toBe('verdix_recommends')
+  })
+
+  it('downgrades clear_from_source to verdix_recommends when reasoning is too short to be a real quote', () => {
+    const result = validateProposalState(proposal({ state: 'clear_from_source', reasoning: 'Clear.' }), true)
+    expect(result.state).toBe('verdix_recommends')
+  })
+
+  it('nulls out proposed_interpretation when state is decision_required but the model still populated one — nothing pre-selected wins', () => {
+    const result = validateProposalState(proposal({ state: 'decision_required', proposed_interpretation: { mode: 'floor', amount: 2000 } }), true)
+    expect(result.state).toBe('decision_required')
+    expect(result.proposed_interpretation).toBeNull()
+  })
+
+  it('forces decision_required when proposed_interpretation is null regardless of the stated state', () => {
+    const result = validateProposalState(proposal({ state: 'clear_from_source', proposed_interpretation: null }), true)
+    expect(result.state).toBe('decision_required')
+  })
+
+  it('never upgrades a decision_required proposal to a more confident state', () => {
+    const result = validateProposalState(proposal({ state: 'decision_required', proposed_interpretation: null, reasoning: 'The agreement does not address partial-month treatment.' }), true)
+    expect(result.state).toBe('decision_required')
   })
 })

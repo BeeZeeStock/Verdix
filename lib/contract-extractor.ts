@@ -33,6 +33,9 @@ Rules:
 - renewal_term_months: the LENGTH of each successive renewal period in months. This is OFTEN DIFFERENT from the initial contract term. Example: a 12-month contract that "automatically renews for successive six-month periods" → contract_term_months = 12, renewal_term_months = 6. Set to null only when the renewal period is not specified or explicitly equals the initial term.
 - escalators: automatic price increases (CPI clauses, fixed % increases, etc.)
   CPI ESCALATOR RULE: For CPI-linked, inflation-linked, or index-linked price adjustments where the exact future rate is unknown at signing: set escalator_pct = null (the actual CPI rate cannot be known at contract time), set escalator_type = 'CPI_cap' when there is a maximum cap, set cap_pct = the stated maximum percentage cap, and set description = the complete escalation formula in plain English (e.g. 'CPI change + 2 percentage points, maximum 6% per 12-month period'). NEVER set escalator_pct = 0 for CPI clauses — a 0% rate means no price change, which misrepresents the contract. Use null to indicate the rate is variable and unknown at signing.
+  INDEX NAME RULE: If the contract names a SPECIFIC index (e.g. "HICP", "RPI", "Consumer Price Index for Urban Consumers"), preserve that exact name verbatim inside description — never silently generalize a named index to "CPI". escalator_type still uses the closed 'CPI_cap' classification for any index-linked clause regardless of which specific index it names; the named index itself only ever appears in description's text, e.g. "HICP change, capped at 4% per annum, applied at renewal" (not "CPI change...") when the contract says HICP.
+  RENEWAL-TIMING RULE: If the escalation is explicitly tied to renewal ("on renewal, the fee may be increased by...") rather than recurring automatically every 12 months during the original term, say so explicitly in description (e.g. include the words "applied at renewal"). Do not conflate a renewal-triggered step with an ordinary automatic annual escalator — they read differently to a human reviewer and must not be described identically.
+  DISCRETION RULE: If the contract uses discretionary language ("may be increased", "is entitled to increase") rather than mandatory language ("shall be increased", "will increase"), include that discretion in description (e.g. "...the vendor MAY increase the fee, subject to..."). Do not drop the word "may"/"shall" when paraphrasing — a human reviewer needs to see whether the increase is automatic or requires a separate decision.
 - discounts: introductory or volume discounts with explicit start/end dates
 - overage_tiers: usage-based charges above included units. Each tier must have:
   - from_unit: the first unit in this tier's range (the cumulative usage count, NOT a billing-block denominator). E.g. for graduated API tiers priced per 1,000 calls: Tier 1 = from_unit:1, to_unit:10000; Tier 2 = from_unit:10001, to_unit:100000; Tier 3 = from_unit:100001, to_unit:null.
@@ -57,6 +60,11 @@ Rules:
     - This exact same method vocabulary and ambiguity rule applies to tiered/volume DISCOUNTS (see discounts below) — do not use a different standard for discount tiers than for pricing tiers.
   - CRITICAL — rate_per_unit decimal parsing: rates written as "€0.0500", "€0.035", "€0.02" are NOT zero. They are decimal fractions: 0.0500 = 0.05, 0.035, 0.02. Extract the full numeric value including leading-zero decimals. NEVER set rate_per_unit to 0 when a non-zero rate is stated in the contract.
   - TIER LABEL RULE: tier_label must describe the volume range. NEVER label a paid tier "Base Allowance" or "Included Units" — these phrases imply the tier is free. Use descriptive range labels like "Lines 1–50,000", "Up to 50,000", "50,001–250,000". Only use "Base Allowance" or "Included" language when those units are genuinely charged at zero (free). If the first tier has a non-zero rate, all tiers are paid — label them accordingly.
+- service_credits: ANY clause that reduces a future charge on a condition — SLA/availability credits, rebates, promotional credits, earned/usage credits, capped credits. Do NOT confuse with discounts (a discount reduces the PRICE up front; a service credit is a conditional reduction triggered by an EVENT — a breach, a threshold, a promotion). Each entry: { "credit_type": "sla" | "rebate" | "promotional" | "earned" | "usage" | "other", "description": "<short label>", "source_clause": "<verbatim or paraphrased clause, or null>", "stated_pct": <number or null>, "stated_amount": <number or null> }.
+  - credit_type: "sla" for availability/uptime/SLA-breach credits, "rebate" for a volume/performance rebate, "promotional" for a limited-time promotional credit, "earned" for a milestone-triggered credit, "usage" for a usage-linked credit, "other" when none of these fit.
+  - stated_pct / stated_amount: the raw percentage or flat amount as stated in the contract — extract ONLY the literal number, do not resolve what it's a percentage OF (e.g. "10% of that month's platform subscription fee" → stated_pct: 10; do not attempt to determine whether that's the discounted or undiscounted fee — that is a human reviewer's interpretation, not an extraction task).
+  - Do NOT populate an "interpretation" field — that is filled in only after human review. Leave service_credits as bare extracted facts.
+  - Only extract clauses that actually reduce a charge. A clause that merely describes a service-level TARGET with no stated financial consequence (no credit, no refund, no reduction) is not a service credit — do not invent one.
 - one_time_fees: non-recurring charges paid once (e.g. onboarding, implementation, setup, migration, professional services). Each entry: fee_label (short name), amount (number), due_date (ISO date or null), description (brief note or null), manual_trigger (boolean), metric_name (string or null), rate_per_unit (number or null).
   - Set manual_trigger=true when the fee cannot be invoiced until the service is delivered and confirmed (e.g. "professional services at €150/hour", "implementation services — billed on delivery", "training sessions"). These fees need human confirmation and a metric entry (hours, days, sessions) before the invoice is issued.
   - When manual_trigger=true, set metric_name to the unit of work (e.g. "hours", "days", "sessions", "units") and rate_per_unit to the per-unit rate. Set amount=0 when the total is variable/unknown at contract time.
@@ -260,7 +268,10 @@ ${contractText.slice(0, 10000)}
   }
 }
 
-function mergeExtractions(results: ContractTerms[]): ContractTerms {
+// Exported so the merge/dedupe/safety-net logic (which has zero AI-call
+// dependency of its own — it only ever operates on already-parsed
+// ContractTerms objects) is directly unit-testable without mocking Claude.
+export function mergeExtractions(results: ContractTerms[]): ContractTerms {
   // Take the most complete result as base, then merge arrays from all chunks
   const base = results.reduce((best, curr) => {
     const bestScore = scoreCompleteness(best)
@@ -272,6 +283,7 @@ function mergeExtractions(results: ContractTerms[]): ContractTerms {
     ...base,
     escalators: dedupe([...results.flatMap(r => r.escalators)], 'description'),
     discounts: dedupe([...results.flatMap(r => r.discounts)], 'description'),
+    service_credits: dedupe([...results.flatMap(r => r.service_credits ?? [])], 'description'),
     overage_tiers: dedupe([...results.flatMap(r => r.overage_tiers)], 'tier_label'),
     one_time_fees: dedupe([...results.flatMap(r => r.one_time_fees ?? [])], 'fee_label'),
     // Use 'comma' if ANY chunk detected comma notation (more specific detection wins)
@@ -295,6 +307,7 @@ function mergeExtractions(results: ContractTerms[]): ContractTerms {
   merged.overage_tiers = flagAmbiguousMinimumCommitments(merged.overage_tiers)
   merged.overage_tiers = flagAmbiguousTierCalculation(merged.overage_tiers)
   merged.discounts = assignDiscountRuleIds(merged.discounts)
+  merged.service_credits = assignServiceCreditRuleIds(merged.service_credits)
 
   return merged
 }
@@ -304,6 +317,19 @@ function mergeExtractions(results: ContractTerms[]): ContractTerms {
 // once at extraction time so it's stable for the lifetime of the job.
 function assignDiscountRuleIds<T extends { discount_rule_id?: string }>(discounts: T[]): T[] {
   return discounts.map(d => d.discount_rule_id ? d : { ...d, discount_rule_id: crypto.randomUUID().slice(0, 8) })
+}
+
+// Same addressability pattern as assignDiscountRuleIds — a contract can have
+// several independent credit clauses (an SLA credit AND a separate
+// promotional credit), each needing its own stable id for review/audit.
+// No flagAmbiguous*-style safety net is needed alongside this one: unlike
+// minimum_commitment/tier_calculation, ServiceCredit.interpretation is never
+// populated at extraction time at all (see the service_credits prompt rule
+// above) — there is no "model marked it resolved when it wasn't" failure
+// mode to guard against, because nothing is ever extracted as resolved in
+// the first place.
+export function assignServiceCreditRuleIds<T extends { credit_rule_id?: string }>(credits: T[]): T[] {
+  return credits.map(c => c.credit_rule_id ? c : { ...c, credit_rule_id: crypto.randomUUID().slice(0, 8) })
 }
 
 // Safety net: force requires_confirmation=true whenever a metric has 2+ paid

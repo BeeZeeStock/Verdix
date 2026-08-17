@@ -86,6 +86,9 @@ export async function GET(
       amount: number
       currency: string
       mode: string
+      // The metric's own cadence — drives the "Partial-month/quarter/year
+      // treatment" label client-side instead of a hardcoded "quarter".
+      period: string | null
       // null when the commitment isn't calendar-anchored (contract_start
       // anchoring never produces a partial window, so there's nothing to
       // confirm); otherwise whether this specific period is a partial one
@@ -127,6 +130,7 @@ export async function GET(
             amount: mc.amount,
             currency: row.currency ?? terms.currency ?? 'EUR',
             mode: mc.mode,
+            period: t.measurement_period ?? null,
             partialPeriod: isPartial
               ? { isPartial: true, needsConfirmation: mc.prorate_partial_periods === 'unclear', prorated: mc.prorate_partial_periods === true }
               : null,

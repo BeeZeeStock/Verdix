@@ -81,12 +81,36 @@ export interface OverageTier {
 // Only 'applies' requires index/frequency/calculation_method to be real.
 export interface EscalatorInterpretation {
   treatment: 'applies' | 'not_applied'
+  /** Closed internal taxonomy used by the calculation engine — never shown
+   *  to a user by itself. A named index other than a literal CPI clause
+   *  (e.g. "HICP", "RPI") still classifies as 'other' here; see index_name
+   *  for the actual source term, which must always be preserved verbatim. */
   index: 'CPI' | 'fixed_pct' | 'other' | null
+  /** The index exactly as named in the contract (e.g. "HICP") — never
+   *  normalized to "CPI" or any other generic label. Required (non-null)
+   *  whenever index is 'CPI' or 'other'; null when index is 'fixed_pct'
+   *  (nothing to name) or treatment is 'not_applied'. */
+  index_name: string | null
   frequency: 'annual' | 'monthly' | 'quarterly' | null
   effective_date: string | null
   cap_pct: number | null
   /** Plain-English calculation formula, e.g. "CPI change + 2pp, capped at 6% per 12-month period" — never fabricated. Null when treatment is 'not_applied'. */
   calculation_method: string | null
+  /** Whether this escalation is contractually automatic or requires an
+   *  affirmative decision each time it could apply. 'requires_renewal_approval'
+   *  is the correct reading of discretionary language like "may be increased"
+   *  — the calculation engine must not compound the rate until this is
+   *  'automatic'. 'not_exercised' means a discretionary clause exists but
+   *  the reviewer has decided not to apply it for now — distinct from
+   *  treatment:'not_applied' (the clause itself doesn't apply at all).
+   *  Missing/undefined on rows written before this field existed reads as
+   *  'automatic', preserving prior behavior for already-confirmed escalators. */
+  discretion: 'automatic' | 'requires_renewal_approval' | 'not_exercised'
+  /** True when the increase is a step applied once at each renewal event
+   *  rather than an ordinary escalator recurring every 12 months during the
+   *  original term — e.g. "on renewal, the fee may be increased by HICP".
+   *  The calculation engine must not apply this as if it recurred mid-term. */
+  renewal_triggered: boolean
   requires_confirmation: boolean
   confirmation_reason?: string | null
 }
@@ -150,8 +174,75 @@ export interface Discount {
   duration_months: number | null
   applies_to: string
   description: string
+  /** How start_date/end_date were derived. 'explicit_dates' (default when
+   *  omitted, matches all pre-existing rows) means they're literal calendar
+   *  boundaries the billing engine compares real dates against.
+   *  'first_n_billing_periods' means the discount runs for
+   *  billing_periods_count invoicing cycles from contract start regardless
+   *  of calendar alignment — set only when the contract text ties the
+   *  discount to invoice/period COUNT rather than a calendar window (e.g.
+   *  "the first two quarterly invoices" on a contract starting mid-quarter);
+   *  start_date/end_date are then a best-effort calendar approximation only,
+   *  not authoritative — the billing engine must count periods instead of
+   *  comparing dates for this anchor. */
+  anchor?: 'explicit_dates' | 'first_n_billing_periods'
+  billing_periods_count?: number | null
   /** Reviewer-approved structured reading of this discount's actual tier/application mechanics, once resolved. */
   interpretation?: DiscountInterpretation | null
+}
+
+// Generalizes beyond "availability credit" to any credit/rebate clause —
+// SLA credits, promotional credits, earned/usage credits, general rebates —
+// one vocabulary rather than a type per credit shape. trigger_type is the
+// discriminator; credit_basis/basis_component describe what the credit is
+// computed FROM, which is exactly what the rule-interaction detector reads
+// to find overlaps with discounts/escalators touching the same component.
+export interface ServiceCreditInterpretation {
+  trigger_type: 'sla_breach' | 'usage_threshold' | 'promotional' | 'earned_milestone' | 'other'
+  /** Plain-English condition, e.g. "uptime < 99.9% in a calendar month" — never fabricated. */
+  trigger_description: string | null
+  credit_basis: 'pct_of_period_fee' | 'pct_of_affected_component' | 'flat_amount' | 'usage_units'
+  /** What the percentage/amount is computed from, e.g. "subscription_fee",
+   *  "invoice_total", "usage_charge", or a specific named component — free
+   *  text, mirrors DiscountInterpretation.applies_to's convention rather
+   *  than inventing a second closed enum for the same concept. */
+  basis_component: string | null
+  credit_value: number | null
+  currency: string | null
+  /** Maximum credit per settlement_period, null = uncapped. */
+  cap_amount: number | null
+  /** Alternative cap expressed as a % of the basis, null = uncapped. */
+  cap_pct: number | null
+  settlement_period: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | 'per_incident' | null
+  /** false = credit applies against future invoices only (the common case); true = customer may request cash. */
+  cash_redeemable: boolean
+  /** Resolution note written by the rule-interaction reviewer when this
+   *  credit's basis was found to overlap another rule (e.g. an active
+   *  discount) — lets the calculation engine and any standalone display of
+   *  this credit reflect the resolved basis without joining the separate
+   *  interaction audit row. Null until an interaction is detected and resolved. */
+  interaction_note?: string | null
+  source_clause: string | null
+  requires_confirmation: boolean
+  confirmation_reason?: string | null
+}
+
+export interface ServiceCredit {
+  /** Stable identifier, same pattern as Discount.discount_rule_id — a
+   *  contract can have several independent credit clauses addressed
+   *  independently in review/audit. Populated at extraction time. */
+  credit_rule_id?: string
+  credit_type: 'sla' | 'rebate' | 'promotional' | 'earned' | 'usage' | 'other'
+  description: string
+  source_clause: string | null
+  /** Raw extracted numbers before interpretation resolves basis/cap/timing
+   *  ambiguity — same "extracted fact vs resolved interpretation" split as
+   *  Discount.discount_pct/interpretation. */
+  stated_pct: number | null
+  stated_amount: number | null
+  /** Reviewer-approved structured reading, once resolved — absent means
+   *  "extracted but not yet interpreted", never inferred. */
+  interpretation?: ServiceCreditInterpretation | null
 }
 
 export interface OneTimeFee {
@@ -212,6 +303,7 @@ export interface ContractTerms {
   ramp_schedule: RampStep[] | null
   escalators: PriceEscalator[]
   discounts: Discount[]
+  service_credits: ServiceCredit[]
   overage_tiers: OverageTier[]
   billing_metered_items?: BillingMeteredItem[]
   additional_recurring_fees: AdditionalRecurringFee[] | null

@@ -12,6 +12,13 @@
   --color-danger: #DC2626;
   --color-safe: #16A34A;
   --color-warn: #D97706;
+  --color-stone-light: #8A9490;
+  --color-forest-dark: #12291C;
+  --color-mint-soft: #E8F3EA;
+  --color-panel: #F7F6F2;
+  --color-line: #EAE7E0;
+  --color-line-soft: #F0EEE9;
+  --color-amber: #D9A05B;
 
   --font-display: 'Fraunces', Georgia, serif;
   --font-sans: 'Inter', system-ui, sans-serif;

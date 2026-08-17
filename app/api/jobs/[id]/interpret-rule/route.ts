@@ -21,6 +21,8 @@ import {
   buildEscalatorPrompt,
   buildDiscountPrompt,
   buildTierCalculationPrompt,
+  buildServiceCreditPrompt,
+  buildRuleInteractionPrompt,
   parseRuleInterpretationResponse,
   describeMissingFieldQuestions,
   describeWhatWillChange,
@@ -30,6 +32,8 @@ import {
   type EscalatorContext,
   type DiscountContext,
   type TierCalculationContext,
+  type ServiceCreditContext,
+  type RuleInteractionContext,
 } from '@/lib/rule-interpretation'
 
 type TierRow = {
@@ -64,9 +68,16 @@ export async function POST(
     // 'discount' — a contract can have several independently-interpretable
     // discounts, so array position alone is never enough to address one.
     discountId?: string
+    // Same addressing pattern as discountId, for ruleType 'service_credit'.
+    creditId?: string
+    // Composite key from lib/rule-interactions.ts's detectRuleInteractionCandidates
+    // (e.g. "service_credit:ab12cd34|discount:ef56gh78"), for ruleType
+    // 'rule_interaction' — re-parsed server-side against this job's own
+    // contract_terms rather than trusted as data.
+    interactionKey?: string
   }
 
-  const { ruleType, contractUnitType, selectedOption, freeText, sourceClause, discountId } = body
+  const { ruleType, contractUnitType, selectedOption, freeText, sourceClause, discountId, creditId, interactionKey } = body
   const reviewerInput = (freeText ?? '').trim()
   if (!ruleType) return NextResponse.json({ error: 'ruleType is required' }, { status: 400 })
   if (!reviewerInput && (!selectedOption || selectedOption === 'other')) {
@@ -75,13 +86,19 @@ export async function POST(
   if (ruleType === 'discount' && !discountId) {
     return NextResponse.json({ error: 'discountId is required for discount interpretation' }, { status: 400 })
   }
+  if (ruleType === 'service_credit' && !creditId) {
+    return NextResponse.json({ error: 'creditId is required for service_credit interpretation' }, { status: 400 })
+  }
+  if (ruleType === 'rule_interaction' && !interactionKey) {
+    return NextResponse.json({ error: 'interactionKey is required for rule_interaction interpretation' }, { status: 400 })
+  }
 
   // Context is built entirely from this job's own stored data — never from
   // client-supplied contract fields — so a reviewer can't smuggle arbitrary
   // "facts" about the contract into the AI prompt.
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('id, org_id, contract_terms ( currency, overage_tiers, escalators, discounts, contract_start_date, contract_end_date )')
+    .select('id, org_id, contract_terms ( currency, overage_tiers, escalators, discounts, service_credits, contract_start_date, contract_end_date )')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .single()
@@ -92,6 +109,7 @@ export async function POST(
     overage_tiers: TierRow[] | null
     escalators: Array<{ escalator_pct: number | null; cap_pct: number | null; effective_date: string | null; applies_from_year: number | null; description: string }> | null
     discounts: Array<{ discount_rule_id?: string; discount_pct: number | null; discount_amount: number | null; discount_type: string | null; applies_to: string | null; description: string | null }> | null
+    service_credits: Array<{ credit_rule_id?: string; credit_type: string | null; description: string | null; source_clause: string | null; stated_pct: number | null; stated_amount: number | null }> | null
     contract_start_date: string | null
     contract_end_date: string | null
   }>)?.[0]
@@ -171,6 +189,55 @@ export async function POST(
       tiers: tiers.map(t => ({ tier_label: t.tier_label, from_unit: t.from_unit, to_unit: t.to_unit, rate_per_unit: t.rate_per_unit })),
     }
     prompt = buildTierCalculationPrompt(context, reviewerInput, selectedOption)
+  } else if (ruleType === 'service_credit') {
+    // Same addressing pattern as discount: stable credit_rule_id, not array
+    // position, with an index-matching fallback for a legacy row.
+    const credits = terms.service_credits ?? []
+    const credit = credits.find(c => c.credit_rule_id === creditId)
+      ?? (Number.isInteger(Number(creditId)) ? credits[Number(creditId)] : undefined)
+    if (!credit) return NextResponse.json({ error: `Service credit '${creditId}' not found on this job` }, { status: 404 })
+    const context: ServiceCreditContext = {
+      sourceClause: sourceClause ?? credit.source_clause ?? null,
+      description: credit.description ?? '',
+      creditType: credit.credit_type ?? 'other',
+      statedPct: credit.stated_pct ?? null,
+      statedAmount: credit.stated_amount ?? null,
+      currency,
+    }
+    prompt = buildServiceCreditPrompt(context, reviewerInput, selectedOption)
+  } else if (ruleType === 'rule_interaction') {
+    // interactionKey addresses a *pair* of rules — re-derive both sides from
+    // this job's own stored terms rather than trusting anything about the
+    // pair's content from the client (the key itself is just an address).
+    const parts = (interactionKey ?? '').split('|')
+    const creditPart = parts.find(p => p.startsWith('service_credit:'))
+    const otherPart = parts.find(p => !p.startsWith('service_credit:'))
+    const parsedCreditId = creditPart?.split(':')[1]
+    const otherType = otherPart?.split(':')[0] as 'discount' | 'escalator' | undefined
+    const otherId = otherPart?.split(':').slice(1).join(':')
+    const credits = terms.service_credits ?? []
+    const credit = credits.find(c => c.credit_rule_id === parsedCreditId)
+    if (!credit) return NextResponse.json({ error: `Service credit for interaction '${interactionKey}' not found on this job` }, { status: 404 })
+    let otherDescription = ''
+    if (otherType === 'discount') {
+      const discount = (terms.discounts ?? []).find(d => d.discount_rule_id === otherId)
+      if (!discount) return NextResponse.json({ error: `Discount for interaction '${interactionKey}' not found on this job` }, { status: 404 })
+      otherDescription = discount.description ?? ''
+    } else if (otherType === 'escalator') {
+      const escalator = (terms.escalators ?? []).find(e => (e.effective_date ?? e.description.slice(0, 24)) === otherId)
+      if (!escalator) return NextResponse.json({ error: `Escalator for interaction '${interactionKey}' not found on this job` }, { status: 404 })
+      otherDescription = escalator.description ?? ''
+    } else {
+      return NextResponse.json({ error: `Malformed interactionKey: ${interactionKey}` }, { status: 400 })
+    }
+    const context: RuleInteractionContext = {
+      creditDescription: credit.description ?? '',
+      creditBasisComponent: null,
+      otherRuleType: otherType,
+      otherRuleDescription: otherDescription,
+      overlapReason: sourceClause ?? 'Both rules reference the same fee component.',
+    }
+    prompt = buildRuleInteractionPrompt(context, reviewerInput, selectedOption)
   } else {
     return NextResponse.json({ error: `Unknown ruleType: ${ruleType}` }, { status: 400 })
   }

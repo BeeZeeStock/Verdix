@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { signIn } from 'next-auth/react'
 import { VerdixLogo } from '@/components/VerdixLogo'
 
@@ -10,6 +10,14 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [selfServiceEnabled, setSelfServiceEnabled] = useState(false)
+
+  useEffect(() => {
+    fetch('/api/public/feature-flags')
+      .then(r => r.json())
+      .then(d => setSelfServiceEnabled(!!d.selfServiceSignupEnabled))
+      .catch(() => null)
+  }, [])
 
   const handleGoogle = async () => {
     setLoading(true)
@@ -100,8 +108,15 @@ export default function LoginPage() {
 
           <div className="flex items-center justify-between mt-5 text-sm text-stone">
             <Link href="/forgot-password" className="hover:text-forest transition-colors">Forgot password?</Link>
-            <Link href="/signup" className="hover:text-forest transition-colors">Don&apos;t have an account? <span className="text-forest font-medium">Sign up →</span></Link>
+            {selfServiceEnabled && (
+              <Link href="/signup" className="hover:text-forest transition-colors">Don&apos;t have an account? <span className="text-forest font-medium">Sign up →</span></Link>
+            )}
           </div>
+          {!selfServiceEnabled && (
+            <p className="text-center text-xs text-stone/60 mt-5">
+              Verdix access is currently provisioned for customers and design partners.
+            </p>
+          )}
 
           <p className="text-center text-xs text-stone/60 mt-6">
             By signing in you agree to our{' '}

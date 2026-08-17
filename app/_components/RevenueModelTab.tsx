@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { computeUserOverage, computeMetricOverage, resolveMinimumCommitment, computeMinimumCommitmentSchedule, type CadenceAnchorMode } from '@/lib/tariff'
+import { computeUserOverage, computeMetricOverage, resolveMinimumCommitment, computeMinimumCommitmentSchedule, monthCursor, type CadenceAnchorMode } from '@/lib/tariff'
+import { isEscalatorUnresolved } from '@/lib/escalator-status'
 import type { OverageTier } from '@/lib/types'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -211,6 +212,12 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   const genericPeriodLabel     = cadenceLabel(genericCadence)
 
   const escalators     = terms.escalators ?? []
+  // A pending/unconfirmed escalator has no real rate yet — 0 is a genuine
+  // economic value, distinct from "not yet known", so this must never
+  // silently seed the scenario simulator's rate input. See escalatorPending
+  // below, which drives the UI to show a "pending" state instead of an
+  // editable 0% input.
+  const escalatorPending = isEscalatorUnresolved(escalators[0] as { escalator_pct?: number | null; interpretation?: { requires_confirmation: boolean; treatment?: string } | null } | undefined)
   const contractEscPct = escalators[0]?.escalator_pct ?? 0
   // A reviewer's confirmed "do not apply this escalation clause" decision is
   // the contract's own interpretation, not a blank slate — the scenario
@@ -218,7 +225,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   // "On" regardless of what was actually confirmed.
   const escalatorInterp = escalators[0]?.interpretation
   const escalatorConfirmedNotApplied = escalatorInterp?.treatment === 'not_applied' && !escalatorInterp.requires_confirmation
-  const escalatorDefaultOn = !escalatorConfirmedNotApplied
+  const escalatorDefaultOn = !escalatorConfirmedNotApplied && !escalatorPending
   const yearPricing    = terms.year_pricing   // e.g. {year1: 54000, year2: 57240, year3: 60675}
   const rampSchedule   = terms.ramp_schedule && terms.ramp_schedule.length > 0 ? terms.ramp_schedule : null
   const baseAnnual     = terms.base_annual_fee ?? 0
@@ -267,9 +274,11 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
 
   const [applyEscalator,   setApplyEscalator]   = useState(() => escalatorDefaultOn)
   const [applyDiscount,    setApplyDiscount]    = useState(true)
-  // One entry per annual escalation period (compound, each year × previous year's rate)
+  // One entry per annual escalation period (compound, each year × previous year's rate).
+  // Empty (not zero-filled) while the escalator is pending interpretation —
+  // there is no confirmed rate yet to seed a scenario with.
   const [escPerYear, setEscPerYear] = useState<number[]>(() =>
-    Array.from({ length: numEscYears }, () => contractEscPct))
+    escalatorPending ? [] : Array.from({ length: numEscYears }, () => contractEscPct))
   const [saving, setSaving] = useState(false)
   const [saved,  setSaved]  = useState(false)
 
@@ -452,11 +461,10 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
   })()
 
   const modelMonths: ModelMonth[] = []
-  let cursor = new Date(start.getFullYear(), start.getMonth(), 1)
   let loopIdx = 0
 
   while (loopIdx < totalContractMonths) {
-    const md = new Date(cursor)
+    const md = monthCursor(start, loopIdx)
     const effectiveBase = monthlyBaseFor(loopIdx, md)
     let inDiscount = false, discountPct = 0
 
@@ -500,7 +508,6 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
       userOvg, apiOvg, genericOvg, total: sub + userOvg + apiOvg + genericOvg,
       isPast: md <= today,
     })
-    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)
     loopIdx++
   }
 
@@ -912,6 +919,12 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               {/* Escalator — per-year compound inputs (hidden when ramp_schedule encodes the rates) */}
               {showEsc && <div>
                 <label className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em] block mb-2">Price escalator</label>
+                {escalatorPending ? (
+                  <div className="flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-lg" style={{ background: '#FEF6E7', color: '#B45309' }}>
+                    <i className="ti ti-clock" style={{ fontSize: 12 }} />
+                    Pending escalator interpretation — resolve in the Review panel to simulate this scenario
+                  </div>
+                ) : (
                 <div className="flex items-center gap-3 mb-3">
                   <button onClick={() => setApplyEscalator(v => !v)}
                     className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0 ${applyEscalator ? 'bg-forest' : 'bg-stone/25'}`}>
@@ -924,7 +937,8 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                     <span className="text-[10px] font-medium" style={{ color: '#B9802F' }}>· scenario override</span>
                   )}
                 </div>
-                {applyEscalator && (
+                )}
+                {!escalatorPending && applyEscalator && (
                   <div className="space-y-2">
                     {escPerYear.map((pct, yi) => (
                       <div key={yi} className="flex items-center gap-1.5">
@@ -1549,7 +1563,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
             {renderGroup('Recurring commercial commitment', layer2Cards)}
             {commitmentNeedsConfirmation && (
               <p className="text-[11px] text-amber-700 -mt-2">
-                * Partial-quarter proration for this commitment hasn&apos;t been confirmed yet — resolve it in the Review panel to see a firm total here.
+                * Partial-{genericPeriodLabel} proration for this commitment hasn&apos;t been confirmed yet — resolve it in the Review panel to see a firm total here.
               </p>
             )}
             {renderGroup('Usage upside', layer3Cards)}

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config'
+import { loadEnv } from 'vite'
 import path from 'node:path'
 
 export default defineConfig({
@@ -6,6 +7,9 @@ export default defineConfig({
     environment: 'node',
     include: ['**/*.test.ts'],
     exclude: ['node_modules/**', '.next/**'],
+    // Modules like lib/supabase.ts instantiate a client at import time and
+    // need these present even for tests that only exercise pure functions.
+    env: loadEnv('', process.cwd(), ''),
   },
   resolve: {
     alias: {

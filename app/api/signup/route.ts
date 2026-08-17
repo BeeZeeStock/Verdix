@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { createOrg } from '@/lib/org'
+import { isSelfServiceSignupEnabled } from '@/lib/feature-flags'
 import { Resend } from 'resend'
 import { TERMS_VERSION } from '@/lib/terms-version'
 
 const NOTIFY_TO = process.env.DESIGN_PARTNER_NOTIFY_EMAIL ?? 'bilal@lynoraai.com'
 
 export async function POST(req: NextRequest) {
+  if (!(await isSelfServiceSignupEnabled())) {
+    return NextResponse.json({ error: 'Self-service signup is currently disabled.' }, { status: 403 })
+  }
+
   const { fullName, email, company, password, privacyConsentAt } = await req.json()
 
   if (!fullName || !email || !company || !password) {

@@ -55,12 +55,20 @@ export async function GET(
       .eq('job_id', jobId),
   ])
 
-  const meters = (mappings ?? []).map(m => ({
-    meterKey:      m.meter_key as string,
-    includedUnits: (m.included_units as number) ?? 0,
-    overageTiers:  (m.overage_tiers ?? []) as Array<{ from_unit: number | null; to_unit: number | null; rate_per_unit: number }>,
-    billingCycle:  m.billing_cycle as string,
-  }))
+  const meters = (mappings ?? []).map(m => {
+    const tiers = (m.overage_tiers ?? []) as Array<{ from_unit: number | null; to_unit: number | null; rate_per_unit: number; tier_calculation?: OverageTier['tier_calculation'] }>
+    // A metric's tier_calculation is duplicated onto every tier row (same
+    // convention as minimum_commitment) — take the first present rather
+    // than assume they'd ever disagree within one metric.
+    const tierCalculationMethod = tiers.find(t => t.tier_calculation)?.tier_calculation?.method ?? null
+    return {
+      meterKey:      m.meter_key as string,
+      includedUnits: (m.included_units as number) ?? 0,
+      overageTiers:  tiers,
+      billingCycle:  m.billing_cycle as string,
+      tierCalculationMethod,
+    }
+  })
 
   const presetFees = (lineItems ?? []).map(li => ({
     label:    li.product_name as string,
