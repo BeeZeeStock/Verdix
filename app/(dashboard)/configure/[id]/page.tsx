@@ -77,6 +77,7 @@ type Tier       = {
     period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
     included_allowance_interaction?: 'before_allowance' | 'after_allowance' | 'unclear'
     prorate_partial_periods?: boolean | 'unclear'
+    source_clause?: string | null
     requires_confirmation: boolean
     confirmation_reason?: string | null
   } | null
@@ -140,6 +141,17 @@ type Job = {
 function fmt(n: number | null | undefined, cur = 'EUR') {
   if (n == null) return '—'
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
+}
+
+// AI reasoning defaults to 2-3 sentences on the review card — a full
+// chain-of-reasoning paragraph buries "what Verdix thinks / why / what it
+// costs" under prose the reviewer has to wade through. Splits on
+// sentence-ending punctuation rather than truncating by character count, so
+// it never cuts off mid-sentence.
+function truncateSentences(text: string, maxSentences = 3): { short: string; truncated: boolean } {
+  const sentences = text.match(/[^.!?]+[.!?]+(\s|$)/g) ?? [text]
+  if (sentences.length <= maxSentences) return { short: text, truncated: false }
+  return { short: sentences.slice(0, maxSentences).join('').trim(), truncated: true }
 }
 
 // For per-unit rates which are often fractional (e.g. €0.05, SEK 0.035).
@@ -1013,6 +1025,7 @@ function RuleInterpretationCard({
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [propagation, setPropagation] = useState<Record<string, string> | null>(null)
   const [aiProposal, setAiProposal] = useState<RuleProposal | null>(null)
+  const [showFullReasoning, setShowFullReasoning] = useState(false)
 
   useEffect(() => {
     if (isEditFlow) return
@@ -1024,7 +1037,7 @@ function RuleInterpretationCard({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ruleType, contractUnitType, discountId, creditId, interactionKey, sourceClause }),
         })
-        const data = await res.json()
+        const data = await res.json().catch(() => ({ ok: false }))
         if (cancelled) return
         if (!res.ok || !data.ok) { setPhase('input'); return }
         setAiProposal(data.proposal)
@@ -1056,13 +1069,18 @@ function RuleInterpretationCard({
           aiProposedInterpretation: aiProposal.proposed_interpretation, approvedInterpretation: aiProposal.proposed_interpretation,
         }),
       })
-      const data = await res.json()
+      // A non-JSON response (e.g. an unhandled server exception returning
+      // Next.js's HTML error page) used to throw here and fall into the
+      // catch block below, which only ever showed a generic "try again" —
+      // the real cause (a specific server error, or just this HTTP status)
+      // is now surfaced instead of swallowed.
+      const data = await res.json().catch(() => ({ error: `Unexpected response from server (${res.status})` }))
       if (!res.ok && !data.propagation) { setErrorMsg(data.error ?? 'Approval failed.'); setPhase('proposed'); return }
       setPropagation(data.propagation ?? {})
       const anyFailed = Object.values(data.propagation ?? {}).includes('failed')
       if (anyFailed) { setPhase('partial') } else { setPhase('applied'); onApplied() }
-    } catch {
-      setErrorMsg('Verdix could not save this approval. Try again.')
+    } catch (err) {
+      setErrorMsg(err instanceof Error && err.message ? `Verdix could not save this approval: ${err.message}` : 'Verdix could not save this approval. Try again.')
       setPhase('proposed')
     }
   }
@@ -1076,7 +1094,7 @@ function RuleInterpretationCard({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ruleType, contractUnitType, discountId, creditId, interactionKey, selectedOption: selectedOption ?? undefined, freeText, sourceClause }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({ error: `Unexpected response from server (${res.status})` }))
       if (!res.ok) { setErrorMsg(data.error ?? 'Verdix could not interpret this rule.'); setPhase('input'); return }
       if (!data.ok) {
         setMissingQuestions(data.questions ?? ['Verdix needs more detail to operationalize this instruction.'])
@@ -1086,8 +1104,8 @@ function RuleInterpretationCard({
       setProposal(data.proposal)
       setWhatWillChange(data.whatWillChange ?? [])
       setPhase('proposal')
-    } catch {
-      setErrorMsg('Verdix could not reach the AI interpretation service. Try again.')
+    } catch (err) {
+      setErrorMsg(err instanceof Error && err.message ? `Verdix could not reach the AI interpretation service: ${err.message}` : 'Verdix could not reach the AI interpretation service. Try again.')
       setPhase('input')
     }
   }
@@ -1104,7 +1122,7 @@ function RuleInterpretationCard({
           aiProposedInterpretation: proposal, approvedInterpretation: proposal,
         }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({ error: `Unexpected response from server (${res.status})` }))
       if (!res.ok && !data.propagation) { setErrorMsg(data.error ?? 'Approval failed.'); setPhase('proposal'); return }
       setPropagation(data.propagation ?? {})
       const anyFailed = Object.values(data.propagation ?? {}).includes('failed')
@@ -1114,8 +1132,8 @@ function RuleInterpretationCard({
         setPhase('applied')
         onApplied()
       }
-    } catch {
-      setErrorMsg('Verdix could not save this approval. Try again.')
+    } catch (err) {
+      setErrorMsg(err instanceof Error && err.message ? `Verdix could not save this approval: ${err.message}` : 'Verdix could not save this approval. Try again.')
       setPhase('proposal')
     }
   }
@@ -1169,7 +1187,30 @@ function RuleInterpretationCard({
             >
               {aiProposal.state === 'clear_from_source' ? 'Clear from source' : 'Verdix recommendation'}
             </span>
-            <p className="text-xs text-ink leading-relaxed">{aiProposal.reasoning}</p>
+            {/* SOURCE — the immutable clause itself, kept visually distinct
+                from Verdix's own interpretation of it below, so a reviewer
+                can check the two against each other at a glance. */}
+            {!!sourceClause && (
+              <p className="text-[11px] text-stone italic leading-relaxed mb-1.5 pl-2" style={{ borderLeft: '2px solid rgba(26,61,43,0.15)' }}>
+                &ldquo;{sourceClause}&rdquo;
+              </p>
+            )}
+            {(() => {
+              const { short, truncated } = truncateSentences(aiProposal.reasoning)
+              return (
+                <>
+                  <p className="text-xs text-ink leading-relaxed">{showFullReasoning ? aiProposal.reasoning : short}</p>
+                  {truncated && (
+                    <button
+                      onClick={() => setShowFullReasoning(v => !v)}
+                      className="text-[11px] font-medium text-forest hover:underline mt-1"
+                    >
+                      {showFullReasoning ? 'Show less' : 'More details'}
+                    </button>
+                  )}
+                </>
+              )
+            })()}
             {!!aiProposal.calculation_preview?.length && (
               <dl className="mt-2 space-y-1 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
                 {aiProposal.calculation_preview.map((row, i) => (
@@ -1425,7 +1466,7 @@ function EditCommercialRuleDrawer({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ruleType, contractUnitType, discountId, creditId, selectedOption: selectedOption ?? undefined, freeText, sourceClause: currentRecord?.source_clause ?? ruleTitle }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({ error: `Unexpected response from server (${res.status})` }))
       if (!res.ok) { setErrorMsg(data.error ?? 'Verdix could not interpret this change.'); setPhase('input'); return }
       if (!data.ok) {
         setMissingQuestions(data.questions ?? ['Verdix needs more detail to operationalize this change.'])
@@ -1436,8 +1477,8 @@ function EditCommercialRuleDrawer({
       setWhatWillChange(data.whatWillChange ?? [])
       setHistoricalImpact(data.historicalImpact ?? null)
       setPhase('proposal')
-    } catch {
-      setErrorMsg('Verdix could not reach the AI interpretation service. Try again.')
+    } catch (err) {
+      setErrorMsg(err instanceof Error && err.message ? `Verdix could not reach the AI interpretation service: ${err.message}` : 'Verdix could not reach the AI interpretation service. Try again.')
       setPhase('input')
     }
   }
@@ -1454,13 +1495,13 @@ function EditCommercialRuleDrawer({
           aiProposedInterpretation: proposal, approvedInterpretation: proposal,
         }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({ error: `Unexpected response from server (${res.status})` }))
       if (!res.ok && !data.propagation) { setErrorMsg(data.error ?? 'Approval failed.'); setPhase('proposal'); return }
       setPropagation(data.propagation ?? {})
       const anyFailed = Object.values(data.propagation ?? {}).includes('failed')
       if (anyFailed) { setPhase('partial') } else { setPhase('applied'); onApplied() }
-    } catch {
-      setErrorMsg('Verdix could not save this approval. Try again.')
+    } catch (err) {
+      setErrorMsg(err instanceof Error && err.message ? `Verdix could not save this approval: ${err.message}` : 'Verdix could not save this approval. Try again.')
       setPhase('proposal')
     }
   }
@@ -1758,7 +1799,14 @@ function ReviewPanel({
         setAvailableMeters(res.available_meters ?? [])
       })
       .catch(() => {})
-  }, [jobId])
+    // Refetches on refreshSignal too, not just jobId — otherwise this
+    // fetch's "confirmed" flags (used for every rule card's usage-source
+    // notice) go stale the moment MeterMappingPanel confirms a mapping
+    // elsewhere in the same drawer, producing the exact "Usage mappings ·
+    // All confirmed" header next to a per-card "not yet confirmed" notice
+    // contradiction — two independent fetches of the same fact, refreshing
+    // on different signals.
+  }, [jobId, refreshSignal])
 
   const partialPeriodMetrics = computePartialPeriodMetrics(contractStartDate, contractEndDate, overageTiers ?? [])
 
@@ -1786,6 +1834,28 @@ function ReviewPanel({
     acc[key].push(item)
     return acc
   }, {})
+
+  // minimum_commitment/partial_period/tier_calculation ambiguities are
+  // duplicated onto EVERY tariff-tier row of a metric at extraction time
+  // (the established "duplicated per-metric" convention, so the billing
+  // engine can read the rule from any tier row) — but the review panel must
+  // only ever show ONE card per metric for each of these, not one per
+  // tariff band. metricCardOwner picks the first item.id encountered as the
+  // one that actually renders the card; metricSiblingIds lets confirming
+  // that one card mark every duplicate item resolved too, so the drawer's
+  // "N of M confirmed" progress doesn't get stuck waiting on cards that were
+  // deliberately never shown.
+  const metricCardOwner = new Map<string, string>()
+  const metricSiblingIds = new Map<string, string[]>()
+  for (const item of items) {
+    const kind = classifyItem(item, overageTiers ?? [], escalators ?? [], partialPeriodMetrics)
+    if (kind !== 'minimum_commitment' && kind !== 'partial_period' && kind !== 'tier_calculation') continue
+    const unitType = findTierForItem(item, overageTiers ?? [])?.unit_type
+    if (!unitType) continue
+    const key = `${kind}:${unitType}`
+    if (!metricCardOwner.has(key)) metricCardOwner.set(key, item.id)
+    metricSiblingIds.set(key, [...(metricSiblingIds.get(key) ?? []), item.id])
+  }
 
   const confirmItem = async (item: LineItem) => {
     setSaving(item.id)
@@ -2014,10 +2084,15 @@ function ReviewPanel({
                             <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Discount structure</span>
                           </div>
                           <p className="text-sm font-medium text-ink leading-snug mb-3">{label}</p>
-                          <p className="text-[11px] text-stone leading-relaxed mb-3">
-                            <span className="font-medium">Why review: </span>
-                            {d.interpretation?.confirmation_reason ?? '"Applies to" alone can\'t tell a staircase tier schedule from a volume schedule — the same rate table produces different totals under each.'}
-                          </p>
+                          {/* No separate static "why review" blurb here — it
+                              used to show a generic staircase-vs-volume
+                              explanation on every discount regardless of
+                              whether it was actually tiered, which was simply
+                              wrong for a flat discount like this one. The AI
+                              proposal card below supplies the real,
+                              clause-specific reasoning; a second, static,
+                              sometimes-incorrect explanation above it is
+                              redundant at best and misleading at worst. */}
                           <RuleInterpretationCard
                             jobId={jobId}
                             kind="discount"
@@ -2059,10 +2134,10 @@ function ReviewPanel({
                             <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Service credit basis</span>
                           </div>
                           <p className="text-sm font-medium text-ink leading-snug mb-3">{label}</p>
-                          <p className="text-[11px] text-stone leading-relaxed mb-3">
-                            <span className="font-medium">Why review: </span>
-                            {'The contract states a credit value but not what it is calculated from — resolving this determines the actual amount credited.'}
-                          </p>
+                          {/* Same as the Discounts section above — no separate
+                              static "why review" blurb; the AI proposal card's
+                              own clause-specific reasoning is the single
+                              source of truth. */}
                           <RuleInterpretationCard
                             jobId={jobId}
                             kind="service_credit"
@@ -2148,11 +2223,34 @@ function ReviewPanel({
               <div className="space-y-3">
                 {groupItems.map(item => {
                   const kind        = classifyItem(item, overageTiers ?? [], escalators ?? [], partialPeriodMetrics)
+
+                  // One card per metric for these three kinds — every tariff
+                  // tier beyond the designated "owner" is a duplicate of the
+                  // same underlying rule and renders nothing here (its own
+                  // rate/tier confirmation, if any, still renders normally
+                  // under its own 'overage_tier' classification elsewhere).
+                  if (kind === 'minimum_commitment' || kind === 'partial_period' || kind === 'tier_calculation') {
+                    const unitType = findTierForItem(item, overageTiers ?? [])?.unit_type
+                    const key = unitType ? `${kind}:${unitType}` : null
+                    if (key && metricCardOwner.get(key) !== item.id) return null
+                  }
+
                   const ctx         = getReviewContext(item, kind, numberFormat, overageTiers ?? [])
                   const isResolved  = !!(resolved[item.id] || item.id in corrections)
                   const isRuleInterpretation = kind === 'minimum_commitment' || kind === 'partial_period' || kind === 'escalator_interpretation' || kind === 'tier_calculation'
                   const ruleTier       = isRuleInterpretation ? findTierForItem(item, overageTiers ?? []) : undefined
                   const ruleUnitType   = ruleTier?.unit_type
+                  // The IMMUTABLE clause as actually extracted — never the
+                  // generated "what to check" instruction text above (ctx.whatToCheck),
+                  // which is a review PROMPT, not contract language. Feeding
+                  // generated text into the AI as if it were the source clause
+                  // produced false "the contract doesn't specify..." verdicts
+                  // for clauses that were, in fact, explicit.
+                  const ruleSourceClause = kind === 'escalator_interpretation'
+                    ? (escalators?.[0]?.description ?? '')
+                    : kind === 'tier_calculation'
+                      ? (ruleTier?.tier_calculation?.source_clause ?? '')
+                      : (ruleTier?.minimum_commitment?.source_clause ?? '')
                   const ruleMeterSuggestion = ruleUnitType ? meterSuggestions.find(s => s.contract_unit_type === ruleUnitType) : undefined
                   const ruleMeter      = ruleMeterSuggestion ? availableMeters.find(m => m.meter_key === ruleMeterSuggestion.meter_key) : undefined
                   const isEditing   = editing === item.id
@@ -2243,12 +2341,23 @@ function ReviewPanel({
                             kind={kind}
                             contractUnitType={ruleUnitType}
                             cadenceLabel={cadenceNoun(ruleTier?.measurement_period)}
-                            sourceClause={ctx.whatToCheck}
+                            sourceClause={ruleSourceClause}
                             currency={item.currency}
                             meterMappingConfirmed={ruleMeterSuggestion?.confirmed}
                             meterSuggestion={ruleMeterSuggestion ? { meter_key: ruleMeterSuggestion.meter_key, display_name: ruleMeter?.display_name } : null}
                             onApplied={() => {
-                              setResolved(r => ({ ...r, [item.id]: 'confirmed' }))
+                              // Resolve every duplicate tariff-tier row sharing
+                              // this metric-level rule, not just this one card's
+                              // own item.id — otherwise the drawer's "N of M
+                              // confirmed" progress stays stuck on cards that
+                              // were deliberately never shown.
+                              const key = ruleUnitType ? `${kind}:${ruleUnitType}` : null
+                              const siblingIds = key ? (metricSiblingIds.get(key) ?? [item.id]) : [item.id]
+                              setResolved(r => {
+                                const next = { ...r }
+                                for (const id of siblingIds) next[id] = 'confirmed'
+                                return next
+                              })
                               scrollToNextUnresolved(item.id)
                               onRefresh()
                             }}

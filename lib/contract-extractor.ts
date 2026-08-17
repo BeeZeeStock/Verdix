@@ -65,6 +65,7 @@ Rules:
   - stated_pct / stated_amount: the raw percentage or flat amount as stated in the contract — extract ONLY the literal number, do not resolve what it's a percentage OF (e.g. "10% of that month's platform subscription fee" → stated_pct: 10; do not attempt to determine whether that's the discounted or undiscounted fee — that is a human reviewer's interpretation, not an extraction task).
   - Do NOT populate an "interpretation" field — that is filled in only after human review. Leave service_credits as bare extracted facts.
   - Only extract clauses that actually reduce a charge. A clause that merely describes a service-level TARGET with no stated financial consequence (no credit, no refund, no reduction) is not a service credit — do not invent one.
+  - Actively search for this clause type — it is frequently located in an "SLA", "Service Levels", or "Availability" section physically separate from the pricing/fees section, not necessarily adjacent to the discount or escalator clauses. Do not skip it just because it isn't near the other commercial terms.
 - one_time_fees: non-recurring charges paid once (e.g. onboarding, implementation, setup, migration, professional services). Each entry: fee_label (short name), amount (number), due_date (ISO date or null), description (brief note or null), manual_trigger (boolean), metric_name (string or null), rate_per_unit (number or null).
   - Set manual_trigger=true when the fee cannot be invoiced until the service is delivered and confirmed (e.g. "professional services at €150/hour", "implementation services — billed on delivery", "training sessions"). These fees need human confirmation and a metric entry (hours, days, sessions) before the invoice is issued.
   - When manual_trigger=true, set metric_name to the unit of work (e.g. "hours", "days", "sessions", "units") and rate_per_unit to the per-unit rate. Set amount=0 when the total is variable/unknown at contract time.
@@ -87,7 +88,7 @@ RULES REMINDER before you read the example:
 1. year_pricing values = what is invoiced in THAT year alone, never cumulative. {"year1": 436288, "year2": 481987} means €436k is the Year 1 invoice and €481k is the Year 2 invoice — even if the contract phrases it as "Year 2 = Year 1 fee + new fees".
 2. base_annual_fee / base_monthly_fee = the platform fee total. Never multiply it by user count. User fees are separate line items.
 
-Input: "Order Form CLR-2024-0001. Vendor: Verdix Corp, 123 Main St, Oslo, Norway. Customer: Acme Inc, 14 Innovation Drive, Stockholm, Sweden. Billing contact: finance@acme.com. Contract term: 36 months, Feb 1 2024 – Jan 31 2027, auto-renewing with 90 days notice. Section 1.1 Base Platform Fee: 100 seats at $4,200/month. Year 1: $50,400, Year 2: $52,000. Section 1.2 Price Escalator: 5% fixed annually. Section 1.3 Introductory Discount: 20% off months 1-6. Payment: Net 30 days from invoice date. Section 2: API overages at $0.02/call."
+Input: "Order Form CLR-2024-0001. Vendor: Verdix Corp, 123 Main St, Oslo, Norway. Customer: Acme Inc, 14 Innovation Drive, Stockholm, Sweden. Billing contact: finance@acme.com. Contract term: 36 months, Feb 1 2024 – Jan 31 2027, auto-renewing with 90 days notice. Section 1.1 Base Platform Fee: 100 seats at $4,200/month. Year 1: $50,400, Year 2: $52,000. Section 1.2 Price Escalator: 5% fixed annually. Section 1.3 Introductory Discount: 20% off months 1-6. Section 1.4 Service Credit: If monthly platform availability falls below 99.5%, Customer receives a service credit equal to 10% of that month's platform subscription fee. Total credits in any calendar month shall not exceed 25% of that month's platform subscription fee. Credits are applied against the next invoice and are not redeemable for cash. Payment: Net 30 days from invoice date. Section 2: API overages at $0.02/call."
 
 Output:
 {
@@ -117,6 +118,7 @@ Output:
   "year_pricing": {"year1": 50400, "year2": 52000},
   "escalators": [{"escalator_pct": 5, "escalator_type": "fixed_pct", "applies_from_year": 2, "effective_date": "2025-02-01", "cap_pct": null, "description": "5% fixed annual price increase"}],
   "discounts": [{"discount_pct": 20, "discount_amount": null, "discount_type": "introductory", "start_date": "2024-02-01", "end_date": "2024-07-31", "duration_months": 6, "applies_to": "base subscription", "description": "20% introductory discount months 1-6"}],
+  "service_credits": [{"credit_type": "sla", "description": "Service credit for platform availability below 99.5%", "source_clause": "If monthly platform availability falls below 99.5%, Customer receives a service credit equal to 10% of that month's platform subscription fee. Total credits in any calendar month shall not exceed 25% of that month's platform subscription fee. Credits are applied against the next invoice and are not redeemable for cash.", "stated_pct": 10, "stated_amount": null}],
   "overage_tiers": [
     {"tier_label": "Calls 1–10,000", "from_unit": 1, "to_unit": 10000, "rate_per_unit": 0.02, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null, "tier_calculation": {"method": "graduated", "source_clause": null, "requires_confirmation": true, "confirmation_reason": "Contract states per-call rates for each tier but does not specify whether crossing a threshold re-rates all calls or only the calls above it."}},
     {"tier_label": "Calls 10,001–100,000", "from_unit": 10001, "to_unit": 100000, "rate_per_unit": 0.015, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null, "tier_calculation": {"method": "graduated", "source_clause": null, "requires_confirmation": true, "confirmation_reason": "Contract states per-call rates for each tier but does not specify whether crossing a threshold re-rates all calls or only the calls above it."}},
@@ -129,6 +131,7 @@ Output:
     "year_pricing": "1.1 Base Platform Fee",
     "escalators": "1.2 Price Escalator",
     "discounts": "1.3 Introductory Discount",
+    "service_credits": "1.4 Service Credit",
     "payment_terms_text": "Payment Terms",
     "overage_tiers": "2. API Overages",
     "one_time_fees": "3. One-Time Fees"

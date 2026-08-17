@@ -50,6 +50,21 @@ type TierRow = {
   unit_type: string
   minimum_period_amount?: number | null
   measurement_period?: string | null
+  // The tier's own extracted source_clause for these two sub-rules — the
+  // authoritative evidence the AI must reason from. A client-supplied
+  // sourceClause is never trusted over this: the review card used to pass
+  // its own generated "what to check" instruction text as if it were the
+  // contract clause, which produced false "the contract doesn't specify..."
+  // verdicts for clauses that were actually explicit. See sourceClauseFor().
+  minimum_commitment?: { source_clause?: string | null } | null
+  tier_calculation?: { source_clause?: string | null } | null
+}
+
+// The server's own extracted text always wins over whatever the client
+// happened to send as `sourceClause` — a client-supplied value is only ever
+// used as a last-resort fallback when extraction genuinely captured nothing.
+function sourceClauseFor(extracted: string | null | undefined, clientSupplied: string | null | undefined): string | null {
+  return extracted || clientSupplied || null
 }
 
 export async function POST(
@@ -112,9 +127,11 @@ export async function POST(
     const includedTier = tiers.find(t => (t.rate_per_unit ?? 0) === 0)
     const paidTiers = tiers.filter(t => (t.rate_per_unit ?? 0) > 0)
     const existingMinimum = tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0)
+    const extractedClause = tiers.find(t => t.minimum_commitment?.source_clause)?.minimum_commitment?.source_clause
+    sourceClauseAvailable = sourceClauseAvailable || !!extractedClause
     const context: MinimumCommitmentContext = {
       contractUnitType,
-      sourceClause: sourceClause ?? null,
+      sourceClause: sourceClauseFor(extractedClause, sourceClause),
       currency,
       includedUnits: includedTier?.to_unit ?? 0,
       tiers: paidTiers.map(t => ({ tier_label: t.tier_label, from_unit: t.from_unit, to_unit: t.to_unit, rate_per_unit: t.rate_per_unit })),
@@ -126,9 +143,13 @@ export async function POST(
     if (!contractUnitType) return NextResponse.json({ error: 'contractUnitType is required for partial_period' }, { status: 400 })
     const tiers = (terms.overage_tiers ?? []).filter(t => t.unit_type === contractUnitType)
     const existingMinimum = tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0)
+    // Partial-period ambiguity concerns the SAME minimum-commitment clause,
+    // not a separate one — reuse its extracted source_clause.
+    const extractedClause = tiers.find(t => t.minimum_commitment?.source_clause)?.minimum_commitment?.source_clause
+    sourceClauseAvailable = sourceClauseAvailable || !!extractedClause
     const context: PartialPeriodContext = {
       contractUnitType,
-      sourceClause: sourceClause ?? null,
+      sourceClause: sourceClauseFor(extractedClause, sourceClause),
       currency,
       contractStartDate: terms.contract_start_date,
       contractEndDate: terms.contract_end_date,
@@ -140,7 +161,7 @@ export async function POST(
     const escalator = (terms.escalators ?? [])[0]
     sourceClauseAvailable = sourceClauseAvailable || !!escalator?.description
     const context: EscalatorContext = {
-      sourceClause: sourceClause ?? null,
+      sourceClause: sourceClauseFor(escalator?.description, sourceClause),
       description: escalator?.description ?? '',
       capPct: escalator?.cap_pct ?? null,
       effectiveDate: escalator?.effective_date ?? null,
@@ -154,7 +175,7 @@ export async function POST(
     if (!discount) return NextResponse.json({ error: `Discount '${discountId}' not found on this job` }, { status: 404 })
     sourceClauseAvailable = sourceClauseAvailable || !!discount.description
     const context: DiscountContext = {
-      sourceClause: sourceClause ?? null,
+      sourceClause: sourceClauseFor(discount.description, sourceClause),
       description: discount.description ?? '',
       currency,
       existingPct: discount.discount_pct ?? null,
@@ -166,9 +187,11 @@ export async function POST(
   } else if (ruleType === 'tier_calculation') {
     if (!contractUnitType) return NextResponse.json({ error: 'contractUnitType is required for tier_calculation' }, { status: 400 })
     const tiers = (terms.overage_tiers ?? []).filter(t => t.unit_type === contractUnitType && (t.rate_per_unit ?? 0) > 0)
+    const extractedClause = tiers.find(t => t.tier_calculation?.source_clause)?.tier_calculation?.source_clause
+    sourceClauseAvailable = sourceClauseAvailable || !!extractedClause
     const context: TierCalculationContext = {
       contractUnitType,
-      sourceClause: sourceClause ?? null,
+      sourceClause: sourceClauseFor(extractedClause, sourceClause),
       currency,
       tiers: tiers.map(t => ({ tier_label: t.tier_label, from_unit: t.from_unit, to_unit: t.to_unit, rate_per_unit: t.rate_per_unit })),
     }
@@ -180,7 +203,7 @@ export async function POST(
     if (!credit) return NextResponse.json({ error: `Service credit '${creditId}' not found on this job` }, { status: 404 })
     sourceClauseAvailable = sourceClauseAvailable || !!credit.description || !!credit.source_clause
     const context: ServiceCreditContext = {
-      sourceClause: sourceClause ?? credit.source_clause ?? null,
+      sourceClause: sourceClauseFor(credit.source_clause, sourceClause),
       description: credit.description ?? '',
       creditType: credit.credit_type ?? 'other',
       statedPct: credit.stated_pct ?? null,
