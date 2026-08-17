@@ -240,10 +240,20 @@ export async function GET(
         }
       }
 
+      // Below this threshold the "match" is really just aiMatch's own
+      // last-resort fallback (first available meter, confidence 0.2) or an
+      // AI call that itself said it wasn't confident — never pre-select a
+      // meter chosen only because it happened to be technically compatible
+      // or first in the list. no_match tells the client to show "No
+      // suitable meter found" and require an explicit human choice instead
+      // of silently defaulting to a semantically wrong meter.
+      const no_match = !db && confidence < 0.4
+
       return {
         contract_unit_type: unitType,
-        meter_key,
+        meter_key: no_match ? '' : meter_key,
         confidence,
+        no_match,
         confirmed:      db ? Boolean(db.confirmed) : false,
         included_units: db ? (db.included_units as number) : includedUnits,
         overage_tiers:  db ? (db.overage_tiers as unknown) : sortedTiers,

@@ -2251,6 +2251,15 @@ function ReviewPanel({
                     : kind === 'tier_calculation'
                       ? (ruleTier?.tier_calculation?.source_clause ?? '')
                       : (ruleTier?.minimum_commitment?.source_clause ?? '')
+                  // Metric-scoped title — never one specific tariff tier's own
+                  // name (e.g. "AI processing 100,001-250,000"). The rule
+                  // being reviewed applies to the whole metric, not one band
+                  // of it, and titling the card after a single tier row is
+                  // exactly what made a shared minimum/tier-method rule read
+                  // as if it were attached to just that one band.
+                  const ruleTitle = kind === 'escalator_interpretation'
+                    ? 'Price escalation'
+                    : ruleUnitType ?? item.product_name
                   const ruleMeterSuggestion = ruleUnitType ? meterSuggestions.find(s => s.contract_unit_type === ruleUnitType) : undefined
                   const ruleMeter      = ruleMeterSuggestion ? availableMeters.find(m => m.meter_key === ruleMeterSuggestion.meter_key) : undefined
                   const isEditing   = editing === item.id
@@ -2277,59 +2286,74 @@ function ReviewPanel({
                               {ctx.typeLabel}
                             </span>
                           </div>
-                          <span
-                            className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                            style={{ color: scoreColor, background: `${scoreColor}15` }}
-                          >
-                            Needs confirmation
-                          </span>
-                        </div>
-
-                        {/* Extracted name */}
-                        <p className="text-sm font-medium text-ink leading-snug mb-2">
-                          {item.product_name}
-                        </p>
-
-                        {/* Key values row */}
-                        <div className="flex flex-wrap gap-3 mb-3">
-                          <div className="text-xs">
-                            <span className="text-stone">Rate · </span>
-                            <span className="font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                              {kind === 'escalator'
-                                ? (() => {
-                                    const m = item.product_name.match(/\((\d+(?:\.\d+)?)%/)
-                                    return m ? `${m[1]}%` : '—%'
-                                  })()
-                                : `${fmtUnit(item.unit_price, item.currency)}/unit`}
+                          {/* No confidence-score "Needs confirmation" pill for
+                              rule-interpretation kinds — RuleInterpretationCard
+                              renders its own state badge (Clear from source /
+                              Verdix recommendation / Decision required), and a
+                              second, unconditional "Needs confirmation" pill
+                              sitting right next to it just contradicted
+                              whatever the AI card said underneath. */}
+                          {!isRuleInterpretation && (
+                            <span
+                              className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                              style={{ color: scoreColor, background: `${scoreColor}15` }}
+                            >
+                              Needs confirmation
                             </span>
-                          </div>
-                          {item.quantity > 0 && kind !== 'escalator' && (
-                            <div className="text-xs">
-                              <span className="text-stone">Qty · </span>
-                              <span className="font-semibold text-ink">{item.quantity}</span>
-                            </div>
                           )}
-                          <div className="text-xs">
-                            <span className="text-stone">Billing · </span>
-                            <span className="font-semibold text-ink">{item.billing_period}</span>
-                          </div>
                         </div>
 
-                        {/* What to check */}
-                        <div className="rounded-xl p-3 mb-3" style={{ background: '#FFFBEB', border: '1px solid #FDE68A' }}>
-                          <p className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: '#92400E' }}>
-                            <i className="ti ti-shield-check mr-1" />Confirm this term
-                          </p>
-                          <p className="text-xs leading-relaxed" style={{ color: '#78350F' }}>
-                            {ctx.whatToCheck}
-                          </p>
-                        </div>
-
-                        {/* Reason for review */}
-                        <p className="text-[11px] text-stone leading-relaxed mb-3">
-                          <span className="font-medium">Why review: </span>
-                          {ctx.whyFlagged}
+                        {/* Extracted name — metric-scoped title for rule-
+                            interpretation kinds, the tariff tier's own name
+                            for a plain rate-confirmation card. */}
+                        <p className="text-sm font-medium text-ink leading-snug mb-2">
+                          {isRuleInterpretation ? ruleTitle : item.product_name}
                         </p>
+
+                        {!isRuleInterpretation && (
+                          <>
+                            {/* Key values row */}
+                            <div className="flex flex-wrap gap-3 mb-3">
+                              <div className="text-xs">
+                                <span className="text-stone">Rate · </span>
+                                <span className="font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                                  {kind === 'escalator'
+                                    ? (() => {
+                                        const m = item.product_name.match(/\((\d+(?:\.\d+)?)%/)
+                                        return m ? `${m[1]}%` : '—%'
+                                      })()
+                                    : `${fmtUnit(item.unit_price, item.currency)}/unit`}
+                                </span>
+                              </div>
+                              {item.quantity > 0 && kind !== 'escalator' && (
+                                <div className="text-xs">
+                                  <span className="text-stone">Qty · </span>
+                                  <span className="font-semibold text-ink">{item.quantity}</span>
+                                </div>
+                              )}
+                              <div className="text-xs">
+                                <span className="text-stone">Billing · </span>
+                                <span className="font-semibold text-ink">{item.billing_period}</span>
+                              </div>
+                            </div>
+
+                            {/* What to check */}
+                            <div className="rounded-xl p-3 mb-3" style={{ background: '#FFFBEB', border: '1px solid #FDE68A' }}>
+                              <p className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: '#92400E' }}>
+                                <i className="ti ti-shield-check mr-1" />Confirm this term
+                              </p>
+                              <p className="text-xs leading-relaxed" style={{ color: '#78350F' }}>
+                                {ctx.whatToCheck}
+                              </p>
+                            </div>
+
+                            {/* Reason for review */}
+                            <p className="text-[11px] text-stone leading-relaxed mb-3">
+                              <span className="font-medium">Why review: </span>
+                              {ctx.whyFlagged}
+                            </p>
+                          </>
+                        )}
 
                         {/* Actions or edit form */}
                         {isRuleInterpretation && !isResolved ? (

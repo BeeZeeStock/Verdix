@@ -14,6 +14,12 @@ type MeterSuggestion = {
   contract_unit_type: string
   meter_key: string
   confidence: number
+  // Server-computed: the best guess it could produce was still below a
+  // trustworthy-match threshold (e.g. the only candidate was "first
+  // available meter, confidence 0.2" — technically compatible on unit type
+  // alone, not actually the right meter). meter_key is '' when this is true
+  // — nothing is pre-selected, the reviewer must pick one explicitly.
+  no_match?: boolean
   confirmed: boolean
   included_units: number
   overage_tiers: Array<{
@@ -48,11 +54,6 @@ interface Props {
 const CYCLE_LABELS: Record<string, string> = {
   monthly: 'Monthly', quarterly: 'Quarterly', 'semi-annual': 'Semi-annual', yearly: 'Yearly', annual: 'Annual',
 }
-
-// Matches configure/[id]/page.tsx's ReviewPanel vocabulary — a single
-// "Needs confirmation" pill for anything below the auto-match threshold,
-// rather than a three-tier confidence scale with raw percentages.
-const NEEDS_CONFIRMATION_THRESHOLD = 0.85
 
 export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, contractBillingFrequency, refreshSignal }: Props) {
   const [suggestions, setSuggestions] = useState<MeterSuggestion[]>([])
@@ -181,8 +182,15 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
   }
 
   const confirmAll = () => {
-    const patch: Record<string, Partial<MeterSuggestion>> = {}
-    suggestions.forEach(s => { patch[s.contract_unit_type] = { ...edits[s.contract_unit_type], confirmed: true } })
+    const patch: Record<string, Partial<MeterSuggestion>> = { ...edits }
+    for (const s of suggestions) {
+      // Never confirm a row with no meter selected — a "no suitable meter
+      // found" row (empty meter_key) still needs an explicit human pick;
+      // batch-confirming it would silently map the metric to nothing.
+      const meterKey = get(s.contract_unit_type, 'meter_key', s.meter_key)
+      if (!meterKey) continue
+      patch[s.contract_unit_type] = { ...patch[s.contract_unit_type], confirmed: true }
+    }
     setEdits(patch)
   }
 
@@ -287,97 +295,95 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
         </div>
       )}
 
-      {/* Mapping rows */}
-      <div className="divide-y divide-forest/6">
+      {/* Mapping rows — each metric gets its own bordered card, matching the
+          rest of the Review panel's rule cards, with every available meter
+          listed as a clickable row instead of a native <select> the
+          reviewer has to open to even see the options. */}
+      <div className="p-4 space-y-3">
         {suggestions.map(s => {
           const meterKey     = get(s.contract_unit_type, 'meter_key', s.meter_key)
           const confirmed    = get(s.contract_unit_type, 'confirmed', s.confirmed)
-          const needsConfirmation = s.confidence < NEEDS_CONFIRMATION_THRESHOLD
+          const noMatch      = !meterKey
           const matchedMeter = meters.find(m => m.meter_key === meterKey)
+          const minCommitment = resolveMinimumCommitment(s)
+
+          const choose = (key: string) => {
+            setEdit(s.contract_unit_type, 'meter_key', key)
+            setEdit(s.contract_unit_type, 'confirmed', true)
+          }
 
           return (
-            <div key={s.contract_unit_type}>
             <div
-              className="px-7 py-4 flex items-center gap-6"
-              style={{ background: confirmed ? '#F6FAF4' : undefined }}>
-
-              {/* Contract unit type */}
-              <div className="w-48 flex-shrink-0">
-                <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Contract says</div>
-                <div className="text-sm font-medium text-ink font-mono bg-cream px-2 py-1 rounded-lg inline-block">
+              key={s.contract_unit_type}
+              className="rounded-2xl border overflow-hidden"
+              style={{ borderColor: confirmed ? 'rgba(11,92,54,0.2)' : '#FAC775', background: confirmed ? '#F8FDF9' : 'white' }}
+            >
+              <div className="px-4 pt-4 pb-3">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-stone mb-1.5">Contract says</div>
+                <div className="text-sm font-medium text-ink font-mono bg-cream px-2.5 py-1.5 rounded-lg inline-block mb-3">
                   {s.contract_unit_type}
                 </div>
-                {needsConfirmation && (
-                  <div className="mt-1.5">
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
-                      style={{ background: '#FEE2E2', color: '#B91C1C' }}>
-                      Needs confirmation
-                    </span>
+
+                {confirmed ? (
+                  <div className="flex items-center gap-2 text-xs font-medium" style={{ color: '#0B5C36' }}>
+                    <i className="ti ti-circle-check-filled" style={{ fontSize: 14 }} />
+                    Mapped to {matchedMeter?.display_name ?? meterKey}
+                    <button onClick={() => setEdit(s.contract_unit_type, 'confirmed', false)} className="ml-auto text-stone hover:text-ink underline underline-offset-2 font-normal">
+                      Change
+                    </button>
                   </div>
+                ) : (
+                  <>
+                    {noMatch ? (
+                      <div className="rounded-xl p-3 mb-3" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
+                        <p className="text-xs font-semibold flex items-center gap-1.5" style={{ color: '#991B1B' }}>
+                          <i className="ti ti-alert-triangle" style={{ fontSize: 13 }} /> No suitable meter found
+                        </p>
+                        <p className="text-[11px] mt-1" style={{ color: '#7F1D1D' }}>
+                          None of the registered meters is a clear semantic match for this contract term — select the correct one below, or register a new meter first.
+                        </p>
+                      </div>
+                    ) : matchedMeter ? (
+                      <p className="text-[11px] text-stone mb-3">
+                        <span className="font-medium text-ink">Verdix suggests</span> {matchedMeter.display_name} ({matchedMeter.unit_label}) — confirm or pick a different meter below.
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-stone mb-3">Select the billing meter this contract term maps to.</p>
+                    )}
+
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-stone mb-1.5">Billing meters</div>
+                    <div className="space-y-1.5">
+                      {meters.map(m => (
+                        <label key={m.meter_key} className="flex items-start gap-2 p-2 rounded-lg cursor-pointer transition-colors"
+                          style={{ background: meterKey === m.meter_key ? '#F0FDF4' : 'transparent', border: `1px solid ${meterKey === m.meter_key ? 'rgba(11,92,54,0.3)' : 'rgba(26,61,43,0.1)'}` }}>
+                          <input type="radio" name={`meter-${s.contract_unit_type}`} className="mt-0.5" checked={meterKey === m.meter_key} onChange={() => choose(m.meter_key)} />
+                          <span>
+                            <span className="block text-xs font-semibold text-ink">{m.display_name}</span>
+                            <span className="block text-[11px] text-stone">Unit: {m.unit_label} · {m.meter_key}</span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
 
-              {/* Arrow */}
-              <div className="flex-shrink-0">
-                <i className="ti ti-arrow-right text-stone/40" style={{ fontSize: 16 }} />
-              </div>
-
-              {/* Meter selector */}
-              <div className="flex-1 min-w-0">
-                <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Billing meter</div>
-                <select
-                  value={meterKey}
-                  onChange={e => {
-                    setEdit(s.contract_unit_type, 'meter_key', e.target.value)
-                    setEdit(s.contract_unit_type, 'confirmed', false)
-                  }}
-                  className="w-full bg-white border border-forest/20 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest"
-                >
-                  {meters.map(m => (
-                    <option key={m.meter_key} value={m.meter_key}>
-                      {m.display_name} ({m.meter_key})
-                    </option>
-                  ))}
-                </select>
-                {matchedMeter && (
-                  <p className="text-[10px] text-stone mt-1">
-                    Unit: <span className="font-medium">{matchedMeter.unit_label}</span>
+              {/* Minimum commitment — read-only pointer to where this actually
+                  gets resolved (the Review panel's own rule-interpretation
+                  card for this metric), never a second interactive widget
+                  here. Resolving it in THIS panel used to only ever write to
+                  contract_meter_mappings — the Commercial Terms view and
+                  every other ambiguity check read contract_terms, which
+                  never updated, so the flag reappeared even after a
+                  reviewer thought they'd already resolved it. */}
+              {minCommitment?.requires_confirmation && (
+                <div className="mx-4 mb-4 rounded-xl p-3" style={{ background: '#FFFBEB', border: '1px solid #FDE68A' }}>
+                  <p className="text-[11px] font-medium flex items-center gap-1.5" style={{ color: '#92400E' }}>
+                    <i className="ti ti-alert-triangle flex-shrink-0" style={{ fontSize: 12 }} />
+                    This metric also has a minimum commitment awaiting interpretation — resolve it in the rule card below, not here.
                   </p>
-                )}
-              </div>
-
-              {/* Confirm toggle */}
-              <div className="flex-shrink-0">
-                <button
-                  onClick={() => setEdit(s.contract_unit_type, 'confirmed', !confirmed)}
-                  className="w-5 h-5 rounded border flex items-center justify-center transition-all"
-                  style={confirmed
-                    ? { background: '#1A3D2B', borderColor: '#1A3D2B' }
-                    : { background: 'white', borderColor: 'rgba(26,61,43,0.3)' }
-                  }
-                  title={confirmed ? 'Confirmed' : 'Click to confirm'}
-                >
-                  {confirmed && <i className="ti ti-check text-white" style={{ fontSize: 11 }} />}
-                </button>
-              </div>
-            </div>
-
-            {/* Minimum commitment — read-only pointer to where this actually
-                gets resolved (the Review panel's own rule-interpretation
-                card for this metric, further down this same panel), never a
-                second interactive widget here. Resolving it in THIS panel
-                used to only ever write to contract_meter_mappings — the
-                Commercial Terms view and every other ambiguity check read
-                contract_terms, which never updated, so the flag reappeared
-                even after a reviewer thought they'd already confirmed it. */}
-            {resolveMinimumCommitment(s)?.requires_confirmation && (
-              <div className="mx-7 mb-4 rounded-xl p-3" style={{ background: '#FFFBEB', border: '1px solid #FDE68A' }}>
-                <p className="text-[11px] font-medium flex items-center gap-1.5" style={{ color: '#92400E' }}>
-                  <i className="ti ti-alert-triangle flex-shrink-0" style={{ fontSize: 12 }} />
-                  This metric also has a minimum commitment awaiting interpretation — resolve it in the rule card below, not here.
-                </p>
-              </div>
-            )}
+                </div>
+              )}
             </div>
           )
         })}
