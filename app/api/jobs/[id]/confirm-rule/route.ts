@@ -80,6 +80,11 @@ function buildMinimumCommitment(approved: Record<string, unknown>, existing: Min
     included_allowance_interaction: (approved.included_allowance_interaction as MinimumCommitment['included_allowance_interaction']) ?? existing?.included_allowance_interaction,
     rollover: existing?.rollover,
     prorate_partial_periods: (approved.prorate_partial_periods as MinimumCommitment['prorate_partial_periods']) ?? existing?.prorate_partial_periods ?? 'unclear',
+    // Never silently defaults to true/false — an unresolved zero-usage
+    // question must stay 'unclear' through confirmation, same discipline as
+    // prorate_partial_periods, so Confirm & apply can never quietly decide
+    // it on the reviewer's behalf.
+    applies_at_zero_usage: (approved.applies_at_zero_usage as MinimumCommitment['applies_at_zero_usage']) ?? existing?.applies_at_zero_usage ?? 'unclear',
     source_clause: (approved.source_clause as string | undefined) ?? existing?.source_clause ?? null,
     requires_confirmation: false,
     confirmation_reason: null,

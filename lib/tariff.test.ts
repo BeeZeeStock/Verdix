@@ -59,6 +59,36 @@ describe('computeMetricOverage — structured minimum_commitment modes', () => {
     expect(computeMetricOverage(10000, tiers, 0).amount).toBe(10000) // 10000 > 5000
   })
 
+  describe('floor — applies_at_zero_usage', () => {
+    it('unset (undefined): still charges the floor at zero usage — unchanged default behavior', () => {
+      const tiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'floor', amount: 5000 }) })]
+      expect(computeMetricOverage(0, tiers, 0).amount).toBe(5000)
+    })
+
+    it('"unclear": still charges the floor at zero usage — never silently waived', () => {
+      const tiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'floor', amount: 5000, applies_at_zero_usage: 'unclear' }) })]
+      expect(computeMetricOverage(0, tiers, 0).amount).toBe(5000)
+    })
+
+    it('explicitly true: charges the floor at zero usage', () => {
+      const tiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'floor', amount: 5000, applies_at_zero_usage: true }) })]
+      expect(computeMetricOverage(0, tiers, 0).amount).toBe(5000)
+    })
+
+    it('explicitly false: waives the floor only when calculated usage is genuinely zero', () => {
+      const tiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'floor', amount: 5000, applies_at_zero_usage: false }) })]
+      expect(computeMetricOverage(0, tiers, 0).amount).toBe(0)
+      // Any nonzero calculated usage still compares against the floor normally.
+      expect(computeMetricOverage(10, tiers, 0).amount).toBe(5000)
+      expect(computeMetricOverage(10000, tiers, 0).amount).toBe(10000)
+    })
+
+    it('explicitly false: usage fully inside the included allowance also counts as zero calculated usage', () => {
+      const tiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'floor', amount: 5000, applies_at_zero_usage: false }) })]
+      expect(computeMetricOverage(50, tiers, 100).amount).toBe(0) // 50 units, 100 included -> 0 billable
+    })
+  })
+
   it('additive: charges the minimum on top of usage regardless', () => {
     const tiers = [tier({ rate_per_unit: 1, minimum_commitment: commitment({ mode: 'additive', amount: 5000 }) })]
     expect(computeMetricOverage(100, tiers, 0).amount).toBe(5100)

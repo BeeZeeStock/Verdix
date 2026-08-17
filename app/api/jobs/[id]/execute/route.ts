@@ -137,6 +137,7 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
       // Structured arrays
       escalators:                terms.escalators             ?? [],
       discounts:                 terms.discounts              ?? [],
+      service_credits:           terms.service_credits        ?? [],
       overage_tiers:             terms.overage_tiers          ?? [],
       one_time_fees:             terms.one_time_fees          ?? [],
       additional_recurring_fees: terms.additional_recurring_fees ?? [],

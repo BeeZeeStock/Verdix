@@ -274,12 +274,14 @@ Translate the reviewer's instruction into a structured JSON object with EXACTLY 
   "period": "monthly" | "quarterly" | "semi-annual" | "annual" | null,
   "included_allowance_interaction": "before_allowance" | "after_allowance",
   "prorate_partial_periods": true | false | "unclear",
+  "applies_at_zero_usage": true | false | "unclear",
   "calculation_summary": "<one-sentence plain-English description of the resulting calculation, e.g. 'max(tiered usage charge, 5000)'>"
 }
 
 Rules:
 - Use ONLY what the reviewer's instruction and the source clause actually say. Never invent a value the reviewer didn't provide or imply.
 - If the reviewer's instruction doesn't specify a required field clearly enough to be confident, omit that field entirely rather than guessing — do not fabricate a default.
+- applies_at_zero_usage (mode 'floor'/'minimum_spend' only): whether the minimum is still owed for a period with genuinely zero usage. Only set true/false if the reviewer's instruction actually addresses this specific scenario; otherwise "unclear" — never assume it follows from the minimum's mere existence.
 - Respond with ONLY the JSON object, no other text.`
 }
 
@@ -692,9 +694,11 @@ Stated minimum: ${context.existingMinimumAmount != null ? `${context.existingMin
 Pricing tiers:
 ${tierLines || '(none)'}
 
-${proposalSchemaBlock('{"mode": "floor"|"additive"|"minimum_spend"|"prepaid_commitment"|"minimum_quantity", "amount": <number>, "period": "monthly"|"quarterly"|"semi-annual"|"annual"|null, "included_allowance_interaction": "before_allowance"|"after_allowance", "prorate_partial_periods": true|false|"unclear", "calculation_summary": "<one sentence>"}')}
+${proposalSchemaBlock('{"mode": "floor"|"additive"|"minimum_spend"|"prepaid_commitment"|"minimum_quantity", "amount": <number>, "period": "monthly"|"quarterly"|"semi-annual"|"annual"|null, "included_allowance_interaction": "before_allowance"|"after_allowance", "prorate_partial_periods": true|false|"unclear", "applies_at_zero_usage": true|false|"unclear", "calculation_summary": "<one sentence>"}')}
 
 Specific guidance: a clause calling the amount a "minimum charge"/"minimum processing charge"/"floor" (rather than an "additional fee") supports "verdix_recommends" with mode "floor". Whether the minimum applies before or after an included allowance is frequently NOT stated even when both exist — if genuinely unstated, set included_allowance_interaction to "unclear" and lean the overall state toward "decision_required" or "verdix_recommends" depending on whether the mode itself is clear.
+
+applies_at_zero_usage (mode "floor"/"minimum_spend" only): a materially separate question from whether the minimum exists at all — whether it is STILL owed for a period with genuinely zero usage. Contracts are frequently silent on this specific scenario even when the minimum itself is stated clearly. Set true/false only when the source clause actually addresses it; otherwise "unclear". Critically, an "unclear" answer here does NOT by itself force the overall state to "decision_required" — if mode/amount/period are otherwise clear, keep the overall state at "clear_from_source" or "verdix_recommends" and mention the open zero-usage question explicitly in reasoning, so a reviewer can still act on everything that IS resolved. Never silently pick true or false and never let this sub-question disappear from the response.
 
 Critical: this metric may have multiple pricing bands/tiers (see Pricing tiers above), but the minimum is a single METRIC-LEVEL rule — it compares against the TOTAL calculated usage charge across every band combined, never against any one band in isolation. calculation_summary must say so explicitly, e.g. "max(total graduated usage charge across all pricing bands after the included allowance, ${context.existingMinimumAmount ?? 'the minimum'})" — never phrase this as if the minimum were attached to one specific tier or unit range.`
 }

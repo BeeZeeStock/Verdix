@@ -148,10 +148,15 @@ function fmt(n: number | null | undefined, cur = 'EUR') {
 // costs" under prose the reviewer has to wade through. Splits on
 // sentence-ending punctuation rather than truncating by character count, so
 // it never cuts off mid-sentence.
-function truncateSentences(text: string, maxSentences = 3): { short: string; truncated: boolean } {
+function truncateSentences(text: string, maxSentences = 3, maxChars = 220): { short: string; truncated: boolean } {
   const sentences = text.match(/[^.!?]+[.!?]+(\s|$)/g) ?? [text]
-  if (sentences.length <= maxSentences) return { short: text, truncated: false }
-  return { short: sentences.slice(0, maxSentences).join('').trim(), truncated: true }
+  const bySentence = sentences.length > maxSentences ? sentences.slice(0, maxSentences).join('').trim() : text
+  if (bySentence.length <= maxChars) return { short: bySentence, truncated: bySentence !== text }
+  // A hard character-length safety net — a single long run-on sentence (or
+  // several short ones with no terminal punctuation the regex could split
+  // on) would otherwise sail through the sentence-count check untouched.
+  const hardCut = bySentence.slice(0, maxChars).replace(/\s+\S*$/, '')
+  return { short: `${hardCut}…`, truncated: true }
 }
 
 // For per-unit rates which are often fractional (e.g. €0.05, SEK 0.035).
@@ -993,7 +998,7 @@ const ITEM_KIND_TO_RULE_TYPE: Partial<Record<ItemKind, RuleType>> = {
 type RulePhase = 'proposing' | 'proposed' | 'input' | 'loading' | 'missing' | 'proposal' | 'confirming' | 'applied' | 'partial' | 'error'
 
 function RuleInterpretationCard({
-  jobId, kind, contractUnitType, discountId, creditId, interactionKey, cadenceLabel, sourceClause, currency, meterMappingConfirmed, meterSuggestion, onApplied,
+  jobId, kind, contractUnitType, discountId, creditId, interactionKey, cadenceLabel, sourceClause, currency, meterMappingConfirmed, meterSuggestion, showMeterDependencyNotice, onApplied,
   initialSelectedOption, initialFreeText,
 }: {
   jobId: string
@@ -1015,6 +1020,11 @@ function RuleInterpretationCard({
   currency: string
   meterMappingConfirmed?: boolean
   meterSuggestion?: { meter_key: string; display_name?: string } | null
+  // Defaults to true. Callers stacking multiple cards for the same metric
+  // (see renderMetricRuleCard) pass false on all but one, since every card
+  // would otherwise repeat an identical "this metric's usage source isn't
+  // confirmed" notice.
+  showMeterDependencyNotice?: boolean
   onApplied: () => void
   // Re-opening an already-confirmed rule ("Edit interpretation") should show
   // what was actually approved last time, not a blank form — the reviewer
@@ -1408,13 +1418,24 @@ function RuleInterpretationCard({
       {/* Meter-mapping dependency — read-only notice, not a second editing
           surface. Confirming/changing a mapping happens in exactly one
           place, the Meter mapping section above (id="meter-mapping-panel");
-          this card only says why it's blocked and jumps there. */}
-      {contractUnitType && meterMappingConfirmed === false && (
+          this card only says why it's blocked and jumps there.
+          showMeterDependencyNotice defaults to true but is suppressed by
+          callers stacking multiple cards for the SAME metric (minimum
+          commitment + partial period + tier calculation can all depend on
+          the same unconfirmed meter) — shown once at the metric-group
+          level instead of once per stacked card. */}
+      {showMeterDependencyNotice !== false && contractUnitType && meterMappingConfirmed === false && (
         <div className="rounded-xl p-3" style={{ background: '#F5F5F4', border: '1px solid rgba(26,61,43,0.1)' }}>
           <p className="text-[10px] font-bold uppercase tracking-widest text-stone mb-1.5">Usage source</p>
           <p className="text-[11px] text-stone mb-2">
-            Contract metric <span className="font-medium text-ink">&quot;{contractUnitType}&quot;</span> maps to{' '}
-            <span className="font-medium text-ink">{meterSuggestion?.display_name ?? meterSuggestion?.meter_key ?? 'a suggested meter'}</span>, not yet confirmed.
+            Contract metric <span className="font-medium text-ink">&quot;{contractUnitType}&quot;</span>{' '}
+            {/* Only a truthy check (not just non-null) catches an empty-string
+                meter_key/display_name — meterSuggestion can exist as an
+                object while both its string fields are '', which `??`
+                alone doesn't fall through on. */}
+            {(meterSuggestion?.display_name || meterSuggestion?.meter_key)
+              ? <>maps to <span className="font-medium text-ink">{meterSuggestion.display_name || meterSuggestion.meter_key}</span>, not yet confirmed.</>
+              : <span className="font-medium text-ink">No meter selected.</span>}
           </p>
           <button
             onClick={() => document.getElementById('meter-mapping-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
@@ -1797,6 +1818,7 @@ function ReviewPanel({
   escalators,
   discounts,
   serviceCredits,
+  extractionNotes,
   contractStartDate,
   contractEndDate,
   numberFormat = 'dot',
@@ -1817,6 +1839,13 @@ function ReviewPanel({
   escalators?: Escalator[]
   discounts?: Discount[]
   serviceCredits?: ServiceCredit[]
+  // Free-text notes the extraction model writes for anything it noticed but
+  // couldn't fit into a structured field — e.g. a penalty clause, which
+  // is the opposite polarity from service_credits (an additional charge,
+  // not a reduction) and has no first-class structured home yet. Shown
+  // as-is so it's never silently dropped just because nothing downstream
+  // knows how to structure it.
+  extractionNotes?: string | null
   contractStartDate?: string
   contractEndDate?: string
   numberFormat?: 'dot' | 'comma'
@@ -1953,7 +1982,7 @@ function ReviewPanel({
   // key (not a real item.id, since this card isn't tied to one), and only
   // once every one of a metric's needed kinds is resolved does it mark the
   // metric's real (hidden, duplicate) tariff-tier rows resolved too.
-  const renderMetricRuleCard = (kind: MetricRuleKind, unitType: string, anchorItemId: string) => {
+  const renderMetricRuleCard = (kind: MetricRuleKind, unitType: string, anchorItemId: string, showMeterDependencyNotice: boolean) => {
     const resolvedKey = `${kind}:${unitType}`
     const isCardResolved = !!resolved[resolvedKey]
     const ruleTier = (overageTiers ?? []).find(t => t.unit_type === unitType)
@@ -1995,6 +2024,7 @@ function ReviewPanel({
               currency={cur ?? 'EUR'}
               meterMappingConfirmed={ruleMeterSuggestion?.confirmed}
               meterSuggestion={ruleMeterSuggestion ? { meter_key: ruleMeterSuggestion.meter_key, display_name: ruleMeter?.display_name } : null}
+              showMeterDependencyNotice={showMeterDependencyNotice}
               onApplied={() => {
                 setResolved(r => {
                   const next = { ...r, [resolvedKey]: 'confirmed' as const }
@@ -2359,6 +2389,25 @@ function ReviewPanel({
               </div>
             )
           })()}
+
+          {/* Extraction notes — free-text flags for anything the model
+              noticed but couldn't fit into a structured field (e.g. a
+              penalty clause, which is the opposite polarity from
+              service_credits). No structured rule to confirm here, just
+              visibility — the point is that it never silently disappears
+              just because nothing downstream knows how to structure it. */}
+          {extractionNotes && (
+            <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: '#FAFAF9' }}>
+              <div className="px-4 pt-4 pb-3">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <i className="ti ti-note text-stone" style={{ fontSize: 12 }} />
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Extraction notes</span>
+                </div>
+                <p className="text-xs text-stone leading-relaxed whitespace-pre-line">{extractionNotes}</p>
+              </div>
+            </div>
+          )}
+
           {Object.entries(groups).map(([section, groupItems]) => (
             <div key={section}>
               {/* Section header from contract */}
@@ -2388,9 +2437,18 @@ function ReviewPanel({
                   const metricUnitType = findTierForItem(item, overageTiers ?? [])?.unit_type
                   if (metricUnitType && metricNeededKinds.has(metricUnitType)) {
                     if (metricAnchorItemId.get(metricUnitType) !== item.id) return null
+                    // The usage-source dependency notice, if this metric's
+                    // meter isn't confirmed, only needs to say so once — on
+                    // the first STILL-UNRESOLVED card in the stack (found
+                    // dynamically, not just index 0 — confirming one kind
+                    // without the others shouldn't leave the notice
+                    // orphaned on an already-"Confirmed" card that no
+                    // longer renders it).
+                    const kinds = metricNeededKinds.get(metricUnitType)!
+                    const firstUnresolvedIdx = kinds.findIndex(k => !resolved[`${k}:${metricUnitType}`])
                     return (
                       <Fragment key={item.id}>
-                        {metricNeededKinds.get(metricUnitType)!.map(k => renderMetricRuleCard(k, metricUnitType, item.id))}
+                        {kinds.map((k, i) => renderMetricRuleCard(k, metricUnitType, item.id, i === firstUnresolvedIdx))}
                       </Fragment>
                     )
                   }
@@ -4762,6 +4820,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           escalators={terms?.escalators}
           discounts={terms?.discounts}
           serviceCredits={terms?.service_credits}
+          extractionNotes={terms?.extraction_notes}
           contractStartDate={terms?.contract_start_date}
           contractEndDate={terms?.contract_end_date}
           numberFormat={terms?.number_format ?? 'dot'}

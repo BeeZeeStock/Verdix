@@ -18,6 +18,12 @@ export interface MinimumCommitment {
   included_allowance_interaction?: 'before_allowance' | 'after_allowance' | 'unclear'
   rollover?: boolean
   prorate_partial_periods?: boolean | 'unclear'
+  /** Whether a 'floor'/'minimum_spend' commitment is still owed for a period
+   *  with zero calculated usage (no usage at all, or usage fully inside the
+   *  included allowance) — a materially different question from whether the
+   *  floor exists at all, and one contracts are frequently silent on.
+   *  Missing/undefined (not yet extracted) reads the same as 'unclear'. */
+  applies_at_zero_usage?: boolean | 'unclear'
   source_clause?: string | null
   requires_confirmation: boolean
   confirmation_reason?: string | null
@@ -232,7 +238,7 @@ export interface ServiceCredit {
    *  contract can have several independent credit clauses addressed
    *  independently in review/audit. Populated at extraction time. */
   credit_rule_id?: string
-  credit_type: 'sla' | 'rebate' | 'promotional' | 'earned' | 'usage' | 'other'
+  credit_type: 'sla' | 'rebate' | 'promotional' | 'earned' | 'usage' | 'waiver' | 'other'
   description: string
   source_clause: string | null
   /** Raw extracted numbers before interpretation resolves basis/cap/timing

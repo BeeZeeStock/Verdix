@@ -274,6 +274,14 @@ export function computeMetricOverage(
     switch (mc.mode) {
       case 'floor':
       case 'minimum_spend':
+        // Whether the floor is still owed for a period with zero calculated
+        // usage (e.g. no usage at all, or usage fully inside the included
+        // allowance) is a genuinely separate question from the floor's
+        // existence — a contract can plausibly go either way. Only skip the
+        // floor once a reviewer has explicitly resolved applies_at_zero_usage
+        // to false; true, 'unclear', or unset all preserve the original,
+        // always-charge-the-floor behavior nobody has had reason to dispute.
+        if (computed === 0 && mc.applies_at_zero_usage === false) return finalize(0)
         return finalize(Math.max(computed, mc.amount))
       case 'additive':
         return finalize(computed + mc.amount)
