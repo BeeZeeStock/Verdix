@@ -74,26 +74,26 @@ function Hero() {
             </div>
           </div>
           <div>
-            <div className={styles.xs} style={{ textTransform: 'uppercase', letterSpacing: '.1em', fontWeight: 500, marginBottom: 6 }}>Fixed fees configured</div>
-            <div className={styles.proofNum}>SEK 94,800</div>
-            <div className={styles.xs} style={{ marginTop: 6 }}>+ usage-based and rule-based SMS charges</div>
+            <div className={styles.xs} style={{ textTransform: 'uppercase', letterSpacing: '.1em', fontWeight: 500, marginBottom: 6 }}>Manual contract re-entry</div>
+            <div className={styles.proofNum}>0</div>
+            <div className={styles.xs} style={{ marginTop: 6 }}>Approved commercial terms flow directly into billing configuration.</div>
           </div>
           <div className={styles.proofRows}>
             <div className={styles.proofRow}><span>Agreement</span><b><span className={styles.pii}>Nordic insurance customer</span> · 12 months</b></div>
             <div className={styles.proofRow}><span>Pricing model</span><b>Fixed + usage · 3 SMS tiers · quarterly minimum</b></div>
-            <div className={styles.proofRow}><span>Fixed fees configured in</span><b>Remembill — via API</b></div>
+            <div className={styles.proofRow}><span>Fixed fees configured</span><b>SEK 94,800 · via Remembill API</b></div>
             <div className={styles.proofRow}><span>Source traceability</span><b className={styles.ok}>Clause-linked ✓</b></div>
-            <div className={styles.proofRow}><span>Manual contract re-entry</span><b>None</b></div>
           </div>
           <p className={styles.xs} style={{ lineHeight: 1.5 }}>The signed agreement enters Verdix, usage is pulled from the Remembill platform, and the billing owner reviews and approves the resulting billing logic. Live Remembill design-partner pilot using a real enterprise agreement. Customer identifiers are redacted and commercial figures shown are illustrative.</p>
         </div>
-        <blockquote className={styles.quote}>
+        {/* Gustav quote — pulled for now, will reintroduce later */}
+        {/* <blockquote className={styles.quote}>
           <p>&quot;The commercial terms live in the agreements, while the usage needed to bill customers lives in the platform. Verdix brings the two together into billing logic that we can review and trace back to the contract, without having to rebuild it manually each billing cycle.&quot;</p>
           <footer>
             <Image src="/images/gustav-frandfors.png" alt="" width={44} height={44} />
             <div><b>Gustav Frändfors</b><span>Founder &amp; CEO, Remembill · Verdix design partner</span></div>
           </footer>
-        </blockquote>
+        </blockquote> */}
       </div>
     </section>
   )
