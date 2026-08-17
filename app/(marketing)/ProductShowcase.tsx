@@ -136,7 +136,7 @@ function PanelCommercialLogic() {
       <div className={styles.pane}>
         <div className={`${styles.paneH} ${styles.br}`}><span className={styles.paneL}>Commercial terms</span><span className={`${styles.badge} ${styles.bBlue} ${styles.spacer}`}>Hybrid — Fixed + Consumption</span></div>
         <div className={styles.paneH} style={{ paddingBottom: 0 }}><span className={styles.paneL}>Confirmed rules</span></div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, padding: '12px 18px 4px' }}>
+        <div className={styles.grid2Col} style={{ padding: '12px 18px 4px' }}>
           <div style={{ border: '1px solid #CFE3D5', borderRadius: 12, background: '#F2F8F3', padding: '15px 16px' }}>
             <div className={styles.fL}>Minimum charge floor</div>
             <div className={styles.fV} style={{ fontSize: 19, color: 'var(--color-ink)', margin: '2px 0 8px' }}>SEK 5,000.00 / calendar quarter</div>
@@ -191,7 +191,7 @@ function PanelConfigureBilling() {
   return (
     <div className={styles.pane}>
       <div className={`${styles.paneH} ${styles.br}`}><span className={styles.paneL}>Review contract terms</span><p className={styles.paneSub}>0 of 4 confirmed</p></div>
-      <div style={{ padding: '16px 18px', display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: 18, alignItems: 'start' }}>
+      <div className={styles.gridReviewCol} style={{ padding: '16px 18px' }}>
         <div>
           <div style={{ border: '1px solid #EBDFC4', borderRadius: 12, background: '#FEF6E7', padding: '14px 15px' }}>
             <div className={styles.fL} style={{ color: 'var(--color-warn)' }}>Confirm this term</div>
@@ -249,15 +249,22 @@ function PanelReviewApprove() {
       <div className={styles.tl}>
         {rows.map((r, i) => r.kind === 'table' ? (
           <div key={i} style={{ margin: '2px 0 12px 22px', border: '1px solid var(--color-line)', borderRadius: 11, overflow: 'hidden' }}>
-            <table className={styles.g} style={{ margin: 0 }}>
-              <thead><tr><th>Description</th><th className={styles.r}>Qty</th><th className={styles.r}>Unit price</th><th className={styles.r}>Total</th></tr></thead>
-              <tbody>
-                <tr><td>Minimum floor</td><td className={styles.r}>—</td><td className={styles.r}>—</td><td className={styles.r}>{r.floor}</td></tr>
-                <tr><td>Usage charge — quarterly in arrears</td><td className={styles.r}>—</td><td className={styles.r}>—</td><td className={styles.r} style={{ fontStyle: 'italic', color: 'var(--color-stone)' }}>Pending usage</td></tr>
-                <tr><td className={styles.b}>Billable amount</td><td className={styles.r}>—</td><td className={styles.r}>—</td><td className={styles.r} style={{ fontStyle: 'italic', color: 'var(--color-warn)', fontWeight: 600 }}>Pending usage — at least {r.billable}</td></tr>
-                <tr><td colSpan={4} style={{ color: 'var(--color-stone)' }}>Partial-quarter treatment: Prorated by days</td></tr>
-              </tbody>
-            </table>
+            {/* Scrolls horizontally within its own bordered box on narrow
+                screens instead of clipping — the nowrap "r" cells (e.g.
+                "Pending usage — at least SEK 2,771.74") don't fit a phone
+                width, and the outer overflow:hidden above was silently
+                cutting that text off rather than making it reachable. */}
+            <div style={{ overflowX: 'auto' }}>
+              <table className={styles.g} style={{ margin: 0 }}>
+                <thead><tr><th>Description</th><th className={styles.r}>Qty</th><th className={styles.r}>Unit price</th><th className={styles.r}>Total</th></tr></thead>
+                <tbody>
+                  <tr><td>Minimum floor</td><td className={styles.r}>—</td><td className={styles.r}>—</td><td className={styles.r}>{r.floor}</td></tr>
+                  <tr><td>Usage charge — quarterly in arrears</td><td className={styles.r}>—</td><td className={styles.r}>—</td><td className={styles.r} style={{ fontStyle: 'italic', color: 'var(--color-stone)' }}>Pending usage</td></tr>
+                  <tr><td className={styles.b}>Billable amount</td><td className={styles.r}>—</td><td className={styles.r}>—</td><td className={styles.r} style={{ fontStyle: 'italic', color: 'var(--color-warn)', fontWeight: 600 }}>Pending usage — at least {r.billable}</td></tr>
+                  <tr><td colSpan={4} style={{ color: 'var(--color-stone)' }}>Partial-quarter treatment: Prorated by days</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         ) : (
           <div key={i} className={styles.tlR}>
@@ -339,7 +346,7 @@ function PanelGraphicalView() {
       {stats.map(g => (
         <div key={g.group}>
           <div className={styles.paneH} style={{ padding: '2px 4px' }}><span className={styles.paneL}>{g.group}</span></div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 14 }}>
+          <div className={styles.grid3Col}>
             {g.cards.map(c => (
               <div key={c.label} className={styles.pane} style={{ padding: '16px 18px' }}>
                 <div className={styles.fL}>{c.label}</div>
@@ -351,7 +358,7 @@ function PanelGraphicalView() {
         </div>
       ))}
       <div className={styles.paneH} style={{ padding: '2px 4px' }}><span className={styles.paneL}>Recurring commercial commitment</span></div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+      <div className={styles.grid2Col}>
         {commitment.map(c => (
           <div key={c.label} className={styles.pane} style={{ padding: '16px 18px' }}>
             <div className={styles.fL}>{c.label}</div>
@@ -361,7 +368,7 @@ function PanelGraphicalView() {
         ))}
       </div>
       <div className={styles.paneH} style={{ padding: '2px 4px' }}><span className={styles.paneL}>Usage upside</span></div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+      <div className={styles.grid2Col}>
         {upside.map(c => (
           <div key={c.label} className={styles.pane} style={{ padding: '16px 18px' }}>
             <div className={styles.fL}>{c.label}</div>

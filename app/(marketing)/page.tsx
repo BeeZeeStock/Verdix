@@ -3,6 +3,7 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { VerdixLogo } from '@/components/VerdixLogo'
 import { ProductShowcase } from './ProductShowcase'
+import { MobileNav } from './MobileNav'
 import styles from './landing.module.css'
 
 export const metadata: Metadata = {
@@ -13,21 +14,30 @@ export const metadata: Metadata = {
 const CALENDLY_URL = 'https://calendly.com/bilal-zahoor/30min'
 
 function Nav() {
+  // Built once and reused for both the desktop nav (styles.navLinks, hidden
+  // below 720px) and the mobile slide-down panel (MobileNav) — a hamburger
+  // menu was previously entirely missing on mobile, so navLinks{display:none}
+  // left small-screen visitors with no way to reach Sign in, Pricing, or the
+  // primary CTA from the nav bar at all.
+  const links = (
+    <>
+      <a href="#who">Who it&apos;s for</a>
+      <a href="#product">Product</a>
+      <a href="#partner">Partner verification</a>
+      <a href="#security">Security</a>
+      <a href="#pricing">Pricing</a>
+      <a href="/demos/contract-to-billing.html" target="_blank" rel="noopener noreferrer">Demo</a>
+      <Link href="/blog">Blog</Link>
+      <Link href="/login">Sign in</Link>
+      <a className={`${styles.btn} ${styles.btnP} ${styles.btnSm}`} href={CALENDLY_URL} target="_blank" rel="noopener noreferrer">Book a working session</a>
+    </>
+  )
   return (
     <nav className={styles.nav}>
       <div className={styles.navIn}>
         <Link className={styles.brand} href="#top"><VerdixLogo size={28} />Verdix</Link>
-        <div className={styles.navLinks}>
-          <a href="#who">Who it&apos;s for</a>
-          <a href="#product">Product</a>
-          <a href="#partner">Partner verification</a>
-          <a href="#security">Security</a>
-          <a href="#pricing">Pricing</a>
-          <a href="/demos/contract-to-billing.html" target="_blank" rel="noopener noreferrer">Demo</a>
-          <Link href="/blog">Blog</Link>
-          <Link href="/login">Sign in</Link>
-          <a className={`${styles.btn} ${styles.btnP} ${styles.btnSm}`} href={CALENDLY_URL} target="_blank" rel="noopener noreferrer">Book a working session</a>
-        </div>
+        <div className={styles.navLinks}>{links}</div>
+        <MobileNav><div className={styles.navMobileLinks}>{links}</div></MobileNav>
       </div>
     </nav>
   )
