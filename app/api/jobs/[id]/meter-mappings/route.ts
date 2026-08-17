@@ -110,7 +110,7 @@ export async function GET(
   // Fetch the job's contract_terms (need overage_tiers + billing_frequency)
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('id, org_id, contract_terms ( id, overage_tiers, billing_frequency, included_units, included_unit_type, ai_proposal_cache )')
+    .select('id, org_id, contract_terms ( id, overage_tiers, billing_frequency, included_units, included_unit_type )')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .single()
@@ -132,9 +132,29 @@ export async function GET(
     billing_frequency?: string | null
     included_units?: number | null
     included_unit_type?: string | null
-    ai_proposal_cache?: Record<string, { promptFingerprint: string; result: { meter_key: string; confidence: number } }> | null
   }>
   const terms = termsArr?.[0] ?? {}
+
+  // Isolated from the query above deliberately — ai_proposal_cache requires
+  // a migration (20260819000001_ai_proposal_cache.sql) that may not have
+  // run yet in every environment. A missing column here can only ever
+  // disable caching, never break usage-mapping suggestions themselves.
+  type AiCache = Record<string, { promptFingerprint: string; result: { meter_key: string; confidence: number } }>
+  let existingCache: AiCache = {}
+  let cacheColumnAvailable = true
+  if (termsArr?.[0]?.id) {
+    const { data: cacheRow, error: cacheReadError } = await supabaseServer
+      .from('contract_terms')
+      .select('ai_proposal_cache')
+      .eq('id', termsArr[0].id)
+      .maybeSingle()
+    if (cacheReadError) {
+      cacheColumnAvailable = false
+      console.warn(`[meter-mappings] ai_proposal_cache column missing — run the pending migration. Falling back without caching.`)
+    } else {
+      existingCache = (cacheRow?.ai_proposal_cache as AiCache | null) ?? {}
+    }
+  }
 
   const overageTiers = terms.overage_tiers ?? []
   // Contract-level fallback — used whenever a metric doesn't separately
@@ -197,7 +217,6 @@ export async function GET(
 
   // Build suggestions — use AI matching when rule-based result doesn't exist in this org
   const availableMeters = (meters ?? []) as Array<{ meter_key: string; display_name: string; unit_label: string | null }>
-  const existingCache = terms.ai_proposal_cache ?? {}
   // Accumulates fresh aiMatch() results this request actually computed, so
   // reopening the panel later (same tiers, same available meters) reuses
   // the cached call instead of re-hitting Claude every time — this endpoint
@@ -283,7 +302,7 @@ export async function GET(
     })
   )
 
-  if (Object.keys(freshCacheWrites).length > 0 && termsArr?.[0]?.id) {
+  if (cacheColumnAvailable && Object.keys(freshCacheWrites).length > 0 && termsArr?.[0]?.id) {
     // Best-effort — a failed cache write just means the next GET recomputes
     // rather than reusing, never a correctness issue worth failing over.
     await supabaseServer
