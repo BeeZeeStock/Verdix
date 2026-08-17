@@ -46,80 +46,82 @@ function Nav() {
 function Hero() {
   return (
     <section className={`${styles.hero} ${styles.section}`} id="top" style={{ paddingBottom: 0 }}>
-      <div className={`${styles.wrap} ${styles.heroGrid}`}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
-          <span className={styles.kicker}>Agreement-to-billing for complex B2B contracts</span>
-          <h1 className={styles.h1}>Your contracts already say what to bill. <em style={{ fontStyle: 'normal', fontWeight: 600, color: 'var(--color-sage)' }}>Your billing system doesn&apos;t know it.</em></h1>
-          <p className={styles.lede}>Verdix reads the signed agreement, pulls the usage it requires, and turns both into approved billing instructions for the systems you already run. Every calculation keeps the contract clause and usage source behind it.</p>
-          <div className={styles.heroCta}>
-            <a className={`${styles.btn} ${styles.btnP}`} href={CALENDLY_URL} target="_blank" rel="noopener noreferrer">Book a 30-minute working session →</a>
-            <a className={`${styles.btn} ${styles.btnS}`} href="#product">See the product</a>
-          </div>
-          <div className={styles.trust}>
-            <span><i className={styles.dot} />No billing migration</span>
-            <span><i className={styles.dot} />No new usage pipeline</span>
-            <span><i className={styles.dot} />EU-hosted · Personal identifiers masked before AI</span>
-            <span><i className={styles.dot} />Clause-linked calculations</span>
-          </div>
-        </div>
-        <div className={styles.proof}>
-          <div className={styles.proofTop}>
-            <div>
-              <span className={`${styles.pill} ${styles.pillLive}`}>Live design-partner pilot</span>
-              <span className={styles.illus} style={{ marginLeft: 8 }}>Illustrative commercial figures</span>
-              <h3 className={styles.h3} style={{ marginTop: 14 }}>From signed agreement to paid invoice</h3>
+      <div className={styles.wrap}>
+        <div className={styles.heroGrid}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
+            <span className={styles.kicker}>Agreement-to-billing for complex B2B contracts</span>
+            <h1 className={styles.h1}>Your contracts already say what to bill. <em style={{ fontStyle: 'normal', fontWeight: 600, color: 'var(--color-sage)' }}>Your billing system doesn&apos;t know it.</em></h1>
+            <p className={styles.lede}>Verdix reads the signed agreement, pulls the usage it requires, and turns both into approved billing instructions for the systems you already run. Every calculation keeps the contract clause and usage source behind it.</p>
+            <div className={styles.heroCta}>
+              <a className={`${styles.btn} ${styles.btnP}`} href={CALENDLY_URL} target="_blank" rel="noopener noreferrer">Book a 30-minute working session →</a>
+              <a className={`${styles.btn} ${styles.btnS}`} href="#product">See the product</a>
+            </div>
+            <div className={styles.trust}>
+              <span><i className={styles.dot} />No billing migration</span>
+              <span><i className={styles.dot} />No new usage pipeline</span>
+              <span><i className={styles.dot} />EU-hosted · Personal identifiers masked before AI</span>
+              <span><i className={styles.dot} />Clause-linked calculations</span>
             </div>
           </div>
-          <p className={styles.xs} style={{ fontSize: '.86rem', lineHeight: 1.55 }}>Verdix turns the commercial terms and usage in the agreement into approved billing. Remembill takes the invoice from delivery to payment, including recovery when a payment fails.</p>
-
-          <div className={styles.flow}>
-            <div className={styles.flowNode}>Signed agreement</div>
-            <div className={styles.flowArrow} aria-hidden="true">↓</div>
-            <div className={styles.flowCol}>
-              <div className={styles.flowColLabel}>
-                <VerdixLogo size={16} />
-                Verdix
+          <div className={styles.proof}>
+            <div className={styles.proofTop}>
+              <div>
+                <span className={`${styles.pill} ${styles.pillLive}`}>Live design-partner pilot</span>
+                <span className={styles.illus} style={{ marginLeft: 8 }}>Illustrative commercial figures</span>
+                <h3 className={styles.h3} style={{ marginTop: 14 }}>From signed agreement to paid invoice</h3>
               </div>
-              <ul>
-                <li>Fixed + variable fees configured</li>
-                <li>Usage pulled from source</li>
-                <li>Clause-linked review &amp; approval</li>
-              </ul>
             </div>
-            <div className={styles.flowArrow} aria-hidden="true">↓</div>
-            <div className={styles.flowNode}>API</div>
-            <div className={styles.flowArrow} aria-hidden="true">↓</div>
-            <div className={styles.flowCol}>
-              <div className={styles.flowColLabel}>
-                <Image src="/images/logo-remembill.png" alt="" width={16} height={16} style={{ height: 16, width: 'auto', borderRadius: 3, flexShrink: 0 }} />
-                Remembill
-              </div>
-              <ul>
-                <li>Invoice delivered</li>
-                <li>Simple payment without login</li>
-                <li>Failed payments recovered</li>
-              </ul>
-            </div>
-            <div className={styles.flowArrow} aria-hidden="true">↓</div>
-            <div className={`${styles.flowNode} ${styles.flowNodePaid}`}>Paid</div>
-          </div>
+            <p className={styles.xs} style={{ fontSize: '.86rem', lineHeight: 1.55 }}>Verdix turns the commercial terms and usage in the agreement into approved billing. Remembill takes the invoice from delivery to payment, including recovery when a payment fails.</p>
 
-          <div className={styles.proofRows}>
-            <div className={styles.proofRow}><span>Commercial model</span><b>Fixed + variable usage · 3 SMS tiers · quarterly minimum</b></div>
-            <div className={styles.proofRow}><span>Verdix → Remembill</span><b>Approved invoices submitted via API</b></div>
-            <div className={styles.proofRow}><span>End-to-end outcome</span><b>No manual contract re-entry · less friction from invoice to payment</b></div>
-            <div className={styles.proofRow}><span>Source traceability</span><b className={styles.ok}>Clause-linked ✓</b></div>
+            <div className={styles.flow}>
+              <div className={styles.flowNode}>Signed agreement</div>
+              <div className={styles.flowArrow} aria-hidden="true">↓</div>
+              <div className={styles.flowCol}>
+                <div className={styles.flowColLabel}>
+                  <VerdixLogo size={16} />
+                  Verdix
+                </div>
+                <ul>
+                  <li>Fixed + variable fees configured</li>
+                  <li>Usage pulled from source</li>
+                  <li>Clause-linked review &amp; approval</li>
+                </ul>
+              </div>
+              <div className={styles.flowArrow} aria-hidden="true">↓</div>
+              <div className={styles.flowNode}>API</div>
+              <div className={styles.flowArrow} aria-hidden="true">↓</div>
+              <div className={styles.flowCol}>
+                <div className={styles.flowColLabel}>
+                  <Image src="/images/logo-remembill.png" alt="" width={16} height={16} style={{ height: 16, width: 'auto', borderRadius: 3, flexShrink: 0 }} />
+                  Remembill
+                </div>
+                <ul>
+                  <li>Invoice delivered</li>
+                  <li>Simple payment without login</li>
+                  <li>Failed payments recovered</li>
+                </ul>
+              </div>
+              <div className={styles.flowArrow} aria-hidden="true">↓</div>
+              <div className={`${styles.flowNode} ${styles.flowNodePaid}`}>Paid</div>
+            </div>
           </div>
-          <p className={styles.xs} style={{ lineHeight: 1.5 }}>Live Remembill design-partner pilot using a real enterprise agreement. Customer identifiers are redacted and commercial figures are illustrative.</p>
+          {/* Gustav quote — pulled for now, will reintroduce later */}
+          {/* <blockquote className={styles.quote}>
+            <p>&quot;The commercial terms live in the agreements, while the usage needed to bill customers lives in the platform. Verdix brings the two together into billing logic that we can review and trace back to the contract, without having to rebuild it manually each billing cycle.&quot;</p>
+            <footer>
+              <Image src="/images/gustav-frandfors.png" alt="" width={44} height={44} />
+              <div><b>Gustav Frändfors</b><span>Founder &amp; CEO, Remembill · Verdix design partner</span></div>
+            </footer>
+          </blockquote> */}
         </div>
-        {/* Gustav quote — pulled for now, will reintroduce later */}
-        {/* <blockquote className={styles.quote}>
-          <p>&quot;The commercial terms live in the agreements, while the usage needed to bill customers lives in the platform. Verdix brings the two together into billing logic that we can review and trace back to the contract, without having to rebuild it manually each billing cycle.&quot;</p>
-          <footer>
-            <Image src="/images/gustav-frandfors.png" alt="" width={44} height={44} />
-            <div><b>Gustav Frändfors</b><span>Founder &amp; CEO, Remembill · Verdix design partner</span></div>
-          </footer>
-        </blockquote> */}
+
+        <div className={styles.proofStats}>
+          <div className={styles.proofStat}><span>Commercial model</span><b>Fixed + variable usage · 3 SMS tiers · quarterly minimum</b></div>
+          <div className={styles.proofStat}><span>Verdix → Remembill</span><b>Approved invoices submitted via API</b></div>
+          <div className={styles.proofStat}><span>End-to-end outcome</span><b>No manual contract re-entry · less friction from invoice to payment</b></div>
+          <div className={styles.proofStat}><span>Source traceability</span><b className={styles.ok}>Clause-linked ✓</b></div>
+        </div>
+        <p className={styles.proofCaption}>Live Remembill design-partner pilot using a real enterprise agreement.</p>
       </div>
     </section>
   )

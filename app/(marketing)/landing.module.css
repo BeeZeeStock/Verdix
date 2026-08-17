@@ -89,6 +89,15 @@
 .flowCol li{font-size:.85rem;color:var(--color-stone);line-height:1.4;padding-left:18px;position:relative}
 .flowCol li::before{content:"✓";position:absolute;left:0;color:var(--color-sage);font-weight:600}
 
+/* full-width outcome strip below the hero grid — uses the width the
+   narrow right-column proof card can't, instead of stacking rows there */
+.proofStats{margin-top:32px;display:grid;grid-template-columns:repeat(4,1fr);background:#fff;border:1px solid var(--color-line);border-radius:16px;overflow:hidden}
+.proofStat{padding:20px 22px;display:flex;flex-direction:column;gap:6px;border-right:1px solid var(--color-line-soft)}
+.proofStat:last-child{border-right:0}
+.proofStat span{font-size:.78rem;color:var(--color-stone)}
+.proofStat b{font-size:.92rem;font-weight:500;color:var(--color-ink);line-height:1.35}
+.proofCaption{margin-top:14px;font-size:.8rem;color:var(--color-stone-light);line-height:1.5}
+
 /* icp band */
 .band{background:var(--color-forest);color:#fff}
 .band h2{color:#fff}
@@ -348,6 +357,6 @@ table.g .warn::before{content:"⚠";color:var(--color-amber);font-size:12px}
 .grid3Col{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
 .gridReviewCol{display:grid;grid-template-columns:1fr 1.2fr;gap:18px;align-items:start}
 
-@media(max-width:1080px){.heroGrid{grid-template-columns:1fr;gap:40px}.plans,.icp,.cards3,.secGrid{grid-template-columns:1fr 1fr}.steps{grid-template-columns:1fr 1fr}.step:nth-child(2){border-right:0}.step:nth-child(-n+2){border-bottom:1px solid var(--color-line)}.ev,.priceFrame{grid-template-columns:1fr}.evL{border-right:0;border-bottom:1px solid var(--color-line)}.app{grid-template-columns:1fr}.side{display:none}}
-@media(max-width:720px){.page{font-size:16px}.section{padding:72px 0}.wrap{padding:0 20px}.navLinks{display:none}.navToggle{display:flex}.plans,.icp,.cards3,.cards2,.secGrid,.steps,.kpis,.grid3,.tiers,.grid2Col,.grid3Col,.gridReviewCol{grid-template-columns:1fr}.step{border-right:0;border-bottom:1px solid var(--color-line)}.bcol,.xl{width:78px}.app{min-height:0}.body{padding:14px}.chart{padding:14px 14px 10px}.tl table.g{font-size:11.5px}.tl table.g th,.tl table.g td{padding:8px 10px}}
+@media(max-width:1080px){.heroGrid{grid-template-columns:1fr;gap:40px}.plans,.icp,.cards3,.secGrid{grid-template-columns:1fr 1fr}.steps{grid-template-columns:1fr 1fr}.step:nth-child(2){border-right:0}.step:nth-child(-n+2){border-bottom:1px solid var(--color-line)}.ev,.priceFrame{grid-template-columns:1fr}.evL{border-right:0;border-bottom:1px solid var(--color-line)}.app{grid-template-columns:1fr}.side{display:none}.proofStats{grid-template-columns:1fr 1fr}.proofStat:nth-child(2){border-right:0}.proofStat:nth-child(-n+2){border-bottom:1px solid var(--color-line-soft)}}
+@media(max-width:720px){.page{font-size:16px}.section{padding:72px 0}.wrap{padding:0 20px}.navLinks{display:none}.navToggle{display:flex}.plans,.icp,.cards3,.cards2,.secGrid,.steps,.kpis,.grid3,.tiers,.grid2Col,.grid3Col,.gridReviewCol{grid-template-columns:1fr}.step{border-right:0;border-bottom:1px solid var(--color-line)}.bcol,.xl{width:78px}.app{min-height:0}.body{padding:14px}.chart{padding:14px 14px 10px}.tl table.g{font-size:11.5px}.tl table.g th,.tl table.g td{padding:8px 10px}.proofStats{grid-template-columns:1fr}.proofStat{border-right:0!important;border-bottom:1px solid var(--color-line-soft)}.proofStat:last-child{border-bottom:0}}
 @media(max-width:480px){.wrap{padding:0 16px}.section{padding:48px 0}.hero{padding:76px 0 0}.proof,.rateSide,.doc .docB{padding:20px}.card,.plan,.icpCard,.secC{padding:20px}.docH{padding:13px 16px}.bcol,.xl{width:60px}.bars{gap:6%}.navIn{padding:0 16px}.kpiV{font-size:21px}.tierV{font-size:19px}.evTotal .v{font-size:1.3rem}}
