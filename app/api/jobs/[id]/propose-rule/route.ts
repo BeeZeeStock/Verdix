@@ -99,13 +99,14 @@ export async function POST(
   // /interpret-rule — never from client-supplied contract fields.
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('id, org_id, contract_terms ( currency, overage_tiers, escalators, discounts, service_credits, contract_start_date, contract_end_date )')
+    .select('id, org_id, contract_terms ( id, currency, overage_tiers, escalators, discounts, service_credits, contract_start_date, contract_end_date, ai_proposal_cache )')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .single()
 
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
   const terms = (job.contract_terms as unknown as Array<{
+    id: string
     currency: string | null
     overage_tiers: TierRow[] | null
     escalators: Array<{ escalator_pct: number | null; cap_pct: number | null; effective_date: string | null; applies_from_year: number | null; description: string }> | null
@@ -113,8 +114,19 @@ export async function POST(
     service_credits: Array<{ credit_rule_id?: string; credit_type: string | null; description: string | null; source_clause: string | null; stated_pct: number | null; stated_amount: number | null }> | null
     contract_start_date: string | null
     contract_end_date: string | null
+    ai_proposal_cache: Record<string, { promptFingerprint: string; proposal: RuleProposal }> | null
   }>)?.[0]
   if (!terms) return NextResponse.json({ error: 'Contract terms not found' }, { status: 404 })
+
+  // Same synthetic addressing convention commercial_rule_interpretations
+  // already uses for contract_unit_type — a stable key per rule instance,
+  // not per request, so the cache entry for "the AI processing minimum
+  // commitment" survives across every re-open of the Review panel.
+  const cacheKey = ruleType === 'discount' ? `discount:${discountId}`
+    : ruleType === 'service_credit' ? `service_credit:${creditId}`
+    : ruleType === 'rule_interaction' ? `rule_interaction:${interactionKey}`
+    : ruleType === 'escalator' ? 'escalator'
+    : `${ruleType}:${contractUnitType}`
 
   const currency = terms.currency ?? 'EUR'
   const client = getAIClient()
@@ -245,6 +257,16 @@ export async function POST(
     return NextResponse.json({ error: `Unknown ruleType: ${ruleType}` }, { status: 400 })
   }
 
+  // Cache hit: the exact prompt (i.e. the exact source data) this rule
+  // instance was last proposed from hasn't changed, so the AI's answer
+  // can't have changed either — skip the Claude call entirely. A cache
+  // miss (prompt text differs, e.g. extraction was corrected) always falls
+  // through to a fresh call rather than ever serving a stale answer.
+  const cached = terms.ai_proposal_cache?.[cacheKey]
+  if (cached && cached.promptFingerprint === prompt) {
+    return NextResponse.json({ ok: true, proposal: cached.proposal, cached: true })
+  }
+
   let rawText: string
   try {
     const response = await client.messages.create({
@@ -285,6 +307,14 @@ export async function POST(
   }
 
   const proposal = validateProposalState(rawProposal, sourceClauseAvailable)
+
+  // Best-effort — a failed cache write just means the next open recomputes
+  // rather than reusing, never a correctness issue worth failing the request over.
+  await supabaseServer
+    .from('contract_terms')
+    .update({ ai_proposal_cache: { ...(terms.ai_proposal_cache ?? {}), [cacheKey]: { promptFingerprint: prompt, proposal, computedAt: new Date().toISOString() } } })
+    .eq('id', terms.id)
+    .then(({ error }) => { if (error) console.warn(`[propose-rule] cache write failed for job ${jobId}:`, error.message) })
 
   return NextResponse.json({ ok: true, proposal })
 }

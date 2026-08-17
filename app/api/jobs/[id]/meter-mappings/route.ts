@@ -110,7 +110,7 @@ export async function GET(
   // Fetch the job's contract_terms (need overage_tiers + billing_frequency)
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('id, org_id, contract_terms ( overage_tiers, billing_frequency, included_units, included_unit_type )')
+    .select('id, org_id, contract_terms ( id, overage_tiers, billing_frequency, included_units, included_unit_type, ai_proposal_cache )')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .single()
@@ -118,6 +118,7 @@ export async function GET(
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   const termsArr  = job.contract_terms as unknown as Array<{
+    id?: string
     overage_tiers?: Array<{
       unit_type?: string
       from_unit?: number | null
@@ -131,6 +132,7 @@ export async function GET(
     billing_frequency?: string | null
     included_units?: number | null
     included_unit_type?: string | null
+    ai_proposal_cache?: Record<string, { promptFingerprint: string; result: { meter_key: string; confidence: number } }> | null
   }>
   const terms = termsArr?.[0] ?? {}
 
@@ -195,6 +197,14 @@ export async function GET(
 
   // Build suggestions — use AI matching when rule-based result doesn't exist in this org
   const availableMeters = (meters ?? []) as Array<{ meter_key: string; display_name: string; unit_label: string | null }>
+  const existingCache = terms.ai_proposal_cache ?? {}
+  // Accumulates fresh aiMatch() results this request actually computed, so
+  // reopening the panel later (same tiers, same available meters) reuses
+  // the cached call instead of re-hitting Claude every time — this endpoint
+  // is fetched independently by both the Review panel and MeterMappingPanel
+  // on every mount, so an uncached aiMatch() was effectively being paid for
+  // twice per panel open, for every unconfirmed metric, indefinitely.
+  const freshCacheWrites: Record<string, { promptFingerprint: string; result: { meter_key: string; confidence: number } }> = {}
   const suggestions = await Promise.all(
     Array.from(unitGroups.entries()).map(async ([unitType, tiers]) => {
       const db = existingMap.get(unitType)
@@ -233,10 +243,21 @@ export async function GET(
           meter_key  = auto.meter_key
           confidence = auto.confidence
         } else {
-          // Rule match is ambiguous or the meter doesn't exist — use AI
-          const ai = await aiMatch(unitType, sortedTiers, availableMeters)
-          meter_key  = ai.meter_key
-          confidence = ai.confidence
+          // Rule match is ambiguous or the meter doesn't exist — use AI,
+          // but only if the exact inputs (tiers + which meters exist)
+          // haven't already been matched before.
+          const cacheKey = `meter_match:${unitType}`
+          const fingerprint = JSON.stringify({ tiers: sortedTiers, meterKeys: availableMeters.map(m => m.meter_key) })
+          const cached = existingCache[cacheKey]
+          if (cached && cached.promptFingerprint === fingerprint) {
+            meter_key  = cached.result.meter_key
+            confidence = cached.result.confidence
+          } else {
+            const ai = await aiMatch(unitType, sortedTiers, availableMeters)
+            meter_key  = ai.meter_key
+            confidence = ai.confidence
+            freshCacheWrites[cacheKey] = { promptFingerprint: fingerprint, result: ai }
+          }
         }
       }
 
@@ -261,6 +282,16 @@ export async function GET(
       }
     })
   )
+
+  if (Object.keys(freshCacheWrites).length > 0 && termsArr?.[0]?.id) {
+    // Best-effort — a failed cache write just means the next GET recomputes
+    // rather than reusing, never a correctness issue worth failing over.
+    await supabaseServer
+      .from('contract_terms')
+      .update({ ai_proposal_cache: { ...existingCache, ...freshCacheWrites } })
+      .eq('id', termsArr[0].id)
+      .then(({ error }) => { if (error) console.warn(`[meter-mappings] cache write failed for job ${jobId}:`, error.message) })
+  }
 
   return NextResponse.json({
     suggestions,
