@@ -78,6 +78,17 @@
 .illus::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--color-stone-light);flex:none}
 .appNote{display:flex;align-items:center;gap:8px;margin-top:14px;font-size:.8rem;color:var(--color-stone-light);line-height:1.5}
 
+/* hero proof: agreement→invoice flow */
+.flow{display:flex;flex-direction:column;align-items:stretch}
+.flowNode{align-self:center;font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--color-forest);background:var(--color-mint-soft);border:1px solid var(--color-line);border-radius:8px;padding:7px 14px}
+.flowNodePaid{color:#fff;background:var(--color-forest);border-color:var(--color-forest)}
+.flowArrow{align-self:center;font-size:.85rem;line-height:1;color:var(--color-stone-light);padding:4px 0}
+.flowCol{border:1px solid var(--color-line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:9px}
+.flowColLabel{display:flex;align-items:center;gap:8px;font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--color-ink)}
+.flowCol ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.flowCol li{font-size:.85rem;color:var(--color-stone);line-height:1.4;padding-left:18px;position:relative}
+.flowCol li::before{content:"✓";position:absolute;left:0;color:var(--color-sage);font-weight:600}
+
 /* icp band */
 .band{background:var(--color-forest);color:#fff}
 .band h2{color:#fff}

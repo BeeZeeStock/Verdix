@@ -67,24 +67,50 @@ function Hero() {
             <div>
               <span className={`${styles.pill} ${styles.pillLive}`}>Live design-partner pilot</span>
               <span className={styles.illus} style={{ marginLeft: 8 }}>Illustrative commercial figures</span>
-              <h3 className={styles.h3} style={{ marginTop: 14, fontFamily: 'var(--font-sans)', fontSize: '.98rem', fontWeight: 600, color: 'var(--color-ink)', display: 'flex', alignItems: 'center', gap: 10 }}>
-                <Image src="/images/logo-remembill.png" alt="Remembill" width={22} height={22} style={{ height: 22, width: 'auto', borderRadius: 4, flexShrink: 0 }} />
-                Remembill is piloting Verdix on one of its own enterprise customer agreements
-              </h3>
+              <h3 className={styles.h3} style={{ marginTop: 14 }}>From signed agreement to paid invoice</h3>
             </div>
           </div>
-          <div>
-            <div className={styles.xs} style={{ textTransform: 'uppercase', letterSpacing: '.1em', fontWeight: 500, marginBottom: 6 }}>Manual contract re-entry</div>
-            <div className={styles.proofNum}>0</div>
-            <div className={styles.xs} style={{ marginTop: 6 }}>Approved commercial terms flow directly into billing configuration.</div>
+          <p className={styles.xs} style={{ fontSize: '.86rem', lineHeight: 1.55 }}>Verdix turns the commercial terms and usage in the agreement into approved billing. Remembill takes the invoice from delivery to payment, including recovery when a payment fails.</p>
+
+          <div className={styles.flow}>
+            <div className={styles.flowNode}>Signed agreement</div>
+            <div className={styles.flowArrow} aria-hidden="true">↓</div>
+            <div className={styles.flowCol}>
+              <div className={styles.flowColLabel}>
+                <VerdixLogo size={16} />
+                Verdix
+              </div>
+              <ul>
+                <li>Fixed + variable fees configured</li>
+                <li>Usage pulled from source</li>
+                <li>Clause-linked review &amp; approval</li>
+              </ul>
+            </div>
+            <div className={styles.flowArrow} aria-hidden="true">↓</div>
+            <div className={styles.flowNode}>API</div>
+            <div className={styles.flowArrow} aria-hidden="true">↓</div>
+            <div className={styles.flowCol}>
+              <div className={styles.flowColLabel}>
+                <Image src="/images/logo-remembill.png" alt="" width={16} height={16} style={{ height: 16, width: 'auto', borderRadius: 3, flexShrink: 0 }} />
+                Remembill
+              </div>
+              <ul>
+                <li>Invoice delivered</li>
+                <li>Simple payment without login</li>
+                <li>Failed payments recovered</li>
+              </ul>
+            </div>
+            <div className={styles.flowArrow} aria-hidden="true">↓</div>
+            <div className={`${styles.flowNode} ${styles.flowNodePaid}`}>Paid</div>
           </div>
+
           <div className={styles.proofRows}>
-            <div className={styles.proofRow}><span>Agreement</span><b><span className={styles.pii}>Nordic insurance customer</span> · 12 months</b></div>
-            <div className={styles.proofRow}><span>Pricing model</span><b>Fixed + usage · 3 SMS tiers · quarterly minimum</b></div>
-            <div className={styles.proofRow}><span>Fixed fees configured</span><b>SEK 94,800 · via Remembill API</b></div>
+            <div className={styles.proofRow}><span>Commercial model</span><b>Fixed + variable usage · 3 SMS tiers · quarterly minimum</b></div>
+            <div className={styles.proofRow}><span>Verdix → Remembill</span><b>Approved invoices submitted via API</b></div>
+            <div className={styles.proofRow}><span>End-to-end outcome</span><b>No manual contract re-entry · less friction from invoice to payment</b></div>
             <div className={styles.proofRow}><span>Source traceability</span><b className={styles.ok}>Clause-linked ✓</b></div>
           </div>
-          <p className={styles.xs} style={{ lineHeight: 1.5 }}>The signed agreement enters Verdix, usage is pulled from the Remembill platform, and the billing owner reviews and approves the resulting billing logic. Live Remembill design-partner pilot using a real enterprise agreement. Customer identifiers are redacted and commercial figures shown are illustrative.</p>
+          <p className={styles.xs} style={{ lineHeight: 1.5 }}>Live Remembill design-partner pilot using a real enterprise agreement. Customer identifiers are redacted and commercial figures are illustrative.</p>
         </div>
         {/* Gustav quote — pulled for now, will reintroduce later */}
         {/* <blockquote className={styles.quote}>
