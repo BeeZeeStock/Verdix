@@ -696,6 +696,10 @@ function SectionHeader({ title, section, onSection }: { title: string; section?:
 // — it exists purely so RuleInterpretationCard's kind→ruleType mapping can
 // be reused for the Review panel's dedicated Discounts section below.
 type ItemKind = 'overage_tier' | 'escalator' | 'escalator_interpretation' | 'base_fee' | 'user_seat' | 'one_time' | 'minimum_commitment' | 'partial_period' | 'tier_calculation' | 'discount' | 'service_credit' | 'rule_interaction' | 'unknown'
+// The subset of ItemKind that's metric-scoped rather than tied to any one
+// tariff-tier row — a single metric can need more than one of these at
+// once (see metricNeededKinds in ReviewPanel).
+type MetricRuleKind = 'minimum_commitment' | 'partial_period' | 'tier_calculation'
 
 // A tier and its rendered LineItem share a tier_label — buildLineItems
 // (execute route) sets product_name from tier_label, optionally with a
@@ -727,7 +731,15 @@ function computePartialPeriodMetrics(contractStartDate: string | undefined, cont
   }
   for (const [unitType, unitTiers] of byUnit) {
     const mc = unitTiers.find(t => t.minimum_commitment)?.minimum_commitment
-    if (!mc || mc.requires_confirmation || mc.prorate_partial_periods !== 'unclear') continue
+    // Partial-period treatment is an independent decision from the
+    // minimum's own mode/floor question — it must never wait on
+    // requires_confirmation (whether the mode has been resolved yet) before
+    // it can even be considered. A missing prorate_partial_periods field
+    // (extraction simply never populated it, as opposed to the model
+    // explicitly writing "unclear") is just as unresolved as the literal
+    // string 'unclear' — both mean "the contract doesn't say."
+    const proratedUnresolved = mc?.prorate_partial_periods == null || mc.prorate_partial_periods === 'unclear'
+    if (!mc || !proratedUnresolved) continue
     const anchorTier = unitTiers.find(t => t.reset_anchor === 'calendar')
     if (!anchorTier) continue
     const cadence = anchorTier.measurement_period ?? 'monthly'
@@ -740,7 +752,7 @@ function computePartialPeriodMetrics(contractStartDate: string | undefined, cont
   return result
 }
 
-function classifyItem(item: LineItem, tiers: Tier[] = [], escalators: Escalator[] = [], partialPeriodMetrics: Set<string> = new Set()): ItemKind {
+function classifyItem(item: LineItem, escalators: Escalator[] = []): ItemKind {
   const rule = (item.applied_rule ?? '').toLowerCase()
   const name = item.product_name.toLowerCase()
 
@@ -767,28 +779,14 @@ function classifyItem(item: LineItem, tiers: Tier[] = [], escalators: Escalator[
     return unresolved ? 'escalator_interpretation' : 'escalator'
   }
 
-  const matchedTier = findTierForItem(item, tiers)
-  // A minimum commitment flagged as ambiguous (unclear interaction with an
-  // included allowance) takes priority over the ordinary overage_tier
-  // classification — it needs a reviewer's explicit interpretation, not
-  // just a rate confirmation. Never silently resolved.
-  if (matchedTier?.minimum_commitment?.requires_confirmation) return 'minimum_commitment'
-  // Once the allowance interaction is resolved, a partial calendar-quarter
-  // (etc.) at the contract's edges is a second, narrower ambiguity on the
-  // same commitment — surfaced as its own card, not bundled into the first.
-  if (matchedTier?.unit_type && partialPeriodMetrics.has(matchedTier.unit_type)) return 'partial_period'
-
-  // A metric with 2+ paid tiers whose calculation method (graduated/volume/
-  // block) isn't confirmed can't have its overage safely billed at all — see
-  // that ambiguity before treating this as an ordinary rate-confirmation
-  // tier below. A single-tier metric has no such ambiguity to raise. Data
-  // extracted before tier_calculation existed (tier_calculation entirely
-  // absent) is just as unresolved as an explicit requires_confirmation:true —
-  // absence is never treated as "nothing to ask about" here.
-  if (matchedTier?.unit_type && (!matchedTier.tier_calculation || matchedTier.tier_calculation.requires_confirmation)) {
-    const paidTierCount = tiers.filter(t => t.unit_type === matchedTier.unit_type && (t.rate_per_unit ?? 0) > 0).length
-    if (paidTierCount >= 2) return 'tier_calculation'
-  }
+  // minimum_commitment / partial_period / tier_calculation are no longer
+  // decided here — they're metric-scoped (not tied to any one tariff-tier
+  // row), and a metric can need more than one of them simultaneously (e.g.
+  // both which minimum mode applies AND how a partial first/last period is
+  // treated). Deciding them per-item meant whichever check matched FIRST
+  // permanently hid the others until IT was confirmed — the metric-level
+  // precomputation right before the render loop (metricNeededKinds) now
+  // owns this, independent of item classification.
 
   // Usage/overage pricing tiers always carry quantity 0 from extraction (no
   // usage confirmed yet) — a structural signal, unlike matching "overage"/
@@ -800,6 +798,20 @@ function classifyItem(item: LineItem, tiers: Tier[] = [], escalators: Escalator[
   if (name.includes('user') || name.includes('seat') || name.includes('license')) return 'user_seat'
   if (rule.includes('base') || name.includes('base') || name.includes('subscription') || name.includes('platform')) return 'base_fee'
   return 'unknown'
+}
+
+// classifyItem no longer decides tier_calculation (see its own comment) —
+// this is the direct replacement for call sites outside ReviewPanel (e.g.
+// the Commercial Terms table) that need to know whether a metric's tier
+// method is still unresolved, without duplicating the full metricNeededKinds
+// precomputation ReviewPanel itself uses.
+function isTierCalculationUnresolvedFor(unitType: string | undefined, tiers: Tier[]): boolean {
+  if (!unitType) return false
+  const metricTiers = tiers.filter(t => t.unit_type === unitType)
+  const paidCount = metricTiers.filter(t => (t.rate_per_unit ?? 0) > 0).length
+  if (paidCount < 2) return false
+  const tierCalc = metricTiers.find(t => t.tier_calculation)?.tier_calculation
+  return !tierCalc || tierCalc.requires_confirmation
 }
 
 type ReviewContext = {
@@ -1138,6 +1150,13 @@ function RuleInterpretationCard({
     }
   }
 
+  // Stable regardless of what the reviewer currently has selected in the
+  // override form — always reflects what Verdix itself originally proposed,
+  // so switching options to explore alternatives doesn't lose track of it.
+  const aiRecommendedOptionId = aiProposal?.proposed_interpretation
+    ? deriveSelectedOption(ruleType, aiProposal.proposed_interpretation)
+    : null
+
   if (phase === 'applied') {
     return (
       <div className="rounded-xl p-3" style={{ background: '#F0FDF4', border: '1px solid rgba(11,92,54,0.2)' }}>
@@ -1258,24 +1277,62 @@ function RuleInterpretationCard({
           {aiProposal?.state === 'decision_required' && (
             <div className="rounded-xl p-3 mb-1" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
               <p className="text-[9px] font-bold uppercase tracking-widest mb-1" style={{ color: '#991B1B' }}>Decision required</p>
-              <p className="text-xs" style={{ color: '#7F1D1D' }}>{aiProposal.reasoning || 'The agreement does not specify how this should be handled — nothing is preselected.'}</p>
+              {(() => {
+                const text = aiProposal.reasoning || 'The agreement does not specify how this should be handled — nothing is preselected.'
+                const { short, truncated } = truncateSentences(text)
+                return (
+                  <>
+                    <p className="text-xs" style={{ color: '#7F1D1D' }}>{showFullReasoning ? text : short}</p>
+                    {truncated && (
+                      <button onClick={() => setShowFullReasoning(v => !v)} className="text-[11px] font-medium mt-1 hover:underline" style={{ color: '#991B1B' }}>
+                        {showFullReasoning ? 'Show less' : 'More details'}
+                      </button>
+                    )}
+                  </>
+                )
+              })()}
             </div>
           )}
           {(initialSelectedOption || initialFreeText) && phase === 'input' && (
             <p className="text-[11px] text-stone -mt-1">Showing the previously confirmed choice and comment — change either, or just re-generate to confirm it again.</p>
           )}
+          {/* Only shown after clicking "Override" on a real proposal — a
+              genuine decision_required item has no earlier AI-recommended
+              screen to return to, since this input form IS that screen. */}
+          {phase === 'input' && aiProposal && aiProposal.state !== 'decision_required' && aiProposal.proposed_interpretation && (
+            <button
+              onClick={() => setPhase('proposed')}
+              className="text-[11px] font-medium text-forest hover:underline flex items-center gap-1 -mt-1"
+            >
+              <i className="ti ti-arrow-left" style={{ fontSize: 11 }} /> Back to Verdix&apos;s recommendation
+            </button>
+          )}
           <p className="text-[10px] font-bold uppercase tracking-widest text-stone">How should this rule be applied?</p>
           <div className="space-y-1.5">
-            {options.map(opt => (
-              <label key={opt.id} className="flex items-start gap-2 p-2 rounded-lg cursor-pointer transition-colors"
-                style={{ background: selectedOption === opt.id ? '#F0FDF4' : 'transparent', border: `1px solid ${selectedOption === opt.id ? 'rgba(11,92,54,0.3)' : 'rgba(26,61,43,0.1)'}` }}>
-                <input type="radio" name={`rule-option-${contractUnitType ?? 'escalator'}`} className="mt-0.5" checked={selectedOption === opt.id} onChange={() => setSelectedOption(opt.id)} />
-                <span>
-                  <span className="block text-xs font-semibold text-ink">{opt.label}</span>
-                  <span className="block text-[11px] text-stone">{opt.description}</span>
-                </span>
-              </label>
-            ))}
+            {options.map(opt => {
+              // Lets the reviewer see what Verdix itself proposed even while
+              // overriding it — the option list previously gave no way to
+              // tell which choice (if any) the AI had actually recommended
+              // once you left the proposal screen.
+              const isAiRecommended = aiRecommendedOptionId != null && opt.id === aiRecommendedOptionId
+              return (
+                <label key={opt.id} className="flex items-start gap-2 p-2 rounded-lg cursor-pointer transition-colors"
+                  style={{ background: selectedOption === opt.id ? '#F0FDF4' : 'transparent', border: `1px solid ${selectedOption === opt.id ? 'rgba(11,92,54,0.3)' : 'rgba(26,61,43,0.1)'}` }}>
+                  <input type="radio" name={`rule-option-${contractUnitType ?? 'escalator'}`} className="mt-0.5" checked={selectedOption === opt.id} onChange={() => setSelectedOption(opt.id)} />
+                  <span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="block text-xs font-semibold text-ink">{opt.label}</span>
+                      {isAiRecommended && (
+                        <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(11,92,54,0.12)', color: '#0B5C36' }}>
+                          Verdix recommended
+                        </span>
+                      )}
+                    </span>
+                    <span className="block text-[11px] text-stone">{opt.description}</span>
+                  </span>
+                </label>
+              )
+            })}
           </div>
           <div>
             <label className="text-[10px] font-bold uppercase tracking-widest text-stone block mb-1">Tell Verdix how this should work</label>
@@ -1835,26 +1892,126 @@ function ReviewPanel({
     return acc
   }, {})
 
-  // minimum_commitment/partial_period/tier_calculation ambiguities are
-  // duplicated onto EVERY tariff-tier row of a metric at extraction time
-  // (the established "duplicated per-metric" convention, so the billing
-  // engine can read the rule from any tier row) — but the review panel must
-  // only ever show ONE card per metric for each of these, not one per
-  // tariff band. metricCardOwner picks the first item.id encountered as the
-  // one that actually renders the card; metricSiblingIds lets confirming
-  // that one card mark every duplicate item resolved too, so the drawer's
-  // "N of M confirmed" progress doesn't get stuck waiting on cards that were
-  // deliberately never shown.
-  const metricCardOwner = new Map<string, string>()
-  const metricSiblingIds = new Map<string, string[]>()
+  // Determine, per metric (unit_type), which of the 3 metric-scoped rule
+  // kinds are still unresolved — computed directly from the metric's own
+  // tiers, never from a per-item classifier. A metric can need more than
+  // one of these simultaneously (e.g. both which minimum mode applies AND
+  // how a partial first/last period is treated), and every tariff-tier row
+  // of that metric carries identical duplicated ambiguity flags (the
+  // established "duplicated per-metric" convention, so the billing engine
+  // can read a rule from any tier row) — a first-match-wins per-item
+  // classifier could only ever surface ONE of them, permanently hiding the
+  // rest until that one card was confirmed. This is exactly why
+  // Partial-month treatment could never appear until the minimum's own
+  // mode/floor question was resolved first.
+  const tiersByUnitType = new Map<string, Tier[]>()
+  for (const t of overageTiers ?? []) {
+    if (!t.unit_type) continue
+    if (!tiersByUnitType.has(t.unit_type)) tiersByUnitType.set(t.unit_type, [])
+    tiersByUnitType.get(t.unit_type)!.push(t)
+  }
+  const metricNeededKinds = new Map<string, MetricRuleKind[]>()
+  for (const [unitType, tierList] of tiersByUnitType) {
+    const kinds: MetricRuleKind[] = []
+    const mc = tierList.find(t => t.minimum_commitment)?.minimum_commitment
+    if (mc?.requires_confirmation) kinds.push('minimum_commitment')
+    if (partialPeriodMetrics.has(unitType)) kinds.push('partial_period')
+    const paidCount = tierList.filter(t => (t.rate_per_unit ?? 0) > 0).length
+    if (paidCount >= 2) {
+      const tierCalc = tierList.find(t => t.tier_calculation)?.tier_calculation
+      if (!tierCalc || tierCalc.requires_confirmation) kinds.push('tier_calculation')
+    }
+    if (kinds.length > 0) metricNeededKinds.set(unitType, kinds)
+  }
+
+  // The first item.id encountered for a metric with outstanding kinds
+  // becomes the "anchor" — the one render slot that shows ALL of that
+  // metric's stacked rule cards, one per needed kind. Every other
+  // tariff-tier row for the same metric is a pure duplicate and renders
+  // nothing. metricAllItemIds lets confirming every one of a metric's
+  // needed kinds mark every duplicate row resolved too, so the drawer's
+  // "N of M confirmed" progress doesn't stay stuck on rows deliberately
+  // never shown.
+  const metricAnchorItemId = new Map<string, string>()
+  const metricAllItemIds = new Map<string, string[]>()
   for (const item of items) {
-    const kind = classifyItem(item, overageTiers ?? [], escalators ?? [], partialPeriodMetrics)
-    if (kind !== 'minimum_commitment' && kind !== 'partial_period' && kind !== 'tier_calculation') continue
     const unitType = findTierForItem(item, overageTiers ?? [])?.unit_type
-    if (!unitType) continue
-    const key = `${kind}:${unitType}`
-    if (!metricCardOwner.has(key)) metricCardOwner.set(key, item.id)
-    metricSiblingIds.set(key, [...(metricSiblingIds.get(key) ?? []), item.id])
+    if (!unitType || !metricNeededKinds.has(unitType)) continue
+    if (!metricAnchorItemId.has(unitType)) metricAnchorItemId.set(unitType, item.id)
+    metricAllItemIds.set(unitType, [...(metricAllItemIds.get(unitType) ?? []), item.id])
+  }
+
+  const METRIC_RULE_LABELS: Record<MetricRuleKind, { typeLabel: string; typeIcon: string }> = {
+    minimum_commitment: { typeLabel: 'Minimum commitment', typeIcon: 'ti-alert-triangle' },
+    partial_period: { typeLabel: 'Partial-period treatment', typeIcon: 'ti-calendar-exclamation' },
+    tier_calculation: { typeLabel: 'Tier calculation method', typeIcon: 'ti-stairs' },
+  }
+
+  // Renders ONE metric-scoped rule card — called once per entry in
+  // metricNeededKinds[unitType], all stacked under the same anchor item's
+  // render slot. Resolution is tracked under a synthetic `${kind}:${unitType}`
+  // key (not a real item.id, since this card isn't tied to one), and only
+  // once every one of a metric's needed kinds is resolved does it mark the
+  // metric's real (hidden, duplicate) tariff-tier rows resolved too.
+  const renderMetricRuleCard = (kind: MetricRuleKind, unitType: string, anchorItemId: string) => {
+    const resolvedKey = `${kind}:${unitType}`
+    const isCardResolved = !!resolved[resolvedKey]
+    const ruleTier = (overageTiers ?? []).find(t => t.unit_type === unitType)
+    const ruleSourceClause = kind === 'tier_calculation'
+      ? (ruleTier?.tier_calculation?.source_clause ?? '')
+      : (ruleTier?.minimum_commitment?.source_clause ?? '')
+    const ruleMeterSuggestion = meterSuggestions.find(s => s.contract_unit_type === unitType)
+    const ruleMeter = ruleMeterSuggestion ? availableMeters.find(m => m.meter_key === ruleMeterSuggestion.meter_key) : undefined
+    const { typeLabel, typeIcon } = METRIC_RULE_LABELS[kind]
+
+    return (
+      <div
+        key={resolvedKey}
+        className="rounded-2xl border overflow-hidden transition-colors"
+        style={{ borderColor: isCardResolved ? 'rgba(11,92,54,0.2)' : '#FAC775', background: isCardResolved ? '#F8FDF9' : 'white' }}
+      >
+        <div className="px-4 pt-4 pb-3">
+          <div className="flex items-center gap-1.5 mb-2.5">
+            <i className={`ti ${typeIcon} text-stone`} style={{ fontSize: 12 }} />
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">{typeLabel}</span>
+          </div>
+          {/* Metric-scoped title — never one specific tariff tier's own name
+              (e.g. "AI processing 100,001-250,000"). The rule applies to the
+              whole metric, not one band of it. */}
+          <p className="text-sm font-medium text-ink leading-snug mb-2">{unitType}</p>
+
+          {isCardResolved ? (
+            <div className="flex items-center gap-2">
+              <i className="ti ti-circle-check-filled flex-shrink-0" style={{ fontSize: 15, color: '#0B5C36' }} />
+              <span className="text-sm font-medium" style={{ color: '#0B5C36' }}>Confirmed</span>
+            </div>
+          ) : (
+            <RuleInterpretationCard
+              jobId={jobId}
+              kind={kind}
+              contractUnitType={unitType}
+              cadenceLabel={cadenceNoun(ruleTier?.measurement_period)}
+              sourceClause={ruleSourceClause}
+              currency={cur ?? 'EUR'}
+              meterMappingConfirmed={ruleMeterSuggestion?.confirmed}
+              meterSuggestion={ruleMeterSuggestion ? { meter_key: ruleMeterSuggestion.meter_key, display_name: ruleMeter?.display_name } : null}
+              onApplied={() => {
+                setResolved(r => {
+                  const next = { ...r, [resolvedKey]: 'confirmed' as const }
+                  const stillNeeded = (metricNeededKinds.get(unitType) ?? []).some(k => k !== kind && !next[`${k}:${unitType}`])
+                  if (!stillNeeded) {
+                    for (const id of metricAllItemIds.get(unitType) ?? []) next[id] = 'confirmed'
+                  }
+                  return next
+                })
+                scrollToNextUnresolved(anchorItemId)
+                onRefresh()
+              }}
+            />
+          )}
+        </div>
+      </div>
+    )
   }
 
   const confirmItem = async (item: LineItem) => {
@@ -2222,22 +2379,26 @@ function ReviewPanel({
 
               <div className="space-y-3">
                 {groupItems.map(item => {
-                  const kind        = classifyItem(item, overageTiers ?? [], escalators ?? [], partialPeriodMetrics)
-
-                  // One card per metric for these three kinds — every tariff
-                  // tier beyond the designated "owner" is a duplicate of the
-                  // same underlying rule and renders nothing here (its own
-                  // rate/tier confirmation, if any, still renders normally
-                  // under its own 'overage_tier' classification elsewhere).
-                  if (kind === 'minimum_commitment' || kind === 'partial_period' || kind === 'tier_calculation') {
-                    const unitType = findTierForItem(item, overageTiers ?? [])?.unit_type
-                    const key = unitType ? `${kind}:${unitType}` : null
-                    if (key && metricCardOwner.get(key) !== item.id) return null
+                  // Metric-scoped rules (minimum commitment, partial-period
+                  // treatment, tier calculation) are handled entirely outside
+                  // classifyItem now — see metricNeededKinds/renderMetricRuleCard
+                  // above. The anchor row renders every one of its metric's
+                  // needed kinds stacked as separate cards; every other row
+                  // of that metric is a pure duplicate and renders nothing.
+                  const metricUnitType = findTierForItem(item, overageTiers ?? [])?.unit_type
+                  if (metricUnitType && metricNeededKinds.has(metricUnitType)) {
+                    if (metricAnchorItemId.get(metricUnitType) !== item.id) return null
+                    return (
+                      <Fragment key={item.id}>
+                        {metricNeededKinds.get(metricUnitType)!.map(k => renderMetricRuleCard(k, metricUnitType, item.id))}
+                      </Fragment>
+                    )
                   }
 
+                  const kind        = classifyItem(item, escalators ?? [])
                   const ctx         = getReviewContext(item, kind, numberFormat, overageTiers ?? [])
                   const isResolved  = !!(resolved[item.id] || item.id in corrections)
-                  const isRuleInterpretation = kind === 'minimum_commitment' || kind === 'partial_period' || kind === 'escalator_interpretation' || kind === 'tier_calculation'
+                  const isRuleInterpretation = kind === 'escalator_interpretation'
                   const ruleTier       = isRuleInterpretation ? findTierForItem(item, overageTiers ?? []) : undefined
                   const ruleUnitType   = ruleTier?.unit_type
                   // The IMMUTABLE clause as actually extracted — never the
@@ -2246,20 +2407,11 @@ function ReviewPanel({
                   // generated text into the AI as if it were the source clause
                   // produced false "the contract doesn't specify..." verdicts
                   // for clauses that were, in fact, explicit.
-                  const ruleSourceClause = kind === 'escalator_interpretation'
-                    ? (escalators?.[0]?.description ?? '')
-                    : kind === 'tier_calculation'
-                      ? (ruleTier?.tier_calculation?.source_clause ?? '')
-                      : (ruleTier?.minimum_commitment?.source_clause ?? '')
-                  // Metric-scoped title — never one specific tariff tier's own
-                  // name (e.g. "AI processing 100,001-250,000"). The rule
-                  // being reviewed applies to the whole metric, not one band
-                  // of it, and titling the card after a single tier row is
-                  // exactly what made a shared minimum/tier-method rule read
-                  // as if it were attached to just that one band.
-                  const ruleTitle = kind === 'escalator_interpretation'
-                    ? 'Price escalation'
-                    : ruleUnitType ?? item.product_name
+                  const ruleSourceClause = escalators?.[0]?.description ?? ''
+                  // No separate title line for escalator_interpretation — the
+                  // type badge right above already reads "Price escalation";
+                  // repeating it as the card's own name was a duplicate heading.
+                  const ruleTitle = ''
                   const ruleMeterSuggestion = ruleUnitType ? meterSuggestions.find(s => s.contract_unit_type === ruleUnitType) : undefined
                   const ruleMeter      = ruleMeterSuggestion ? availableMeters.find(m => m.meter_key === ruleMeterSuggestion.meter_key) : undefined
                   const isEditing   = editing === item.id
@@ -2303,12 +2455,15 @@ function ReviewPanel({
                           )}
                         </div>
 
-                        {/* Extracted name — metric-scoped title for rule-
-                            interpretation kinds, the tariff tier's own name
-                            for a plain rate-confirmation card. */}
-                        <p className="text-sm font-medium text-ink leading-snug mb-2">
-                          {isRuleInterpretation ? ruleTitle : item.product_name}
-                        </p>
+                        {/* Extracted name — omitted for escalator_interpretation
+                            (ruleTitle is '') since the type badge above already
+                            says "Price escalation"; a second identical line was
+                            a duplicate heading. */}
+                        {(!isRuleInterpretation || ruleTitle) && (
+                          <p className="text-sm font-medium text-ink leading-snug mb-2">
+                            {isRuleInterpretation ? ruleTitle : item.product_name}
+                          </p>
+                        )}
 
                         {!isRuleInterpretation && (
                           <>
@@ -2370,18 +2525,12 @@ function ReviewPanel({
                             meterMappingConfirmed={ruleMeterSuggestion?.confirmed}
                             meterSuggestion={ruleMeterSuggestion ? { meter_key: ruleMeterSuggestion.meter_key, display_name: ruleMeter?.display_name } : null}
                             onApplied={() => {
-                              // Resolve every duplicate tariff-tier row sharing
-                              // this metric-level rule, not just this one card's
-                              // own item.id — otherwise the drawer's "N of M
-                              // confirmed" progress stays stuck on cards that
-                              // were deliberately never shown.
-                              const key = ruleUnitType ? `${kind}:${ruleUnitType}` : null
-                              const siblingIds = key ? (metricSiblingIds.get(key) ?? [item.id]) : [item.id]
-                              setResolved(r => {
-                                const next = { ...r }
-                                for (const id of siblingIds) next[id] = 'confirmed'
-                                return next
-                              })
+                              // Only escalator_interpretation reaches this
+                              // branch now (minimum_commitment/partial_period/
+                              // tier_calculation are handled by
+                              // renderMetricRuleCard above) — a single
+                              // job-level entity, no duplicate rows to fan out to.
+                              setResolved(r => ({ ...r, [item.id]: 'confirmed' }))
                               scrollToNextUnresolved(item.id)
                               onRefresh()
                             }}
@@ -4062,10 +4211,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 // configured" when shown inline with real fixed fees, but is
                 // exactly what an unconsumed pricing rule should look like on
                 // its own. Same rows, same editing behavior, grouped order only.
-                const partialPeriodMetricsForConfig = computePartialPeriodMetrics(terms?.contract_start_date, terms?.contract_end_date, tiers)
                 const groupOf = (item: LineItem): 'Variable pricing' | 'Fixed line items' => {
-                  const k = classifyItem(item, tiers, terms?.escalators ?? [], partialPeriodMetricsForConfig)
-                  return (k === 'overage_tier' || k === 'minimum_commitment' || k === 'partial_period' || k === 'tier_calculation') ? 'Variable pricing' : 'Fixed line items'
+                  // Every tariff-tier row (any metric, resolved or not)
+                  // classifies as 'overage_tier' now — classifyItem no longer
+                  // has separate minimum_commitment/partial_period/
+                  // tier_calculation branches to also check for.
+                  const k = classifyItem(item, terms?.escalators ?? [])
+                  return k === 'overage_tier' ? 'Variable pricing' : 'Fixed line items'
                 }
                 const groupOrder = ['Fixed line items', 'Variable pricing'] as const
                 const orderedItems = groupOrder.flatMap(g => items.filter(i => groupOf(i) === g))
@@ -4093,16 +4245,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           // from a resolved one, so its Total column silently rendered
                           // the raw (often 0) total_amount as "0%" instead of flagging
                           // that no rate exists yet.
-                          const rowKind = classifyItem(item, tiers, terms?.escalators ?? [], partialPeriodMetricsForConfig)
+                          const rowKind = classifyItem(item, terms?.escalators ?? [])
                           const isEscalator = rowKind === 'escalator'
                           const isEscalatorUnresolved = rowKind === 'escalator_interpretation'
-                          const isVariableTier = rowKind === 'overage_tier' || rowKind === 'minimum_commitment' || rowKind === 'partial_period' || rowKind === 'tier_calculation'
+                          const isVariableTier = rowKind === 'overage_tier'
                           // A metric whose tier method (graduated/volume/block) isn't
                           // confirmed has no single safe Total to show — the same
                           // rate table can legitimately produce different totals
                           // under each method (see lib/tariff.ts) — real invoicing
-                          // already refuses to bill it (lib/usage-pull.ts).
-                          const isTierCalcUnresolved = rowKind === 'tier_calculation'
+                          // already refuses to bill it (lib/usage-pull.ts). Computed
+                          // directly from the tiers now (classifyItem no longer
+                          // decides tier_calculation — see isTierCalculationUnresolvedFor).
+                          const isTierCalcUnresolved = isTierCalculationUnresolvedFor(findTierForItem(item, tiers)?.unit_type, tiers)
                           const isVariable  = rowKind === 'one_time' && item.total_amount === 0
                           // A reviewer's explicit "do not apply this escalator"
                           // decision must never render as "0%", which reads as a
@@ -4679,6 +4833,23 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   <span className="ml-2 text-[11px] text-stone truncate">· jumping to §{drawer.section}</span>
                 )}
               </div>
+              {/* PDFViewer renders the document onto <canvas> for the
+                  clause-highlighting overlay — there was no way to actually
+                  save the file anywhere in this drawer (a canvas can't be
+                  right-click-saved as a PDF). This links directly to the
+                  same signed URL the viewer itself uses. */}
+              {pdfUrl && !pdfUrlError && (
+                <a
+                  href={pdfUrl}
+                  download
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-shrink-0 mr-1 text-stone hover:text-ink transition-colors w-7 h-7 flex items-center justify-center rounded-lg hover:bg-cream"
+                  title="Download PDF"
+                >
+                  <i className="ti ti-download" style={{ fontSize: 14 }} />
+                </a>
+              )}
               <button
                 onClick={() => closePDF()}
                 className="text-stone hover:text-ink transition-colors w-7 h-7 flex items-center justify-center rounded-lg hover:bg-cream"

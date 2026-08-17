@@ -325,9 +325,13 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
                 </div>
 
                 {confirmed ? (
-                  <div className="flex items-center gap-2 text-xs font-medium" style={{ color: '#0B5C36' }}>
-                    <i className="ti ti-circle-check-filled" style={{ fontSize: 14 }} />
-                    Mapped to {matchedMeter?.display_name ?? meterKey}
+                  // meterKey can be empty on a legacy row confirmed before
+                  // the no-match safeguard existed — shown as its own
+                  // distinct, flagged state rather than a blank "Mapped to"
+                  // with nothing after it.
+                  <div className="flex items-center gap-2 text-xs font-medium" style={{ color: meterKey ? '#0B5C36' : '#991B1B' }}>
+                    <i className={`ti ${meterKey ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 14 }} />
+                    {meterKey ? `Mapped to ${matchedMeter?.display_name ?? meterKey}` : 'No meter selected'}
                     <button onClick={() => setEdit(s.contract_unit_type, 'confirmed', false)} className="ml-auto text-stone hover:text-ink underline underline-offset-2 font-normal">
                       Change
                     </button>
