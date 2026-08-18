@@ -4,6 +4,25 @@ Scope: verify that the implementation genuinely supports the Privacy Policy, Ter
 
 Method: direct code review of the AI/PII pipeline, auth, and route layer, plus three parallel research passes covering (1) Supabase RLS/grants/storage, (2) all 76 API routes for auth/tenant-scoping, (3) retention/deletion/logging/headers/dependencies/secrets.
 
+## DEPLOYMENT STATUS — production-verified 2026-08-18
+
+Shipped to production across 4 commits (`1ffbc542` security release, `f6c25799` duplicate-extraction/storm fix, `55fcb372` + `2cffe53b` review-panel edit UX), deployed as `verdix-ck0opojih` (`www.lynoraai.com`). All 5 migrations applied. Post-deploy verification run directly against the live production domain and database (not just preview):
+
+- **RLS isolation**: `RUN_RLS_INTEGRATION_TESTS=true npx vitest run lib/rls-isolation.test.ts` → **8/8 passing** against production Supabase.
+- **Route-level auth**: `terms` PATCH, `upload`, `usage/record`, `line-items` PATCH → **401**; `admin/design-partners`, `/api/debug` → **403** — all unauthenticated, confirmed on `www.lynoraai.com` directly.
+- **Security headers**: CSP, HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy all present on `https://www.lynoraai.com/`.
+- **Stripe webhook**: a genuinely HMAC-signed test event (signed with the real `STRIPE_WEBHOOK_SECRET`, never printed) was POSTed to production and accepted (`{"received":true}`, 200).
+- **Remembill webhook**: correctly rejects unsigned requests (401) — expected, `REMEMBILL_WEBHOOK_SECRET` isn't configured yet pending their sandbox support; the daily `remembill-payment-sync` poll cron covers payment-status sync in the interim.
+- **Bedrock routing**: confirmed via AWS CloudWatch directly (not app logs) — `AWS/Bedrock` `Invocations` metric recorded real calls in the exact window of a live end-to-end test (upload → PII detection → extraction → review), proving Bedrock is genuinely being used, not falling back to direct Anthropic. `USE_BEDROCK`/AWS credentials are now set in Vercel for both Preview and Production (they were previously only in local `.env.local` — see the corrected finding below).
+- **PII console-log removal**: code-verified (`grep` for the removed `console.log('[PII]'...)` calls returns zero matches in the deployed source).
+- **Retention cron dry-run**: ran against production — `{"dry_run": true, "candidate_count": 0}`. No deletions have occurred; the cron will keep reporting dry-run-only until `RETENTION_DELETE_ENABLED=true` is deliberately set.
+
+**Corrected finding, discovered during production testing**: the original audit's Bedrock/EU-pinning evidence (§3, "AI processing pinned to an EU AWS region") was based on `USE_BEDROCK`/AWS credentials present in local `.env.local` — those were never actually configured in Vercel until this deployment. This means Bedrock/EU-pinning was very likely **not actually active in the deployed app** at any point before this release, despite the Privacy Policy's claim — every contract was probably processed via direct Anthropic API, not EU-pinned Bedrock, until now. This is now fixed and independently confirmed via CloudWatch (see above), not just code review.
+
+**Two additional fixes made during production testing** (found via live smoke-testing, not the original audit, but shipped in the same release):
+- `execute/route.ts` was re-extracting the same PDF a second time independently of `detect-pii/route.ts` — doubling Bedrock calls/cost per contract. Fixed via a short-lived `jobs.pending_extracted_text` handoff column (written once, consumed once, self-cleaning).
+- A recursive `setTimeout` polling loop in `configure/[id]/page.tsx` never cancelled itself on effect re-run, allowing orphaned poll chains to accumulate and flood `/meter-mappings` with request bursts (360+ near-simultaneous calls observed) — this is what caused "Confirm & apply" to appear to hang during testing (the click never reached the server). Fixed with a cancellation flag + stored timer id.
+
 ---
 
 ## 1. Findings & vulnerabilities (severity-ordered)
@@ -27,8 +46,8 @@ Every RLS policy in `supabase/migrations/*.sql` was written as `for all using (t
 ### HIGH — AI processing bypassed the EU-pinned Bedrock path
 Four routes (`execute`, `detect-pii`, `audit`, `partner-recon`) each hand-rolled their own `new Anthropic()` call for PDF→text extraction — the *first* AI call in the pipeline, on the **raw, unmasked document**, since masking can't happen until there's text to mask. This call went to Anthropic's direct API (not Bedrock, not EU-pinned), regardless of `USE_BEDROCK`, for every single contract processed. The main commercial-terms extraction call was already correctly routed through the Bedrock/EU path — only this earlier step wasn't.
 
-### HIGH — PII masking is a paid add-on, not a baseline guarantee
-`execute/route.ts` and `detect-pii/route.ts` both gate masking behind `pii_addon_enabled === true || plan_id === 'trial'`. The Privacy Policy and Security page state masking as unconditional ("Before any text is sent for AI analysis, PII... is masked"). **This is a product/policy decision, not something I changed** — see §6.
+### HIGH — PII masking is a paid add-on, not a baseline guarantee — ✅ RESOLVED
+`execute/route.ts` and `detect-pii/route.ts` both gated masking behind `pii_addon_enabled === true || plan_id === 'trial'`. The Privacy Policy and Security page state masking as unconditional ("Before any text is sent for AI analysis, PII... is masked"). Per explicit instruction, the plan gate was removed from both routes — masking is now a baseline control for every org, matching what the pricing page already said ("Available on all plans"). Verified in production.
 
 ### HIGH — PII leaked into server logs
 `execute/route.ts` logged the full masking token↔real-value map, masked-text excerpts, and restored customer/vendor names via `console.log` on every run — defeating masking for anyone with Vercel log access, independent of whether masking was even enabled. Fixed (removed).
@@ -49,8 +68,8 @@ Nothing in the codebase enforced the Privacy Policy's "90 days after job complet
 Disclosed whether `AUTH_SECRET`/`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are set and `AUTH_SECRET`'s character length to any caller, in production.
 
 ### LOW / informational
-- No email verification on self-service signup (`email_confirm: true` set unconditionally) — anyone can sign up claiming an email they don't own.
-- Self-service org auto-creation defaults to **enabled** when the `verdix_settings` feature-flag row hasn't been seeded — confirm current production value.
+- No email verification on self-service signup (`email_confirm: true` set unconditionally) — anyone can sign up claiming an email they don't own. Still open.
+- Self-service org auto-creation defaulted to **enabled** when the `verdix_settings` feature-flag row hadn't been seeded — ✅ **RESOLVED**: fail-safe default flipped to `false` (invitation-only). Production's `verdix_settings` row was independently confirmed already explicitly set to `'false'` (not relying on the code default), so this was a defense-in-depth fix, not a live-behavior change.
 - No rate limiting on `/api/signup`.
 - No idempotency/replay-id tracking on any webhook (Stripe/Remembill/billing) — low practical risk since all three only ever apply idempotent status writes.
 - `org_integrations` had a dead policy comparing `current_user` (a Postgres role name) to an email — could never match; accidentally safe, not deliberately so.
@@ -116,12 +135,12 @@ Disclosed whether `AUTH_SECRET`/`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are se
 
 Every deployment this session (`npx vercel inspect ... --wait`) showed lambdas running in `[iad1]` (US East, Virginia) — `vercel.json` has no `regions` override, so the app runs on Vercel's default region. This means Next.js API routes (including ones that briefly hold contract text in memory before calling Bedrock) execute in the US, even though the database and AI inference are EU-pinned. Whether this matters depends on how strictly "does not leave [the EEA]" is meant — I did not move this myself since changing a Vercel project's function region is an infrastructure change I was told to report rather than apply. If EU-only compute is required, that's a Vercel project-settings change to make deliberately, not a code fix.
 
-## 6. Decisions requiring your call (not fixed, by design)
+## 6. Decisions requiring your call
 
-1. **PII masking behind a paid add-on** — either make it a baseline guarantee (product/pricing decision) or correct the Privacy Policy/Security copy to disclose it's plan-dependent. I did neither unilaterally.
-2. **Retention-policy ambiguity** — "90 days after job completion" doesn't say what happens to a job that never completed (stuck/failed). The new cron applies the 90-day window uniformly from `jobs.updated_at` regardless of status, flagged in its own code comment — narrow it if the intended policy is different.
-3. **`meter-mappings`'s AI call** — still uses direct Anthropic (Haiku) rather than Bedrock, because Bedrock routing in this codebase is pinned to a single Sonnet-family model; forcing it through Bedrock would silently swap models. Low risk (no contract PII in this call, only metric/meter names), but not EU-pinned. Needs either an EU Bedrock Haiku profile or an explicit decision that this exception is acceptable.
-4. **Self-service signup defaults to enabled** when unseeded, and new signups get no email verification. If Verdix is meant to be invitation-only, confirm the `verdix_settings` row is actually set to disabled in production, and consider adding real email verification.
+1. ~~**PII masking behind a paid add-on**~~ — ✅ **Resolved**: made universal per explicit instruction, no code gate remains. The vestigial `/api/billing/pii-addon` Stripe SKU/route was deliberately left alone (removing a billing product is a separate commercial decision, not a security fix) — worth cleaning up separately if it's no longer meaningful to sell.
+2. **Retention-policy ambiguity** — "90 days after job completion" doesn't say what happens to a job that never completed (stuck/failed). The cron applies the 90-day window uniformly from `jobs.updated_at` regardless of status, flagged in its own code comment. It ships in **dry-run mode only** (`RETENTION_DELETE_ENABLED` unset) — first production dry-run returned `candidate_count: 0`, so this is genuinely low-urgency right now, but the status question should be resolved before ever setting `RETENTION_DELETE_ENABLED=true`.
+3. ~~**`meter-mappings`'s AI call**~~ — ✅ **Resolved**: found and live-tested a real EU Bedrock Haiku profile (`eu.anthropic.claude-haiku-4-5-20251001-v1:0`) against this AWS account before wiring it in (verified via a real `InvokeModel` call, not just checking it was listed). All AI calls in the app now route through Bedrock when `USE_BEDROCK=true`.
+4. ~~**Self-service signup default**~~ — ✅ **Resolved**: fails closed now. Email verification on signup is still genuinely open — not fixed, since building real verification (send/confirm flow) is a larger feature than a config default flip.
 
 ---
 
@@ -129,13 +148,13 @@ Every deployment this session (`npx vercel inspect ... --wait`) showed lambdas r
 
 | Public claim | Implementation evidence | Verified? | Fix made | Safe website wording |
 |---|---|---|---|---|
-| EU-based infrastructure | AI: EU-pinned (confirmed). Supabase region: unconfirmed. Vercel compute: **US** (`iad1`, confirmed from deploy logs). | **Partially** — mixed | None (infra decision, flagged §5) | Narrow to "AI processing and data storage are EU-hosted" rather than a blanket infrastructure claim, until compute region is addressed or the claim is scoped to match reality. |
-| PII masked before AI processing | Pipeline now routes all AI calls through masking-aware, Bedrock-pinned path — **but only when the paid add-on/trial is active**. | **No** as a universal claim; yes conditionally | Routing bug fixed; paywall gating not (product decision, §6) | Either make masking universal, or state "available on paid plans / trial" explicitly. |
+| EU-based infrastructure | AI: EU-pinned and **confirmed via live AWS CloudWatch metrics against production**, not just code review. Supabase region: unconfirmed. Vercel compute: **US** (`iad1`, confirmed from deploy logs). | **Partially** — mixed | Bedrock routing fixed + env vars now actually configured in Vercel (previously only local); compute region flagged, not changed (§5) | Narrow to "AI processing and data storage are EU-hosted" rather than a blanket infrastructure claim, until compute region is addressed or the claim is scoped to match reality. |
+| PII masked before AI processing | Pipeline routes all AI calls through the masking-aware, Bedrock-pinned path, **for every org, no plan gate**. | **Yes** | Routing bug fixed; paywall gate removed entirely | Keep the claim as-is — it's now accurate. |
 | No training on customer contracts | Provider-level (AWS Bedrock/Anthropic) commitment, not app-enforced | **Cannot verify from code** | — | Keep only if independently confirmed against the actual AWS Bedrock agreement for this account. |
 | Encryption at rest | Standard for Supabase/AWS, not independently provable per-hop from code | **Cannot verify exact claim** | — | "Customer data is encrypted at rest." |
 | Encryption in transit | Same | **Cannot verify exact protocol version** | — | "Customer data is encrypted in transit." |
-| Retention/deletion (90-day docs, 30-day post-termination) | Was entirely unimplemented; now a cron + Storage removal + audit log exist | **Was false; now implemented** (code-verified, not yet run in prod) | Yes — new cron, `removeStorageObject`, `deletion_log` | Keep the claim once the migration is applied and the cron has run at least once successfully. |
-| Tenant isolation | Was severely broken at both DB (RLS) and app (route auth) layers; both fixed this session | **Was false; now fixed** (migration not yet applied) | Yes — extensive, see §2 | Keep the claim once the RLS migration is applied in production. |
+| Retention/deletion (90-day docs, 30-day post-termination) | Was entirely unimplemented; now a cron + Storage removal + audit log exist, **dry-run-verified against production** (`candidate_count: 0`, no deletions have occurred) | **Was false; now implemented** | Yes — new cron, `removeStorageObject`, `deletion_log` | Keep the claim — deletion mechanism now genuinely exists (real deletion still gated behind `RETENTION_DELETE_ENABLED`, pending the §6.2 policy-ambiguity decision). |
+| Tenant isolation | Was severely broken at both DB (RLS) and app (route auth) layers; both fixed, migration applied, **RLS isolation test passing 8/8 against production**, route-level 401/403s confirmed against `www.lynoraai.com` directly | **Was false; now fixed and production-verified** | Yes — extensive, see §2 | Keep the claim — independently verified, not just code review. |
 | Restricted production access | Organizational, not code-visible | **Cannot verify from code** | — | Keep only if independently confirmed who has dashboard access. |
 | Clause-linked auditability | Real product feature — `commercial_rule_interpretations` stores source clause, reviewer, timestamps; its RLS was decorative until this fix | **Yes**, feature-level; DB-level enforcement now genuine too | RLS fix makes the audit trail itself properly isolated | Keep as-is. |
 
@@ -143,15 +162,20 @@ Every deployment this session (`npx vercel inspect ... --wait`) showed lambdas r
 
 ## 8. Remaining manual actions
 
-1. **Apply the three new migrations** to production Supabase, in order: `20260819000002_demo_leads.sql` (if not already applied), `20260819000003_rls_lockdown.sql`, `20260819000004_deletion_log.sql`.
-2. **Confirm `REMEMBILL_WEBHOOK_SECRET` is set** in Vercel production env vars — the webhook now rejects all requests without it (previously it silently accepted everything).
-3. **Confirm `CRON_SECRET` is set** in Vercel production env vars, and register the new cron's schedule takes effect (already added to `vercel.json`, deploys automatically on next push).
-4. **Check the Supabase project's region** in the dashboard (Project Settings → General) and reconcile with the "EU-based infrastructure" claim.
-5. **Check the Bedrock console** for this AWS account: exact regions covered by the `eu.*` inference profile, invocation logging, and prompt/output retention configuration.
-6. **Confirm AWS/Anthropic's actual data-training policy** for this account before keeping the "never used to train AI models" claim.
-7. **Decide on PII-masking gating** (§6.1) and update either the product or the policy copy accordingly.
-8. **Check `verdix_settings.self_service_signup_enabled`'s current production value** and decide if email verification should be added to signup.
-9. **Confirm who has production access** to Vercel/Supabase/AWS, and that those accounts have MFA enabled.
-10. **Confirm Supabase backup/PITR configuration** for the current plan tier, and whether a restore has ever been tested.
-11. **Run the RLS isolation test against production** after applying the migration: `RUN_RLS_INTEGRATION_TESTS=true npx vitest run lib/rls-isolation.test.ts` — expect it to go from red (pre-migration) to green (post-migration).
-12. **Decide on the Vercel compute region** (§5) if "EU-hosted" is meant to cover application compute, not just data storage and AI inference.
+Done:
+1. ~~Apply the migrations~~ — all 5 applied (`demo_leads`, `rls_lockdown`, `deletion_log`, `pending_extracted_text`, plus the original `demo_leads` fix).
+2. ~~Confirm/set `CRON_SECRET`~~ — set in Vercel (Production + Preview); cron auth also fixed to accept Vercel's automatic `Authorization: Bearer` header, not just the custom one.
+3. ~~Configure `USE_BEDROCK`/AWS credentials in Vercel~~ — set (Production + Preview) and confirmed working via live CloudWatch data.
+4. ~~Run the RLS isolation test against production~~ — done, 8/8 passing.
+
+Still open:
+1. **`REMEMBILL_WEBHOOK_SECRET`** — not yet set (Remembill's sandbox doesn't support sending it yet, per them). Webhook correctly fails closed in the meantime; `remembill-payment-sync` cron covers the gap. Set this once Remembill implements it.
+2. **Check the Supabase project's region** in the dashboard (Project Settings → General) and reconcile with the "EU-based infrastructure" claim.
+3. **Check the Bedrock console** for this AWS account: exact regions covered by the `eu.*` inference profile, invocation logging, and prompt/output retention configuration.
+4. **Confirm AWS/Anthropic's actual data-training policy** for this account before keeping the "never used to train AI models" claim.
+5. **Confirm who has production access** to Vercel/Supabase/AWS, and that those accounts have MFA enabled.
+6. **Confirm Supabase backup/PITR configuration** for the current plan tier, and whether a restore has ever been tested.
+7. **Decide on the Vercel compute region** (§5) if "EU-hosted" is meant to cover application compute, not just data storage and AI inference.
+8. **Resolve the retention-policy ambiguity** (§6.2 — failed/incomplete jobs) before ever setting `RETENTION_DELETE_ENABLED=true`.
+9. **Add real email verification to signup** if desired — self-service now fails closed by default, but verified accounts still aren't required.
+10. Consider cleaning up the vestigial `/api/billing/pii-addon` Stripe SKU now that masking is universal (commercial decision, not security).
