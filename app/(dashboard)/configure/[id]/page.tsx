@@ -549,7 +549,17 @@ function EditableStat({ label, value, sub, hint, inputType = 'text', placeholder
       <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">{label}</p>
       <div className="flex items-start gap-1">
         <div className="flex-1 min-w-0">
-          <p className="text-[15px] font-medium text-ink leading-snug">{value ?? <span className="text-stone/40">—</span>}</p>
+          {/* Clicking the value itself starts editing too — hunting for the
+              small hover-revealed pencil (especially over a near-empty "—"
+              placeholder) was needlessly fiddly. The pencil stays as a
+              secondary, more discoverable affordance. */}
+          <p
+            onClick={startEdit}
+            title={`Edit ${label.toLowerCase()}`}
+            className="text-[15px] font-medium text-ink leading-snug cursor-pointer rounded -mx-1 px-1 hover:bg-forest/5 transition-colors"
+          >
+            {value ?? <span className="text-stone/40">—</span>}
+          </p>
           {sub && <p className="text-[11px] text-stone mt-0.5">{sub}</p>}
           {!value && hint && <p className="text-[11px] mt-0.5 leading-snug" style={{ color: '#B45309' }}>{hint}</p>}
         </div>
