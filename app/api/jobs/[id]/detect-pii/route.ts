@@ -41,6 +41,13 @@ export async function POST(
 
     const contractText = await extractPDFText(buffer, resolvedUrl)
 
+    // Hand off the extracted text to execute/route.ts so it doesn't pay for
+    // a second identical Bedrock call re-extracting the same PDF. Cleared
+    // once execute consumes it (or by the retention cron / job deletion if
+    // it never gets consumed) — a short-lived pipeline handoff, not a second
+    // permanent store of raw unmasked contract text.
+    await supabaseServer.from('jobs').update({ pending_extracted_text: contractText }).eq('id', id)
+
     // Run local PII detection (dynamic import keeps compromise out of module init)
     const { detectPII } = await import('@/lib/pii-detector')
     const { entities } = detectPII(contractText)

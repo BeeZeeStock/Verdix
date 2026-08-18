@@ -57,12 +57,26 @@ export async function POST(
 async function runExecutePipeline(jobId: string, orgId: string, contractUrl: string | null, currency: string) {
   if (!contractUrl) throw new Error('Missing contract file')
 
-  const resolvedUrl = await resolveStorageUrl(contractUrl)
-  const res = await fetch(resolvedUrl)
-  if (!res.ok) throw new Error(`Failed to download contract`)
-  const buffer = Buffer.from(await res.arrayBuffer())
+  // Reuse detect-pii's extraction if this job already went through PII
+  // detection — avoids a second identical Bedrock call re-extracting the
+  // same PDF, and (when present) skips re-downloading the file too.
+  const { data: pendingRow } = await supabaseServer
+    .from('jobs')
+    .select('pending_extracted_text')
+    .eq('id', jobId)
+    .maybeSingle()
 
-  const contractText = await extractPDFText(buffer, resolvedUrl)
+  let contractText: string
+  if (pendingRow?.pending_extracted_text) {
+    contractText = pendingRow.pending_extracted_text
+    await supabaseServer.from('jobs').update({ pending_extracted_text: null }).eq('id', jobId)
+  } else {
+    const resolvedUrl = await resolveStorageUrl(contractUrl)
+    const res = await fetch(resolvedUrl)
+    if (!res.ok) throw new Error(`Failed to download contract`)
+    const buffer = Buffer.from(await res.arrayBuffer())
+    contractText = await extractPDFText(buffer, resolvedUrl)
+  }
 
   // PII masking is a baseline control for every org, not a paid add-on — use
   // approved entities from DB (set during PII review step), falling back to

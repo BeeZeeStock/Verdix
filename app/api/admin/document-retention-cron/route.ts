@@ -110,6 +110,7 @@ export async function GET(req: NextRequest) {
         .update({
           contract_pdf_url: null,
           billing_csv_url: null,
+          pending_extracted_text: null,
           document_deleted_at: new Date().toISOString(),
         })
         .eq('id', job.id)

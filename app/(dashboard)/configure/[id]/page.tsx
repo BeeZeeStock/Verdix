@@ -2828,6 +2828,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // /confirm-rule, not that panel's own save path) leaves it showing stale
   // "unconfirmed" state until the page is reloaded.
   const [refreshSignal, setRefreshSignal] = useState(0)
+  // Tracks the last value this was actually called with, so a call that
+  // reports the same confirmed-state twice in a row is a no-op instead of
+  // bumping refreshSignal again — refreshSignal re-triggers MeterMappingPanel's
+  // own fetch effect, so an unconditional bump on every call is a direct path
+  // to a self-sustaining refetch loop if this ever gets invoked repeatedly
+  // with an unchanged value (e.g. a re-render storm elsewhere).
+  const lastConfirmedRef = useRef<boolean | null>(null)
   // Stable reference — MeterMappingPanel re-runs its own onConfirmedChange
   // effect whenever this callback's identity changes, so an inline arrow
   // function here would re-trigger on every render and bump refreshSignal
@@ -2835,6 +2842,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // inline callback -> effect fires -> bump refreshSignal -> ...).
   const handleMeterMappingsConfirmedChange = useCallback((c: boolean) => {
     setMeterMappingsConfirmed(c)
+    if (lastConfirmedRef.current === c) return
+    lastConfirmedRef.current = c
     setRefreshSignal(s => s + 1)
   }, [])
   const [drawer, setDrawer]   = useState<{ open: boolean; section?: string }>({ open: false })
@@ -2986,15 +2995,29 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   }
 
   useEffect(() => {
+    // `cancelled` is checked both before scheduling the next tick and before
+    // acting on a response that arrives after cleanup — without it, a poll
+    // chain started by one mount of this effect (e.g. before a Strict Mode
+    // double-invoke, or an `id` change) keeps recursing via setTimeout
+    // forever, since nothing else references or can cancel that specific
+    // timer. Multiple orphaned chains each polling every 3s independently is
+    // exactly what was flooding /meter-mappings with bursts of duplicate
+    // requests.
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
     const poll = async () => {
       const data = await fetchJob()
-      if (!data) return
+      if (cancelled || !data) return
       if (['PENDING_HUMAN_REVIEW', 'READY_TO_APPROVE', 'COMPLETED', 'FAILED'].includes(data.execute_status)) return
-      setTimeout(poll, 3000)
+      timer = setTimeout(poll, 3000)
     }
     poll()
     const cycle = setInterval(() => setMsgIdx(i => (i + 1) % PROCESSING_MESSAGES.length), 2000)
-    return () => clearInterval(cycle)
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+      clearInterval(cycle)
+    }
   }, [id])
 
   // When the last flagged item is reviewed, promote the DB status so the list reflects "Ready to approve".
