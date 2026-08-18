@@ -330,11 +330,17 @@ table.g .warn::before{content:"⚠";color:var(--color-amber);font-size:12px}
 .missC p{font-size:.87rem;color:var(--color-stone);line-height:1.55}
 @media(max-width:1080px){.clauseGrid{grid-template-columns:1fr}.vtag{display:none}.miss{grid-template-columns:1fr}}
 
-/* security */
-.secGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:20px}
+/* security — three equal cards on desktop, stacked on mobile (see the
+   720px breakpoint below; deliberately not forced into a 2-up tablet
+   step like other grids, since 3 items split 2+1 leaves an orphan) */
+.secGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
 .secC{border:1px solid var(--color-line);border-radius:16px;padding:26px;background:#fff;display:flex;flex-direction:column;gap:10px}
 .secC h3{font-size:1.04rem}
 .secC p{font-size:.9rem;color:var(--color-stone)}
+.secPrompt{font-size:.78rem;color:var(--color-stone-light);padding-top:8px;border-top:1px solid var(--color-line-soft);margin-top:2px}
+.secCtaRow{display:flex;flex-direction:column;gap:6px;margin-top:auto;padding-top:6px}
+.secCta{font-size:.83rem;font-weight:500;color:var(--color-sage)}
+.secCta:hover{color:var(--color-forest)}
 
 /* pricing */
 .priceFrame{display:grid;grid-template-columns:1fr;gap:20px;margin-bottom:36px}
@@ -376,6 +382,6 @@ table.g .warn::before{content:"⚠";color:var(--color-amber);font-size:12px}
 .grid3Col{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
 .gridReviewCol{display:grid;grid-template-columns:1fr 1.2fr;gap:18px;align-items:start}
 
-@media(max-width:1080px){.heroGrid{grid-template-columns:1fr;gap:40px}.plans,.icp,.cards3,.secGrid{grid-template-columns:1fr 1fr}.steps{grid-template-columns:1fr 1fr}.step:nth-child(2){border-right:0}.step:nth-child(-n+2){border-bottom:1px solid var(--color-line)}.ev,.priceFrame{grid-template-columns:1fr}.evL{border-right:0;border-bottom:1px solid var(--color-line)}.app{grid-template-columns:1fr}.side{display:none}.proofStats{grid-template-columns:1fr 1fr}.proofStat:nth-child(2){border-right:0}.proofStat:nth-child(-n+2){border-bottom:1px solid var(--color-line-soft)}}
+@media(max-width:1080px){.heroGrid{grid-template-columns:1fr;gap:40px}.plans,.icp,.cards3{grid-template-columns:1fr 1fr}.steps{grid-template-columns:1fr 1fr}.step:nth-child(2){border-right:0}.step:nth-child(-n+2){border-bottom:1px solid var(--color-line)}.ev,.priceFrame{grid-template-columns:1fr}.evL{border-right:0;border-bottom:1px solid var(--color-line)}.app{grid-template-columns:1fr}.side{display:none}.proofStats{grid-template-columns:1fr 1fr}.proofStat:nth-child(2){border-right:0}.proofStat:nth-child(-n+2){border-bottom:1px solid var(--color-line-soft)}}
 @media(max-width:720px){.page{font-size:16px}.section{padding:72px 0}.wrap{padding:0 20px}.navLinks{display:none}.navToggle{display:flex}.plans,.icp,.cards3,.cards2,.secGrid,.steps,.kpis,.grid3,.tiers,.grid2Col,.grid3Col,.gridReviewCol{grid-template-columns:1fr}.step{border-right:0;border-bottom:1px solid var(--color-line)}.bcol,.xl{width:78px}.app{min-height:0}.body{padding:14px}.chart{padding:14px 14px 10px}.tl table.g{font-size:11.5px}.tl table.g th,.tl table.g td{padding:8px 10px}.trustHideMobile{display:none}.flow{display:none}.flowMobile{display:block}.proofStats,.hero>.wrap>.proofCaption{display:none}.icpBodyFull{display:none}.icpBodyShort{display:block;font-weight:500;color:#fff}}
 @media(max-width:480px){.wrap{padding:0 16px}.section{padding:48px 0}.hero{padding:76px 0 0}.proof,.rateSide,.doc .docB{padding:20px}.card,.plan,.icpCard,.secC{padding:20px}.docH{padding:13px 16px}.bcol,.xl{width:60px}.bars{gap:6%}.navIn{padding:0 16px}.kpiV{font-size:21px}.tierV{font-size:19px}.evTotal .v{font-size:1.3rem}}

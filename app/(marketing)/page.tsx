@@ -352,11 +352,40 @@ function ClauseDrilldown() {
   )
 }
 
-const SECURITY_CARDS = [
-  { title: 'EU-based architecture', body: 'Customer data is processed within European infrastructure.' },
-  { title: 'Masked before AI processing', body: 'Personal identifiers such as names, email addresses, phone numbers and other direct identifiers are masked before contract text reaches the model layer.' },
-  { title: 'No training on your contracts', body: 'Your agreements and customer data are not used to train AI models.' },
-  { title: 'Traceable by design', body: 'Extracted terms, source clauses and billing calculations remain linked throughout the workflow.' },
+const SECURITY_CARDS: Array<{
+  title: string
+  body: string[]
+  contactPrompt?: string
+  ctas?: Array<{ label: string; href: string }>
+}> = [
+  {
+    title: 'EU data handling',
+    body: [
+      'Application processing and primary customer data storage run in European infrastructure.',
+      "AI model processing is routed through Amazon Bedrock's EU infrastructure.",
+    ],
+    ctas: [{ label: 'Privacy & retention →', href: '/privacy' }],
+  },
+  {
+    title: 'Data minimisation & AI',
+    body: [
+      'Direct personal identifiers are masked before contract text reaches the AI processing layer.',
+      'Customer data is isolated by organisation throughout the Verdix application.',
+    ],
+  },
+  {
+    // Deliberately no "proof" badges (DPA/subprocessors/retention) here yet —
+    // those aren't finished and shouldn't be claimed until they are. Just the
+    // two controls actually verified, plus a genuine contact path for
+    // anything not yet published. See the 2026-08-19 security audit.
+    title: 'Governance & traceability',
+    body: [
+      'Contract terms, reviewer decisions and billing calculations remain linked to their source evidence.',
+      'Customer data access is isolated by organisation.',
+    ],
+    contactPrompt: 'Security & data protection questions?',
+    ctas: [{ label: 'Contact us →', href: 'mailto:bilal@lynoraai.com?subject=Security%20%26%20Data%20Protection%20Enquiry' }],
+  },
 ]
 
 function Security() {
@@ -370,7 +399,20 @@ function Security() {
         </div>
         <div className={styles.secGrid}>
           {SECURITY_CARDS.map(c => (
-            <div key={c.title} className={styles.secC}><h3 className={styles.h3}>{c.title}</h3><p>{c.body}</p></div>
+            <div key={c.title} className={styles.secC}>
+              <h3 className={styles.h3}>{c.title}</h3>
+              {c.body.map(p => <p key={p}>{p}</p>)}
+              {c.contactPrompt && <p className={styles.secPrompt}>{c.contactPrompt}</p>}
+              {c.ctas && (
+                <div className={styles.secCtaRow}>
+                  {c.ctas.map(cta => (
+                    <a key={cta.label} href={cta.href} className={styles.secCta}>
+                      {cta.label}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
           ))}
         </div>
       </div>

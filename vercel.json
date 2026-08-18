@@ -12,10 +12,6 @@
     {
       "path": "/api/admin/remembill-payment-sync",
       "schedule": "0 8 * * *"
-    },
-    {
-      "path": "/api/admin/document-retention-cron",
-      "schedule": "0 3 * * *"
     }
   ]
 }

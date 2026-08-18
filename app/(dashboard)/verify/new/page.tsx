@@ -225,7 +225,7 @@ export default function NewVerifyPage() {
             </div>
           </div>
           <div className="bg-mint/40 border border-sage/20 rounded-xl p-4 text-xs text-forest/70 leading-relaxed">
-            Files encrypted and stored in Frankfurt, Germany (EU). Contract text sent to AI processor for extraction, raw text not retained.
+            Files encrypted and stored in Ireland (EU). Contract text sent to AI processor for extraction, raw text not retained.
           </div>
           {uploadError && (
             <p className="text-xs text-danger bg-red-50 border border-red-200 rounded-xl px-4 py-3">{uploadError}</p>

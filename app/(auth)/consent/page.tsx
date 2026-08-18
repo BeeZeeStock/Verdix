@@ -45,9 +45,9 @@ export default function ConsentPage() {
               <ul className="space-y-1.5 text-xs text-stone leading-relaxed list-none">
                 <li><span className="font-medium text-ink">Contract files</span> are stored securely and only accessible by your organisation.</li>
                 <li><span className="font-medium text-ink">PII masking</span> — names, emails, and identifiers are detected and masked locally before being sent to AI for analysis.</li>
-                <li><span className="font-medium text-ink">AI processing</span> is performed via Amazon Bedrock infrastructure. Your contract data is never used to train AI models.</li>
+                <li><span className="font-medium text-ink">AI processing</span> is performed via Amazon Bedrock infrastructure. Verdix does not use customer contracts or customer data to train models. Contract content processed through Amazon Bedrock is not used to train foundation models.</li>
                 <li><span className="font-medium text-ink">Extracted terms</span> (prices, dates, discounts) power your dashboard only and are never shared with other organisations.</li>
-                <li><span className="font-medium text-ink">Storage</span> is handled by Supabase with encryption at rest, hosted in the EU (Frankfurt).</li>
+                <li><span className="font-medium text-ink">Storage</span> is handled by Supabase with encryption at rest, hosted in the EU (Ireland).</li>
               </ul>
             </div>
 

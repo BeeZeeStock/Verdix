@@ -195,7 +195,7 @@ export default function NewPartnerPage() {
             ))}
           </div>
           <div className="bg-mint/40 border border-sage/20 rounded-xl p-4 text-xs text-forest/70 leading-relaxed">
-            Files encrypted and stored in Frankfurt, Germany (EU). Contract text sent to AI processor for extraction, raw text not retained.
+            Files encrypted and stored in Ireland (EU). Contract text sent to AI processor for extraction, raw text not retained.
           </div>
           <div className="flex justify-between">
             <button onClick={() => setStep(2)} className="border border-forest/20 text-stone text-sm font-medium px-6 py-3 rounded-xl hover:bg-cream transition-colors">← Back</button>

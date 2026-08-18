@@ -35,11 +35,11 @@ export default function PrivacyPage() {
             },
             {
               title: '4. How we use your data — AI processing',
-              body: 'Contract text is processed through Amazon Bedrock, a managed AI infrastructure service provided by Amazon Web Services (AWS). Before any text is sent for AI analysis, personally identifiable information (names, email addresses, and other identifiers) is detected and masked locally on our servers — tokens replace the real values, and the real values never leave our infrastructure. Extracted commercial terms (prices, dates, discounts) are stored in your organisation\'s account only. Your data is never used to train AI models.',
+              body: 'Contract text is processed through Amazon Bedrock, a managed AI infrastructure service provided by Amazon Web Services (AWS). Before any text is sent for AI analysis, personally identifiable information (names, email addresses, and other identifiers) is detected and masked locally on our servers — tokens replace the real values, and the real values never leave our infrastructure. Extracted commercial terms (prices, dates, discounts) are stored in your organisation\'s account only. Verdix does not use customer contracts or customer data to train models. Contract content processed through Amazon Bedrock is not used to train foundation models.',
             },
             {
               title: '5. Data retention',
-              body: 'Account data is retained for the duration of your subscription plus 30 days after termination. Uploaded contract documents are retained for 90 days after job completion, then permanently deleted from storage. Extracted structured data (contract terms, findings) is retained for the duration of your subscription. Consent records are retained for 7 years for legal compliance purposes.',
+              body: 'Verdix retains customer data while the customer\'s account and relevant agreements remain active. Customers may delete agreements and associated data through the service or request deletion. Following termination of the Verdix service, customer data is deleted within 30 days, except where certain records must be retained for legal, accounting, security or compliance purposes. Consent records are retained for 7 years for legal compliance purposes.',
             },
             {
               title: '6. Transfers outside the EEA',
@@ -51,7 +51,7 @@ export default function PrivacyPage() {
             },
             {
               title: '8. Security',
-              body: 'All data is encrypted at rest (AES-256) and in transit (TLS 1.3). Database access is restricted to authenticated application sessions. Access to production systems is restricted to named individuals on a need-to-know basis. PII masking is applied before any data leaves our servers for AI processing.',
+              body: 'Verdix uses encryption in transit and at rest across its core application infrastructure, together with access controls and other technical safeguards designed to protect customer data. Database access is restricted to authenticated application sessions. Access to production systems is restricted to named individuals on a need-to-know basis. PII masking is applied before any data leaves our servers for AI processing.',
             },
             {
               title: '9. Contact',
