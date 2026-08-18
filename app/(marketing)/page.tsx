@@ -355,13 +355,15 @@ function ClauseDrilldown() {
 const SECURITY_CARDS: Array<{
   title: string
   body: string[]
-  contactPrompt?: string
+  proof?: string
   ctas?: Array<{ label: string; href: string }>
+  contactPrompt?: string
+  contactCtas?: Array<{ label: string; href: string }>
 }> = [
   {
     title: 'EU data handling',
     body: [
-      'Application processing and primary customer data storage run in European infrastructure.',
+      'Core application processing and primary customer data storage run in European infrastructure.',
       "AI model processing is routed through Amazon Bedrock's EU infrastructure.",
     ],
     ctas: [{ label: 'Privacy & retention →', href: '/privacy' }],
@@ -374,17 +376,17 @@ const SECURITY_CARDS: Array<{
     ],
   },
   {
-    // Deliberately no "proof" badges (DPA/subprocessors/retention) here yet —
-    // those aren't finished and shouldn't be claimed until they are. Just the
-    // two controls actually verified, plus a genuine contact path for
-    // anything not yet published. See the 2026-08-19 security audit.
     title: 'Governance & traceability',
     body: [
       'Contract terms, reviewer decisions and billing calculations remain linked to their source evidence.',
-      'Customer data access is isolated by organisation.',
+    ],
+    proof: 'DPA · Subprocessors · Privacy',
+    ctas: [
+      { label: 'View DPA →', href: '/dpa' },
+      { label: 'View subprocessors →', href: '/subprocessors' },
     ],
     contactPrompt: 'Security & data protection questions?',
-    ctas: [{ label: 'Contact us →', href: 'mailto:bilal@lynoraai.com?subject=Security%20%26%20Data%20Protection%20Enquiry' }],
+    contactCtas: [{ label: 'Contact us →', href: 'mailto:bilal@lynoraai.com?subject=Verdix%20Security%20and%20Data%20Protection' }],
   },
 ]
 
@@ -402,10 +404,20 @@ function Security() {
             <div key={c.title} className={styles.secC}>
               <h3 className={styles.h3}>{c.title}</h3>
               {c.body.map(p => <p key={p}>{p}</p>)}
-              {c.contactPrompt && <p className={styles.secPrompt}>{c.contactPrompt}</p>}
+              {c.proof && <p className={styles.secPrompt}>{c.proof}</p>}
               {c.ctas && (
                 <div className={styles.secCtaRow}>
                   {c.ctas.map(cta => (
+                    <a key={cta.label} href={cta.href} className={styles.secCta}>
+                      {cta.label}
+                    </a>
+                  ))}
+                </div>
+              )}
+              {c.contactPrompt && <p className={styles.secPrompt}>{c.contactPrompt}</p>}
+              {c.contactCtas && (
+                <div className={styles.secCtaRow}>
+                  {c.contactCtas.map(cta => (
                     <a key={cta.label} href={cta.href} className={styles.secCta}>
                       {cta.label}
                     </a>
@@ -524,6 +536,8 @@ function Footer() {
             <Link href="/login">Sign in</Link>
             <Link href="/privacy">Privacy Policy</Link>
             <Link href="/terms">Terms of Service</Link>
+            <Link href="/dpa">DPA</Link>
+            <Link href="/subprocessors">Subprocessors</Link>
             <a href="mailto:bilal@lynoraai.com">Contact</a>
           </div>
         </div>

@@ -39,7 +39,7 @@ export default function TermsPage() {
             },
             {
               title: '5. Data processing',
-              body: 'By uploading contracts and billing data, you instruct Lynora AB to process that data on your behalf for the purpose of delivering the service. Our processing of personal data within your documents is governed by our Privacy Policy and, where applicable, the Data Processing Agreement available on request. You remain the data controller for any personal data contained in documents you upload.',
+              body: <>By uploading contracts and billing data, you instruct Lynora AB to process that data on your behalf for the purpose of delivering the service. Our processing of personal data within your documents is governed by our Privacy Policy and, where applicable, our <Link href="/dpa" className="text-forest underline">Data Processing Agreement</Link>, which is publicly available on the Verdix website. Customers requiring an executed copy may request a signed DPA from Lynora AB. You remain the data controller for any personal data contained in documents you upload.</>,
             },
             {
               title: '6. Subscriptions and payment',

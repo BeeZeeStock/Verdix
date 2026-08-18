@@ -43,7 +43,7 @@ export default function PrivacyPage() {
             },
             {
               title: '6. Transfers outside the EEA',
-              body: <>AI processing is performed via <a href="https://aws.amazon.com/bedrock/" target="_blank" rel="noopener noreferrer" className="text-forest underline">Amazon Bedrock</a> using EU-hosted AWS regions, meaning your contract data is processed within the European Economic Area and does not leave it for AI analysis. All other platform data is also stored within EU infrastructure.</>,
+              body: <>AI processing is performed via <a href="https://aws.amazon.com/bedrock/" target="_blank" rel="noopener noreferrer" className="text-forest underline">Amazon Bedrock</a> using EU-hosted AWS regions, meaning your contract data is processed within the European Economic Area and does not leave it for AI analysis. Verdix&apos;s core application processing and primary customer data storage are hosted within European infrastructure. Certain ancillary service providers, such as transactional email providers, may process limited personal data outside the EEA subject to appropriate data-transfer safeguards.</>,
             },
             {
               title: '7. Your rights',

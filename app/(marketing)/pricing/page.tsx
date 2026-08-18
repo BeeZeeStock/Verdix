@@ -256,7 +256,7 @@ export default async function PricingPage() {
               },
               {
                 q: 'Is my contract data private?',
-                a: 'Yes. All data is stored in EU-hosted infrastructure (Supabase, Ireland). PII is masked before any AI processing. Verdix does not use customer contracts or customer data to train models. Contract content processed through Amazon Bedrock is not used to train foundation models.',
+                a: 'Yes. Verdix\'s core application processing and primary customer data storage are EU-hosted, with the primary database and file storage in Ireland. Some ancillary providers may process limited data outside the EEA under appropriate transfer safeguards. PII is masked before any AI processing. Verdix does not use customer contracts or customer data to train models. Contract content processed through Amazon Bedrock is not used to train foundation models.',
               },
             ].map(({ q, a }) => (
               <div key={q} className="border-b border-forest/8 pb-5">
