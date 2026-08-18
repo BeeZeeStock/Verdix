@@ -12,36 +12,50 @@ export const metadata: Metadata = {
 }
 
 const CALENDLY_URL = 'https://calendly.com/bilal-zahoor/30min'
+const DEMO_URL = '/demos/contract-to-billing.html'
 
 function Nav() {
-  // Built once and reused for both the desktop nav (styles.navLinks, hidden
-  // below 720px) and the mobile slide-down panel (MobileNav) — a hamburger
-  // menu was previously entirely missing on mobile, so navLinks{display:none}
-  // left small-screen visitors with no way to reach Sign in, Pricing, or the
-  // primary CTA from the nav bar at all.
-  const links = (
+  // The persistent desktop top nav is kept deliberately short (conversion
+  // pass: Product/Security/Pricing/Sign in/CTA only) — Who it's for, Partner
+  // verification, Demo and Blog stay reachable via the footer and the mobile
+  // panel, just not competing for space in the bar itself. The mobile
+  // slide-down panel keeps the fuller set since a visitor who opens it has
+  // already asked to see everything, and it was previously the only way for
+  // small screens to reach Sign in/Pricing/the primary CTA at all.
+  const desktopLinks = (
+    <>
+      <a href="#product">Product</a>
+      <a href="#security">Security</a>
+      <a href="#pricing">Pricing</a>
+      <Link href="/login">Sign in</Link>
+      <a className={`${styles.btn} ${styles.btnP} ${styles.btnSm}`} href={DEMO_URL} target="_blank" rel="noopener noreferrer">Watch demo</a>
+    </>
+  )
+  const mobileLinks = (
     <>
       <a href="#who">Who it&apos;s for</a>
       <a href="#product">Product</a>
       <a href="#partner">Partner verification</a>
       <a href="#security">Security</a>
       <a href="#pricing">Pricing</a>
-      <a href="/demos/contract-to-billing.html" target="_blank" rel="noopener noreferrer">Demo</a>
+      <a href={DEMO_URL} target="_blank" rel="noopener noreferrer">Watch demo</a>
       <Link href="/blog">Blog</Link>
       <Link href="/login">Sign in</Link>
-      <a className={`${styles.btn} ${styles.btnP} ${styles.btnSm}`} href={CALENDLY_URL} target="_blank" rel="noopener noreferrer">Book a working session</a>
+      <a className={`${styles.btn} ${styles.btnP} ${styles.btnSm}`} href={CALENDLY_URL} target="_blank" rel="noopener noreferrer">Book a demo</a>
     </>
   )
   return (
     <nav className={styles.nav}>
       <div className={styles.navIn}>
         <Link className={styles.brand} href="#top"><VerdixLogo size={28} />Verdix</Link>
-        <div className={styles.navLinks}>{links}</div>
-        <MobileNav><div className={styles.navMobileLinks}>{links}</div></MobileNav>
+        <div className={styles.navLinks}>{desktopLinks}</div>
+        <MobileNav><div className={styles.navMobileLinks}>{mobileLinks}</div></MobileNav>
       </div>
     </nav>
   )
 }
+
+const PILOT_DISCLOSURE = 'Live Remembill design-partner pilot using a real enterprise agreement. Customer identifiers are redacted and commercial figures shown are illustrative.'
 
 function Hero() {
   return (
@@ -51,15 +65,15 @@ function Hero() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
             <span className={styles.kicker}>Agreement-to-billing for complex B2B contracts</span>
             <h1 className={styles.h1}>Your contracts already say what to bill. <em style={{ fontStyle: 'normal', fontWeight: 600, color: 'var(--color-sage)' }}>Your billing system doesn&apos;t know it.</em></h1>
-            <p className={styles.lede}>Verdix reads the signed agreement, pulls the usage it requires, and turns both into approved billing instructions for the systems you already run. Every calculation keeps the contract clause and usage source behind it.</p>
+            <p className={styles.icpLine}>For SaaS, fintech, telecom and energy companies billing negotiated, usage-linked B2B contracts.</p>
+            <p className={styles.lede}>Verdix reads the signed agreement, pulls the usage it requires, and turns both into approved, clause-linked billing instructions. Keep your existing billing stack, with live integrations to Remembill and Stripe.</p>
             <div className={styles.heroCta}>
-              <a className={`${styles.btn} ${styles.btnP}`} href={CALENDLY_URL} target="_blank" rel="noopener noreferrer">Book a 30-minute working session →</a>
-              <a className={`${styles.btn} ${styles.btnS}`} href="#product">See the product</a>
+              <a className={`${styles.btn} ${styles.btnP}`} href={DEMO_URL} target="_blank" rel="noopener noreferrer">Watch the 2-minute walkthrough →</a>
+              <a className={`${styles.btn} ${styles.btnS}`} href={CALENDLY_URL} target="_blank" rel="noopener noreferrer">Book a demo</a>
             </div>
             <div className={styles.trust}>
               <span><i className={styles.dot} />No billing migration</span>
-              <span><i className={styles.dot} />No new usage pipeline</span>
-              <span><i className={styles.dot} />EU-hosted · Personal identifiers masked before AI</span>
+              <span className={styles.trustHideMobile}><i className={styles.dot} />No new usage pipeline</span>
               <span><i className={styles.dot} />Clause-linked calculations</span>
             </div>
           </div>
@@ -67,29 +81,31 @@ function Hero() {
             <div className={styles.proofTop}>
               <div>
                 <span className={`${styles.pill} ${styles.pillLive}`}>Live design-partner pilot</span>
-                <span className={styles.illus} style={{ marginLeft: 8 }}>Illustrative commercial figures</span>
                 <h3 className={styles.h3} style={{ marginTop: 14 }}>From signed agreement to paid invoice</h3>
               </div>
             </div>
             <p className={styles.xs} style={{ fontSize: '.86rem', lineHeight: 1.55 }}>Verdix turns the commercial terms and usage in the agreement into approved billing. Remembill takes the invoice from delivery to payment, including recovery when a payment fails.</p>
 
+            {/* Desktop: horizontal workflow. Below 720px this is swapped for
+                the compact numbered blocks below — the full arrow chain reads
+                fine at full width but consumes most of a phone screen. */}
             <div className={styles.flow}>
               <div className={styles.flowNode}>Signed agreement</div>
-              <div className={styles.flowArrow} aria-hidden="true">↓</div>
+              <div className={styles.flowArrow} aria-hidden="true">→</div>
               <div className={styles.flowCol}>
                 <div className={styles.flowColLabel}>
                   <VerdixLogo size={16} />
                   Verdix
                 </div>
                 <ul>
-                  <li>Fixed + variable fees configured</li>
-                  <li>Usage pulled from source</li>
+                  <li>Fixed + variable billing logic configured</li>
+                  <li>Required usage pulled</li>
                   <li>Clause-linked review &amp; approval</li>
                 </ul>
               </div>
-              <div className={styles.flowArrow} aria-hidden="true">↓</div>
+              <div className={styles.flowArrow} aria-hidden="true">→</div>
               <div className={styles.flowNode}>API</div>
-              <div className={styles.flowArrow} aria-hidden="true">↓</div>
+              <div className={styles.flowArrow} aria-hidden="true">→</div>
               <div className={styles.flowCol}>
                 <div className={styles.flowColLabel}>
                   <Image src="/images/logo-remembill.png" alt="" width={16} height={16} style={{ height: 16, width: 'auto', borderRadius: 3, flexShrink: 0 }} />
@@ -98,11 +114,32 @@ function Hero() {
                 <ul>
                   <li>Invoice delivered</li>
                   <li>Simple payment without login</li>
-                  <li>Failed payments recovered</li>
+                  <li>Failed-payment recovery</li>
                 </ul>
               </div>
-              <div className={styles.flowArrow} aria-hidden="true">↓</div>
-              <div className={`${styles.flowNode} ${styles.flowNodePaid}`}>Paid</div>
+              <div className={styles.flowArrow} aria-hidden="true">→</div>
+              <div className={`${styles.flowNode} ${styles.flowNodePaid}`}>Payment</div>
+            </div>
+
+            <div className={styles.flowMobile}>
+              <div className={styles.flowMobileStep}>
+                <span className={styles.flowMobileNum}>1</span>
+                <div><div className={styles.flowMobileLabel}>Verdix</div><p>Commercial terms + usage → approved billing</p></div>
+              </div>
+              <div className={styles.flowMobileStep}>
+                <span className={styles.flowMobileNum}>2</span>
+                <div><div className={styles.flowMobileLabel}>API</div><p>Approved invoice data sent automatically</p></div>
+              </div>
+              <div className={styles.flowMobileStep}>
+                <span className={styles.flowMobileNum}>3</span>
+                <div><div className={styles.flowMobileLabel}>Remembill</div><p>Invoice delivery → payment → failed-payment recovery</p></div>
+              </div>
+              <div className={styles.flowMobileOutcome}>No manual contract re-entry. Less friction from agreement to payment.</div>
+              <div className={styles.flowMobileProof}>
+                <div className={styles.proofStat}><span>Commercial model</span><b>Fixed + variable usage · 3 SMS tiers · quarterly minimum</b></div>
+                <div className={styles.proofStat}><span>Traceability</span><b className={styles.ok}>Clause-linked ✓</b></div>
+              </div>
+              <p className={styles.proofCaption}>{PILOT_DISCLOSURE}</p>
             </div>
           </div>
           {/* Gustav quote — pulled for now, will reintroduce later */}
@@ -117,11 +154,11 @@ function Hero() {
 
         <div className={styles.proofStats}>
           <div className={styles.proofStat}><span>Commercial model</span><b>Fixed + variable usage · 3 SMS tiers · quarterly minimum</b></div>
-          <div className={styles.proofStat}><span>Verdix → Remembill</span><b>Approved invoices submitted via API</b></div>
+          <div className={styles.proofStat}><span>Verdix → Remembill</span><b>Approved invoice data submitted to Remembill via API</b></div>
           <div className={styles.proofStat}><span>End-to-end outcome</span><b>No manual contract re-entry · less friction from invoice to payment</b></div>
           <div className={styles.proofStat}><span>Source traceability</span><b className={styles.ok}>Clause-linked ✓</b></div>
         </div>
-        <p className={styles.proofCaption}>Live Remembill design-partner pilot using a real enterprise agreement.</p>
+        <p className={styles.proofCaption}>{PILOT_DISCLOSURE}</p>
       </div>
     </section>
   )
@@ -134,12 +171,12 @@ function TheGap() {
         <div className={styles.secHead}>
           <span className={styles.kicker}>The gap</span>
           <h2 className={styles.h2}>Bespoke contracts move faster than billing systems</h2>
-          <p className={styles.lede}>Tiers, minimum commitments, credits, ramp discounts and amendments get negotiated in the agreement. Someone still has to translate them into executable billing logic — every cycle, by hand.</p>
+          <p className={styles.lede}>Commercial terms get negotiated in the agreement. Someone still has to translate them into billing logic, every cycle, by hand.</p>
         </div>
         <div className={styles.cards3}>
-          <div className={styles.card}><span className={styles.num}>01</span><h3 className={styles.h3}>Terms live in the agreement</h3><p>Rates, tiers, commitments and exceptions sit in contracts and amendments — not in the billing configuration.</p></div>
-          <div className={styles.card}><span className={styles.num}>02</span><h3 className={styles.h3}>The invoice depends on data elsewhere</h3><p>Transactions, sessions, seats, shipments or API calls live in operational systems, outside the billing workflow.</p></div>
-          <div className={styles.card}><span className={styles.num}>03</span><h3 className={styles.h3}>People connect the two manually</h3><p>Teams re-read agreements, pull usage and rebuild the logic each cycle. Errors surface after invoicing, if at all.</p></div>
+          <div className={styles.card}><span className={styles.num}>01</span><h3 className={styles.h3}>Terms live in the agreement</h3><p>Rates, tiers, commitments and exceptions never make it cleanly into billing configuration.</p></div>
+          <div className={styles.card}><span className={styles.num}>02</span><h3 className={styles.h3}>Usage lives somewhere else</h3><p>Transactions, sessions, seats and consumption sit in operational systems, outside the billing workflow.</p></div>
+          <div className={styles.card}><span className={styles.num}>03</span><h3 className={styles.h3}>People connect them manually</h3><p>Teams interpret the contract, retrieve usage and rebuild the calculation every cycle.</p></div>
         </div>
         <div className={styles.note}>
           <span><b>Symptoms:</b> billing rework · revenue leakage · delayed invoices · slower close · billing disputes without clear evidence</span>
@@ -150,10 +187,10 @@ function TheGap() {
 }
 
 const ICP_CARDS = [
-  { title: 'Enterprise SaaS & AI', body: 'Bespoke pricing schedules, minimum commitments, usage tiers, ramp discounts, overages, credits, annual escalators and amendments.', buyer: 'RevOps · Billing Operations · Finance · Deal Desk' },
-  { title: 'Payments & fintech', body: 'Merchant-specific transaction rates, volume tiers, minimum fees, platform charges, revenue shares and negotiated pricing exceptions.', buyer: 'Billing Operations · RevOps · Finance' },
-  { title: 'EV charging & energy', body: 'Customer-specific tariffs, subscription and usage charges, site-specific pricing, energy pass-through rules and contract amendments.', buyer: 'Billing Operations · Revenue Operations · Finance' },
-  { title: 'Telecom & connectivity', body: 'Customer-specific messaging, voice, data and IoT rates, volume tiers, minimum commitments, reseller pricing and negotiated contract amendments.', buyer: 'Revenue Assurance · Billing Operations · Finance' },
+  { title: 'Enterprise SaaS & AI', body: 'Bespoke pricing schedules, minimum commitments, usage tiers, ramp discounts, overages, credits, annual escalators and amendments.', tags: 'Usage tiers · minimums · ramp discounts · credits', buyer: 'RevOps · Billing Operations · Finance · Deal Desk' },
+  { title: 'Payments & fintech', body: 'Merchant-specific transaction rates, volume tiers, minimum fees, platform charges, revenue shares and negotiated pricing exceptions.', tags: 'Transaction rates · volume tiers · minimum fees · revenue shares', buyer: 'Billing Operations · RevOps · Finance' },
+  { title: 'EV charging & energy', body: 'Customer-specific tariffs, subscription and usage charges, site-specific pricing, energy pass-through rules and contract amendments.', tags: 'Tariffs · usage charges · site-specific pricing · pass-through rules', buyer: 'Billing Operations · Revenue Operations · Finance' },
+  { title: 'Telecom & connectivity', body: 'Customer-specific messaging, voice, data and IoT rates, volume tiers, minimum commitments, reseller pricing and negotiated contract amendments.', tags: 'Messaging & data rates · volume tiers · minimums · reseller pricing', buyer: 'Revenue Assurance · Billing Operations · Finance' },
 ]
 
 function WhoBand() {
@@ -175,7 +212,8 @@ function WhoBand() {
           {ICP_CARDS.map(c => (
             <div key={c.title} className={styles.icpCard}>
               <h3 className={styles.h3}>{c.title}</h3>
-              <p>{c.body}</p>
+              <p className={styles.icpBodyFull}>{c.body}</p>
+              <p className={styles.icpBodyShort}>{c.tags}</p>
               <div className={styles.icpBuyer}>{c.buyer}</div>
             </div>
           ))}
@@ -217,8 +255,14 @@ function HowItWorks() {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
             <span style={{ fontSize: '.8rem', opacity: .55 }}>Live integrations</span>
-            <Image src="/images/logo-remembill.png" alt="Remembill" width={26} height={26} style={{ height: 26, width: 'auto', borderRadius: 4 }} />
-            <Image src="/images/logo-stripe.png" alt="Stripe" width={46} height={22} style={{ height: 22, width: 'auto' }} />
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Image src="/images/logo-remembill.png" alt="" width={26} height={26} style={{ height: 26, width: 'auto', borderRadius: 4 }} />
+              <span style={{ fontSize: '.88rem', fontWeight: 500, color: 'var(--color-ink)' }}>Remembill</span>
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Image src="/images/logo-stripe.png" alt="" width={46} height={22} style={{ height: 22, width: 'auto' }} />
+              <span style={{ fontSize: '.88rem', fontWeight: 500, color: 'var(--color-ink)' }}>Stripe</span>
+            </span>
           </div>
         </div>
       </div>
@@ -243,16 +287,12 @@ function ProductSection() {
 
 function PartnerSection() {
   return (
-    <section className={styles.section} id="partner">
+    <section className={styles.section} id="partner" style={{ paddingTop: 0, paddingBottom: 56 }}>
       <div className={styles.wrap}>
-        <div className={styles.secHead}>
+        <div className={styles.partnerCompact}>
           <span className={styles.kicker}>The other side of the ledger</span>
-          <h2 className={styles.h2}>The same agreement logic can also verify what your partners charge you</h2>
-          <p className={styles.lede}>Verdix applies the same contract intelligence to partner, supplier and reseller agreements — comparing incoming invoices against the rates, tiers, discounts, minimums and other terms you actually agreed. Instead of rebuilding the calculation by hand, your team gets a clause-backed view of what was expected, what was charged and where the two differ.</p>
-        </div>
-        <div className={styles.cards2}>
-          <div className={styles.card}><h3 className={styles.h3}>What it catches</h3><p>Wrong rates and tiers, duplicate charges, expired discounts, unsupported fees, waived minimums still being charged, missed rebates and incorrect indexation.</p></div>
-          <div className={styles.card}><h3 className={styles.h3}>What you get</h3><p>A clause-backed expected-versus-actual comparison, a quantified exception list, and an audit trail showing why each charge is correct — or why it should be challenged.</p></div>
+          <p className={styles.lede} style={{ marginTop: 8 }}>Verdix can also use the same agreement logic to verify incoming supplier, reseller and partner invoices.</p>
+          <p className={styles.sm} style={{ marginTop: 10 }}><b style={{ color: 'var(--color-ink)', fontWeight: 500 }}>Catches:</b> wrong rates · expired discounts · unsupported fees · missed rebates · incorrect indexation</p>
         </div>
       </div>
     </section>
@@ -297,6 +337,9 @@ function ClauseDrilldown() {
                 </tbody>
               </table>
               <p style={{ marginBottom: 0 }}><span className={styles.hl}><b>Garanterad minimiavgift:</b> Kunden betalar lägst 5 000 SEK per kalenderkvartal för SMS-påminnelser, oavsett faktisk volym under kvartalet.</span></p>
+              <div className={styles.annotation}>
+                <b>English interpretation:</b> SMS usage is measured quarterly in arrears. The first 500 reminders are included in the base fee, usage above that is tiered, and the customer is subject to a SEK 5,000 minimum charge per calendar quarter.
+              </div>
             </div>
           </div>
         </div>
@@ -341,7 +384,7 @@ const PLANS = [
     price: 'Start with one real agreement',
     warmup: 'Test Verdix on a historical contract and the usage behind it before committing to a production integration.',
     features: ['Complimentary first audit', 'Read-only validation', 'Early product access', 'Direct roadmap input', 'Preferred commercial terms'],
-    cta: 'Book a 30-minute working session →', href: CALENDLY_URL, primary: true,
+    cta: 'Bring us an agreement →', href: CALENDLY_URL, primary: true,
   },
   {
     name: 'Growing teams', hi: false,
@@ -409,7 +452,7 @@ function CTA() {
           <span style={{ opacity: .8 }}>Early access · Direct roadmap input · Preferred commercial terms</span>
         </p>
         <div className={styles.ctaB}>
-          <a className={`${styles.btn} ${styles.btnP}`} href={CALENDLY_URL} target="_blank" rel="noopener noreferrer">Book a 30-minute working session →</a>
+          <a className={`${styles.btn} ${styles.btnP}`} href={CALENDLY_URL} target="_blank" rel="noopener noreferrer">Bring us an agreement →</a>
         </div>
       </div>
     </section>

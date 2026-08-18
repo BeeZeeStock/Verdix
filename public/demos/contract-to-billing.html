@@ -15,12 +15,41 @@
   --b:rgba(26,61,43,.10);--bm:rgba(26,61,43,.20)
 }
 html,body{height:100%;overflow:hidden;font-family:'Inter',system-ui,-apple-system,sans-serif;color:var(--ink);background:var(--cr)}
-#app{display:flex;height:100vh;height:100dvh;overflow:hidden}
+body{display:flex;flex-direction:column}
+/* flex:1 (not a fixed vh calc) so #app always fills whatever's left under
+   #promo, however tall #promo gets — one row while capturing, two once the
+   privacy line or the success state wraps it, without a magic-number fight */
+#app{display:flex;flex:1;min-height:0;overflow:hidden}
+
+/* ── Lead-capture strip: sits alongside the walkthrough (never gates it) ── */
+#promo{flex-shrink:0;background:var(--f);color:#fff;padding:9px 18px;font-size:12.5px}
+#promo-row{display:flex;align-items:center;gap:12px}
+#promo-q{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#promo-form{display:flex;align-items:center;gap:8px;margin-left:auto;flex-shrink:0}
+#promo-email{width:190px;max-width:40vw;padding:7px 10px;border-radius:7px;border:1px solid rgba(255,255,255,.28);background:rgba(255,255,255,.09);color:#fff;font-size:12px;font-family:inherit}
+#promo-email::placeholder{color:rgba(255,255,255,.55)}
+#promo-email:focus{outline:none;border-color:#73C99B;background:rgba(255,255,255,.15)}
+#promo-email.err{border-color:#E8877A}
+#promo-btn{flex-shrink:0;padding:7px 14px;border:none;border-radius:7px;background:#fff;color:var(--f);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .15s}
+#promo-btn:hover{background:var(--mt)}
+#promo-btn:disabled{opacity:.6;cursor:default}
+#promo-privacy{margin-top:5px;font-size:10.5px;color:rgba(255,255,255,.6);line-height:1.4}
+#promo-privacy a{color:rgba(255,255,255,.85)}
+#promo-error{margin-top:4px;font-size:10.5px;color:#F3B4A8;min-height:13px}
+#promo-success{display:none;align-items:center;gap:14px;flex-wrap:wrap;transition:opacity .3s ease}
+#promo-success-msg{font-weight:600}
+#promo-success-sub{color:rgba(255,255,255,.75)}
+#promo.collapsed{padding:6px 18px}
+#promo.collapsed #promo-success-sub{display:none}
+.hp-field{position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none}
+@media(max-width:640px){#promo-q{display:none}#promo-email{width:auto;flex:1;max-width:none}#promo-btn{font-size:11px;padding:7px 10px}}
 
 /* ── Sidebar ── */
 #sb{width:210px;flex-shrink:0;background:var(--sb);border-right:1px solid var(--b);display:flex;flex-direction:column;height:100%;overflow:hidden}
-.sb-logo{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--b)}
+.sb-logo{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--b);text-decoration:none;color:inherit;transition:opacity .15s}
+.sb-logo:hover{opacity:.75}
 .sb-logo-txt{font-weight:600;font-size:15px;color:var(--f);letter-spacing:.02em}
+.sb-logo-back{font-size:10px;color:var(--st);margin-left:auto}
 .sb-nav{flex:1;overflow-y:auto;padding:6px 0}
 .sb-s{padding:10px 16px 3px;font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:#9CA3AF}
 .ni{display:flex;align-items:center;gap:9px;margin:1px 7px;padding:7px 11px;border-radius:8px;font-size:13px;color:var(--st)}
@@ -226,13 +255,32 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',system-ui,-apple-syste
 </style>
 </head>
 <body>
+<div id="promo">
+  <div id="promo-capture">
+    <div id="promo-row">
+      <span id="promo-q">Want to see Verdix on one of your agreements?</span>
+      <div id="promo-form">
+        <input type="text" id="promo-hp" class="hp-field" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" />
+        <input type="email" id="promo-email" placeholder="Work email" autocomplete="email" />
+        <button type="button" id="promo-btn" onclick="submitLead()">Get in touch →</button>
+      </div>
+    </div>
+    <p id="promo-privacy">We&rsquo;ll only use your email to follow up about Verdix. <a href="/privacy" target="_blank" rel="noopener noreferrer">Privacy policy →</a></p>
+    <p id="promo-error"></p>
+  </div>
+  <div id="promo-success">
+    <span id="promo-success-msg">Thanks. We have your email.</span>
+    <span id="promo-success-sub">We&rsquo;ll be in touch shortly.</span>
+  </div>
+</div>
 <div id="app">
 <!-- Sidebar -->
 <aside id="sb">
-  <div class="sb-logo">
+  <a class="sb-logo" href="/" title="Back to verdix.ai">
     <svg width="26" height="26" viewBox="0 0 28 28" fill="none"><rect width="28" height="28" rx="7" fill="#1A3D2B"/><path d="M7.5 7L11 7L14 18.5L17 7L20.5 7L14 22Z" fill="#fff"/><rect x="11" y="24" width="6" height="1.5" rx=".75" fill="#73C99B"/></svg>
     <span class="sb-logo-txt">Verdix</span>
-  </div>
+    <span class="sb-logo-back">← Home</span>
+  </a>
   <nav class="sb-nav">
     <div class="sb-s">Insights</div>
     <div class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Dashboard</div>
@@ -449,6 +497,77 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',system-ui,-apple-syste
 </div>
 
 <script>
+// Fires into whatever analytics is already on the page, if any — this demo
+// ships with none, so these are no-ops today and light up automatically
+// once gtag/Plausible/PostHog (or similar) is added site-wide.
+function track(event, props) {
+  try {
+    if (window.gtag) window.gtag('event', event, props || {})
+    else if (window.plausible) window.plausible(event, { props: props || {} })
+    else if (window.posthog && window.posthog.capture) window.posthog.capture(event, props || {})
+  } catch (e) {}
+}
+
+async function submitLead() {
+  const emailInput = document.getElementById('promo-email')
+  const hpInput = document.getElementById('promo-hp')
+  const errorEl = document.getElementById('promo-error')
+  const btn = document.getElementById('promo-btn')
+  const email = emailInput.value.trim()
+  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+
+  errorEl.textContent = ''
+  if (!valid) {
+    emailInput.classList.add('err')
+    errorEl.textContent = 'Enter a valid work email.'
+    emailInput.focus()
+    return
+  }
+  emailInput.classList.remove('err')
+  btn.disabled = true
+  btn.textContent = 'Sending…'
+
+  try {
+    const res = await fetch('/api/demo-lead', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: email,
+        source: 'demo_walkthrough',
+        pagePath: window.location.pathname,
+        website: hpInput.value, // honeypot — real visitors never fill this
+      }),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      errorEl.textContent = data.error || 'Something went wrong. Please try again.'
+      btn.disabled = false
+      btn.textContent = 'Get in touch →'
+      return
+    }
+    track('demo_lead_submitted', { source: 'demo_walkthrough' })
+    document.getElementById('promo-capture').style.display = 'none'
+    const successEl = document.getElementById('promo-success')
+    successEl.style.display = 'flex'
+    // Collapse to a small confirmation after a few seconds — the flow ends
+    // at "we have your email," nothing further is asked of the visitor.
+    setTimeout(() => {
+      document.getElementById('promo-success-msg').textContent = '✓ Email received'
+      document.getElementById('promo').classList.add('collapsed')
+    }, 4000)
+  } catch (e) {
+    errorEl.textContent = 'Network error. Please try again.'
+    btn.disabled = false
+    btn.textContent = 'Get in touch →'
+  }
+}
+
+document.getElementById('promo-email').addEventListener('input', () => {
+  document.getElementById('promo-email').classList.remove('err')
+  document.getElementById('promo-error').textContent = ''
+})
+document.getElementById('promo-email').addEventListener('keydown', e => { if (e.key === 'Enter') submitLead() })
+
 let cur = 0
 const TOTAL = 5
 const sideNav = ['ni-up','ni-up','ni-up','ni-cfg','ni-cfg']

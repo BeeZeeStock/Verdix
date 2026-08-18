@@ -6,8 +6,8 @@ import styles from './landing.module.css'
 
 const TABS = [
   { id: 'p1', label: '1 · Extract' },
-  { id: 'p3', label: '2 · Configure billing' },
-  { id: 'p2', label: '3 · Commercial logic' },
+  { id: 'p2', label: '2 · Commercial logic' },
+  { id: 'p3', label: '3 · Configure billing' },
   { id: 'p4', label: '4 · Review & approve' },
   { id: 'p5', label: 'Graphical view' },
 ] as const
