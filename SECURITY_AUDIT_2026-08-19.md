@@ -23,6 +23,23 @@ Shipped to production across 4 commits (`1ffbc542` security release, `f6c25799` 
 - `execute/route.ts` was re-extracting the same PDF a second time independently of `detect-pii/route.ts` — doubling Bedrock calls/cost per contract. Fixed via a short-lived `jobs.pending_extracted_text` handoff column (written once, consumed once, self-cleaning).
 - A recursive `setTimeout` polling loop in `configure/[id]/page.tsx` never cancelled itself on effect re-run, allowing orphaned poll chains to accumulate and flood `/meter-mappings` with request bursts (360+ near-simultaneous calls observed) — this is what caused "Confirm & apply" to appear to hang during testing (the click never reached the server). Fixed with a cancellation flag + stored timer id.
 
+## VERCEL COMPUTE REGION MIGRATION — production-verified 2026-08-18
+
+**Supabase region: West EU (Ireland) / `eu-west-1`** — confirmed manually by the user directly in the Supabase dashboard (Project Settings → General), not inferred from the project URL or any network-level signal. A Cloudflare edge-datacenter header (`cf-ray: ...-ARN`) was checked during this audit and explicitly rejected as unreliable evidence, since it reflects Cloudflare's request-routing edge, not the database's true origin location.
+
+**Vercel compute region: Dublin / `dub1` (`eu-west-1`)** — was `iad1` (Washington D.C., US) for the entire duration of this audit and every prior deployment this session; migrated 2026-08-18, commit `24e530d7`. `dub1` is the same AWS region as both Supabase and Bedrock.
+
+- **Config change**: `vercel.json` top-level `"regions": ["dub1"]` — confirmed via Vercel's own current documentation (fetched live, not from memory) that this remains the supported, version-controlled way to set a project's default function region, and that no `functions.*.regions` or per-route `preferredRegion` override exists anywhere in the codebase to conflict with it. Single region only, as instructed — no multi-region failover configured.
+- **Deployed to Preview first** (`verdix-j5k9x19uy`), full smoke suite run against it, then promoted to Production only after passing.
+- **Independent verification the function actually moved — not inferred, not assumed**:
+  - Vercel's own build manifest: `npx vercel inspect ... --wait` shows every lambda tagged `[dub1]` (previously always `[iad1]`).
+  - Live request metadata on the real production domain: `curl -sI https://www.lynoraai.com/api/debug` → `x-vercel-id: arn1::dub1::...` (the middle segment is the actual function-execution region; `arn1` is just the Cloudflare/Vercel edge PoP that received the request).
+- **Full smoke suite re-run against production post-migration**: RLS isolation (8/8), route-level auth (401/403 on all 5 previously-fixed routes), security headers, a genuinely re-signed Stripe webhook event, Remembill webhook (correctly still 401 — no secret configured yet, unrelated to region), Remembill payment-sync cron (`checked: 11, paid: 0`), retention-cron dry-run (`candidate_count: 0`, no deletions), demo-lead capture (real Supabase write), and both Bedrock AI clients (main extraction + meter-mapping fast client) invoked live and returned correct responses through the EU Bedrock path. All passed.
+- **Latency, before (`iad1`) vs after (`dub1`), same methodology both times**: retention-cron dry-run (a real Supabase-querying request) went from **782ms avg → 371ms avg** (production, ~53% faster) — consistent with compute now being co-located with the database instead of crossing the Atlantic on every DB round-trip. No endpoint tested showed a regression.
+- **Not verified by browser**: sign-in, contract upload, PII detection, extraction, review panel, "Confirm & apply", and meter mapping were not re-tested via the UI for this specific change (no browser automation available) — but this migration changed zero application code, only the function execution region, and those exact flows were manually verified end-to-end on the immediately-preceding preview just prior to this change.
+
+**Public security copy**: not touched by this migration, per instruction. Now that both Supabase and Vercel compute are confirmed EU (`eu-west-1`), the "EU-based infrastructure" claim no longer has an unresolved compute-region gap — but updating the actual Privacy Policy/Security page wording is a separate step, not done as part of this verification.
+
 ---
 
 ## 1. Findings & vulnerabilities (severity-ordered)
@@ -131,9 +148,11 @@ Disclosed whether `AUTH_SECRET`/`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are se
 - **Backups/PITR** — Supabase plan tier and backup configuration are dashboard-only; not visible from code.
 - **MFA on Vercel/Supabase/AWS accounts** — dashboard-only.
 
-## 5. Vercel compute region — flagged, not changed
+## 5. Vercel compute region — ✅ RESOLVED 2026-08-18
 
-Every deployment this session (`npx vercel inspect ... --wait`) showed lambdas running in `[iad1]` (US East, Virginia) — `vercel.json` has no `regions` override, so the app runs on Vercel's default region. This means Next.js API routes (including ones that briefly hold contract text in memory before calling Bedrock) execute in the US, even though the database and AI inference are EU-pinned. Whether this matters depends on how strictly "does not leave [the EEA]" is meant — I did not move this myself since changing a Vercel project's function region is an infrastructure change I was told to report rather than apply. If EU-only compute is required, that's a Vercel project-settings change to make deliberately, not a code fix.
+Every deployment throughout this audit (`npx vercel inspect ... --wait`) showed lambdas running in `[iad1]` (Washington D.C., US) — `vercel.json` had no `regions` override, so the app ran on Vercel's default region, even though the database and AI inference were EU-pinned. Originally flagged as an infra decision to report rather than apply unilaterally.
+
+Explicitly instructed and migrated: `vercel.json` now sets `"regions": ["dub1"]` (Dublin, `eu-west-1` — the same AWS region as Supabase and Bedrock), single-region only, no failover. Deployed to Preview, full smoke suite passed (including live Bedrock calls through both AI clients and a real Supabase write), latency compared before/after (53% faster on a Supabase-touching endpoint, no regressions), then promoted to Production and independently re-verified: Vercel's build manifest tags every function `[dub1]`, and a live request against `www.lynoraai.com` returns `x-vercel-id: arn1::dub1::...`. Full detail in the "VERCEL COMPUTE REGION MIGRATION" section above.
 
 ## 6. Decisions requiring your call
 
@@ -148,7 +167,7 @@ Every deployment this session (`npx vercel inspect ... --wait`) showed lambdas r
 
 | Public claim | Implementation evidence | Verified? | Fix made | Safe website wording |
 |---|---|---|---|---|
-| EU-based infrastructure | AI: EU-pinned, **confirmed via live AWS CloudWatch metrics against production** (`eu-west-1`). Supabase: **confirmed `eu-west-1` (Ireland)** directly in the dashboard — same region as Bedrock. Vercel compute: **US** (`iad1`, confirmed from deploy logs) — the one piece that isn't EU. | **Data storage + AI: yes. Compute: no.** | Bedrock routing fixed + env vars now actually configured in Vercel; Supabase region independently confirmed; compute region flagged, not changed (§5) | Data storage and AI processing are genuinely EU-hosted (Ireland) — that claim can stand as written. If "EU-hosted infrastructure" is meant to cover application compute too, that's currently inaccurate (Vercel functions run in `iad1`, US) and should either be fixed (§5) or the claim narrowed to "data storage and AI processing." |
+| EU-based infrastructure | AI: EU-pinned, confirmed via live AWS CloudWatch metrics (`eu-west-1`). Supabase: confirmed `eu-west-1` (Ireland) directly in the dashboard. Vercel compute: **confirmed `dub1`/`eu-west-1` (Ireland)** — was `iad1` (US) throughout the audit, migrated and independently verified 2026-08-18 via Vercel's own build manifest and live `x-vercel-id` response header on production. | **Yes — all three layers (data storage, AI, compute) now confirmed EU (`eu-west-1`).** | Bedrock routing fixed, env vars configured in Vercel, Supabase region confirmed, **and compute region migrated + verified**. | The claim can now stand as a genuine, verified "EU-based infrastructure" statement covering data storage, AI processing, and application compute together — not just narrowed to data/AI. Updating the actual public copy is a separate, deliberate step, not done automatically by this fix. |
 | PII masked before AI processing | Pipeline routes all AI calls through the masking-aware, Bedrock-pinned path, **for every org, no plan gate**. | **Yes** | Routing bug fixed; paywall gate removed entirely | Keep the claim as-is — it's now accurate. |
 | No training on customer contracts | Provider-level (AWS Bedrock/Anthropic) commitment, not app-enforced | **Cannot verify from code** | — | Keep only if independently confirmed against the actual AWS Bedrock agreement for this account. |
 | Encryption at rest | Standard for Supabase/AWS, not independently provable per-hop from code | **Cannot verify exact claim** | — | "Customer data is encrypted at rest." |
@@ -168,6 +187,7 @@ Done:
 3. ~~Configure `USE_BEDROCK`/AWS credentials in Vercel~~ — set (Production + Preview) and confirmed working via live CloudWatch data.
 4. ~~Run the RLS isolation test against production~~ — done, 8/8 passing.
 5. ~~Check the Supabase project's region~~ — confirmed directly in the dashboard: **`eu-west-1` (Ireland)**, same region as Bedrock.
+6. ~~Decide on/migrate the Vercel compute region~~ — migrated to `dub1` (`eu-west-1`, Ireland) and independently verified on production 2026-08-18 (build manifest + live `x-vercel-id` header). All three infrastructure layers — data storage, AI processing, application compute — are now confirmed in the same EU region.
 
 Still open:
 1. **`REMEMBILL_WEBHOOK_SECRET`** — not yet set (Remembill's sandbox doesn't support sending it yet, per them). Webhook correctly fails closed in the meantime; `remembill-payment-sync` cron covers the gap. Set this once Remembill implements it.
@@ -175,7 +195,7 @@ Still open:
 3. **Confirm AWS/Anthropic's actual data-training policy** for this account before keeping the "never used to train AI models" claim.
 4. **Confirm who has production access** to Vercel/Supabase/AWS, and that those accounts have MFA enabled.
 5. **Confirm Supabase backup/PITR configuration** for the current plan tier, and whether a restore has ever been tested.
-6. **Decide on the Vercel compute region** (§5) if "EU-hosted" is meant to cover application compute, not just data storage and AI inference — this is now the only unresolved piece of the "EU-based infrastructure" claim.
-7. **Resolve the retention-policy ambiguity** (§6.2 — failed/incomplete jobs) before ever setting `RETENTION_DELETE_ENABLED=true`.
-9. **Add real email verification to signup** if desired — self-service now fails closed by default, but verified accounts still aren't required.
-10. Consider cleaning up the vestigial `/api/billing/pii-addon` Stripe SKU now that masking is universal (commercial decision, not security).
+6. **Resolve the retention-policy ambiguity** (§6.2 — failed/incomplete jobs) before ever setting `RETENTION_DELETE_ENABLED=true`.
+7. **Add real email verification to signup** if desired — self-service now fails closed by default, but verified accounts still aren't required.
+8. Consider cleaning up the vestigial `/api/billing/pii-addon` Stripe SKU now that masking is universal (commercial decision, not security).
+9. **Update public Privacy Policy/Security page copy** to reflect that application compute is now also confirmed EU-hosted (`dub1`), if the "EU-based infrastructure" claim should explicitly cover compute, not just data/AI. Not done automatically — a deliberate copy change is a separate step from this verification.
