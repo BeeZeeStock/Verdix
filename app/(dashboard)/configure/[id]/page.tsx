@@ -3537,7 +3537,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     </div>
                   ) : (
                     <div className="flex items-start gap-1">
-                      <p className="text-[15px] font-medium text-ink leading-snug">{cur}</p>
+                      <p
+                        onClick={() => { setCurrencyDraft(cur); setCurrencyEditing(true) }}
+                        title="Change currency"
+                        className="text-[15px] font-medium text-ink leading-snug cursor-pointer rounded -mx-1 px-1 hover:bg-forest/5 transition-colors"
+                      >
+                        {cur}
+                      </p>
                       <button
                         onClick={() => { setCurrencyDraft(cur); setCurrencyEditing(true) }}
                         title="Change currency"
