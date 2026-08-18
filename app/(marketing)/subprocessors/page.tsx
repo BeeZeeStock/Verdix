@@ -58,18 +58,27 @@ export default function SubprocessorsPage() {
         </div>
       </nav>
 
-      <div className="max-w-4xl mx-auto px-6 pt-28 pb-20">
-        <h1 className="font-display font-light text-ink text-4xl mb-3">Verdix Subprocessors</h1>
-        <p className="text-stone text-sm mb-8">Last updated: 18 August 2026</p>
+      <div className="max-w-6xl mx-auto px-6 pt-28 pb-20">
+        <div className="max-w-3xl">
+          <h1 className="font-display font-light text-ink text-4xl mb-3">Verdix Subprocessors</h1>
+          <p className="text-stone text-sm mb-8">Last updated: 18 August 2026</p>
 
-        <p className={`${p} mb-10`}>Lynora AB uses a limited number of service providers to process Personal Data on behalf of Verdix customers in order to operate and provide the Verdix service.</p>
+          <p className={`${p} mb-10`}>Lynora AB uses a limited number of service providers to process Personal Data on behalf of Verdix customers in order to operate and provide the Verdix service.</p>
+        </div>
 
         <section className="mb-10">
           <h2 className={h2}>Core subprocessors</h2>
 
-          {/* Desktop / tablet: table */}
-          <div className="hidden md:block overflow-x-auto rounded-xl border border-forest/10">
-            <table className="w-full text-sm border-collapse">
+          {/* Desktop / tablet: static table, no horizontal scroll — columns wrap instead of forcing overflow */}
+          <div className="hidden md:block rounded-xl border border-forest/10">
+            <table className="w-full text-sm border-collapse table-fixed">
+              <colgroup>
+                <col className="w-[16%]" />
+                <col className="w-[18%]" />
+                <col className="w-[23%]" />
+                <col className="w-[25%]" />
+                <col className="w-[18%]" />
+              </colgroup>
               <thead>
                 <tr className="bg-white text-left">
                   <th className="p-3 font-medium text-ink border-b border-forest/10">Provider</th>
@@ -82,11 +91,11 @@ export default function SubprocessorsPage() {
               <tbody>
                 {SUBPROCESSORS.map((row, i) => (
                   <tr key={row.provider} className={i % 2 === 0 ? 'bg-cream/40' : 'bg-white'}>
-                    <td className="p-3 align-top font-medium text-ink whitespace-nowrap">{row.provider}</td>
+                    <td className="p-3 align-top font-medium text-ink">{row.provider}</td>
                     <td className="p-3 align-top text-stone">{row.purpose}</td>
                     <td className="p-3 align-top text-stone">{row.dataProcessed}</td>
                     <td className="p-3 align-top text-stone">{row.residency}</td>
-                    <td className="p-3 align-top text-stone whitespace-nowrap">{row.entity}</td>
+                    <td className="p-3 align-top text-stone">{row.entity}</td>
                   </tr>
                 ))}
               </tbody>
@@ -109,31 +118,33 @@ export default function SubprocessorsPage() {
           </div>
         </section>
 
-        <section className="mb-10">
-          <h2 className={h2}>Customer-selected integrations</h2>
-          <div className="space-y-2">
-            <p className={p}>At a customer’s instruction, Verdix may transmit approved billing information to downstream systems selected or enabled by that customer.</p>
-            <p className={p}>These customer-selected integrations are not automatically part of Verdix’s core infrastructure and may have separate contractual and data-protection roles.</p>
-            <p className={p}>Examples may include billing, invoicing and payment systems enabled by the customer.</p>
-          </div>
-        </section>
+        <div className="max-w-3xl">
+          <section className="mb-10">
+            <h2 className={h2}>Customer-selected integrations</h2>
+            <div className="space-y-2">
+              <p className={p}>At a customer’s instruction, Verdix may transmit approved billing information to downstream systems selected or enabled by that customer.</p>
+              <p className={p}>These customer-selected integrations are not automatically part of Verdix’s core infrastructure and may have separate contractual and data-protection roles.</p>
+              <p className={p}>Examples may include billing, invoicing and payment systems enabled by the customer.</p>
+            </div>
+          </section>
 
-        <section className="mb-10">
-          <h2 className={h2}>Changes to subprocessors</h2>
-          <div className="space-y-2">
-            <p className={p}>Lynora AB maintains this list as core subprocessors are added, replaced or removed.</p>
-            <p className={p}>Customers covered by a Verdix DPA will receive at least 30 days’ notice before a material new subprocessor begins processing Customer Personal Data, except where an urgent change is required for security, availability or legal compliance.</p>
-            <p className={p}>Customers may raise legitimate data-protection concerns during that notice period.</p>
-          </div>
-        </section>
+          <section className="mb-10">
+            <h2 className={h2}>Changes to subprocessors</h2>
+            <div className="space-y-2">
+              <p className={p}>Lynora AB maintains this list as core subprocessors are added, replaced or removed.</p>
+              <p className={p}>Customers covered by a Verdix DPA will receive at least 30 days’ notice before a material new subprocessor begins processing Customer Personal Data, except where an urgent change is required for security, availability or legal compliance.</p>
+              <p className={p}>Customers may raise legitimate data-protection concerns during that notice period.</p>
+            </div>
+          </section>
 
-        <section>
-          <h2 className={h2}>Questions</h2>
-          <div className="space-y-2">
-            <p className={p}>For questions about Verdix subprocessors or data processing:</p>
-            <a href="mailto:bilal@lynoraai.com" className="text-sm text-forest font-medium hover:underline">bilal@lynoraai.com</a>
-          </div>
-        </section>
+          <section>
+            <h2 className={h2}>Questions</h2>
+            <div className="space-y-2">
+              <p className={p}>For questions about Verdix subprocessors or data processing:</p>
+              <a href="mailto:bilal@lynoraai.com" className="text-sm text-forest font-medium hover:underline">bilal@lynoraai.com</a>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   )
