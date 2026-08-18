@@ -5,6 +5,7 @@ import { extractContractTerms } from '@/lib/contract-extractor'
 import { parseBillingCSV } from '@/lib/billing-parser'
 import { reconcile } from '@/lib/reconciler'
 import { resolveStorageUrl } from '@/lib/storage'
+import { extractDocumentText } from '@/lib/ai-client'
 
 export async function POST(
   _req: NextRequest,
@@ -106,31 +107,10 @@ async function fetchFile(url: string): Promise<Buffer> {
 }
 
 async function extractTextFromBuffer(buffer: Buffer, url: string): Promise<string> {
-  // For PDF files, use Claude's vision capability via base64
   const pathname = new URL(url).pathname
-  if (pathname.endsWith('.pdf')) {
-    const Anthropic = (await import('@anthropic-ai/sdk')).default
-    const client = new Anthropic()
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8192,
-      messages: [{
-        role: 'user',
-        content: [{
-          type: 'document',
-          source: {
-            type: 'base64',
-            media_type: 'application/pdf',
-            data: buffer.toString('base64'),
-          },
-        }, {
-          type: 'text',
-          text: 'Extract all text from this contract document. Preserve structure including section numbers, tables, and dates. Output plain text only.',
-        }],
-      }],
-    })
-    const content = response.content[0]
-    return content.type === 'text' ? content.text : ''
-  }
-  return buffer.toString('utf-8')
+  return extractDocumentText(
+    buffer,
+    pathname.endsWith('.pdf'),
+    'Extract all text from this contract document. Preserve structure including section numbers, tables, and dates. Output plain text only.',
+  )
 }

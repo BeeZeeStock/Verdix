@@ -13,14 +13,19 @@ export function parseBooleanSetting(value: unknown, defaultValue: boolean): bool
   return value === true || value === 'true'
 }
 
-/** Defaults to true (current behavior) when the row hasn't been seeded yet. */
+/**
+ * Fails CLOSED: defaults to false (invitation-only) when the row hasn't been
+ * seeded yet. Verdix is a provisioned/invitation-led product — an unseeded
+ * settings row must never silently open self-service org creation to any
+ * Google or credentials identity that authenticates.
+ */
 export async function isSelfServiceSignupEnabled(): Promise<boolean> {
   const { data } = await supabaseServer
     .from('verdix_settings')
     .select('value')
     .eq('key', SELF_SERVICE_SIGNUP_KEY)
     .maybeSingle()
-  return parseBooleanSetting(data?.value, true)
+  return parseBooleanSetting(data?.value, false)
 }
 
 /**

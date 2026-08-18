@@ -2,12 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { resolveStorageUrl } from '@/lib/storage'
-import { getOrgSubscription } from '@/lib/billing'
-import { newAnthropicClient, isAIInfraError, AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
+import { extractDocumentText, isAIInfraError, AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
 import { isAdminEmail } from '@/lib/admin'
 import type { PIIEntity } from '@/lib/pii-detector'
-
-const anthropicDirect = newAnthropicClient()
 
 const GENERIC_INFRA_ERROR = 'This contract couldn’t be processed right now due to a temporary system issue. Please contact bilal@lynoraai.com for help.'
 
@@ -32,44 +29,7 @@ export async function POST(
   if (jobError || !job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
   if (!job.contract_pdf_url) return NextResponse.json({ error: 'No contract file uploaded' }, { status: 400 })
 
-  // Verify PII masking is available: active addon OR trial plan (free preview).
-  // For paid plans where pii_addon_enabled is stale (e.g. webhook missed),
-  // do a live Stripe check and self-heal the Supabase flag.
-  const sub = await getOrgSubscription(org.orgId)
-
-  let piiAllowed = sub.pii_addon_enabled === true || sub.plan_id === 'trial'
-
-  if (!piiAllowed && sub.stripe_subscription_id && ['core', 'pro', 'enterprise'].includes(sub.plan_id)) {
-    try {
-      const { data: piiPlan } = await supabaseServer
-        .from('verdix_plans')
-        .select('stripe_price_id')
-        .eq('id', 'pii_addon')
-        .maybeSingle()
-
-      if (piiPlan?.stripe_price_id) {
-        const { default: Stripe } = await import('stripe')
-        const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' })
-        const stripeSub = await stripe.subscriptions.retrieve(sub.stripe_subscription_id)
-
-        if (['active', 'trialing'].includes(stripeSub.status)) {
-          const hasPii = stripeSub.items.data.some(i => i.price.id === piiPlan.stripe_price_id)
-          if (hasPii) {
-            await supabaseServer.from('org_subscriptions').update({
-              pii_addon_enabled: true,
-              updated_at: new Date().toISOString(),
-            }).eq('org_id', org.orgId)
-            piiAllowed = true
-          }
-        }
-      }
-    } catch { /* best-effort — fall through to the error below */ }
-  }
-
-  if (!piiAllowed) {
-    return NextResponse.json({ error: 'Advanced PII Data Masking is not active on your plan.' }, { status: 403 })
-  }
-
+  // PII masking is a baseline security control for every org — no plan gate.
   await supabaseServer.from('jobs').update({ execute_status: 'DETECTING_PII' }).eq('id', id)
 
   try {
@@ -110,25 +70,11 @@ export async function POST(
 
 async function extractPDFText(buffer: Buffer, url: string): Promise<string> {
   const pathname = new URL(url).pathname
-  if (pathname.endsWith('.pdf')) {
-    const response = await anthropicDirect.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8192,
-      messages: [{
-        role: 'user',
-        content: [{
-          type: 'document',
-          source: { type: 'base64', media_type: 'application/pdf', data: buffer.toString('base64') },
-        }, {
-          type: 'text',
-          text: 'Extract all text from this contract. Output plain text, preserving section structure and all commercial terms, dates, and amounts.',
-        }],
-      }],
-    })
-    const c = response.content[0]
-    return c.type === 'text' ? c.text : ''
-  }
-  return buffer.toString('utf-8')
+  return extractDocumentText(
+    buffer,
+    pathname.endsWith('.pdf'),
+    'Extract all text from this contract. Output plain text, preserving section structure and all commercial terms, dates, and amounts.',
+  )
 }
 
 async function savePIIEntities(jobId: string, orgId: string, entities: PIIEntity[]) {

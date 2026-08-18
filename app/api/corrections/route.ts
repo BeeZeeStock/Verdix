@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireAdmin } from '@/lib/admin'
+import { requireOrg } from '@/lib/org'
 
 export async function POST(req: NextRequest) {
+  let org
+  try { org = await requireOrg('admin') } catch (res) { return res as Response }
+
   const body = await req.json()
   const {
     jobId,
@@ -17,6 +21,19 @@ export async function POST(req: NextRequest) {
   if (!jobId || !fieldName || !correctedValue) {
     return NextResponse.json({ error: 'jobId, fieldName, and correctedValue are required' }, { status: 400 })
   }
+
+  // extraction_corrections has no org_id column of its own (it's a
+  // deliberately cross-org learning log), but a caller should only be able
+  // to submit a correction against a job they can actually see — otherwise
+  // anyone could poison future extraction quality for every other customer
+  // by submitting garbage "corrections" against a job id they don't own.
+  const { data: ownedJob } = await supabaseServer
+    .from('jobs')
+    .select('id')
+    .eq('id', jobId)
+    .eq('org_id', org.orgId)
+    .maybeSingle()
+  if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   const { data, error } = await supabaseServer
     .from('extraction_corrections')

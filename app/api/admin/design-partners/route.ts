@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
+import { requireAdmin } from '@/lib/admin'
 
 export async function GET() {
+  try { await requireAdmin() } catch (res) { return res as Response }
+
   const { data, error } = await supabaseServer
     .from('design_partner_applications')
     .select('id, company, contact_name, contact_email, contact_role, company_size, pain_point, status, created_at')
@@ -12,6 +15,8 @@ export async function GET() {
 }
 
 export async function PATCH(req: Request) {
+  try { await requireAdmin() } catch (res) { return res as Response }
+
   const { id, status } = await req.json()
   const validStatuses = ['new', 'contacted', 'approved', 'declined']
   if (!id || !validStatuses.includes(status)) {

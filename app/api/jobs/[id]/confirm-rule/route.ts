@@ -99,6 +99,19 @@ export async function POST(
   try { org = await requireOrg('admin') } catch (res) { return res as Response }
 
   const { id: jobId } = await params
+
+  // Verify the job actually belongs to the caller's org before touching
+  // anything — every write below is scoped by job_id alone, which would
+  // otherwise let an admin of one org mutate another org's commercial terms
+  // and billing configuration just by knowing/guessing a job id.
+  const { data: ownedJob } = await supabaseServer
+    .from('jobs')
+    .select('id')
+    .eq('id', jobId)
+    .eq('org_id', org.orgId)
+    .maybeSingle()
+  if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+
   const body = await req.json() as Body
   const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey } = body
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
+import { requireOrg } from '@/lib/org'
 
 const BUCKET = 'verdix-files'
 
@@ -11,6 +12,9 @@ async function ensureBucket() {
 }
 
 export async function POST(req: NextRequest) {
+  let org
+  try { org = await requireOrg('admin') } catch (res) { return res as Response }
+
   const formData = await req.formData()
   const file = formData.get('file') as File | null
   const jobId = formData.get('jobId') as string | null
@@ -19,6 +23,17 @@ export async function POST(req: NextRequest) {
   if (!file || !jobId) {
     return NextResponse.json({ error: 'file and jobId are required' }, { status: 400 })
   }
+
+  // The subsequent DB write is an UPDATE keyed only on jobId — without this
+  // check, any authenticated caller could overwrite another org's contract
+  // file just by knowing/guessing that org's job id.
+  const { data: ownedJob } = await supabaseServer
+    .from('jobs')
+    .select('id')
+    .eq('id', jobId)
+    .eq('org_id', org.orgId)
+    .maybeSingle()
+  if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   await ensureBucket()
 

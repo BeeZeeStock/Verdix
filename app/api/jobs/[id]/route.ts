@@ -6,6 +6,8 @@ import { REMEMBILL_BASE, remembillHeaders } from '@/lib/billing-writer'
 import { AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
 import { isAdminEmail } from '@/lib/admin'
 import { getContractSummaries } from '@/lib/contract-tcv'
+import { removeStorageObject } from '@/lib/storage'
+import { logDeletion } from '@/lib/deletion-log'
 
 const GENERIC_INFRA_ERROR = 'This contract couldn’t be processed right now due to a temporary system issue. Please contact bilal@lynoraai.com for help.'
 
@@ -31,7 +33,7 @@ export async function DELETE(
 
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('org_id, billing_platform, billing_subscription_id, billing_customer_id')
+    .select('org_id, billing_platform, billing_subscription_id, billing_customer_id, contract_pdf_url, billing_csv_url')
     .eq('id', id)
     .single()
   if (!job || job.org_id !== org.orgId)
@@ -171,6 +173,25 @@ export async function DELETE(
   await supabaseServer.from('leakage_findings').delete().eq('job_id', id)
   await supabaseServer.from('line_items').delete().eq('job_id', id)
   await supabaseServer.from('contract_terms').delete().eq('job_id', id)
+
+  // Deleting the jobs row alone left the actual uploaded document sitting in
+  // Storage forever — remove the underlying objects too, and log that it
+  // happened (identifiers only, never content).
+  for (const [objectType, stored] of [
+    ['contract_pdf', job.contract_pdf_url],
+    ['billing_csv', job.billing_csv_url],
+  ] as const) {
+    if (!stored) continue
+    const result = await removeStorageObject(stored)
+    await logDeletion({
+      objectId: result.path ?? stored,
+      objectType,
+      orgId: job.org_id,
+      reason: 'manual_delete',
+      storageRemoved: result.removed,
+      error: result.error ?? null,
+    })
+  }
 
   const { error } = await supabaseServer.from('jobs').delete().eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

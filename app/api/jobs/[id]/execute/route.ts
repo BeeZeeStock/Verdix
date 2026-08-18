@@ -7,15 +7,11 @@ import { resolveStorageUrl } from '@/lib/storage'
 import { maskText, restoreTokensInObject } from '@/lib/pii-detector'
 import { computeMonthlyBaseRate, computeEscalatorMultiplier, computeDiscountMultiplier, monthCursor } from '@/lib/billing-writer'
 import { billingInterval } from '@/lib/stripe-meter'
-import { newAnthropicClient, isAIInfraError, AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
+import { extractDocumentText, isAIInfraError, AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
 
 
 // Allow up to 5 minutes — PDF extraction + two Anthropic calls can exceed the default 10s limit
 export const maxDuration = 300
-
-// PDF text extraction always uses the Anthropic SDK directly because the document
-// content type (base64 PDF upload) is not yet supported in our Bedrock shim.
-const anthropicDirect = newAnthropicClient()
 
 export async function POST(
   _req: NextRequest,
@@ -61,14 +57,6 @@ export async function POST(
 async function runExecutePipeline(jobId: string, orgId: string, contractUrl: string | null, currency: string) {
   if (!contractUrl) throw new Error('Missing contract file')
 
-  // Check if PII masking is enabled: active addon OR trial plan (free preview)
-  const { data: subData } = await supabaseServer
-    .from('org_subscriptions')
-    .select('pii_addon_enabled, plan_id')
-    .eq('org_id', orgId)
-    .maybeSingle()
-  const PII_MASKING_ENABLED = subData?.pii_addon_enabled === true || subData?.plan_id === 'trial'
-
   const resolvedUrl = await resolveStorageUrl(contractUrl)
   const res = await fetch(resolvedUrl)
   if (!res.ok) throw new Error(`Failed to download contract`)
@@ -76,29 +64,16 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
 
   const contractText = await extractPDFText(buffer, resolvedUrl)
 
-  // PII masking: use approved entities from DB (set during PII review step).
-  // Falls back to auto-detection if no reviewed entities exist yet.
-  let textToExtract = contractText
-  let reverseMap = new Map<string, string>()
-  let tokenMap   = new Map<string, string>()
+  // PII masking is a baseline control for every org, not a paid add-on — use
+  // approved entities from DB (set during PII review step), falling back to
+  // auto-detection if no reviewed entities exist yet for this job/org.
+  const { tokenMap, reverseMap } = await buildMaskFromDB(jobId, orgId, contractText)
+  const textToExtract = maskText(contractText, tokenMap)
 
-  if (PII_MASKING_ENABLED) {
-    const result = await buildMaskFromDB(jobId, orgId, contractText)
-    tokenMap      = result.tokenMap
-    reverseMap    = result.reverseMap
-    textToExtract = maskText(contractText, tokenMap)
-    console.log('[PII] token map:', JSON.stringify(Object.fromEntries(tokenMap)))
-    console.log('[PII] masked text (first 500 chars):', textToExtract.slice(0, 500))
-  }
-
-  const rawTerms = await extractContractTerms(textToExtract, undefined, PII_MASKING_ENABLED && tokenMap.size > 0)
-  console.log('[PII] raw extraction customer_name:', rawTerms.customer_name, '| vendor_name:', rawTerms.vendor_name)
+  const rawTerms = await extractContractTerms(textToExtract, undefined, tokenMap.size > 0)
 
   // Restore PII tokens in string fields so the saved record has real values.
-  const terms = PII_MASKING_ENABLED
-    ? restoreTokensInObject(rawTerms, reverseMap)
-    : rawTerms
-  console.log('[PII] after restore customer_name:', terms.customer_name, '| vendor_name:', terms.vendor_name)
+  const terms = restoreTokensInObject(rawTerms, reverseMap)
 
   // Build proposed line items from contract terms
   const lineItems = buildLineItems(terms, currency)
@@ -378,23 +353,9 @@ async function buildMaskFromDB(jobId: string, orgId: string, contractText: strin
 
 async function extractPDFText(buffer: Buffer, url: string): Promise<string> {
   const pathname = new URL(url).pathname
-  if (pathname.endsWith('.pdf')) {
-    const response = await anthropicDirect.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8192,
-      messages: [{
-        role: 'user',
-        content: [{
-          type: 'document',
-          source: { type: 'base64', media_type: 'application/pdf', data: buffer.toString('base64') },
-        }, {
-          type: 'text',
-          text: 'Extract all text from this contract. Output plain text, preserving section structure and all commercial terms, dates, and amounts.',
-        }],
-      }],
-    })
-    const c = response.content[0]
-    return c.type === 'text' ? c.text : ''
-  }
-  return buffer.toString('utf-8')
+  return extractDocumentText(
+    buffer,
+    pathname.endsWith('.pdf'),
+    'Extract all text from this contract. Output plain text, preserving section structure and all commercial terms, dates, and amounts.',
+  )
 }

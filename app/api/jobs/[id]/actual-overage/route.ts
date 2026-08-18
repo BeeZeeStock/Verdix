@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
+import { requireOrg } from '@/lib/org'
 
 type OverageLineItem = { amount: number; description: string; currency: string }
 
@@ -7,7 +8,18 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  let org
+  try { org = await requireOrg() } catch (res) { return res as Response }
+
   const { id } = await params
+
+  const { data: ownedJob } = await supabaseServer
+    .from('jobs')
+    .select('id')
+    .eq('id', id)
+    .eq('org_id', org.orgId)
+    .maybeSingle()
+  if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   const { data: planned, error: plannedError } = await supabaseServer
     .from('planned_invoices')

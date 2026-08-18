@@ -17,8 +17,13 @@ create index on demo_leads (email);
 
 alter table demo_leads enable row level security;
 
+-- Scoped `to service_role` explicitly — a policy with no `to` clause applies
+-- to PUBLIC (anon + authenticated too), which would make this table readable
+-- via the browser-exposed anon key despite the "service role bypass" name.
 do $$ begin
-  create policy "service role bypass" on demo_leads for all using (true) with check (true);
+  create policy "service_role_only" on demo_leads for all to service_role using (true) with check (true);
 exception when duplicate_object then null; end $$;
+
+revoke all on demo_leads from anon, authenticated;
 
 notify pgrst, 'reload schema';

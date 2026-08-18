@@ -12,6 +12,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
 import { isAdminEmail, isRemembillTeam } from '@/lib/admin'
+import { getFastAIClient } from '@/lib/ai-client'
 
 // ── Auto-mapping heuristic ────────────────────────────────────────────────────
 const METER_RULES: Array<{ patterns: string[]; key: string; confidence: number }> = [
@@ -49,8 +50,7 @@ async function aiMatch(
     : 'No tiers defined'
 
   try {
-    const Anthropic = (await import('@anthropic-ai/sdk')).default
-    const client = new Anthropic()
+    const client = getFastAIClient()
     const resp = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 100,
@@ -324,9 +324,25 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  try { await requireOrg('admin') } catch (res) { return res as Response }
+  let org
+  try { org = await requireOrg('admin') } catch (res) { return res as Response }
 
   const { id: jobId } = await params
+
+  // Verify the job belongs to the caller's org before writing anything —
+  // this handler upserts contract_meter_mappings and, once all mappings are
+  // confirmed, writes tier/pricing data into org_billing_config (the table
+  // the live billing cron reads) scoped only by jobId below. Without this
+  // check, an admin of one org could corrupt another org's live billing
+  // configuration just by knowing/guessing a job id.
+  const { data: ownedJob } = await supabaseServer
+    .from('jobs')
+    .select('id')
+    .eq('id', jobId)
+    .eq('org_id', org.orgId)
+    .maybeSingle()
+  if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+
   const body = await req.json() as {
     mappings: Array<{
       contract_unit_type: string

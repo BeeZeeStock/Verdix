@@ -1,12 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
+import { requireOrg } from '@/lib/org'
 
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  let org
+  try { org = await requireOrg('admin') } catch (res) { return res as Response }
+
   const { id } = await params
   const body = await req.json()
+
+  const { data: ownedJob } = await supabaseServer
+    .from('jobs')
+    .select('id')
+    .eq('id', id)
+    .eq('org_id', org.orgId)
+    .maybeSingle()
+  if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   const SCALAR_FIELDS = [
     'contract_id', 'crm_id',

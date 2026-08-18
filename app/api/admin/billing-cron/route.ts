@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { runBillingForOrg } from '@/lib/billing-engine'
+import { isAuthorizedCronRequest } from '@/lib/cron-auth'
 
 // GET /api/admin/billing-cron
 // Called daily by Vercel Cron or any scheduler. Protected by x-cron-secret header.
 // Finds all orgs whose billing period has ended and runs billing for each.
 export async function GET(req: NextRequest) {
-  const secret = req.headers.get('x-cron-secret')
-  if (secret !== process.env.CRON_SECRET) {
+  if (!isAuthorizedCronRequest(req)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 

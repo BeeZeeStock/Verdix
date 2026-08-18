@@ -20,10 +20,10 @@ import { supabaseServer } from '@/lib/supabase'
 import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl } from '@/lib/billing-writer'
 import { computeOverageForPeriod, type OverageLineItem } from '@/lib/usage-pull'
 import type { ContractTerms } from '@/lib/types'
+import { isAuthorizedCronRequest } from '@/lib/cron-auth'
 
 export async function GET(req: NextRequest) {
-  const secret = req.headers.get('x-cron-secret')
-  if (secret !== process.env.CRON_SECRET) {
+  if (!isAuthorizedCronRequest(req)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 

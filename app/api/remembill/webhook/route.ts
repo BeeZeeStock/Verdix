@@ -14,7 +14,19 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import { timingSafeEqual } from 'node:crypto'
 import { supabaseServer } from '@/lib/supabase'
+
+// Constant-time compare so a mismatched secret can't be brute-forced via
+// response-timing differences. Also fails closed: if the two strings are
+// different lengths, timingSafeEqual throws rather than allowing a naive
+// substring/truncation bypass — caught below and treated as no-match.
+function secretsMatch(a: string, b: string): boolean {
+  const bufA = Buffer.from(a)
+  const bufB = Buffer.from(b)
+  if (bufA.length !== bufB.length) return false
+  return timingSafeEqual(bufA, bufB)
+}
 
 // Known Remembill event types (extend as their API evolves)
 type RememhillEvent = {
@@ -31,8 +43,13 @@ type RememhillEvent = {
 
 export async function POST(req: NextRequest) {
   // ── Verify shared secret ────────────────────────────────────────────────────
-  const secret = req.headers.get('x-remembill-secret')
-  if (process.env.REMEMBILL_WEBHOOK_SECRET && secret !== process.env.REMEMBILL_WEBHOOK_SECRET) {
+  // Fails CLOSED: a missing REMEMBILL_WEBHOOK_SECRET env var used to mean "skip
+  // the check entirely" (any request was accepted, unauthenticated) — now it
+  // means every request is rejected instead, since an unset secret can never
+  // be proven to have come from Remembill.
+  const configuredSecret = process.env.REMEMBILL_WEBHOOK_SECRET
+  const providedSecret = req.headers.get('x-remembill-secret')
+  if (!configuredSecret || !providedSecret || !secretsMatch(providedSecret, configuredSecret)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 

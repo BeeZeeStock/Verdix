@@ -17,7 +17,17 @@ const AI_CLIENT_MAX_RETRIES = 2
 // For Bedrock the modelId comes from AWS_BEDROCK_MODEL_ID env var instead.
 const BEDROCK_MODEL_ID = process.env.AWS_BEDROCK_MODEL_ID ?? 'eu.anthropic.claude-sonnet-4-6'
 
-type MessageParam = { role: 'user' | 'assistant'; content: string }
+// EU cross-region inference profile for lightweight/fast-tier calls (e.g.
+// meter-key matching) that don't need the full extraction model. Verified
+// live against this AWS account before wiring in (2026-08-19): listed via
+// ListInferenceProfiles as ACTIVE, and a real InvokeModel call against it
+// returned a correctly-formatted response in ~1.3s.
+const BEDROCK_FAST_MODEL_ID = process.env.AWS_BEDROCK_FAST_MODEL_ID ?? 'eu.anthropic.claude-haiku-4-5-20251001-v1:0'
+
+type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'document'; source: { type: 'base64'; media_type: string; data: string } }
+type MessageParam = { role: 'user' | 'assistant'; content: string | ContentBlock[] }
 type CreateParams = {
   model: string
   max_tokens: number
@@ -28,7 +38,7 @@ type MessageResponse = {
   content: Array<{ type: string; text: string }>
 }
 
-function bedrockClient() {
+function bedrockClient(modelId: string) {
   const bedrock = new BedrockRuntimeClient({
     region:      process.env.AWS_REGION ?? 'eu-west-1',
     credentials: {
@@ -48,7 +58,7 @@ function bedrockClient() {
           system:            params.system,
           messages:          params.messages,
         })
-        const res = await bedrock.send(new InvokeModelCommand({ modelId: BEDROCK_MODEL_ID, body }))
+        const res = await bedrock.send(new InvokeModelCommand({ modelId, body }))
         return JSON.parse(Buffer.from(res.body).toString('utf8')) as MessageResponse
       },
     },
@@ -58,7 +68,17 @@ function bedrockClient() {
 // Returns either the Anthropic SDK client or a Bedrock-backed shim with the
 // same .messages.create() interface, based on the USE_BEDROCK env var.
 export function getAIClient(): { messages: { create(p: CreateParams): Promise<MessageResponse> } } {
-  if (USE_BEDROCK) return bedrockClient()
+  if (USE_BEDROCK) return bedrockClient(BEDROCK_MODEL_ID)
+  return newAnthropicClient() as unknown as ReturnType<typeof bedrockClient>
+}
+
+// Same routing as getAIClient(), but for lightweight/fast-tier calls (e.g.
+// meter-key matching) — uses the EU Haiku profile instead of the full
+// extraction model when Bedrock is active. Falls back to a direct Anthropic
+// Haiku client otherwise, matching the same non-Bedrock dev-mode behavior
+// getAIClient() already has.
+export function getFastAIClient(): { messages: { create(p: CreateParams): Promise<MessageResponse> } } {
+  if (USE_BEDROCK) return bedrockClient(BEDROCK_FAST_MODEL_ID)
   return newAnthropicClient() as unknown as ReturnType<typeof bedrockClient>
 }
 
@@ -70,6 +90,31 @@ export function newAnthropicClient(): Anthropic {
 }
 
 export const AI_PROVIDER = USE_BEDROCK ? `bedrock:${BEDROCK_MODEL_ID}` : 'anthropic'
+
+// Shared PDF-to-text step used by every pipeline (execute, detect-pii, audit,
+// partner-recon) — previously each route hand-rolled its own `new Anthropic()`
+// call for this, which bypassed getAIClient()'s Bedrock/EU routing entirely
+// (and ran on the RAW, unmasked document, since masking can't happen until
+// there's text to mask). Routing through getAIClient() means the same
+// USE_BEDROCK switch that pins the commercial-terms extraction call to an
+// EU AWS region now also covers this earlier, raw-document step.
+export async function extractDocumentText(buffer: Buffer, isPdf: boolean, instruction: string): Promise<string> {
+  if (!isPdf) return buffer.toString('utf-8')
+  const client = getAIClient()
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 8192,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: buffer.toString('base64') } },
+        { type: 'text', text: instruction },
+      ],
+    }],
+  })
+  const c = response.content[0]
+  return c?.type === 'text' ? c.text : ''
+}
 
 // Anthropic's SDK throws Anthropic.APIError (and its subclasses — RateLimitError,
 // BadRequestError [covers "credit balance is too low"], AuthenticationError,

@@ -8,6 +8,7 @@ import {
   aiReconcile,
 } from '@/lib/partner-reconciler'
 import { resolveStorageUrl } from '@/lib/storage'
+import { extractDocumentText } from '@/lib/ai-client'
 
 export async function POST(
   _req: NextRequest,
@@ -157,34 +158,10 @@ async function fetchBuffer(url: string): Promise<Buffer> {
 
 async function extractText(buffer: Buffer, url: string): Promise<string> {
   const pathname = new URL(url).pathname
-  if (pathname.includes('.pdf') || pathname.includes('%2Epdf')) {
-    const Anthropic = (await import('@anthropic-ai/sdk')).default
-    const client = new Anthropic()
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8192,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: buffer.toString('base64'),
-              },
-            },
-            {
-              type: 'text',
-              text: 'Extract all text from this document. Preserve structure including section numbers, tables, amounts, and dates. Output plain text only.',
-            },
-          ],
-        },
-      ],
-    })
-    const c = response.content[0]
-    return c.type === 'text' ? c.text : ''
-  }
-  return buffer.toString('utf-8')
+  const isPdf = pathname.includes('.pdf') || pathname.includes('%2Epdf')
+  return extractDocumentText(
+    buffer,
+    isPdf,
+    'Extract all text from this document. Preserve structure including section numbers, tables, amounts, and dates. Output plain text only.',
+  )
 }
