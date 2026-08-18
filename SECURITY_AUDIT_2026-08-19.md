@@ -111,18 +111,18 @@ Disclosed whether `AUTH_SECRET`/`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are se
 
 | Claim | Evidence |
 |---|---|
-| AI processing pinned to an EU AWS region | `AWS_REGION=eu-west-1`, `AWS_BEDROCK_MODEL_ID=eu.anthropic.claude-sonnet-4-6` (an EU cross-region inference profile), and — after this session's fix — *all* AI calls in the contract pipeline now route through it, not just the main extraction call. |
+| AI processing pinned to an EU AWS region | `AWS_REGION=eu-west-1`, `AWS_BEDROCK_MODEL_ID=eu.anthropic.claude-sonnet-4-6` (an EU cross-region inference profile), and — after this session's fix — *all* AI calls in the contract pipeline now route through it, not just the main extraction call. Confirmed live via AWS CloudWatch. |
+| Supabase project region is EU | **Confirmed directly in the Supabase dashboard (Project Settings → General) by the user: "West EU (Ireland)"** — i.e. `eu-west-1`, the same AWS region as Bedrock. Not inferred from the project URL or any network-level signal (a Cloudflare edge-datacenter header was checked and explicitly rejected as unreliable — it reflects request routing, not the origin's true location). |
 | PII detection itself is local, not AI-based | `lib/pii-detector.ts` imports only `compromise` (local NLP); no network/AI client. |
 | Storage bucket is private with correct access scoping | `verdix-files` bucket created `public: false`; its one RLS policy is correctly `to service_role`. |
 | Stripe/billing webhooks verify signatures | `stripe.webhooks.constructEvent(...)` with a real secret, confirmed in both `stripe/webhook` and `billing/webhook`. |
 | No secrets committed to git | `git log` across all branches for `.env*`/`.pem`/`.key` file additions returns nothing. |
 | No `NEXT_PUBLIC_`-prefixed secret | Every secret-shaped env var (`SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_SECRET_KEY`, `AWS_SECRET_ACCESS_KEY`, etc.) correctly lacks the prefix; only the two Supabase values designed to be public (URL, anon key) carry it. |
-| Retention/deletion is now implemented | New cron + `deletion_log` + `removeStorageObject()`, wired into both manual and scheduled deletion paths (code-verified; not yet run against production). |
-| Tenant isolation at both DB and app layers | RLS lockdown migration (written, not yet applied) + all 11 route-level gaps fixed and typechecked/linted/tested. |
+| Retention/deletion is now implemented | New cron + `deletion_log` + `removeStorageObject()`, wired into both manual and scheduled deletion paths, dry-run-verified against production (`candidate_count: 0`). |
+| Tenant isolation at both DB and app layers | RLS lockdown migration applied + all 11 route-level gaps fixed, and independently verified against production (RLS isolation test 8/8, route-level 401/403s confirmed on `www.lynoraai.com`). |
 
 ## 4. Claims that cannot currently be verified (need dashboard/account access I don't have)
 
-- **Supabase project region** — no region indicator appears anywhere in code/env (the project URL is just a random ref). Check Project Settings → General in the Supabase dashboard.
 - **Whether Bedrock's `eu.*` cross-region inference profile is confined to EU regions specifically**, and its prompt/output retention and invocation-logging configuration — check the AWS Bedrock console for this account.
 - **"Your data is never used to train AI models"** — this is a claim about AWS's/Anthropic's own service terms, not something Verdix's code enforces or can prove; verify against the actual AWS Bedrock service agreement for this account.
 - **Exact encryption protocols (AES-256, TLS 1.3) across every hop** — genuinely infra/provider-level, not verifiable from application code. Recommend the provider-neutral wording below.
@@ -148,7 +148,7 @@ Every deployment this session (`npx vercel inspect ... --wait`) showed lambdas r
 
 | Public claim | Implementation evidence | Verified? | Fix made | Safe website wording |
 |---|---|---|---|---|
-| EU-based infrastructure | AI: EU-pinned and **confirmed via live AWS CloudWatch metrics against production**, not just code review. Supabase region: unconfirmed. Vercel compute: **US** (`iad1`, confirmed from deploy logs). | **Partially** — mixed | Bedrock routing fixed + env vars now actually configured in Vercel (previously only local); compute region flagged, not changed (§5) | Narrow to "AI processing and data storage are EU-hosted" rather than a blanket infrastructure claim, until compute region is addressed or the claim is scoped to match reality. |
+| EU-based infrastructure | AI: EU-pinned, **confirmed via live AWS CloudWatch metrics against production** (`eu-west-1`). Supabase: **confirmed `eu-west-1` (Ireland)** directly in the dashboard — same region as Bedrock. Vercel compute: **US** (`iad1`, confirmed from deploy logs) — the one piece that isn't EU. | **Data storage + AI: yes. Compute: no.** | Bedrock routing fixed + env vars now actually configured in Vercel; Supabase region independently confirmed; compute region flagged, not changed (§5) | Data storage and AI processing are genuinely EU-hosted (Ireland) — that claim can stand as written. If "EU-hosted infrastructure" is meant to cover application compute too, that's currently inaccurate (Vercel functions run in `iad1`, US) and should either be fixed (§5) or the claim narrowed to "data storage and AI processing." |
 | PII masked before AI processing | Pipeline routes all AI calls through the masking-aware, Bedrock-pinned path, **for every org, no plan gate**. | **Yes** | Routing bug fixed; paywall gate removed entirely | Keep the claim as-is — it's now accurate. |
 | No training on customer contracts | Provider-level (AWS Bedrock/Anthropic) commitment, not app-enforced | **Cannot verify from code** | — | Keep only if independently confirmed against the actual AWS Bedrock agreement for this account. |
 | Encryption at rest | Standard for Supabase/AWS, not independently provable per-hop from code | **Cannot verify exact claim** | — | "Customer data is encrypted at rest." |
@@ -167,15 +167,15 @@ Done:
 2. ~~Confirm/set `CRON_SECRET`~~ — set in Vercel (Production + Preview); cron auth also fixed to accept Vercel's automatic `Authorization: Bearer` header, not just the custom one.
 3. ~~Configure `USE_BEDROCK`/AWS credentials in Vercel~~ — set (Production + Preview) and confirmed working via live CloudWatch data.
 4. ~~Run the RLS isolation test against production~~ — done, 8/8 passing.
+5. ~~Check the Supabase project's region~~ — confirmed directly in the dashboard: **`eu-west-1` (Ireland)**, same region as Bedrock.
 
 Still open:
 1. **`REMEMBILL_WEBHOOK_SECRET`** — not yet set (Remembill's sandbox doesn't support sending it yet, per them). Webhook correctly fails closed in the meantime; `remembill-payment-sync` cron covers the gap. Set this once Remembill implements it.
-2. **Check the Supabase project's region** in the dashboard (Project Settings → General) and reconcile with the "EU-based infrastructure" claim.
-3. **Check the Bedrock console** for this AWS account: exact regions covered by the `eu.*` inference profile, invocation logging, and prompt/output retention configuration.
-4. **Confirm AWS/Anthropic's actual data-training policy** for this account before keeping the "never used to train AI models" claim.
-5. **Confirm who has production access** to Vercel/Supabase/AWS, and that those accounts have MFA enabled.
-6. **Confirm Supabase backup/PITR configuration** for the current plan tier, and whether a restore has ever been tested.
-7. **Decide on the Vercel compute region** (§5) if "EU-hosted" is meant to cover application compute, not just data storage and AI inference.
-8. **Resolve the retention-policy ambiguity** (§6.2 — failed/incomplete jobs) before ever setting `RETENTION_DELETE_ENABLED=true`.
+2. **Check the Bedrock console** for this AWS account: exact regions covered by the `eu.*` inference profile, invocation logging, and prompt/output retention configuration.
+3. **Confirm AWS/Anthropic's actual data-training policy** for this account before keeping the "never used to train AI models" claim.
+4. **Confirm who has production access** to Vercel/Supabase/AWS, and that those accounts have MFA enabled.
+5. **Confirm Supabase backup/PITR configuration** for the current plan tier, and whether a restore has ever been tested.
+6. **Decide on the Vercel compute region** (§5) if "EU-hosted" is meant to cover application compute, not just data storage and AI inference — this is now the only unresolved piece of the "EU-based infrastructure" claim.
+7. **Resolve the retention-policy ambiguity** (§6.2 — failed/incomplete jobs) before ever setting `RETENTION_DELETE_ENABLED=true`.
 9. **Add real email verification to signup** if desired — self-service now fails closed by default, but verified accounts still aren't required.
 10. Consider cleaning up the vestigial `/api/billing/pii-addon` Stripe SKU now that masking is universal (commercial decision, not security).
