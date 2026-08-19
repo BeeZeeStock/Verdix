@@ -38,10 +38,9 @@ function Nav() {
       <a href="#partner">Partner verification</a>
       <a href="#security">Security</a>
       <a href="#pricing">Pricing</a>
-      <a href={DEMO_URL} target="_blank" rel="noopener noreferrer">Watch demo</a>
       <Link href="/blog">Blog</Link>
       <Link href="/login">Sign in</Link>
-      <a className={`${styles.btn} ${styles.btnP} ${styles.btnSm}`} href={CALENDLY_URL} target="_blank" rel="noopener noreferrer">Book a demo</a>
+      <a className={`${styles.btn} ${styles.btnP} ${styles.btnSm}`} href={DEMO_URL} target="_blank" rel="noopener noreferrer">Watch demo</a>
     </>
   )
   return (
@@ -68,8 +67,7 @@ function Hero() {
             <p className={styles.icpLine}>For SaaS, fintech, telecom and energy companies billing negotiated, usage-linked B2B contracts.</p>
             <p className={styles.lede}>Verdix reads the signed agreement, pulls the usage it requires, and turns both into approved, clause-linked billing instructions. Keep your existing billing stack, with live integrations to Remembill and Stripe.</p>
             <div className={styles.heroCta}>
-              <a className={`${styles.btn} ${styles.btnP}`} href={DEMO_URL} target="_blank" rel="noopener noreferrer">Watch the 2-minute walkthrough →</a>
-              <a className={`${styles.btn} ${styles.btnS}`} href={CALENDLY_URL} target="_blank" rel="noopener noreferrer">Book a demo</a>
+              <a className={`${styles.btn} ${styles.btnP}`} href={DEMO_URL} target="_blank" rel="noopener noreferrer">Watch demo</a>
             </div>
             <div className={styles.trust}>
               <span><i className={styles.dot} />No billing migration</span>
