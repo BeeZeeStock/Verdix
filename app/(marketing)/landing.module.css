@@ -96,7 +96,7 @@
 .flowMobile{display:none}
 .flowMobileStep{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--color-line-soft)}
 .flowMobileNum{flex:none;width:22px;height:22px;border-radius:50%;background:var(--color-mint-soft);color:var(--color-forest);font-size:.72rem;font-weight:700;display:flex;align-items:center;justify-content:center}
-.flowMobileLabel{font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--color-ink);margin-bottom:2px}
+.flowMobileLabel{display:flex;align-items:center;gap:6px;font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--color-ink);margin-bottom:2px}
 .flowMobileStep p{margin:0;font-size:.86rem;color:var(--color-stone);line-height:1.4}
 .flowMobileOutcome{margin-top:14px;padding:12px 14px;border-radius:10px;background:var(--color-mint-soft);color:var(--color-forest);font-size:.86rem;font-weight:500;line-height:1.4}
 .flowMobileProof{margin-top:6px;display:flex;flex-direction:column;border-top:1px solid var(--color-line-soft)}

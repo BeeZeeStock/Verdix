@@ -122,7 +122,10 @@ function Hero() {
             <div className={styles.flowMobile}>
               <div className={styles.flowMobileStep}>
                 <span className={styles.flowMobileNum}>1</span>
-                <div><div className={styles.flowMobileLabel}>Verdix</div><p>Commercial terms + usage → approved billing</p></div>
+                <div>
+                  <div className={styles.flowMobileLabel}><VerdixLogo size={13} />Verdix</div>
+                  <p>Commercial terms + usage → approved billing</p>
+                </div>
               </div>
               <div className={styles.flowMobileStep}>
                 <span className={styles.flowMobileNum}>2</span>
@@ -130,7 +133,13 @@ function Hero() {
               </div>
               <div className={styles.flowMobileStep}>
                 <span className={styles.flowMobileNum}>3</span>
-                <div><div className={styles.flowMobileLabel}>Remembill</div><p>Invoice delivery → payment → failed-payment recovery</p></div>
+                <div>
+                  <div className={styles.flowMobileLabel}>
+                    <Image src="/images/logo-remembill.png" alt="" width={13} height={13} style={{ height: 13, width: 'auto', borderRadius: 3, flexShrink: 0 }} />
+                    Remembill
+                  </div>
+                  <p>Invoice delivery → payment → failed-payment recovery</p>
+                </div>
               </div>
               <div className={styles.flowMobileOutcome}>No manual contract re-entry. Less friction from agreement to payment.</div>
               <div className={styles.flowMobileProof}>
