@@ -9,6 +9,7 @@ import {
   buildTierCalculationProposalPrompt,
   buildEscalatorProposalPrompt,
   buildPartialPeriodProposalPrompt,
+  buildServiceCreditProposalPrompt,
   validateProposalState,
   parseRuleInterpretationResponse,
   describeMissingFieldQuestions,
@@ -16,6 +17,7 @@ import {
   optionsForRuleType,
   deriveSelectedOption,
   optionsForEdit,
+  getBaseFeeProrationOptions,
   type MinimumCommitmentContext,
   type PartialPeriodContext,
   type EscalatorContext,
@@ -76,6 +78,19 @@ describe('buildPartialPeriodPrompt', () => {
     expect(prompt).toContain('2027-08-10')
     expect(prompt).toContain(context.sourceClause!)
     expect(prompt).toContain('Prorate by days for the first quarter')
+  })
+
+  it('asserts calendar-boundary resetting as a given fact for a plain metric minimum (subjectNoun unset)', () => {
+    const prompt = buildPartialPeriodPrompt(context, 'Prorate by days')
+    expect(prompt).toMatch(/resets on calendar boundaries stated in the contract/)
+  })
+
+  it('base/recurring fee (subjectNoun set): treats the calendar-vs-contract-anniversary anchor as the open question, never asserts calendar as given', () => {
+    const feeContext: PartialPeriodContext = { ...context, subjectNoun: 'recurring fee' }
+    const prompt = buildPartialPeriodPrompt(feeContext, 'Bill by contract month')
+    expect(prompt).not.toMatch(/resets on calendar boundaries stated in the contract/)
+    expect(prompt).toMatch(/does not state whether that cadence resets on fixed calendar boundaries or on the contract's own start-date anniversary/)
+    expect(prompt).toContain('"reset_anchor": "contract_start" | "calendar"')
   })
 })
 
@@ -156,6 +171,27 @@ describe('parseRuleInterpretationResponse', () => {
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.missingFields).toContain('treatment')
   })
+
+  it('base_fee_proration: reset_anchor alone is a complete proposal when contract_start — prorate_partial_periods is moot once no partial period can occur', () => {
+    const raw = JSON.stringify({ reset_anchor: 'contract_start', calculation_summary: 'Full fee every contract month.' })
+    const result = parseRuleInterpretationResponse('base_fee_proration', raw)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.proposal.reset_anchor).toBe('contract_start')
+  })
+
+  it('base_fee_proration: reset_anchor "calendar" without prorate_partial_periods reports it as missing', () => {
+    const raw = JSON.stringify({ reset_anchor: 'calendar', calculation_summary: 'Depends on proration.' })
+    const result = parseRuleInterpretationResponse('base_fee_proration', raw)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.missingFields).toContain('prorate_partial_periods')
+  })
+
+  it('base_fee_proration: missing reset_anchor entirely is reported as missing, never defaulted to calendar', () => {
+    const raw = JSON.stringify({ prorate_partial_periods: false })
+    const result = parseRuleInterpretationResponse('base_fee_proration', raw)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.missingFields).toContain('reset_anchor')
+  })
 })
 
 describe('deriveSelectedOption', () => {
@@ -173,6 +209,15 @@ describe('deriveSelectedOption', () => {
   })
   it('returns null when there is no approved interpretation to derive from', () => {
     expect(deriveSelectedOption('minimum_commitment', null)).toBeNull()
+  })
+  it('maps reset_anchor: contract_start back to the contract_month option for base_fee_proration, regardless of prorate_partial_periods', () => {
+    expect(deriveSelectedOption('base_fee_proration', { reset_anchor: 'contract_start', prorate_partial_periods: false })).toBe('contract_month')
+  })
+  it('maps reset_anchor: calendar + prorate false back to calendar_full for recurring_fee_proration', () => {
+    expect(deriveSelectedOption('recurring_fee_proration', { reset_anchor: 'calendar', prorate_partial_periods: false })).toBe('calendar_full')
+  })
+  it('maps reset_anchor: calendar + prorate true + days back to calendar_prorate_days', () => {
+    expect(deriveSelectedOption('base_fee_proration', { reset_anchor: 'calendar', prorate_partial_periods: true, proration_method: 'days' })).toBe('calendar_prorate_days')
   })
 })
 
@@ -235,6 +280,27 @@ describe('optionsForRuleType', () => {
       expect(options.length).toBeGreaterThan(1) // structured choices exist, not free-text-only
       expect(options.some(o => o.id === 'other')).toBe(true)
     }
+  })
+})
+
+describe('getBaseFeeProrationOptions', () => {
+  it('omits the contract-month option when no contractPeriodLabel is given (contract starts on day 1 — no distinct framing exists)', () => {
+    const options = getBaseFeeProrationOptions('month', null)
+    expect(options.some(o => o.id === 'contract_month')).toBe(false)
+    expect(options.some(o => o.id === 'calendar_full')).toBe(true)
+  })
+
+  it('offers "full fee per contract month" as its own first-class option, distinct from every calendar-boundary variant, when a contractPeriodLabel is known', () => {
+    const options = getBaseFeeProrationOptions('month', '17th–16th')
+    const contractMonth = options.find(o => o.id === 'contract_month')
+    expect(contractMonth).toBeDefined()
+    expect(contractMonth!.label).toContain('17th–16th')
+    // A real choice among peers, not a variant of "prorate or bill full" —
+    // calendar_full/prorate_days/prorate_months all still exist alongside it.
+    expect(options.some(o => o.id === 'calendar_full')).toBe(true)
+    expect(options.some(o => o.id === 'calendar_prorate_days')).toBe(true)
+    expect(options.some(o => o.id === 'calendar_prorate_months')).toBe(true)
+    expect(options.some(o => o.id === 'other')).toBe(true)
   })
 })
 
@@ -436,6 +502,26 @@ describe('buildMinimumCommitmentProposalPrompt — scenario: monthly AI processi
   })
 })
 
+describe('buildServiceCreditProposalPrompt — application_state split (Growth Credit / Annual Rebate scenario)', () => {
+  it('asks for application_state as a field independent of state, with guidance not to let one drag down the other', () => {
+    const prompt = buildServiceCreditProposalPrompt({
+      sourceClause: 'A Growth Credit of SEK 110,000 is earned upon processing more than 2,000,000 transactions in 3 consecutive calendar months. The credit applies only to future transaction-processing fees and carries forward until consumed.',
+      description: 'Growth Credit', creditType: 'earned', statedPct: null, statedAmount: 110_000, currency: 'SEK',
+    })
+    expect(prompt).toContain('"application_state": "clear_from_source" | "verdix_recommends" | "decision_required"')
+    expect(prompt).toMatch(/graded INDEPENDENTLY of "state"/)
+    expect(prompt).toMatch(/do not let application_state's uncertainty pull "state" down/i)
+  })
+
+  it('instructs decision_required specifically for application_state when eligible_component_keys is unstated, without forcing the same for state', () => {
+    const prompt = buildServiceCreditProposalPrompt({
+      sourceClause: 'Customer receives a rebate of 5% of transaction-processing fees paid in the prior Contract Year, credited within 45 days.',
+      description: 'Annual Rebate', creditType: 'rebate', statedPct: 5, statedAmount: null, currency: 'SEK',
+    })
+    expect(prompt).toMatch(/set eligible_component_keys to null and grade application_state "decision_required"/)
+  })
+})
+
 describe('buildTierCalculationProposalPrompt — scenario: graduated pricing explicit in source', () => {
   it('instructs clear_from_source for explicit "each band applies only to requests falling within that band" language', () => {
     const prompt = buildTierCalculationProposalPrompt({
@@ -497,6 +583,18 @@ describe('buildPartialPeriodProposalPrompt — scenario: contract silent on part
     expect(prompt).toMatch(/you MUST use "decision_required"/)
     expect(prompt).toMatch(/silence on partial-period treatment is silence, not evidence for either answer/i)
   })
+
+  it('base/recurring fee (TEST-PAY-002 scenario): asks about the reset_anchor itself rather than assuming calendar boundaries, and still defaults to decision_required absent explicit anchor language', () => {
+    const prompt = buildPartialPeriodProposalPrompt({
+      contractUnitType: 'platform subscription fee', sourceClause: null, currency: 'SEK',
+      contractStartDate: '2026-08-17', contractEndDate: '2028-08-16', measurementPeriod: 'monthly', minimumAmount: 38_500,
+      subjectNoun: 'recurring fee',
+    })
+    expect(prompt).not.toMatch(/resets on calendar boundaries stated in the contract/)
+    expect(prompt).toContain('"reset_anchor": "contract_start"|"calendar"')
+    expect(prompt).toMatch(/you MUST use "decision_required"/)
+    expect(prompt).toMatch(/silence on the anchor question is silence, not evidence for either answer/i)
+  })
 })
 
 describe('validateProposalState — safety net, only ever downgrades', () => {
@@ -530,5 +628,46 @@ describe('validateProposalState — safety net, only ever downgrades', () => {
   it('never upgrades a decision_required proposal to a more confident state', () => {
     const result = validateProposalState(proposal({ state: 'decision_required', proposed_interpretation: null, reasoning: 'The agreement does not address partial-month treatment.' }), true)
     expect(result.state).toBe('decision_required')
+  })
+
+  describe('application_state (service_credit split)', () => {
+    it('Growth Credit scenario: state stays clear_from_source and application_state also clear_from_source when both are genuinely explicit — one being open never drags the other down', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source',
+        application_state: 'clear_from_source',
+        proposed_interpretation: { trigger_type: 'usage_threshold', credit_value: 110_000, application_rule: { eligible_component_keys: ['transaction_processing'], carry_forward: true } },
+        reasoning: 'The clause states the credit applies only to future transaction-processing fees and carries forward until consumed.',
+      }), true)
+      expect(result.state).toBe('clear_from_source')
+      expect(result.application_state).toBe('clear_from_source')
+      expect((result.proposed_interpretation as Record<string, unknown>).application_rule).not.toBeNull()
+    })
+
+    it('Annual Rebate scenario: state clear_from_source (trigger/value explicit) while application_state is decision_required (offset target unstated) — nulls only application_rule, keeps the rest of proposed_interpretation', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source',
+        application_state: 'decision_required',
+        proposed_interpretation: { trigger_type: 'usage_threshold', credit_value: 5, application_rule: { eligible_component_keys: null } },
+        reasoning: 'The clause states a 5% rebate of transaction-processing fees paid but never says what future charges it may offset.',
+      }), true)
+      expect(result.state).toBe('clear_from_source')
+      expect(result.application_state).toBe('decision_required')
+      expect(result.proposed_interpretation).not.toBeNull()
+      expect((result.proposed_interpretation as Record<string, unknown>).trigger_type).toBe('usage_threshold')
+      expect((result.proposed_interpretation as Record<string, unknown>).application_rule).toBeNull()
+    })
+
+    it('downgrades application_state clear_from_source to verdix_recommends when no source clause is available, independent of state', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source', application_state: 'clear_from_source',
+        proposed_interpretation: { trigger_type: 'usage_threshold', application_rule: { eligible_component_keys: 'all' } },
+      }), false)
+      expect(result.application_state).toBe('verdix_recommends')
+    })
+
+    it('is undefined for rule types that never asked for it (no regression for the existing single-state cards)', () => {
+      const result = validateProposalState(proposal({ state: 'clear_from_source' }), true)
+      expect(result.application_state).toBeUndefined()
+    })
   })
 })

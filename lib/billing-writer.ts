@@ -157,16 +157,20 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
 
   const periods: BillingPeriod[] = []
 
-  // Calendar-anchored base/recurring fees: lib/contract-extractor.ts only
-  // ever populates base_fee_proration when the contract states this fee
-  // resets on fixed calendar boundaries rather than the contract's own
-  // start-date anniversary — its mere presence already settles the anchor
-  // question, which can make the first and/or last billing period shorter
-  // than a full cadence cycle. Reuses the exact window engine real billing
-  // already relies on for the identical problem on a metric minimum
-  // (enumerateContractWindows/isPartialWindow) rather than a second,
-  // parallel date calculation.
-  if (terms.base_fee_proration) {
+  // Calendar-anchored base/recurring fees: base_fee_proration's mere
+  // presence does NOT by itself mean calendar-boundary billing — it can
+  // equally hold a reviewer-confirmed reset_anchor of 'contract_start' (via
+  // the "Full fee per contract month" review option), which means periods
+  // follow the contract's own start-date anniversary and no partial period
+  // ever occurs, exactly like the plain path below with no proration rule
+  // at all. Only reset_anchor === 'calendar' actually changes the window
+  // engine used — gating on presence alone previously ran calendar-anchored
+  // windows even after a reviewer explicitly confirmed contract-month
+  // billing, silently overriding their decision. Reuses the exact window
+  // engine real billing already relies on for the identical problem on a
+  // metric minimum (enumerateContractWindows/isPartialWindow) rather than a
+  // second, parallel date calculation.
+  if (terms.base_fee_proration && terms.base_fee_proration.reset_anchor === 'calendar') {
     const windows = enumerateContractWindows(cs, contractEnd, terms.billing_frequency, 'calendar')
     let periodIdx  = 0
     let monthsUsed = 0

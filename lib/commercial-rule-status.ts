@@ -8,14 +8,76 @@
 // the status banner must derive from this one object so they can't disagree
 // with each other the way two hand-rolled booleans could.
 import { isEscalatorUnresolved, type EscalatorLike } from './escalator-status'
+import { findCadenceWindowContaining, isPartialWindow } from './tariff'
 
 type UnresolvedFlag = { requires_confirmation: boolean } | null | undefined
+
+// A metric's minimum_commitment record bundles several genuinely
+// independent questions behind extraction's own single requires_confirmation
+// flag: whether the MODE itself is stated, how the minimum interacts with an
+// included allowance (only meaningful if the metric actually has one), and
+// whether a partial first/last calendar period prorates. Folding all three
+// into one flag meant a metric with an explicit floor and NO allowance at
+// all still showed a "how does the minimum interact with the allowance"
+// review card, purely because the unrelated partial-period question was
+// open — real extracted TEST-PAY-002 data set included_allowance_interaction
+// to "unclear" despite there being no allowance tier for the metric at all,
+// because the extraction prompt's schema has nowhere else to put "I'm not
+// sure this minimum's mechanics are fully settled." isMinimumCommitment
+// ModeUnresolved/ProrationUnresolved below split it back into the two
+// questions this codebase actually asks as two separate review cards.
+type MinimumCommitmentLike = {
+  mode?: string | null
+  included_allowance_interaction?: 'before_allowance' | 'after_allowance' | 'unclear' | null
+  prorate_partial_periods?: boolean | 'unclear' | null
+  requires_confirmation: boolean
+} | null | undefined
+
+export function isMinimumCommitmentModeUnresolved(mc: MinimumCommitmentLike, hasAllowance: boolean): boolean {
+  if (!mc) return false
+  if (!mc.mode) return true
+  if (hasAllowance && (!mc.included_allowance_interaction || mc.included_allowance_interaction === 'unclear')) return true
+  return false
+}
+
+// Date-aware: a calendar-anchored metric with prorate_partial_periods still
+// unset only genuinely blocks readiness if the contract's own start/end
+// dates actually create a partial window under that anchoring — the same
+// window check page.tsx's computePartialPeriodMetrics always used, now
+// shared here so client and server can never disagree about which metrics
+// have a real partial-period question. Without both dates known yet, fails
+// toward "ask" rather than assuming resolved, consistent with every other
+// confirmation gate in this pipeline.
+export function isMinimumCommitmentProrationUnresolved(
+  mc: MinimumCommitmentLike,
+  hasCalendarAnchor: boolean,
+  measurementPeriod: string | null | undefined,
+  contractStartDate: string | null | undefined,
+  contractEndDate: string | null | undefined,
+): boolean {
+  if (!mc || !hasCalendarAnchor) return false
+  const prorationUnset = mc.prorate_partial_periods == null || mc.prorate_partial_periods === 'unclear'
+  if (!prorationUnset) return false
+  if (!contractStartDate || !contractEndDate) return true
+  const start = new Date(contractStartDate + 'T00:00:00')
+  const end   = new Date(contractEndDate + 'T00:00:00')
+  const cadence = measurementPeriod ?? 'monthly'
+  const firstWindow = findCadenceWindowContaining(start, cadence, start, 'calendar')
+  const lastWindow  = findCadenceWindowContaining(start, cadence, end, 'calendar')
+  return isPartialWindow(firstWindow, start, end) || isPartialWindow(lastWindow, start, end)
+}
 
 type TierLike = {
   unit_type?: string
   rate_per_unit?: number
-  minimum_commitment?: UnresolvedFlag
+  minimum_commitment?: MinimumCommitmentLike
   tier_calculation?: UnresolvedFlag
+  // Only set to 'calendar' when the contract text explicitly ties this
+  // metric's measurement window to calendar boundaries — see OverageTier's
+  // own field comment in lib/types.ts. Drives whether a partial-period
+  // question exists for this metric's minimum at all.
+  reset_anchor?: 'contract_start' | 'calendar' | null
+  measurement_period?: string | null
 }
 
 type DiscountLike = {
@@ -25,7 +87,16 @@ type DiscountLike = {
 
 type CreditLike = {
   credit_rule_id?: string
-  interpretation?: (UnresolvedFlag & { interaction_note?: string | null }) | null
+  // application_rule carries its OWN independent requires_confirmation,
+  // separate from the interpretation's own top-level flag — a credit whose
+  // trigger/rate/cap are confirmed but whose application scope (what it may
+  // reduce, carry-forward) the contract never stated remains a live,
+  // unresolved decision even once the top-level flag flips false. See
+  // buildCreditApplicationRule (confirm-rule/route.ts) for where this gets
+  // set, and the two-state (state/application_state) proposal split in
+  // lib/rule-interpretation.ts for where a reviewer can confirm one without
+  // the other.
+  interpretation?: (UnresolvedFlag & { interaction_note?: string | null; application_rule?: UnresolvedFlag }) | null
 }
 
 type ProrationLike = { requires_confirmation: boolean } | null | undefined
@@ -41,6 +112,12 @@ export type CommercialRuleTerms = {
   // to a contract with no usage-based tiers at all, a flat-fee-only deal).
   base_fee_proration?: ProrationLike
   additional_recurring_fees?: Array<{ fee_label?: string; amount?: number; proration?: ProrationLike }> | null
+  // Only needed for isMinimumCommitmentProrationUnresolved's date-aware
+  // window check — optional so every existing caller/fixture that predates
+  // this field keeps working unchanged (missing dates just fail toward
+  // "ask", same as an explicitly-unconfirmed rule).
+  contract_start_date?: string | null
+  contract_end_date?: string | null
 }
 
 export type CommercialRuleStatus =
@@ -111,7 +188,18 @@ export function computeCommercialRuleWorkload(
   for (const [unitType, group] of groups) {
     if (group.some(t => t.minimum_commitment !== undefined && t.minimum_commitment !== null)) {
       const mc = group.find(t => t.minimum_commitment)?.minimum_commitment
-      countItem(`minimum_commitment:${unitType}`, !!mc?.requires_confirmation)
+      const hasAllowance = group.some(t => (t.rate_per_unit ?? 0) === 0)
+      const anchorTier = group.find(t => t.reset_anchor === 'calendar')
+      // Two independent items, not one — a metric can have its mode/
+      // allowance mechanics fully settled while its partial-period
+      // treatment is still open, or vice versa. Counting them as a single
+      // conflated item is what previously let a genuinely explicit,
+      // allowance-free minimum ("max(usage, 66,000) per calendar month")
+      // show up as an unresolved allowance-interaction question.
+      countItem(`minimum_commitment:${unitType}`, isMinimumCommitmentModeUnresolved(mc, hasAllowance))
+      countItem(`partial_period:${unitType}`, isMinimumCommitmentProrationUnresolved(
+        mc, !!anchorTier, anchorTier?.measurement_period, terms?.contract_start_date, terms?.contract_end_date,
+      ))
     }
     const paidCount = group.filter(t => (t.rate_per_unit ?? 0) > 0).length
     if (paidCount >= 2) {
@@ -138,7 +226,14 @@ export function computeCommercialRuleWorkload(
 
   for (const c of terms?.service_credits ?? []) {
     if (!c.credit_rule_id) continue
-    countItem(`service_credit:${c.credit_rule_id}`, !c.interpretation || c.interpretation.requires_confirmation)
+    // Unresolved if EITHER the top-level interpretation is still open OR —
+    // once that's confirmed — its independent application_rule still is.
+    // A credit can be fully confirmed on trigger/rate/cap while its
+    // application scope (what it may reduce) remains a real, separate,
+    // outstanding decision; the readiness count must not drop it just
+    // because the main flag flipped.
+    const unresolved = !c.interpretation || c.interpretation.requires_confirmation || !!c.interpretation.application_rule?.requires_confirmation
+    countItem(`service_credit:${c.credit_rule_id}`, unresolved)
   }
 
   const meterMappingOk = meterMapping.total === 0 || meterMapping.confirmed >= meterMapping.total

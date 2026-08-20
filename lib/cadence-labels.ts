@@ -26,3 +26,25 @@ export function ruleCadenceLabel(period: string | null | undefined, resetAnchor:
 export function partialPeriodLabel(period: string | null | undefined): string {
   return `Partial-${cadenceNoun(period)} treatment`
 }
+
+function ordinal(day: number): string {
+  const j = day % 10, k = day % 100
+  if (j === 1 && k !== 11) return `${day}st`
+  if (j === 2 && k !== 12) return `${day}nd`
+  if (j === 3 && k !== 13) return `${day}rd`
+  return `${day}th`
+}
+
+// "17th–16th" — the contract's own billing-period boundary when its start
+// date doesn't land on day 1, used to phrase a "bill by contract month, not
+// calendar month" option concretely instead of leaving a reviewer to work
+// out what that would even mean for this specific agreement. Null when the
+// contract already starts on day 1 (contract month and calendar month are
+// the same thing — no distinct option is meaningful) or when no start date
+// is known yet.
+export function contractMonthLabel(startDate: string | null | undefined): string | null {
+  if (!startDate) return null
+  const day = new Date(startDate + 'T00:00:00').getDate()
+  if (day === 1) return null
+  return `${ordinal(day)}–${ordinal(day - 1)}`
+}

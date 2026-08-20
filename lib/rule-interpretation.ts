@@ -5,6 +5,8 @@
 // API route and the review-panel UI (describeWhatWillChange in particular
 // must never diverge between what the API reports and what the UI shows).
 
+import { cadenceNoun, contractMonthLabel } from './cadence-labels'
+
 export type RuleType = 'minimum_commitment' | 'escalator' | 'partial_period' | 'discount' | 'tier_calculation' | 'service_credit' | 'rule_interaction' | 'base_fee_proration' | 'recurring_fee_proration'
 
 export type StructuredOption = {
@@ -36,6 +38,37 @@ export function getPartialPeriodOptions(cadenceLabel: string = 'period'): Struct
     { id: 'none', label: 'No minimum for partial period', description: "Waive the minimum entirely for a period the contract wasn't in effect for the whole of." },
     { id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' },
   ]
+}
+
+// base_fee_proration / recurring_fee_proration ask a genuinely different
+// first question than getPartialPeriodOptions above: a metric's minimum
+// commitment is measured over a window the contract already ties to the
+// calendar (e.g. "for each calendar month"), so only proration TREATMENT is
+// open. A recurring fee billed "monthly in advance" with no anchor language
+// at all has not even settled whether its periods run on calendar
+// boundaries or the contract's own start-date anniversary — assuming
+// calendar and only asking about proration silently forecloses the
+// anniversary reading, which may be the more natural one for a fee that
+// resets "monthly" starting from a specific signing/go-live date. When the
+// contract starts mid-month, contractPeriodLabel names that anniversary
+// window concretely (e.g. "17th–16th") so the option reads as a real,
+// specific choice rather than an abstract "contract month".
+export function getBaseFeeProrationOptions(cadenceLabel: string = 'period', contractPeriodLabel?: string | null): StructuredOption[] {
+  const options: StructuredOption[] = []
+  if (contractPeriodLabel) {
+    options.push({
+      id: 'contract_month',
+      label: `Full fee per contract ${cadenceLabel} (${contractPeriodLabel})`,
+      description: `Billing periods follow the contract's own start-date anniversary, not the calendar — every ${cadenceLabel} is a full ${cadenceLabel} by definition, so no partial-period question ever arises.`,
+    })
+  }
+  options.push(
+    { id: 'calendar_full', label: `Full fee each calendar ${cadenceLabel}`, description: `Billing resets on calendar ${cadenceLabel} boundaries; a partial first or final ${cadenceLabel} is still charged in full.` },
+    { id: 'calendar_prorate_days', label: 'Prorate by days on calendar boundaries', description: `Billing resets on calendar ${cadenceLabel} boundaries; a partial ${cadenceLabel} is reduced in proportion to the days actually covered.` },
+    { id: 'calendar_prorate_months', label: 'Prorate by months on calendar boundaries', description: `Billing resets on calendar ${cadenceLabel} boundaries; a partial ${cadenceLabel} is reduced in proportion to the months actually covered.` },
+    { id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' },
+  )
+  return options
 }
 
 export const ESCALATOR_OPTIONS: StructuredOption[] = [
@@ -93,15 +126,15 @@ export const RULE_INTERACTION_OPTIONS: StructuredOption[] = [
   { id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' },
 ]
 
-export function optionsForRuleType(ruleType: RuleType, cadenceLabel?: string): StructuredOption[] {
+export function optionsForRuleType(ruleType: RuleType, cadenceLabel?: string, contractPeriodLabel?: string | null): StructuredOption[] {
   switch (ruleType) {
     case 'minimum_commitment': return MINIMUM_COMMITMENT_OPTIONS
     case 'partial_period': return getPartialPeriodOptions(cadenceLabel)
-    // Same underlying question as partial_period (prorate or bill in full?),
-    // just applied to a base/recurring fee instead of a metric minimum — the
-    // options genuinely are identical, not a placeholder reuse.
-    case 'base_fee_proration': return getPartialPeriodOptions(cadenceLabel)
-    case 'recurring_fee_proration': return getPartialPeriodOptions(cadenceLabel)
+    // A different question from partial_period, not the same one reused —
+    // see getBaseFeeProrationOptions for why: the calendar anchor itself is
+    // open here, not just proration treatment.
+    case 'base_fee_proration': return getBaseFeeProrationOptions(cadenceLabel, contractPeriodLabel)
+    case 'recurring_fee_proration': return getBaseFeeProrationOptions(cadenceLabel, contractPeriodLabel)
     case 'escalator': return ESCALATOR_OPTIONS
     case 'discount': return DISCOUNT_OPTIONS
     case 'tier_calculation': return TIER_CALCULATION_OPTIONS
@@ -131,10 +164,17 @@ export function deriveSelectedOption(ruleType: RuleType, approved: Record<string
     if (approved.index === 'fixed_pct') return 'fixed_pct'
     return 'other'
   }
-  if (ruleType === 'partial_period' || ruleType === 'base_fee_proration' || ruleType === 'recurring_fee_proration') {
+  if (ruleType === 'partial_period') {
     if (approved.prorate_partial_periods === false) return 'full'
     if (approved.prorate_partial_periods === true && approved.proration_method === 'days') return 'prorate_days'
     if (approved.prorate_partial_periods === true && approved.proration_method === 'months') return 'prorate_months'
+    return 'other'
+  }
+  if (ruleType === 'base_fee_proration' || ruleType === 'recurring_fee_proration') {
+    if (approved.reset_anchor === 'contract_start') return 'contract_month'
+    if (approved.reset_anchor === 'calendar' && approved.prorate_partial_periods === false) return 'calendar_full'
+    if (approved.reset_anchor === 'calendar' && approved.prorate_partial_periods === true && approved.proration_method === 'days') return 'calendar_prorate_days'
+    if (approved.reset_anchor === 'calendar' && approved.prorate_partial_periods === true && approved.proration_method === 'months') return 'calendar_prorate_months'
     return 'other'
   }
   if (ruleType === 'discount') {
@@ -254,9 +294,9 @@ export type RuleInteractionContext = {
   overlapReason: string
 }
 
-function optionContext(ruleType: RuleType, selectedOption?: string): string {
+function optionContext(ruleType: RuleType, selectedOption?: string, cadenceLabel?: string, contractPeriodLabel?: string | null): string {
   if (!selectedOption || selectedOption === 'other') return ''
-  const opt = optionsForRuleType(ruleType).find(o => o.id === selectedOption)
+  const opt = optionsForRuleType(ruleType, cadenceLabel, contractPeriodLabel).find(o => o.id === selectedOption)
   if (!opt) return ''
   return `\nThe reviewer selected the structured option "${opt.label}": ${opt.description}`
 }
@@ -302,11 +342,46 @@ export function buildPartialPeriodPrompt(
   reviewerInput: string,
   selectedOption?: string,
 ): string {
+  // A metric's minimum commitment (subjectNoun unset) is measured over a
+  // window the contract has already tied to the calendar — only proration
+  // TREATMENT is open. A base/recurring fee (subjectNoun set) hasn't even
+  // settled that: "billed monthly in advance" with no anchor language
+  // leaves open whether periods run on calendar boundaries or the
+  // contract's own start-date anniversary. Asserting "resets on calendar
+  // boundaries stated in the contract" as a given fact for the fee case
+  // would beg the exact question being asked — the two prompts diverge
+  // here rather than sharing one premise that's only true for one of them.
+  const isFee = !!context.subjectNoun
   const subject = context.subjectNoun ?? 'minimum commitment'
+  const ruleType = isFee ? 'base_fee_proration' : 'partial_period'
+  if (isFee) {
+    const cadenceLabel = cadenceNoun(context.measurementPeriod)
+    const contractPeriodLabel = contractMonthLabel(context.contractStartDate)
+    return `A SaaS contract runs from ${context.contractStartDate ?? 'unknown'} to ${context.contractEndDate ?? 'unknown'}. The "${context.contractUnitType}" ${subject} of ${context.minimumAmount != null ? `${context.minimumAmount} ${context.currency}` : ''} is billed on a recurring cadence, but the contract does not state whether that cadence resets on fixed calendar boundaries or on the contract's own start-date anniversary — both are plausible readings of ordinary "billed monthly" language. A human reviewer is resolving which anchor applies, and — only if calendar boundaries are chosen — how a resulting partial first/final period should be treated.
+
+Source clause: ${context.sourceClause ?? '(not captured)'}
+${optionContext(ruleType, selectedOption, cadenceLabel, contractPeriodLabel)}
+Reviewer's instruction: "${reviewerInput}"
+
+Translate the reviewer's instruction into a structured JSON object with EXACTLY these fields:
+{
+  "reset_anchor": "contract_start" | "calendar",
+  "prorate_partial_periods": true | false,
+  "proration_method": "days" | "months" | "none" | null,
+  "calculation_summary": "<one-sentence plain-English description>"
+}
+
+Rules:
+- Use ONLY what the reviewer's instruction and the source clause actually say. Never invent a value the reviewer didn't specify.
+- reset_anchor "contract_start" means every billing period runs from the contract's own start-date anniversary — no partial period is ever possible under this reading, so prorate_partial_periods should be false and proration_method "none".
+- reset_anchor "calendar" means billing periods reset on fixed calendar boundaries (e.g. the 1st of the month), which can produce a partial first/final period — prorate_partial_periods and proration_method then describe how that partial period is treated.
+- If the reviewer's instruction doesn't clearly specify a field, omit it entirely rather than guessing.
+- Respond with ONLY the JSON object, no other text.`
+  }
   return `A SaaS contract runs from ${context.contractStartDate ?? 'unknown'} to ${context.contractEndDate ?? 'unknown'}, but the "${context.contractUnitType}" ${subject} resets on calendar boundaries stated in the contract, creating a partial first and/or final period. A human reviewer is resolving how the ${context.minimumAmount != null ? `${context.minimumAmount} ${context.currency}` : ''} ${subject} should apply to a period the contract wasn't in effect for the whole of.
 
 Source clause: ${context.sourceClause ?? '(not captured)'}
-${optionContext('partial_period', selectedOption)}
+${optionContext(ruleType, selectedOption)}
 Reviewer's instruction: "${reviewerInput}"
 
 Translate the reviewer's instruction into a structured JSON object with EXACTLY these fields:
@@ -489,8 +564,8 @@ const REQUIRED_FIELDS: Record<RuleType, string[]> = {
   tier_calculation: ['method', 'calculation_summary'],
   service_credit: ['trigger_type', 'credit_basis', 'basis_component'],
   rule_interaction: ['resolution', 'note'],
-  base_fee_proration: ['prorate_partial_periods'],
-  recurring_fee_proration: ['prorate_partial_periods'],
+  base_fee_proration: ['reset_anchor'],
+  recurring_fee_proration: ['reset_anchor'],
 }
 
 // Only a tiered/volume discount needs its tier structure spelled out — a
@@ -541,6 +616,13 @@ export function parseRuleInterpretationResponse(ruleType: RuleType, rawText: str
   if (ruleType === 'discount' && (parsed.discount_type === 'tiered_discount' || parsed.discount_type === 'volume_discount')) {
     missing.push(...DISCOUNT_TIERED_FIELDS.filter(f => parsed[f] == null))
   }
+  // prorate_partial_periods only means something once calendar-boundary
+  // billing is established — a contract_start anchor has no partial period
+  // to prorate, so requiring the field unconditionally would force the AI
+  // to invent a value for a question that doesn't apply under that reading.
+  if ((ruleType === 'base_fee_proration' || ruleType === 'recurring_fee_proration') && parsed.reset_anchor === 'calendar' && parsed.prorate_partial_periods == null) {
+    missing.push('prorate_partial_periods')
+  }
   if (missing.length > 0) return { ok: false, missingFields: missing }
   return { ok: true, proposal: parsed }
 }
@@ -553,6 +635,7 @@ const MISSING_FIELD_QUESTIONS: Record<string, string> = {
   amount: 'What is the minimum amount?',
   included_allowance_interaction: 'Should the minimum apply before or after the included allowance?',
   prorate_partial_periods: 'Should the minimum be prorated for a partial period, or applied in full?',
+  reset_anchor: 'Does this fee reset on fixed calendar boundaries, or on the contract’s own start-date anniversary?',
   treatment: 'Should this escalation clause actually apply, or should it be excluded entirely?',
   index: 'Is this escalator tied to an index (like CPI) or a fixed percentage?',
   index_name: 'What is the index actually called in the contract (e.g. HICP, RPI, CPI)?',
@@ -677,12 +760,26 @@ export type RuleProposal = {
   // this rather than trusting the model's own claim.
   reasoning: string
   calculation_preview?: Array<{ label: string; value: string }>
+  // service_credit only (see buildServiceCreditProposalPrompt) — grades
+  // proposed_interpretation.application_rule independently of `state`, so a
+  // credit's fully-explicit trigger/rate/cap facts are never dragged down
+  // to "Verdix recommendation" purely because its separate application-
+  // scope/carry-forward question is still open, and vice versa. Undefined
+  // for every other rule type, which has only the one, holistic state.
+  application_state?: ProposalState
 }
 
-function proposalSchemaBlock(fields: string): string {
+// extraStateField lets a specific rule type ask for a SECOND, independently
+// graded state alongside the main one — added for service_credit, where a
+// single holistic classification forced facts that are fully explicit
+// (trigger, rate, cap) to be graded down to "verdix_recommends" purely
+// because a genuinely separate question (application scope / carry-forward)
+// was still open. Every other rule type passes this as undefined and gets
+// the original single-state schema, unchanged.
+function proposalSchemaBlock(fields: string, extraStateField?: { name: string; label: string }): string {
   return `Respond with a structured JSON object with EXACTLY these fields:
 {
-  "state": "clear_from_source" | "verdix_recommends" | "decision_required",
+  "state": "clear_from_source" | "verdix_recommends" | "decision_required",${extraStateField ? `\n  "${extraStateField.name}": "clear_from_source" | "verdix_recommends" | "decision_required",` : ''}
   "proposed_interpretation": ${fields} | null,
   "reasoning": "<one to three sentences, quoting or closely paraphrasing the actual source clause — never generic AI boilerplate like 'this is ambiguous'>",
   "calculation_preview": [{"label": "<short label>", "value": "<plain-English value or formula>"}] | omit if not usefully computable yet
@@ -693,7 +790,7 @@ State rules — this is the most important part of your response:
 - "verdix_recommends": the contract isn't perfectly explicit, but there is a commercially defensible reading (e.g. the contract calls something a "minimum charge" rather than an "additional fee", which supports reading it as a floor). proposed_interpretation must still be fully populated — this is a recommendation, not a fact, but it IS a specific, structured recommendation. reasoning must explain the specific textual basis for the recommendation.
 - "decision_required": the contract is genuinely silent on the deciding question. Set proposed_interpretation to null — do NOT pre-select anything, do NOT guess, do NOT default to the "usual" answer. reasoning must explain specifically what the contract fails to state.
 - When in doubt between "verdix_recommends" and "decision_required": if you cannot point to ANY textual basis (however indirect) for a specific answer, use "decision_required". A recommendation with no textual basis is worse than an honest gap.
-- Never claim "clear_from_source" for a question the contract doesn't directly address — that state means "explicit", not "the common default".`
+- Never claim "clear_from_source" for a question the contract doesn't directly address — that state means "explicit", not "the common default".${extraStateField ? `\n- "${extraStateField.name}" grades ONLY ${extraStateField.label}, using the exact same three-state definitions above, but graded INDEPENDENTLY of "state" — do not let uncertainty in one drag the other down, and do not let clarity in one inflate the other. A clause can be fully explicit about its trigger and value while remaining completely silent on ${extraStateField.label}, or vice versa.` : ''}`
 }
 
 export type MinimumCommitmentProposalContext = MinimumCommitmentContext
@@ -720,6 +817,22 @@ Critical: this metric may have multiple pricing bands/tiers (see Pricing tiers a
 
 export type PartialPeriodProposalContext = PartialPeriodContext
 export function buildPartialPeriodProposalPrompt(context: PartialPeriodProposalContext): string {
+  // Same divergence as buildPartialPeriodPrompt above: a base/recurring fee
+  // has not settled its calendar-vs-contract-anniversary anchor at all, so
+  // asserting "resets on calendar boundaries" as a given fact — and never
+  // even asking about it in the schema — silently forecloses the
+  // contract-start reading and skews any calculation_preview toward
+  // calendar-boundary math that may not apply.
+  if (context.subjectNoun) {
+    const subject = context.subjectNoun
+    return `A SaaS contract runs from ${context.contractStartDate ?? 'unknown'} to ${context.contractEndDate ?? 'unknown'}. The "${context.contractUnitType}" ${subject} of ${context.minimumAmount != null ? `${context.minimumAmount} ${context.currency}` : ''} is billed on a recurring cadence, but the contract does not state whether that cadence resets on fixed calendar boundaries or on the contract's own start-date anniversary. Before any human reviewer has said anything, determine Verdix's own best interpretation of which anchor applies, and — only if calendar boundaries — how a resulting partial first/final period should be treated.
+
+Source clause: ${context.sourceClause ?? '(not captured)'}
+
+${proposalSchemaBlock('{"reset_anchor": "contract_start"|"calendar", "prorate_partial_periods": true|false, "proration_method": "days"|"months"|"none"|null, "calculation_summary": "<one sentence>"}')}
+
+Specific guidance: ordinary "billed monthly in advance" language, with no explicit calendar-boundary or anniversary wording, is genuinely silent on this question — neither anchor is the "default". Unless the source clause says something explicit (e.g. "billed on the first of each calendar month" supports calendar; "billed monthly from the effective date" supports contract_start), you MUST use "decision_required" with proposed_interpretation null. This is the single most important rule in this prompt: silence on the anchor question is silence, not evidence for either answer.`
+  }
   return `A SaaS contract runs from ${context.contractStartDate ?? 'unknown'} to ${context.contractEndDate ?? 'unknown'}. The "${context.contractUnitType}" metric's minimum commitment resets on calendar boundaries, creating a partial first and/or final period. Before any human reviewer has said anything, determine Verdix's own best interpretation of how the ${context.minimumAmount != null ? `${context.minimumAmount} ${context.currency}` : ''} minimum should apply to a period the contract wasn't in effect for the whole of.
 
 Source clause: ${context.sourceClause ?? '(not captured)'}
@@ -785,15 +898,19 @@ Source clause / description: ${context.sourceClause ?? context.description}
 Extraction's own classification: ${context.creditType}
 Stated value: ${context.statedPct != null ? `${context.statedPct}%` : context.statedAmount != null ? `${context.statedAmount} ${context.currency}` : 'not captured as a single value'}
 
-${proposalSchemaBlock('{"trigger_type": "sla_breach"|"usage_threshold"|"promotional"|"earned_milestone"|"other", "trigger_description": "<plain-English condition>", "credit_basis": "pct_of_period_fee"|"pct_of_affected_component"|"flat_amount"|"usage_units", "basis_component": "<what the value is computed from>", "credit_value": <number>, "cap_amount": <number or null>, "cap_pct": <number or null>, "settlement_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"per_incident"|null, "cash_redeemable": true|false, "earn_rule": {"trigger_metric_key": "<metric name, e.g. transactions>", "trigger_quantity": <number>, "trigger_comparator": "gt"|"gte", "trigger_window": "calendar_month"|"billing_period"|"contract_year"|"per_incident", "consecutive_windows_required": <number, 1 if the clause does not require a streak>, "window_anchor": "contract_start"|"calendar", "finalization_deadline_days": <number or null>}, "application_rule": {"computed_from_component_keys": [<string>]|null, "eligible_component_keys": [<string>]|"all"|null, "excluded_component_keys": [<string>], "one_time": true|false|"unclear", "carry_forward": true|false|"unclear"}, "calculation_summary": "<one sentence>"}')}
+${proposalSchemaBlock(
+  '{"trigger_type": "sla_breach"|"usage_threshold"|"promotional"|"earned_milestone"|"other", "trigger_description": "<plain-English condition>", "credit_basis": "pct_of_period_fee"|"pct_of_affected_component"|"flat_amount"|"usage_units", "basis_component": "<what the value is computed from>", "credit_value": <number>, "cap_amount": <number or null>, "cap_pct": <number or null>, "settlement_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"per_incident"|null, "cash_redeemable": true|false, "earn_rule": {"trigger_metric_key": "<metric name, e.g. transactions>", "trigger_quantity": <number>, "trigger_comparator": "gt"|"gte", "trigger_window": "calendar_month"|"billing_period"|"contract_year"|"per_incident", "consecutive_windows_required": <number, 1 if the clause does not require a streak>, "window_anchor": "contract_start"|"calendar", "finalization_deadline_days": <number or null>}, "application_rule": {"computed_from_component_keys": [<string>]|null, "eligible_component_keys": [<string>]|"all"|null, "excluded_component_keys": [<string>], "one_time": true|false|"unclear", "carry_forward": true|false|"unclear"}, "calculation_summary": "<one sentence>"}',
+  { name: 'application_state', label: 'application_rule — WHAT future charges this credit may reduce, whether it carries forward, and whether it is one-time (never the trigger, rate, cap, or settlement timing, which "state" already covers)' },
+)}
 
 Specific guidance, by field:
-- trigger condition, credit value, cap, and settlement timing are usually stated explicitly — resolve these as "clear_from_source" when the wording is direct.
+- trigger condition, credit value, cap, and settlement timing are usually stated explicitly — resolve these as "clear_from_source" when the wording is direct. These drive "state", never "application_state".
 - basis_component (WHAT the percentage/amount is computed from — e.g. "the affected month's subscription fee") is often genuinely ambiguous, especially when another rule (like an introductory discount) could change what "the fee" means for a given period — if the clause doesn't specify and no other context resolves it, use "decision_required" for basis_component specifically rather than assuming the standard/undiscounted fee.
 - earn_rule.consecutive_windows_required: only set above 1 when the clause explicitly requires a streak across multiple windows (e.g. "in each of 3 consecutive calendar months") — a single-period threshold is 1, never inferred as a streak just because it recurs.
-- application_rule.eligible_component_keys is the single most commonly UNSTATED field — a clause can state a credit's SIZE (e.g. "5% of transaction-processing fees paid") without ever stating what future charges that resulting credit may reduce. Do not assume it may offset "all amounts payable" or "the same component it was computed from" unless the contract actually says so. If the clause is silent on what the credit may be applied against, set eligible_component_keys to null and mark this field's own requires_confirmation true in your reasoning — this is one of the most important distinctions in this prompt, and getting it wrong risks a credit silently reducing the wrong charge.
+- application_rule.eligible_component_keys is the single most commonly UNSTATED field — a clause can state a credit's SIZE (e.g. "5% of transaction-processing fees paid") without ever stating what future charges that resulting credit may reduce. Do not assume it may offset "all amounts payable" or "the same component it was computed from" unless the contract actually says so. If the clause is silent on what the credit may be applied against, set eligible_component_keys to null and grade application_state "decision_required" — this is one of the most important distinctions in this prompt, and getting it wrong risks a credit silently reducing the wrong charge.
 - application_rule.carry_forward: only true when the clause explicitly says the credit persists/carries forward until consumed. A clause establishing that a credit applies to FUTURE periods (i.e. not the same period it was earned) is not, by itself, evidence that it survives indefinitely — those are different questions. If unstated, use "unclear", never default to true just because the credit is clearly not same-period-applicable.
-- application_rule.one_time: true only when the clause says the credit can be earned once ("a one-time credit," "cannot be earned again"). If the clause is silent on repeatability, use "unclear" rather than assuming either repeatable or one-time.`
+- application_rule.one_time: true only when the clause says the credit can be earned once ("a one-time credit," "cannot be earned again"). If the clause is silent on repeatability, use "unclear" rather than assuming either repeatable or one-time.
+- Do not let application_state's uncertainty pull "state" down to "verdix_recommends"/"decision_required" when the trigger/value/cap facts are themselves fully explicit — grade them independently, exactly as instructed above.`
 }
 
 export type RuleInteractionProposalContext = RuleInteractionContext
@@ -816,14 +933,18 @@ Specific guidance: this is rarely explicit — most contracts that define a serv
 // after every response.
 export function validateProposalState(proposal: RuleProposal, sourceClauseAvailable: boolean): RuleProposal {
   const { reasoning } = proposal
-  let { state, proposed_interpretation } = proposal
+  let { state, proposed_interpretation, application_state } = proposal
 
   // A "decision_required" claim that still ships a fully-populated
   // proposed_interpretation is internally contradictory — the model may have
   // meant to flag genuine uncertainty about one field while still proposing
   // the rest; treat that as decision_required won, since "nothing
   // pre-selected" is the safer failure mode than silently trusting a
-  // proposal the model itself called undecidable.
+  // proposal the model itself called undecidable. Only clears the WHOLE
+  // proposal when the main `state` itself is decision_required — a
+  // service_credit whose application_state alone is decision_required still
+  // needs its trigger/rate/cap fields (main `state`'s own content), just
+  // not its application_rule sub-object (handled below).
   if (state === 'decision_required' && proposed_interpretation != null) {
     proposed_interpretation = null
   }
@@ -848,5 +969,24 @@ export function validateProposalState(proposal: RuleProposal, sourceClauseAvaila
     state = 'decision_required'
   }
 
-  return { state, proposed_interpretation, reasoning }
+  // application_state (service_credit only) — same three safety checks as
+  // `state` above, applied independently and scoped to application_rule
+  // specifically, so grading one aspect down never silently drags the other.
+  if (application_state) {
+    const applicationRule = proposed_interpretation && typeof proposed_interpretation === 'object'
+      ? (proposed_interpretation as Record<string, unknown>).application_rule as Record<string, unknown> | null | undefined
+      : undefined
+    if (application_state === 'decision_required' && applicationRule != null && proposed_interpretation) {
+      (proposed_interpretation as Record<string, unknown>).application_rule = null
+    }
+    if (application_state === 'clear_from_source') {
+      const reasoningLooksSourced = reasoning.trim().length >= 20
+      if (!sourceClauseAvailable || !reasoningLooksSourced) application_state = 'verdix_recommends'
+    }
+    if (application_state !== 'decision_required' && applicationRule == null) {
+      application_state = 'decision_required'
+    }
+  }
+
+  return { state, proposed_interpretation, reasoning, application_state }
 }

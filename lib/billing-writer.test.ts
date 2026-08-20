@@ -162,6 +162,21 @@ describe('computeBillingSchedule — calendar-anchored base fee proration (TEST-
     expect(periods[0].baseAmount).toBe(38_500)
   })
 
+  it('reviewer confirms "full fee per contract month" (reset_anchor: contract_start) — same schedule as no proration rule at all, no partial period ever occurs', () => {
+    const contractTerms = terms({
+      ...baseFixture,
+      base_fee_proration: { reset_anchor: 'contract_start', prorate_partial_periods: false, requires_confirmation: false },
+    })
+    const periods = computeBillingSchedule(contractTerms)
+    // Contract-start-anchored periods (17th–16th), never calendar-month
+    // windows — must match the no-proration-rule schedule exactly, proving
+    // the reviewer's confirmed anchor is actually followed, not silently
+    // overridden by the presence of a base_fee_proration record.
+    expect(periods[0].periodStart).toEqual(new Date(2026, 7, 17))
+    expect(periods[0].periodEnd).toEqual(new Date(2026, 8, 16))
+    expect(periods[0].baseAmount).toBe(38_500)
+  })
+
   it('an additional recurring fee with its own confirmed proration prorates independently of the base fee', () => {
     const contractTerms = terms({
       ...baseFixture,

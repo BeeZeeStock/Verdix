@@ -12,10 +12,10 @@ import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCa
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, contractLifecycleStatus } from '@/lib/contract-tcv-calc'
 import { findCadenceWindowContaining, isPartialWindow } from '@/lib/tariff'
-import { ruleCadenceLabel, partialPeriodLabel, cadenceNoun } from '@/lib/cadence-labels'
+import { ruleCadenceLabel, partialPeriodLabel, cadenceNoun, contractMonthLabel } from '@/lib/cadence-labels'
 import { optionsForRuleType, optionsForEdit, deriveSelectedOption, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
-import { computeCommercialRuleWorkload } from '@/lib/commercial-rule-status'
+import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved } from '@/lib/commercial-rule-status'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
@@ -740,14 +740,14 @@ function findTierForItem(item: LineItem, tiers: Tier[]): Tier | undefined {
 
 // A metric's minimum commitment resets on calendar-quarter (etc.) boundaries
 // independent of the contract's own start/end date, so the first and/or
-// last window the contract touches can be shorter than a full cadence cycle
-// — only surfaced once the allowance-interaction ambiguity is already
-// resolved, so the reviewer tackles one ambiguity at a time per metric.
+// last window the contract touches can be shorter than a full cadence cycle.
+// Thin wrapper around lib/commercial-rule-status.ts's
+// isMinimumCommitmentProrationUnresolved — the exact same date-aware window
+// check the server-side readiness gate (computeCommercialRuleWorkload,
+// approve/route.ts) uses, so this page can never show a partial-period card
+// the server doesn't also count as outstanding, or vice versa.
 function computePartialPeriodMetrics(contractStartDate: string | undefined, contractEndDate: string | undefined, tiers: Tier[]): Set<string> {
   const result = new Set<string>()
-  if (!contractStartDate || !contractEndDate) return result
-  const start = parseLocalDate(contractStartDate)
-  const end   = parseLocalDate(contractEndDate)
   const byUnit = new Map<string, Tier[]>()
   for (const t of tiers) {
     if (!t.unit_type) continue
@@ -756,21 +756,8 @@ function computePartialPeriodMetrics(contractStartDate: string | undefined, cont
   }
   for (const [unitType, unitTiers] of byUnit) {
     const mc = unitTiers.find(t => t.minimum_commitment)?.minimum_commitment
-    // Partial-period treatment is an independent decision from the
-    // minimum's own mode/floor question — it must never wait on
-    // requires_confirmation (whether the mode has been resolved yet) before
-    // it can even be considered. A missing prorate_partial_periods field
-    // (extraction simply never populated it, as opposed to the model
-    // explicitly writing "unclear") is just as unresolved as the literal
-    // string 'unclear' — both mean "the contract doesn't say."
-    const proratedUnresolved = mc?.prorate_partial_periods == null || mc.prorate_partial_periods === 'unclear'
-    if (!mc || !proratedUnresolved) continue
     const anchorTier = unitTiers.find(t => t.reset_anchor === 'calendar')
-    if (!anchorTier) continue
-    const cadence = anchorTier.measurement_period ?? 'monthly'
-    const firstWindow = findCadenceWindowContaining(start, cadence, start, 'calendar')
-    const lastWindow  = findCadenceWindowContaining(start, cadence, end, 'calendar')
-    if (isPartialWindow(firstWindow, start, end) || isPartialWindow(lastWindow, start, end)) {
+    if (isMinimumCommitmentProrationUnresolved(mc, !!anchorTier, anchorTier?.measurement_period, contractStartDate, contractEndDate)) {
       result.add(unitType)
     }
   }
@@ -1026,7 +1013,7 @@ const BASE_FEE_PRORATION_SENTINEL = '__base_fee__'
 type RulePhase = 'proposing' | 'proposed' | 'input' | 'loading' | 'missing' | 'proposal' | 'confirming' | 'applied' | 'partial' | 'error'
 
 function RuleInterpretationCard({
-  jobId, kind, contractUnitType, discountId, creditId, interactionKey, cadenceLabel, sourceClause, currency, meterMappingConfirmed, meterSuggestion, showMeterDependencyNotice, onApplied,
+  jobId, kind, contractUnitType, discountId, creditId, interactionKey, cadenceLabel, contractPeriodLabel, sourceClause, currency, meterMappingConfirmed, meterSuggestion, showMeterDependencyNotice, onApplied,
   initialSelectedOption, initialFreeText,
 }: {
   jobId: string
@@ -1044,6 +1031,12 @@ function RuleInterpretationCard({
   // meaningful for kind 'partial_period', where it drives "Full <cadence>
   // minimum applies" instead of a hardcoded "quarterly".
   cadenceLabel?: string
+  // "17th–16th" — only meaningful for kind 'base_fee_proration'/
+  // 'recurring_fee_proration', where it names the contract's own
+  // billing-period boundary concretely for the "bill by contract month"
+  // option. Null/absent when the contract starts on day 1 (no distinct
+  // contract-month framing exists) or for every other kind.
+  contractPeriodLabel?: string | null
   sourceClause: string
   currency: string
   meterMappingConfirmed?: boolean
@@ -1061,7 +1054,7 @@ function RuleInterpretationCard({
   initialFreeText?: string
 }) {
   const ruleType = ITEM_KIND_TO_RULE_TYPE[kind] ?? 'minimum_commitment'
-  const options = optionsForRuleType(ruleType, cadenceLabel)
+  const options = optionsForRuleType(ruleType, cadenceLabel, contractPeriodLabel)
   // Re-opening an already-confirmed rule ("Edit interpretation") starts from
   // what's already approved, not a fresh AI proposal — only a first-time
   // review runs the propose-first flow.
@@ -1279,6 +1272,36 @@ function RuleInterpretationCard({
               </dl>
             )}
           </div>
+          {/* Application scope — service_credit only. Graded and shown
+              separately from the trigger/rate/cap badge above: a credit can
+              be Clear from source on what it's worth while genuinely
+              Decision required on what it may reduce (or vice versa), and
+              folding both into one badge previously meant the whole card
+              read as "Verdix recommendation" the moment EITHER question was
+              less than fully explicit — even for a credit like Growth
+              Credit, whose application scope is itself stated verbatim. */}
+          {aiProposal.application_state && (
+            <div className="rounded-xl p-3" style={{
+              background: aiProposal.application_state === 'clear_from_source' ? '#F0FDF4' : aiProposal.application_state === 'decision_required' ? '#FEF2F2' : '#FFFDF5',
+              border: `1px solid ${aiProposal.application_state === 'clear_from_source' ? 'rgba(11,92,54,0.2)' : aiProposal.application_state === 'decision_required' ? '#FECACA' : 'rgba(217,167,90,0.35)'}`,
+            }}>
+              <span
+                className="inline-block text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full mb-1.5"
+                style={aiProposal.application_state === 'clear_from_source'
+                  ? { background: 'rgba(11,92,54,0.12)', color: '#0B5C36' }
+                  : aiProposal.application_state === 'decision_required'
+                    ? { background: 'rgba(153,27,27,0.1)', color: '#991B1B' }
+                    : { background: 'rgba(180,83,9,0.12)', color: '#92400E' }}
+              >
+                Application scope · {aiProposal.application_state === 'clear_from_source' ? 'Clear from source' : aiProposal.application_state === 'decision_required' ? 'Decision required' : 'Verdix recommendation'}
+              </span>
+              <p className="text-[11px] leading-relaxed" style={{ color: aiProposal.application_state === 'decision_required' ? '#7F1D1D' : '#4A5D50' }}>
+                {aiProposal.application_state === 'decision_required'
+                  ? "The contract states this credit's size but not what future charges it may reduce — resolve this before it can be applied against an invoice."
+                  : 'What this credit may reduce, and whether it carries forward, is covered in the reasoning above.'}
+              </p>
+            </div>
+          )}
           {errorMsg && <p className="text-xs" style={{ color: '#DC2626' }}>{errorMsg}</p>}
           <div className="flex gap-2">
             <button
@@ -1992,7 +2015,12 @@ function ReviewPanel({
   for (const [unitType, tierList] of tiersByUnitType) {
     const kinds: MetricRuleKind[] = []
     const mc = tierList.find(t => t.minimum_commitment)?.minimum_commitment
-    if (mc?.requires_confirmation) kinds.push('minimum_commitment')
+    // Same canonical predicate the server-side readiness gate uses — a
+    // minimum with an explicit mode and no included allowance (e.g.
+    // TEST-PAY-002's transaction floor) no longer shows this card just
+    // because its unrelated partial-period question is still open.
+    const hasAllowance = tierList.some(t => (t.rate_per_unit ?? 0) === 0)
+    if (isMinimumCommitmentModeUnresolved(mc, hasAllowance)) kinds.push('minimum_commitment')
     if (partialPeriodMetrics.has(unitType)) kinds.push('partial_period')
     const paidCount = tierList.filter(t => (t.rate_per_unit ?? 0) > 0).length
     if (paidCount >= 2) {
@@ -2465,13 +2493,14 @@ function ReviewPanel({
                         </div>
                         <p className="text-sm font-medium text-ink leading-snug mb-1">Platform subscription fee</p>
                         <p className="text-[11px] text-stone leading-relaxed mb-3">
-                          The agreement begins or ends part-way through a calendar {cadenceNoun(contractBillingFrequency)}, but the {fmt(baseFeeAmount, cur ?? 'EUR')} recurring fee resets on calendar boundaries. No explicit proration rule was identified.
+                          The agreement states the {fmt(baseFeeAmount, cur ?? 'EUR')} fee is billed {contractBillingFrequency ?? 'monthly'} in advance, but does not say whether billing periods reset on calendar boundaries or on the contract's own start date{contractStartDate ? ` (${contractStartDate})` : ''}. This decides whether a partial-period question exists at all.
                         </p>
                         <RuleInterpretationCard
                           jobId={jobId}
                           kind="base_fee_proration"
                           contractUnitType={BASE_FEE_PRORATION_SENTINEL}
                           cadenceLabel={cadenceNoun(contractBillingFrequency)}
+                          contractPeriodLabel={contractMonthLabel(contractStartDate)}
                           sourceClause={baseFeeProration?.source_clause ?? ''}
                           currency={cur ?? 'EUR'}
                           onApplied={onRefresh}
@@ -2488,13 +2517,14 @@ function ReviewPanel({
                         </div>
                         <p className="text-sm font-medium text-ink leading-snug mb-1">{f.fee_label}</p>
                         <p className="text-[11px] text-stone leading-relaxed mb-3">
-                          The agreement begins or ends part-way through a calendar {cadenceNoun(f.billing_frequency ?? contractBillingFrequency)}, but the {fmt(f.amount, cur ?? 'EUR')} recurring fee resets on calendar boundaries. No explicit proration rule was identified.
+                          The agreement states the {fmt(f.amount, cur ?? 'EUR')} fee is billed {f.billing_frequency ?? contractBillingFrequency ?? 'monthly'}, but does not say whether billing periods reset on calendar boundaries or on the contract's own start date{contractStartDate ? ` (${contractStartDate})` : ''}. This decides whether a partial-period question exists at all.
                         </p>
                         <RuleInterpretationCard
                           jobId={jobId}
                           kind="recurring_fee_proration"
                           contractUnitType={f.fee_label}
                           cadenceLabel={cadenceNoun(f.billing_frequency ?? contractBillingFrequency)}
+                          contractPeriodLabel={contractMonthLabel(contractStartDate)}
                           sourceClause={f.proration?.source_clause ?? f.description ?? ''}
                           currency={cur ?? 'EUR'}
                           onApplied={onRefresh}
@@ -3828,9 +3858,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               {(() => {
                 const confirmedMinimums = new Map<string, Tier>()
                 for (const t of tiers) {
-                  if (t.unit_type && t.minimum_commitment && !t.minimum_commitment.requires_confirmation && !confirmedMinimums.has(t.unit_type)) {
-                    confirmedMinimums.set(t.unit_type, t)
-                  }
+                  if (!t.unit_type || !t.minimum_commitment || confirmedMinimums.has(t.unit_type)) continue
+                  // Mode/allowance mechanics only — NOT the flat DB
+                  // requires_confirmation flag, which also folds in the
+                  // partial-period question (rendered as its own inline
+                  // "Needs confirmation" line below, lines ~3900-3908). An
+                  // explicit floor with no allowance shows here as
+                  // Confirmed even while only its partial-period treatment
+                  // remains open, instead of hiding the whole clear-cut
+                  // mode/amount/period behind an unrelated open question.
+                  const hasAllowance = tiers.some(ft => ft.unit_type === t.unit_type && (ft.rate_per_unit ?? 0) === 0)
+                  if (isMinimumCommitmentModeUnresolved(t.minimum_commitment, hasAllowance)) continue
+                  confirmedMinimums.set(t.unit_type, t)
                 }
                 // Only a genuinely valid treatment ('applies' or 'not_applied') counts
                 // as confirmed here — an interpretation predating the treatment field
@@ -3874,13 +3913,19 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                                   {fmt(mc.amount, cur)} added to the {t.measurement_period ?? ''} {unitType} usage charge, independent of the included allowance
                                 </span>
                               </p>
-                            ) : mc.included_allowance_interaction && (() => {
+                            ) : (() => {
                               // Plain business language, not the raw enum — "after allowance"
                               // exposes an internal field name rather than saying what it
                               // means for billing. Reuses the metric's own $0-rate tier
                               // (not a separate calculation) for the included-unit count.
+                              // Gated on the allowance tier actually EXISTING, not just on
+                              // included_allowance_interaction being truthy — extraction can
+                              // leave that enum at "unclear" purely as a leftover from a
+                              // conflated ambiguity flag even when this metric has no
+                              // allowance at all, which must never render as a live question.
                               const freeTier = tiers.find(ft => ft.unit_type === unitType && (ft.rate_per_unit ?? 0) === 0)
-                              const includedCount = freeTier?.to_unit
+                              if (!freeTier || !mc.included_allowance_interaction) return null
+                              const includedCount = freeTier.to_unit
                               const interaction = mc.included_allowance_interaction
                               const text = interaction === 'unclear'
                                 ? "Needs confirmation — the contract doesn't state whether the minimum applies before or after the included allowance."
