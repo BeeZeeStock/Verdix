@@ -16,17 +16,20 @@ const DEMO_URL = '/demos/contract-to-billing.html'
 
 function Nav() {
   // The persistent desktop top nav is kept deliberately short (conversion
-  // pass: Product/Security/Pricing/Sign in/CTA only) — Who it's for, Partner
-  // verification, Demo and Blog stay reachable via the footer and the mobile
-  // panel, just not competing for space in the bar itself. The mobile
-  // slide-down panel keeps the fuller set since a visitor who opens it has
-  // already asked to see everything, and it was previously the only way for
-  // small screens to reach Sign in/Pricing/the primary CTA at all.
+  // pass: Product/Security/Pricing/Insights/Sign in/CTA) — Who it's for and
+  // Partner verification stay reachable via the footer and the mobile panel,
+  // just not competing for space in the bar itself. Insights (the blog) is
+  // back in the main bar now that Demo has its own dedicated CTA slot rather
+  // than sharing space. The mobile slide-down panel keeps the fuller set
+  // since a visitor who opens it has already asked to see everything, and it
+  // was previously the only way for small screens to reach Sign in/Pricing/
+  // the primary CTA at all.
   const desktopLinks = (
     <>
       <a href="#product">Product</a>
       <a href="#security">Security</a>
       <a href="#pricing">Pricing</a>
+      <Link href="/blog">Insights</Link>
       <Link href="/login">Sign in</Link>
       <a className={`${styles.btn} ${styles.btnP} ${styles.btnSm}`} href={DEMO_URL} target="_blank" rel="noopener noreferrer">Watch demo</a>
     </>
@@ -38,7 +41,7 @@ function Nav() {
       <a href="#partner">Partner verification</a>
       <a href="#security">Security</a>
       <a href="#pricing">Pricing</a>
-      <Link href="/blog">Blog</Link>
+      <Link href="/blog">Insights</Link>
       <Link href="/login">Sign in</Link>
       <a className={`${styles.btn} ${styles.btnP} ${styles.btnSm}`} href={DEMO_URL} target="_blank" rel="noopener noreferrer">Watch demo</a>
     </>
@@ -539,13 +542,14 @@ function Footer() {
             <a href="#security">Security</a>
             <a href="#pricing">Pricing</a>
             <a href="/demos/contract-to-billing.html" target="_blank" rel="noopener noreferrer">Demo</a>
-            <Link href="/blog">Blog</Link>
+            <Link href="/blog">Insights</Link>
             <Link href="/login">Sign in</Link>
             <Link href="/privacy">Privacy Policy</Link>
             <Link href="/terms">Terms of Service</Link>
             <Link href="/dpa">DPA</Link>
             <Link href="/subprocessors">Subprocessors</Link>
             <a href="mailto:bilal@lynoraai.com">Contact</a>
+            <a href="https://www.linkedin.com/company/verdix-rev-ops/?viewAsMember=true" target="_blank" rel="noopener noreferrer">LinkedIn</a>
           </div>
         </div>
         <div className={styles.footB}>© 2026 Verdix. All rights reserved. · Lynora AB · Org. nr 559516-1190 · Sweden</div>
