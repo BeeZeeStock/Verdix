@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { configureBilling, type LineItemInput } from '@/lib/billing-writer'
+import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { ContractTerms } from '@/lib/types'
 
 // Rebuilds planned_invoices from the current contract_terms when a job has a
@@ -43,7 +44,7 @@ export async function POST(
     return NextResponse.json({ error: 'Chargebee billing schedules can’t be rebuilt from here yet — contact support.' }, { status: 400 })
   }
 
-  const terms = (job.contract_terms as unknown as ContractTerms[])?.[0]
+  const terms = unwrapEmbedded(job.contract_terms as unknown as ContractTerms | ContractTerms[])
   if (!terms) return NextResponse.json({ error: 'No contract terms' }, { status: 400 })
 
   const lineItems = (job.line_items ?? []) as LineItemInput[]

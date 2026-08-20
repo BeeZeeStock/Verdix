@@ -23,6 +23,7 @@ import { applyCreditLedgerForPeriod } from '@/lib/credit-ledger-service'
 import type { ContractTerms } from '@/lib/types'
 import { isAuthorizedCronRequest } from '@/lib/cron-auth'
 import { resolveVatTreatment, computeVat, reconcileGrossAmount } from '@/lib/vat'
+import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import { getCustomerVatConfig, getInvoiceVatOverride } from '@/lib/vat-service'
 
 export async function GET(req: NextRequest) {
@@ -74,8 +75,7 @@ export async function GET(req: NextRequest) {
 
       if (!job) throw new Error(`Job ${row.job_id} not found`)
 
-      const termsArr = job.contract_terms as unknown as ContractTerms[]
-      const terms    = termsArr?.[0]
+      const terms = unwrapEmbedded(job.contract_terms as unknown as ContractTerms | ContractTerms[])
       if (!terms) throw new Error(`No contract terms for job ${row.job_id}`)
 
       const customerId = (job.billing_customer_id as string | null)

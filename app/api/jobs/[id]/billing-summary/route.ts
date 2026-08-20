@@ -4,6 +4,7 @@ import { requireOrg } from '@/lib/org'
 import { billingInterval } from '@/lib/stripe-meter'
 import { remembillAppUrl } from '@/lib/billing-writer'
 import { enumerateContractWindows, resolveWindowMinimum } from '@/lib/tariff'
+import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { ContractTerms } from '@/lib/types'
 
 export async function GET(
@@ -34,7 +35,7 @@ export async function GET(
 
   const subId      = job.billing_subscription_id as string | null
   const customerId = job.billing_customer_id     as string | null
-  const terms      = (job.contract_terms as unknown as ContractTerms[])?.[0]
+  const terms      = unwrapEmbedded(job.contract_terms as unknown as ContractTerms | ContractTerms[])
 
   // ── Remembill path: no Stripe client needed ───────────────────────────────
   if (job.billing_platform === 'remembill') {

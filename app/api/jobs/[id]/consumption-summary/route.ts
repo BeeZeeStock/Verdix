@@ -21,6 +21,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { computeOverageForPeriod, type OverageLineItem } from '@/lib/usage-pull'
 import { isPartialWindow } from '@/lib/tariff'
+import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { ContractTerms } from '@/lib/types'
 
 type PeriodStatus = 'past' | 'current' | 'pending' | 'future'
@@ -43,8 +44,7 @@ export async function GET(
 
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
-  const termsArr = job.contract_terms as unknown as ContractTerms[]
-  const terms    = termsArr?.[0]
+  const terms = unwrapEmbedded(job.contract_terms as unknown as ContractTerms | ContractTerms[])
 
   const { data: rows } = await supabaseServer
     .from('planned_invoices')

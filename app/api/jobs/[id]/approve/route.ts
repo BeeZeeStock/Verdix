@@ -5,6 +5,7 @@ import { configureBilling } from '@/lib/billing-writer'
 import { computeCommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { setCustomerVatConfig } from '@/lib/vat-service'
+import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { ContractTerms } from '@/lib/types'
 
 export async function POST(
@@ -31,8 +32,12 @@ export async function POST(
   // job should not generate a second sync event.
   const wasAlreadyCompleted = (job as unknown as Record<string, unknown>).execute_status === 'COMPLETED'
 
-  const termsArr = job.contract_terms as unknown as ContractTerms[]
-  const terms = termsArr?.[0] ?? ({} as ContractTerms)
+  // Never silently fall back to {} — an empty ContractTerms would push a
+  // contract with no base fee, no dates, nothing, to the real billing
+  // platform. A job reaching Approve must already have real contract_terms;
+  // if it doesn't, that's a real error to surface, not paper over.
+  const terms = unwrapEmbedded(job.contract_terms as unknown as ContractTerms | ContractTerms[])
+  if (!terms) return NextResponse.json({ error: 'No contract terms found for this job — re-run extraction first.' }, { status: 400 })
   const lineItems = (modifiedLineItems ?? job.line_items ?? []) as Array<{
     product_name: string; quantity: number; unit_price: number
     billing_period: string; total_amount: number; currency: string

@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { REMEMBILL_BASE, remembillHeaders } from '@/lib/billing-writer'
+import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 
 export async function POST(
   req: NextRequest,
@@ -34,8 +35,7 @@ export async function POST(
 
   const rbKey = (rbInt?.config as Record<string, string>)?.api_key ?? process.env.REMEMBILL_API_KEY!
   const h = remembillHeaders(rbKey)
-  const termsArr = job.contract_terms as unknown as Array<{ currency?: string }>
-  const cur = ((termsArr?.[0]?.currency) ?? 'SEK').toUpperCase()
+  const cur = (unwrapEmbedded(job.contract_terms as unknown as { currency?: string } | Array<{ currency?: string }>)?.currency ?? 'SEK').toUpperCase()
   // Use tomorrow as issue date to avoid any idempotency collision with previous probe runs
   const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
   const due      = new Date(Date.now() + 31 * 86_400_000).toISOString().slice(0, 10)

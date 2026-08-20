@@ -12,6 +12,7 @@ import { requireOrg } from '@/lib/org'
 import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl, safeHeaderValue } from '@/lib/billing-writer'
 import { resolveVatTreatment, computeVat, reconcileGrossAmount } from '@/lib/vat'
 import { getCustomerVatConfig } from '@/lib/vat-service'
+import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 
 export async function POST(
   req: NextRequest,
@@ -49,9 +50,8 @@ export async function POST(
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
   if (!job.billing_customer_id) return NextResponse.json({ error: 'No billing customer on this job' }, { status: 400 })
 
-  const termsArr        = job.contract_terms as unknown as Array<{ currency?: string; payment_terms_days?: number | null }>
-  const terms           = termsArr?.[0] ?? {}
-  const cur             = (body.currency ?? terms.currency ?? 'EUR').toUpperCase()
+  const terms = unwrapEmbedded(job.contract_terms as unknown as { currency?: string; payment_terms_days?: number | null } | Array<{ currency?: string; payment_terms_days?: number | null }>) ?? {}
+  const cur   = (body.currency ?? terms.currency ?? 'EUR').toUpperCase()
 
   // Link back to the approved line_items row (for traceability — quantity
   // itself is per-delivery human input, not read from here).

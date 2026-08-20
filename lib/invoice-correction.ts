@@ -20,6 +20,7 @@ import { REMEMBILL_BASE, remembillHeaders, getOrgConfig, createAdHocInvoice } fr
 import { computeOverageForPeriod } from './usage-pull'
 import { resolveVatTreatment, computeVat } from './vat'
 import { getCustomerVatConfig, getInvoiceVatOverride } from './vat-service'
+import { unwrapEmbedded } from './postgrest-helpers'
 import type { ContractTerms } from './types'
 
 export type CorrectionAction = 'cancellation' | 'correction'
@@ -161,8 +162,7 @@ export async function requestInvoiceCorrection(params: RequestParams): Promise<R
   }
 
   try {
-    const termsArr = (job as unknown as { contract_terms: ContractTerms[] }).contract_terms
-    const terms = termsArr?.[0]
+    const terms = unwrapEmbedded((job as unknown as { contract_terms: ContractTerms | ContractTerms[] }).contract_terms)
     if (!terms) throw new Error('Contract terms not found')
 
     const customerId = job.billing_customer_id as string | undefined

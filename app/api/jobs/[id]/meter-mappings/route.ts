@@ -14,6 +14,7 @@ import { auth } from '@/lib/auth'
 import { isAdminEmail, isRemembillTeam } from '@/lib/admin'
 import { getFastAIClient } from '@/lib/ai-client'
 import { allMeterMappingsResolved } from '@/lib/meter-mapping-status'
+import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 
 // ── Auto-mapping heuristic ────────────────────────────────────────────────────
 const METER_RULES: Array<{ patterns: string[]; key: string; confidence: number }> = [
@@ -134,7 +135,7 @@ export async function GET(
 
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
-  const termsArr  = job.contract_terms as unknown as Array<{
+  type MeterMappingTerms = {
     id?: string
     overage_tiers?: Array<{
       unit_type?: string
@@ -149,8 +150,8 @@ export async function GET(
     billing_frequency?: string | null
     included_units?: number | null
     included_unit_type?: string | null
-  }>
-  const terms = termsArr?.[0] ?? {}
+  }
+  const terms = unwrapEmbedded(job.contract_terms as unknown as MeterMappingTerms | MeterMappingTerms[]) ?? {}
 
   // Isolated from the query above deliberately — ai_proposal_cache requires
   // a migration (20260819000001_ai_proposal_cache.sql) that may not have
@@ -159,11 +160,11 @@ export async function GET(
   type AiCache = Record<string, { promptFingerprint: string; result: { meter_key: string; confidence: number } }>
   let existingCache: AiCache = {}
   let cacheColumnAvailable = true
-  if (termsArr?.[0]?.id) {
+  if (terms?.id) {
     const { data: cacheRow, error: cacheReadError } = await supabaseServer
       .from('contract_terms')
       .select('ai_proposal_cache')
-      .eq('id', termsArr[0].id)
+      .eq('id', terms.id)
       .maybeSingle()
     if (cacheReadError) {
       cacheColumnAvailable = false
@@ -320,13 +321,13 @@ export async function GET(
     })
   )
 
-  if (cacheColumnAvailable && Object.keys(freshCacheWrites).length > 0 && termsArr?.[0]?.id) {
+  if (cacheColumnAvailable && Object.keys(freshCacheWrites).length > 0 && terms?.id) {
     // Best-effort — a failed cache write just means the next GET recomputes
     // rather than reusing, never a correctness issue worth failing over.
     await supabaseServer
       .from('contract_terms')
       .update({ ai_proposal_cache: { ...existingCache, ...freshCacheWrites } })
-      .eq('id', termsArr[0].id)
+      .eq('id', terms.id)
       .then(({ error }) => { if (error) console.warn(`[meter-mappings] cache write failed for job ${jobId}:`, error.message) })
   }
 

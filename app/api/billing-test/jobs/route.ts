@@ -14,6 +14,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { requireAdmin } from '@/lib/admin'
+import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 
 async function resolveOrgId(bodyOrgId: string | null): Promise<string | Response> {
   if (bodyOrgId) {
@@ -56,11 +57,11 @@ export async function GET(req: NextRequest) {
   if (jobIdFilter) jobsQuery = jobsQuery.in('id', jobIdFilter)
   const { data: jobs } = await jobsQuery
 
-  type JobRow = { id: string; created_at: string; contract_terms: { customer_name: string | null }[] }
+  type JobRow = { id: string; created_at: string; contract_terms: { customer_name: string | null } | { customer_name: string | null }[] | null }
 
   const result = ((jobs ?? []) as unknown as JobRow[]).map(j => ({
     id:    j.id,
-    label: j.contract_terms?.[0]?.customer_name
+    label: unwrapEmbedded(j.contract_terms)?.customer_name
       ?? `${j.id.slice(0, 8)}… — ${new Date(j.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`,
   }))
 

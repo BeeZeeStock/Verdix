@@ -25,6 +25,7 @@ import { requireOrg } from '@/lib/org'
 import { requireAdmin } from '@/lib/admin'
 import { getOrgSubscription, getPlan } from '@/lib/billing'
 import { computeMetricOverage, describeTieredUsage } from '@/lib/tariff'
+import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { OverageTier, TierCalculationMethod } from '@/lib/types'
 
 async function resolveOrgId(req: NextRequest, bodyOrgId: string | undefined): Promise<string | Response> {
@@ -82,7 +83,7 @@ export async function POST(req: NextRequest) {
     job_id: string
     included_units: number | null
     overage_tiers: Array<{ from_unit?: number | null; to_unit?: number | null; rate_per_unit?: number; tier_calculation?: TierCalculationMethod | null }>
-    jobs: { id: string; org_id: string; contract_terms: { customer_name: string | null; currency: string | null }[] } | null
+    jobs: { id: string; org_id: string; contract_terms: { customer_name: string | null; currency: string | null } | { customer_name: string | null; currency: string | null }[] | null } | null
   }
 
   const jobs = ((mappings ?? []) as unknown as MappingRow[]).map(m => {
@@ -96,12 +97,13 @@ export async function POST(req: NextRequest) {
       tier_calculation: t.tier_calculation ?? null,
     }))
     const result = tiers.length > 0 ? computeMetricOverage(testValue, tiers, includedUnits) : { amount: 0, method: 'graduated' as const, requiresConfirmation: false, usageAmount: 0, minimumApplied: false }
+    const jobTerms = unwrapEmbedded(m.jobs?.contract_terms)
     return {
       jobId:         m.job_id,
-      customerName:  m.jobs?.contract_terms?.[0]?.customer_name ?? null,
+      customerName:  jobTerms?.customer_name ?? null,
       // Each agreement bills in its own contract currency — never assume
       // EUR, which is only correct for the self-serve planPreview below.
-      currency:      m.jobs?.contract_terms?.[0]?.currency ?? 'EUR',
+      currency:      jobTerms?.currency ?? 'EUR',
       includedUnits,
       billableUnits: Math.max(0, testValue - includedUnits),
       amount:        Math.round(result.amount * 100) / 100,

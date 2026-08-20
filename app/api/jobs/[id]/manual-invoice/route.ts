@@ -17,6 +17,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { createAdHocInvoice } from '@/lib/billing-writer'
 import { computeMetricOverage, describeTieredUsage } from '@/lib/tariff'
+import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { OverageTier } from '@/lib/types'
 
 async function loadJob(jobId: string, orgId: string) {
@@ -40,8 +41,8 @@ export async function GET(
   const job = await loadJob(jobId, org.orgId)
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
-  const termsArr = job.contract_terms as unknown as Array<{ currency?: string; payment_terms_days?: number | null }>
-  const currency = (termsArr?.[0]?.currency ?? 'EUR').toUpperCase()
+  const terms0   = unwrapEmbedded(job.contract_terms as unknown as { currency?: string; payment_terms_days?: number | null } | Array<{ currency?: string; payment_terms_days?: number | null }>)
+  const currency = (terms0?.currency ?? 'EUR').toUpperCase()
 
   const [{ data: mappings }, { data: lineItems }] = await Promise.all([
     supabaseServer
@@ -105,8 +106,7 @@ export async function POST(
   const job = await loadJob(jobId, org.orgId)
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
-  const termsArr = job.contract_terms as unknown as Array<{ currency?: string; payment_terms_days?: number | null }>
-  const terms    = termsArr?.[0] ?? {}
+  const terms    = unwrapEmbedded(job.contract_terms as unknown as { currency?: string; payment_terms_days?: number | null } | Array<{ currency?: string; payment_terms_days?: number | null }>) ?? {}
   const currency = (terms.currency ?? 'EUR').toUpperCase()
   const netDays  = terms.payment_terms_days ?? 30
 

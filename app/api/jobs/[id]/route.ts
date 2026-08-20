@@ -8,6 +8,7 @@ import { isAdminEmail } from '@/lib/admin'
 import { getContractSummaries } from '@/lib/contract-tcv'
 import { removeStorageObject } from '@/lib/storage'
 import { logDeletion } from '@/lib/deletion-log'
+import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 
 const GENERIC_INFRA_ERROR = 'This contract couldn’t be processed right now due to a temporary system issue. Please contact bilal@lynoraai.com for help.'
 
@@ -267,8 +268,17 @@ export async function GET(
   const summaries = await getContractSummaries([id])
   const summary = summaries[id]
 
+  // The frontend (and its Terms[] type) expects contract_terms as an array,
+  // matching how PostgREST used to embed this relationship. Adding
+  // contract_terms_job_id_unique made PostgREST recognize it as one-to-one
+  // and start returning a single object instead — normalized back to an
+  // array here, at the one place this response is built, rather than
+  // touching every frontend read site.
+  const normalizedTerms = unwrapEmbedded(job.contract_terms as unknown as Record<string, unknown> | Record<string, unknown>[])
+
   return NextResponse.json({
     ...job,
+    contract_terms: normalizedTerms ? [normalizedTerms] : [],
     billedToDate: summary?.billedToDate ?? 0,
     committedContractValue: summary?.committedContractValue ?? 0,
   })
