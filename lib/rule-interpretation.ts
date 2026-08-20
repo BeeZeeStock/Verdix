@@ -761,25 +761,38 @@ export type RuleProposal = {
   reasoning: string
   calculation_preview?: Array<{ label: string; value: string }>
   // service_credit only (see buildServiceCreditProposalPrompt) — grades
-  // proposed_interpretation.application_rule independently of `state`, so a
+  // application_rule.eligible_component_keys specifically (WHAT future
+  // charges this credit may reduce), independently of `state`, so a
   // credit's fully-explicit trigger/rate/cap facts are never dragged down
-  // to "Verdix recommendation" purely because its separate application-
-  // scope/carry-forward question is still open, and vice versa. Undefined
-  // for every other rule type, which has only the one, holistic state.
+  // to "Verdix recommendation" purely because eligibility is still open,
+  // and vice versa. Undefined for every other rule type.
   application_state?: ProposalState
+  // service_credit only — grades application_rule.carry_forward/one_time
+  // specifically (whether an earned-but-unused credit survives/expires,
+  // and whether it can be earned more than once). Deliberately a THIRD,
+  // independent grade from both `state` and `application_state`: a clause
+  // can state a credit's size (state), state exactly what it may offset
+  // (application_state), and still say nothing about how long it survives
+  // unused (survival_state) — three genuinely separate questions, none of
+  // which should drag the others down. Undefined for every other rule type.
+  survival_state?: ProposalState
 }
 
-// extraStateField lets a specific rule type ask for a SECOND, independently
-// graded state alongside the main one — added for service_credit, where a
-// single holistic classification forced facts that are fully explicit
-// (trigger, rate, cap) to be graded down to "verdix_recommends" purely
-// because a genuinely separate question (application scope / carry-forward)
-// was still open. Every other rule type passes this as undefined and gets
-// the original single-state schema, unchanged.
-function proposalSchemaBlock(fields: string, extraStateField?: { name: string; label: string }): string {
+// extraStateFields lets a specific rule type ask for additional,
+// independently graded states alongside the main one — added for
+// service_credit, where a single holistic classification forced facts that
+// are fully explicit (trigger, rate, cap) to be graded down to
+// "verdix_recommends" purely because a genuinely separate question
+// (eligibility, or survival/expiry) was still open. Every other rule type
+// passes an empty array and gets the original single-state schema, unchanged.
+function proposalSchemaBlock(fields: string, extraStateFields: Array<{ name: string; label: string }> = []): string {
+  const extraStateJson = extraStateFields.map(f => `\n  "${f.name}": "clear_from_source" | "verdix_recommends" | "decision_required",`).join('')
+  const extraStateGuidance = extraStateFields.map(f =>
+    `\n- "${f.name}" grades ONLY ${f.label}, using the exact same three-state definitions above, but graded INDEPENDENTLY of "state" and of every other extra state field — do not let uncertainty in one drag another down, and do not let clarity in one inflate another. A clause can be fully explicit about its trigger and value while remaining completely silent on ${f.label}, or vice versa.`
+  ).join('')
   return `Respond with a structured JSON object with EXACTLY these fields:
 {
-  "state": "clear_from_source" | "verdix_recommends" | "decision_required",${extraStateField ? `\n  "${extraStateField.name}": "clear_from_source" | "verdix_recommends" | "decision_required",` : ''}
+  "state": "clear_from_source" | "verdix_recommends" | "decision_required",${extraStateJson}
   "proposed_interpretation": ${fields} | null,
   "reasoning": "<one to three sentences, quoting or closely paraphrasing the actual source clause — never generic AI boilerplate like 'this is ambiguous'>",
   "calculation_preview": [{"label": "<short label>", "value": "<plain-English value or formula>"}] | omit if not usefully computable yet
@@ -790,7 +803,7 @@ State rules — this is the most important part of your response:
 - "verdix_recommends": the contract isn't perfectly explicit, but there is a commercially defensible reading (e.g. the contract calls something a "minimum charge" rather than an "additional fee", which supports reading it as a floor). proposed_interpretation must still be fully populated — this is a recommendation, not a fact, but it IS a specific, structured recommendation. reasoning must explain the specific textual basis for the recommendation.
 - "decision_required": the contract is genuinely silent on the deciding question. Set proposed_interpretation to null — do NOT pre-select anything, do NOT guess, do NOT default to the "usual" answer. reasoning must explain specifically what the contract fails to state.
 - When in doubt between "verdix_recommends" and "decision_required": if you cannot point to ANY textual basis (however indirect) for a specific answer, use "decision_required". A recommendation with no textual basis is worse than an honest gap.
-- Never claim "clear_from_source" for a question the contract doesn't directly address — that state means "explicit", not "the common default".${extraStateField ? `\n- "${extraStateField.name}" grades ONLY ${extraStateField.label}, using the exact same three-state definitions above, but graded INDEPENDENTLY of "state" — do not let uncertainty in one drag the other down, and do not let clarity in one inflate the other. A clause can be fully explicit about its trigger and value while remaining completely silent on ${extraStateField.label}, or vice versa.` : ''}`
+- Never claim "clear_from_source" for a question the contract doesn't directly address — that state means "explicit", not "the common default".${extraStateGuidance}`
 }
 
 export type MinimumCommitmentProposalContext = MinimumCommitmentContext
@@ -900,17 +913,19 @@ Stated value: ${context.statedPct != null ? `${context.statedPct}%` : context.st
 
 ${proposalSchemaBlock(
   '{"trigger_type": "sla_breach"|"usage_threshold"|"promotional"|"earned_milestone"|"other", "trigger_description": "<plain-English condition>", "credit_basis": "pct_of_period_fee"|"pct_of_affected_component"|"flat_amount"|"usage_units", "basis_component": "<what the value is computed from>", "credit_value": <number>, "cap_amount": <number or null>, "cap_pct": <number or null>, "settlement_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"per_incident"|null, "cash_redeemable": true|false, "earn_rule": {"trigger_metric_key": "<metric name, e.g. transactions>", "trigger_quantity": <number>, "trigger_comparator": "gt"|"gte", "trigger_window": "calendar_month"|"billing_period"|"contract_year"|"per_incident", "consecutive_windows_required": <number, 1 if the clause does not require a streak>, "window_anchor": "contract_start"|"calendar", "finalization_deadline_days": <number or null>}, "application_rule": {"computed_from_component_keys": [<string>]|null, "eligible_component_keys": [<string>]|"all"|null, "excluded_component_keys": [<string>], "one_time": true|false|"unclear", "carry_forward": true|false|"unclear"}, "calculation_summary": "<one sentence>"}',
-  { name: 'application_state', label: 'application_rule — WHAT future charges this credit may reduce, whether it carries forward, and whether it is one-time (never the trigger, rate, cap, or settlement timing, which "state" already covers)' },
+  [
+    { name: 'application_state', label: 'application_rule.eligible_component_keys ONLY — WHAT future charges this credit may reduce (never carry-forward/expiry, which survival_state covers below, and never the trigger, rate, cap, or settlement timing, which "state" already covers)' },
+    { name: 'survival_state', label: 'application_rule.carry_forward and application_rule.one_time ONLY — whether an earned-but-unused credit persists or expires, and whether it can be earned more than once (never eligibility/scope, which application_state covers, and never trigger/rate/cap/settlement timing)' },
+  ],
 )}
 
 Specific guidance, by field:
-- trigger condition, credit value, cap, and settlement timing are usually stated explicitly — resolve these as "clear_from_source" when the wording is direct. These drive "state", never "application_state".
+- trigger condition, credit value, cap, and settlement timing are usually stated explicitly — resolve these as "clear_from_source" when the wording is direct. These drive "state", never "application_state" or "survival_state".
 - basis_component (WHAT the percentage/amount is computed from — e.g. "the affected month's subscription fee") is often genuinely ambiguous, especially when another rule (like an introductory discount) could change what "the fee" means for a given period — if the clause doesn't specify and no other context resolves it, use "decision_required" for basis_component specifically rather than assuming the standard/undiscounted fee.
 - earn_rule.consecutive_windows_required: only set above 1 when the clause explicitly requires a streak across multiple windows (e.g. "in each of 3 consecutive calendar months") — a single-period threshold is 1, never inferred as a streak just because it recurs.
-- application_rule.eligible_component_keys is the single most commonly UNSTATED field — a clause can state a credit's SIZE (e.g. "5% of transaction-processing fees paid") without ever stating what future charges that resulting credit may reduce. Do not assume it may offset "all amounts payable" or "the same component it was computed from" unless the contract actually says so. If the clause is silent on what the credit may be applied against, set eligible_component_keys to null and grade application_state "decision_required" — this is one of the most important distinctions in this prompt, and getting it wrong risks a credit silently reducing the wrong charge.
-- application_rule.carry_forward: only true when the clause explicitly says the credit persists/carries forward until consumed. A clause establishing that a credit applies to FUTURE periods (i.e. not the same period it was earned) is not, by itself, evidence that it survives indefinitely — those are different questions. If unstated, use "unclear", never default to true just because the credit is clearly not same-period-applicable.
-- application_rule.one_time: true only when the clause says the credit can be earned once ("a one-time credit," "cannot be earned again"). If the clause is silent on repeatability, use "unclear" rather than assuming either repeatable or one-time.
-- Do not let application_state's uncertainty pull "state" down to "verdix_recommends"/"decision_required" when the trigger/value/cap facts are themselves fully explicit — grade them independently, exactly as instructed above.`
+- application_rule.eligible_component_keys is the single most commonly UNSTATED field — a clause can state a credit's SIZE (e.g. "5% of transaction-processing fees paid") without ever stating what future charges that resulting credit may reduce. Do not assume it may offset "all amounts payable" or "the same component it was computed from" unless the contract actually says so. But this is a real, gradeable "clear_from_source" case whenever the clause DOES say so explicitly — e.g. "applied against future amounts payable" is explicit textual grounding for eligible_component_keys "all"; "applicable only against future transaction-processing fees" is explicit grounding for eligible_component_keys ["transaction_processing"]. Only set eligible_component_keys to null and grade application_state "decision_required" when the clause is genuinely silent on what the credit may be applied against — do not confuse silence on eligibility with silence on calculation basis; a clause stating what a credit is computed FROM (e.g. "5% of transaction-processing fees paid") does not, by itself, state what it may be applied AGAINST — those are different questions, and stating only the former leaves eligible_component_keys null.
+- application_rule.carry_forward / application_rule.one_time drive survival_state, independently of application_state: only set carry_forward true when the clause explicitly says the credit persists/carries forward until consumed. A clause establishing that a credit applies to FUTURE periods (i.e. not the same period it was earned) is not, by itself, evidence that it survives indefinitely — those are different questions. If unstated, use "unclear", never default to true just because the credit is clearly not same-period-applicable. Likewise one_time is true only when the clause says the credit can be earned once; if silent on repeatability, use "unclear". It is entirely normal — and must be graded as such, not smoothed over — for a clause to state eligibility explicitly (application_state "clear_from_source") while saying nothing at all about survival/expiry (survival_state "decision_required"), or vice versa.
+- Do not let application_state's or survival_state's uncertainty pull "state" down to "verdix_recommends"/"decision_required" when the trigger/value/cap facts are themselves fully explicit, and do not let either pull the other down — grade all three independently, exactly as instructed above.`
 }
 
 export type RuleInteractionProposalContext = RuleInteractionContext
@@ -933,7 +948,7 @@ Specific guidance: this is rarely explicit — most contracts that define a serv
 // after every response.
 export function validateProposalState(proposal: RuleProposal, sourceClauseAvailable: boolean): RuleProposal {
   const { reasoning } = proposal
-  let { state, proposed_interpretation, application_state } = proposal
+  let { state, proposed_interpretation, application_state, survival_state } = proposal
 
   // A "decision_required" claim that still ships a fully-populated
   // proposed_interpretation is internally contradictory — the model may have
@@ -1013,5 +1028,34 @@ export function validateProposalState(proposal: RuleProposal, sourceClauseAvaila
     }
   }
 
-  return { state, proposed_interpretation, reasoning, application_state }
+  // survival_state (service_credit only) — same independent safety-check
+  // pattern as application_state above, scoped to carry_forward/one_time
+  // instead of eligible_component_keys. A credit can be "clear_from_source"
+  // on eligibility while genuinely silent on survival (or vice versa) — see
+  // buildServiceCreditProposalPrompt's guidance — so this must never be
+  // derived from application_state, only validated against its own fields.
+  if (survival_state && proposed_interpretation && typeof proposed_interpretation === 'object') {
+    const interp = proposed_interpretation as Record<string, unknown>
+    const applicationRule = interp.application_rule as Record<string, unknown> | null | undefined
+
+    if (survival_state === 'clear_from_source') {
+      const reasoningLooksSourced = reasoning.trim().length >= 20
+      if (!sourceClauseAvailable || !reasoningLooksSourced) survival_state = 'verdix_recommends'
+    }
+
+    // Contradiction: claims a confident survival_state but left both
+    // carry_forward and one_time unset/unclear — force decision_required.
+    // Only this ONE direction is corrected, mirroring application_state's
+    // own asymmetry: survival_state can legitimately be "decision_required"
+    // while eligible_component_keys is fully resolved (that's the exact
+    // scenario this split exists for), so nothing here touches eligibility.
+    const carryForward = applicationRule?.carry_forward
+    const oneTime = applicationRule?.one_time
+    const survivalResolved = !!applicationRule && (carryForward === true || carryForward === false || oneTime === true || oneTime === false)
+    if (survival_state !== 'decision_required' && !survivalResolved) {
+      survival_state = 'decision_required'
+    }
+  }
+
+  return { state, proposed_interpretation, reasoning, application_state, survival_state }
 }

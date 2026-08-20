@@ -509,8 +509,9 @@ describe('buildServiceCreditProposalPrompt — application_state split (Growth C
       description: 'Growth Credit', creditType: 'earned', statedPct: null, statedAmount: 110_000, currency: 'SEK',
     })
     expect(prompt).toContain('"application_state": "clear_from_source" | "verdix_recommends" | "decision_required"')
+    expect(prompt).toContain('"survival_state": "clear_from_source" | "verdix_recommends" | "decision_required"')
     expect(prompt).toMatch(/graded INDEPENDENTLY of "state"/)
-    expect(prompt).toMatch(/do not let application_state's uncertainty pull "state" down/i)
+    expect(prompt).toMatch(/do not let application_state's or survival_state's uncertainty pull "state" down/i)
   })
 
   it('instructs decision_required specifically for application_state when eligible_component_keys is unstated, without forcing the same for state', () => {
@@ -665,17 +666,19 @@ describe('validateProposalState — safety net, only ever downgrades', () => {
       expect(appRule.eligible_component_keys).toBeNull()
     })
 
-    it('Service Credit scenario: application_state decision_required (carry-forward/expiry unstated) while eligible_component_keys stays populated ("all") — never erased just because application_state is decision_required, since a DIFFERENT sub-field (carry_forward) is the actual open question', () => {
+    it('Service Credit scenario: eligibility is explicit ("all") so application_state is clear_from_source, while survival_state is decision_required (carry-forward/expiry unstated) — the two grades diverge on the SAME credit, neither erasing the other\'s resolved sub-field', () => {
       const result = validateProposalState(proposal({
         state: 'clear_from_source',
-        application_state: 'decision_required',
-        proposed_interpretation: { trigger_type: 'sla_breach', credit_value: 5_500, cap_amount: 55_000, application_rule: { eligible_component_keys: 'all', carry_forward: 'unclear' } },
-        reasoning: 'The clause states the credit applies against future amounts payable but does not state how long an unused credit survives.',
+        application_state: 'clear_from_source',
+        survival_state: 'decision_required',
+        proposed_interpretation: { trigger_type: 'sla_breach', credit_value: 5_500, cap_amount: 55_000, application_rule: { eligible_component_keys: 'all', carry_forward: 'unclear', one_time: 'unclear' } },
+        reasoning: 'The clause states the credit applies against future amounts payable but does not state how long an unused credit survives, or whether it is one-time.',
       }), true)
       const appRule = (result.proposed_interpretation as Record<string, unknown>).application_rule as Record<string, unknown>
       expect(appRule.eligible_component_keys).toBe('all')
       expect(appRule.carry_forward).toBe('unclear')
-      expect(result.application_state).toBe('decision_required')
+      expect(result.application_state).toBe('clear_from_source')
+      expect(result.survival_state).toBe('decision_required')
     })
 
     it('corrects the contradiction: application_state claims a confident state but eligible_component_keys is unset — forces decision_required rather than trusting an empty confidence claim', () => {
@@ -698,6 +701,66 @@ describe('validateProposalState — safety net, only ever downgrades', () => {
     it('is undefined for rule types that never asked for it (no regression for the existing single-state cards)', () => {
       const result = validateProposalState(proposal({ state: 'clear_from_source' }), true)
       expect(result.application_state).toBeUndefined()
+    })
+  })
+
+  describe('survival_state (independent third grade — carry_forward/one_time)', () => {
+    it('Growth Credit scenario: carry_forward explicitly true and one_time explicitly true — survival_state clear_from_source, independent of application_state', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source',
+        application_state: 'clear_from_source',
+        survival_state: 'clear_from_source',
+        proposed_interpretation: { trigger_type: 'earned_milestone', application_rule: { eligible_component_keys: ['transaction_processing'], carry_forward: true, one_time: true } },
+        reasoning: 'The clause states the credit is one-time and carries forward until consumed.',
+      }), true)
+      expect(result.survival_state).toBe('clear_from_source')
+      expect(result.application_state).toBe('clear_from_source')
+    })
+
+    it('Annual Rebate scenario: eligibility unstated (application_state decision_required) AND survival unstated (survival_state decision_required) — both open independently, neither derived from the other', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source',
+        application_state: 'decision_required',
+        survival_state: 'decision_required',
+        proposed_interpretation: { trigger_type: 'usage_threshold', application_rule: { eligible_component_keys: null, carry_forward: 'unclear', one_time: 'unclear' } },
+        reasoning: 'The clause states a 5% rebate but never says what it may offset or how long it survives unused.',
+      }), true)
+      expect(result.application_state).toBe('decision_required')
+      expect(result.survival_state).toBe('decision_required')
+    })
+
+    it('corrects the contradiction: survival_state claims a confident state but both carry_forward and one_time are unset/unclear — forces decision_required', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source',
+        survival_state: 'verdix_recommends',
+        proposed_interpretation: { trigger_type: 'usage_threshold', application_rule: { eligible_component_keys: 'all', carry_forward: 'unclear', one_time: 'unclear' } },
+      }), true)
+      expect(result.survival_state).toBe('decision_required')
+    })
+
+    it('does NOT force survival_state decision_required just because eligible_component_keys is null — the two questions stay independent', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source',
+        application_state: 'decision_required',
+        survival_state: 'clear_from_source',
+        proposed_interpretation: { trigger_type: 'usage_threshold', application_rule: { eligible_component_keys: null, carry_forward: true, one_time: false } },
+        reasoning: 'The clause states the credit carries forward and is not one-time, but never says what it may be applied against.',
+      }), true)
+      expect(result.application_state).toBe('decision_required')
+      expect(result.survival_state).toBe('clear_from_source')
+    })
+
+    it('downgrades survival_state clear_from_source to verdix_recommends when no source clause is available, independent of state/application_state', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source', survival_state: 'clear_from_source',
+        proposed_interpretation: { trigger_type: 'usage_threshold', application_rule: { carry_forward: true } },
+      }), false)
+      expect(result.survival_state).toBe('verdix_recommends')
+    })
+
+    it('is undefined for rule types that never asked for it', () => {
+      const result = validateProposalState(proposal({ state: 'clear_from_source' }), true)
+      expect(result.survival_state).toBeUndefined()
     })
   })
 })

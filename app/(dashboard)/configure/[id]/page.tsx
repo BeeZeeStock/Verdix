@@ -1024,14 +1024,56 @@ const BASE_FEE_PRORATION_SENTINEL = '__base_fee__'
 // there was never anything pre-selected).
 type RulePhase = 'proposing' | 'proposed' | 'input' | 'loading' | 'missing' | 'proposal' | 'confirming' | 'applied' | 'partial' | 'error'
 
-// Mirrors confirm-rule/route.ts's buildCreditApplicationRule requiresConfirmation
-// predicate exactly — confirming a credit's trigger/rate/cap (via
-// confirmProposal, or a freeText override via confirmAndApply) does NOT by
-// itself resolve what the credit may reduce when the contract doesn't state
-// it; that stays a live, separate gate even after this confirmation succeeds.
-function applicationRuleStillOpen(appRule: Record<string, unknown> | null | undefined): boolean {
+// Split from a single combined "application_rule still open" check into two
+// independent predicates — eligibility (what this credit may reduce) and
+// survival (whether it expires/carries forward, and whether it's one-time)
+// are genuinely separate questions a contract can resolve independently
+// (see lib/rule-interpretation.ts's buildServiceCreditProposalPrompt). A
+// credit whose eligibility is explicit but whose survival is unstated must
+// show as resolved-on-eligibility, open-on-survival — never a single
+// generic "application scope: decision required" that hides which specific
+// question is actually still open. Mirrors confirm-rule/route.ts's
+// buildCreditApplicationRule requiresConfirmation predicate, split the same way.
+function eligibilityStillOpen(appRule: Record<string, unknown> | null | undefined): boolean {
   if (!appRule) return false
-  return appRule.eligible_component_keys == null || appRule.one_time === 'unclear' || appRule.carry_forward === 'unclear'
+  return appRule.eligible_component_keys == null
+}
+function survivalStillOpen(appRule: Record<string, unknown> | null | undefined): boolean {
+  if (!appRule) return false
+  return appRule.one_time === 'unclear' || appRule.carry_forward === 'unclear'
+}
+
+// Shared presentation for a single independently-graded sub-question on a
+// service credit (application scope, survival & expiry) — same three-state
+// visual language (green/amber/red) already used for the main trigger/rate/
+// cap proposal card above, just parameterized so the two sub-badges don't
+// duplicate this styling block twice.
+function SubStateBadge({ label, state, decisionRequiredText, resolvedText }: {
+  label: string
+  state: 'clear_from_source' | 'verdix_recommends' | 'decision_required'
+  decisionRequiredText: string
+  resolvedText: string
+}) {
+  return (
+    <div className="rounded-xl p-3" style={{
+      background: state === 'clear_from_source' ? '#F0FDF4' : state === 'decision_required' ? '#FEF2F2' : '#FFFDF5',
+      border: `1px solid ${state === 'clear_from_source' ? 'rgba(11,92,54,0.2)' : state === 'decision_required' ? '#FECACA' : 'rgba(217,167,90,0.35)'}`,
+    }}>
+      <span
+        className="inline-block text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full mb-1.5"
+        style={state === 'clear_from_source'
+          ? { background: 'rgba(11,92,54,0.12)', color: '#0B5C36' }
+          : state === 'decision_required'
+            ? { background: 'rgba(153,27,27,0.1)', color: '#991B1B' }
+            : { background: 'rgba(180,83,9,0.12)', color: '#92400E' }}
+      >
+        {label} · {state === 'clear_from_source' ? 'Clear from source' : state === 'decision_required' ? 'Decision required' : 'Verdix recommendation'}
+      </span>
+      <p className="text-[11px] leading-relaxed" style={{ color: state === 'decision_required' ? '#7F1D1D' : '#4A5D50' }}>
+        {state === 'decision_required' ? decisionRequiredText : resolvedText}
+      </p>
+    </div>
+  )
 }
 
 function RuleInterpretationCard({
@@ -1094,8 +1136,10 @@ function RuleInterpretationCard({
   // Set at the moment a confirm succeeds, from the exact interpretation
   // object that was just sent as approvedInterpretation — not recomputed
   // later from aiProposal, which wouldn't reflect what a freeText override
-  // via confirmAndApply actually approved.
-  const [applicationScopeStillOpen, setApplicationScopeStillOpen] = useState(false)
+  // via confirmAndApply actually approved. Two independent flags, not one —
+  // see eligibilityStillOpen/survivalStillOpen above.
+  const [eligibilityOpenAfterConfirm, setEligibilityOpenAfterConfirm] = useState(false)
+  const [survivalOpenAfterConfirm, setSurvivalOpenAfterConfirm] = useState(false)
 
   useEffect(() => {
     if (isEditFlow) return
@@ -1151,7 +1195,9 @@ function RuleInterpretationCard({
       if (anyFailed) {
         setPhase('partial')
       } else {
-        setApplicationScopeStillOpen(ruleType === 'service_credit' && applicationRuleStillOpen((aiProposal.proposed_interpretation as Record<string, unknown>)?.application_rule as Record<string, unknown> | undefined))
+        const confirmedAppRule = (aiProposal.proposed_interpretation as Record<string, unknown>)?.application_rule as Record<string, unknown> | undefined
+        setEligibilityOpenAfterConfirm(ruleType === 'service_credit' && eligibilityStillOpen(confirmedAppRule))
+        setSurvivalOpenAfterConfirm(ruleType === 'service_credit' && survivalStillOpen(confirmedAppRule))
         setPhase('applied')
         onApplied()
       }
@@ -1205,7 +1251,9 @@ function RuleInterpretationCard({
       if (anyFailed) {
         setPhase('partial')
       } else {
-        setApplicationScopeStillOpen(ruleType === 'service_credit' && applicationRuleStillOpen((proposal as Record<string, unknown>)?.application_rule as Record<string, unknown> | undefined))
+        const confirmedAppRule = (proposal as Record<string, unknown>)?.application_rule as Record<string, unknown> | undefined
+        setEligibilityOpenAfterConfirm(ruleType === 'service_credit' && eligibilityStillOpen(confirmedAppRule))
+        setSurvivalOpenAfterConfirm(ruleType === 'service_credit' && survivalStillOpen(confirmedAppRule))
         setPhase('applied')
         onApplied()
       }
@@ -1222,21 +1270,28 @@ function RuleInterpretationCard({
     ? deriveSelectedOption(ruleType, aiProposal.proposed_interpretation)
     : null
 
-  if (phase === 'applied' && applicationScopeStillOpen) {
+  if (phase === 'applied' && (eligibilityOpenAfterConfirm || survivalOpenAfterConfirm)) {
+    const openParts = [
+      eligibilityOpenAfterConfirm ? 'application scope' : null,
+      survivalOpenAfterConfirm ? 'survival & expiry' : null,
+    ].filter(Boolean).join(' and ')
     return (
       <div className="rounded-xl p-3" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
         <p className="text-sm font-medium flex items-center gap-1.5" style={{ color: '#7F1D1D' }}>
-          <i className="ti ti-alert-triangle" style={{ fontSize: 15 }} /> Trigger, rate & cap confirmed — application scope still open
+          <i className="ti ti-alert-triangle" style={{ fontSize: 15 }} /> Trigger, rate & cap confirmed — {openParts} still open
         </p>
         <p className="text-[11px] mt-1" style={{ color: '#7F1D1D' }}>
-          The contract states this credit&rsquo;s size but not what future charges it may reduce. It will keep counting as a decision outstanding, and won&rsquo;t be applied against billing, until this is resolved.
+          {eligibilityOpenAfterConfirm && !survivalOpenAfterConfirm && "The contract states this credit's size but not what future charges it may reduce."}
+          {survivalOpenAfterConfirm && !eligibilityOpenAfterConfirm && "The contract doesn't state how long an earned-but-unused credit remains available, or whether it can be earned more than once."}
+          {eligibilityOpenAfterConfirm && survivalOpenAfterConfirm && "The contract doesn't state what future charges this credit may reduce, nor how long an earned-but-unused credit remains available."}
+          {' '}It will keep counting as a decision outstanding, and won&rsquo;t be applied against billing, until this is resolved.
         </p>
         <button
           onClick={() => setPhase('input')}
           className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-lg"
           style={{ background: '#1A3D2B', color: 'white' }}
         >
-          Resolve application scope
+          Resolve {openParts}
         </button>
       </div>
     )
@@ -1335,26 +1390,28 @@ function RuleInterpretationCard({
               less than fully explicit — even for a credit like Growth
               Credit, whose application scope is itself stated verbatim. */}
           {aiProposal.application_state && (
-            <div className="rounded-xl p-3" style={{
-              background: aiProposal.application_state === 'clear_from_source' ? '#F0FDF4' : aiProposal.application_state === 'decision_required' ? '#FEF2F2' : '#FFFDF5',
-              border: `1px solid ${aiProposal.application_state === 'clear_from_source' ? 'rgba(11,92,54,0.2)' : aiProposal.application_state === 'decision_required' ? '#FECACA' : 'rgba(217,167,90,0.35)'}`,
-            }}>
-              <span
-                className="inline-block text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full mb-1.5"
-                style={aiProposal.application_state === 'clear_from_source'
-                  ? { background: 'rgba(11,92,54,0.12)', color: '#0B5C36' }
-                  : aiProposal.application_state === 'decision_required'
-                    ? { background: 'rgba(153,27,27,0.1)', color: '#991B1B' }
-                    : { background: 'rgba(180,83,9,0.12)', color: '#92400E' }}
-              >
-                Application scope · {aiProposal.application_state === 'clear_from_source' ? 'Clear from source' : aiProposal.application_state === 'decision_required' ? 'Decision required' : 'Verdix recommendation'}
-              </span>
-              <p className="text-[11px] leading-relaxed" style={{ color: aiProposal.application_state === 'decision_required' ? '#7F1D1D' : '#4A5D50' }}>
-                {aiProposal.application_state === 'decision_required'
-                  ? "The contract states this credit's size but not what future charges it may reduce — resolve this before it can be applied against an invoice."
-                  : 'What this credit may reduce, and whether it carries forward, is covered in the reasoning above.'}
-              </p>
-            </div>
+            <SubStateBadge
+              label="Application scope"
+              state={aiProposal.application_state}
+              decisionRequiredText="The contract states this credit's size but not what future charges it may reduce — resolve this before it can be applied against an invoice."
+              resolvedText="What this credit may reduce is covered in the reasoning above."
+            />
+          )}
+          {/* Survival & expiry — deliberately a SEPARATE badge from
+              Application scope above, not a second line inside it. A clause
+              can state exactly what a credit may offset (Growth Credit:
+              "applicable only against future transaction-processing fees")
+              while saying nothing about how long an earned-but-unused
+              credit survives — those are different questions, and folding
+              survival's silence into the eligibility badge would incorrectly
+              mark an otherwise-explicit eligibility answer as unresolved. */}
+          {aiProposal.survival_state && (
+            <SubStateBadge
+              label="Survival & expiry"
+              state={aiProposal.survival_state}
+              decisionRequiredText="The contract doesn't state how long an earned-but-unused credit remains available, or whether it can be earned more than once — resolve this before it can be applied against an invoice."
+              resolvedText="Whether this credit carries forward and whether it can be earned more than once is covered in the reasoning above."
+            />
           )}
           {errorMsg && <p className="text-xs" style={{ color: '#DC2626' }}>{errorMsg}</p>}
           <div className="flex gap-2">
@@ -2774,6 +2831,17 @@ function ReviewPanel({
                   <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Extraction notes</span>
                 </div>
                 <p className="text-xs text-stone leading-relaxed whitespace-pre-line">{extractionNotes}</p>
+                {/* This text is written once, at extraction time, and never
+                    rewritten afterward — a policy it flags as unresolved
+                    here may since have been confirmed via its own review
+                    card above (or may have none at all if it doesn't map to
+                    a structured rule type). It is a point-in-time snapshot,
+                    not a live list of outstanding decisions — the review
+                    cards above and the "decisions outstanding" count are the
+                    live signal for what's actually still open. */}
+                <p className="text-[10px] text-stone/70 italic mt-2">
+                  Reflects the original extraction — a decision mentioned here may already be resolved by a review card above; it is not itself a live outstanding-decision indicator.
+                </p>
               </div>
             </div>
           )}

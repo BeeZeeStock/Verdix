@@ -154,6 +154,12 @@ export type CommercialRuleWorkload = {
   // + (meterMapping outstanding) + (vat outstanding) into one canonical
   // "N items to review" count, but each stays separately labeled.
   vat: { configured: boolean }
+  // The exact addressing keys behind totalToConfirm — e.g.
+  // "service_credit:f2da66fe", "base_fee_proration",
+  // "minimum_commitment:transaction" — so a caller (or a debugging session)
+  // can see precisely WHICH items make up the count instead of only its
+  // size. Does not include meterMapping/vat, which are separate buckets.
+  blockers: string[]
 }
 
 function groupTiersByUnitType(tiers: TierLike[]): Map<string, TierLike[]> {
@@ -188,11 +194,13 @@ export function computeCommercialRuleWorkload(
   let totalToConfirm = 0
   let readyToConfirm = 0
   let decisionRequired = 0
+  const blockers: string[] = []
 
   const countItem = (key: string, unresolved: boolean) => {
     totalItems++
     if (!unresolved) return
     totalToConfirm++
+    blockers.push(key)
     if (flaggedAsAmbiguous.has(key)) decisionRequired++
     else readyToConfirm++
   }
@@ -271,5 +279,6 @@ export function computeCommercialRuleWorkload(
     interactionsToConfirm,
     meterMapping,
     vat,
+    blockers,
   }
 }

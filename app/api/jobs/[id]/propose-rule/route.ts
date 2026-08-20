@@ -389,6 +389,11 @@ export async function POST(
     // Annual Rebate/Growth Credit/Service Credit's unresolved
     // application/carry-forward policy) never reached the client.
     application_state: parsedRaw.application_state as RuleProposal['application_state'],
+    // Same extraction gap as application_state above, for the newer,
+    // independently-graded survival/expiry question (carry_forward/
+    // one_time) — must be pulled out explicitly here too, not just added to
+    // the type/prompt/validator, or it silently stays undefined forever.
+    survival_state: parsedRaw.survival_state as RuleProposal['survival_state'],
   }
 
   const proposal = validateProposalState(rawProposal, sourceClauseAvailable)
