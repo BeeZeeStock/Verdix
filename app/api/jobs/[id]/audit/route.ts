@@ -110,12 +110,18 @@ async function runAuditPipeline(
     )
   }
 
-  // Update job status
+  // Update job status. currency is included here too, not just on
+  // contract_terms — jobs.currency is what the agreement-list pages
+  // actually display, and it was otherwise left at its creation-time
+  // placeholder ('USD') forever, silently diverging from the real
+  // extracted currency on contract_terms. Only overwritten when extraction
+  // actually found a currency — never clobber a good prior value with null.
   await supabaseServer.from('jobs').update({
     status: 'COMPLETED',
     total_leakage: totalLeakage,
     findings_count: findings.length,
     contract_terms_id: savedTerms?.id,
+    ...(contractTerms.currency ? { currency: contractTerms.currency } : {}),
   }).eq('id', jobId)
 
   const { recordSync } = await import('@/lib/billing')

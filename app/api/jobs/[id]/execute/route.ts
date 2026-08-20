@@ -180,9 +180,16 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
 
   const needsReview = lineItems.some(i => i.confidence_score < 0.95)
 
+  // currency is included here too, not just on contract_terms —
+  // jobs.currency is what the agreement-list pages actually display, and
+  // it was otherwise left at its creation-time placeholder ('USD') forever,
+  // silently diverging from the real extracted currency on contract_terms.
+  // Only overwritten when extraction actually found a currency — never
+  // clobber a good prior value with null.
   await supabaseServer.from('jobs').update({
     execute_status: needsReview ? 'PENDING_HUMAN_REVIEW' : 'READY_TO_APPROVE',
     contract_terms_id: savedTerms?.id,
+    ...(terms.currency ? { currency: terms.currency } : {}),
   }).eq('id', jobId)
 }
 
