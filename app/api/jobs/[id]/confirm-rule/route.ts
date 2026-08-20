@@ -26,6 +26,12 @@ import { auth } from '@/lib/auth'
 import type { RuleType } from '@/lib/rule-interpretation'
 import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation, CreditEarnRule, CreditApplicationRule, PeriodProrationRule, AdditionalRecurringFee } from '@/lib/types'
 
+// Several sequential writes (audit row, contract_terms, sometimes
+// contract_meter_mappings) — same defensive reasoning as propose-rule/
+// interpret-rule's identical export, so a slow write chain can't silently
+// fall back to a too-short platform default either.
+export const maxDuration = 60
+
 type Body = {
   ruleType: RuleType
   contractUnitType?: string

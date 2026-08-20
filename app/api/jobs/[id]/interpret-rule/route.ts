@@ -36,6 +36,10 @@ import {
   type RuleInteractionContext,
 } from '@/lib/rule-interpretation'
 
+// See propose-rule/route.ts's identical export for why this matters — this
+// route makes the same kind of live Claude call.
+export const maxDuration = 60
+
 type TierRow = {
   tier_label: string
   from_unit: number | null

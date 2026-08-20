@@ -11,8 +11,7 @@ import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCard'
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, contractLifecycleStatus } from '@/lib/contract-tcv-calc'
-import { findCadenceWindowContaining, isPartialWindow } from '@/lib/tariff'
-import { ruleCadenceLabel, partialPeriodLabel, cadenceNoun, contractMonthLabel } from '@/lib/cadence-labels'
+import { ruleCadenceLabel, cadenceNoun, contractMonthLabel } from '@/lib/cadence-labels'
 import { optionsForRuleType, optionsForEdit, deriveSelectedOption, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved } from '@/lib/commercial-rule-status'
@@ -1945,7 +1944,7 @@ function ReviewPanel({
   // can show/resolve its "usage source" dependency inline — the same data
   // MeterMappingPanel uses, so Confirm/Change mapping here writes through
   // the same endpoint and never diverges from that panel's own state.
-  type MeterSuggestion = { contract_unit_type: string; meter_key: string; confirmed: boolean; included_units: number; overage_tiers: unknown; billing_cycle: string }
+  type MeterSuggestion = { contract_unit_type: string; meter_key: string; confirmed: boolean; included_units: number; overage_tiers: unknown; billing_cycle: string; input_classification?: 'meter' | 'meter_or_manual_input' | 'derived' | 'persisted_balance'; manual_value_configured?: boolean }
   type AvailableMeter  = { meter_key: string; display_name: string }
   const [meterSuggestions, setMeterSuggestions] = useState<MeterSuggestion[]>([])
   const [availableMeters,  setAvailableMeters]  = useState<AvailableMeter[]>([])
@@ -1968,8 +1967,47 @@ function ReviewPanel({
 
   const partialPeriodMetrics = computePartialPeriodMetrics(contractStartDate, contractEndDate, overageTiers ?? [])
 
+  // Canonical readiness — same computeCommercialRuleWorkload call the main
+  // page and the server approval gate use, built from this panel's own
+  // already-fetched data (overageTiers/discounts/serviceCredits/
+  // baseFeeProration/meterSuggestions), so the drawer header can never show
+  // a different "N confirmed" than the page-level readiness banner. This
+  // replaces the old resolvedCount/items.length header, which tracked
+  // per-LINE-ITEM confirmation (a mechanism the metric-scoped rule cards —
+  // minimum commitment, partial period, base-fee proration, tier
+  // calculation — never actually write to, so it stayed stuck at "0 of N"
+  // regardless of how many of those cards were genuinely confirmed.
+  const unresolvedInteractionsForWorkload = detectRuleInteractionCandidates({
+    service_credits: serviceCredits, discounts, escalators,
+  }).filter(cand => {
+    const credit = (serviceCredits ?? []).find(c => c.credit_rule_id === cand.creditId)
+    return !!credit?.interpretation && !credit.interpretation.requires_confirmation && !credit.interpretation.interaction_note
+  })
+  const meterMappingWorkload = {
+    total: meterSuggestions.length,
+    confirmed: meterSuggestions.filter(s => isMeterMappingResolved({
+      classification: s.input_classification ?? 'meter', confirmed: s.confirmed, meter_key: s.meter_key, manual_value_configured: s.manual_value_configured,
+    })).length,
+  }
+  const commercialWorkload = computeCommercialRuleWorkload(
+    {
+      overage_tiers: overageTiers, escalators, discounts, service_credits: serviceCredits,
+      base_fee_proration: baseFeeProration, additional_recurring_fees: additionalRecurringFees,
+      contract_start_date: contractStartDate, contract_end_date: contractEndDate,
+    },
+    meterMappingWorkload,
+    unresolvedInteractionsForWorkload.length,
+  )
+  const usageMappingsOutstanding = Math.max(0, commercialWorkload.meterMapping.total - commercialWorkload.meterMapping.confirmed)
+  const commercialDecisionsOutstanding = commercialWorkload.totalToConfirm + commercialWorkload.interactionsToConfirm
+  const needsReviewInPanel = items.filter(i => i.confidence_score < 0.95 && !(i.id in corrections)).length
+  const totalBlockers = commercialDecisionsOutstanding + usageMappingsOutstanding + needsReviewInPanel
+
   const resolvedCount = items.filter(i => resolved[i.id] || i.id in corrections).length
-  const allDone = resolvedCount === items.length
+  // Same canonical readiness as totalBlockers above — not the old
+  // resolvedCount === items.length equality, which the metric-scoped rule
+  // cards never satisfy (they don't mark line items resolved).
+  const allDone = totalBlockers === 0
 
   // After confirming/saving one term, jump straight to the next one that
   // still needs attention — View clause → Confirm/Edit → next item, instead
@@ -2275,9 +2313,17 @@ function ReviewPanel({
         <div className="flex-shrink-0 px-6 py-4 border-b border-forest/10 flex items-center justify-between">
           <div>
             <p className="text-sm font-semibold text-ink">Review contract terms</p>
+            {/* Same canonical readiness model as the page-level banner
+                (commercialWorkload above) — not the old per-line-item
+                resolvedCount/items.length, which the metric-scoped rule
+                cards (minimum commitment, partial period, base-fee
+                proration, tier calculation) never write to, so it stayed
+                stuck at "0 of N" regardless of how many of those were
+                actually confirmed. */}
             <p className="text-xs text-stone mt-0.5">
-              {resolvedCount} of {items.length} confirmed
-              {allDone && <span className="ml-1.5 font-medium" style={{ color: '#0B5C36' }}>· Ready to approve</span>}
+              {totalBlockers === 0
+                ? <span className="font-medium" style={{ color: '#0B5C36' }}>All confirmed · Ready to approve</span>
+                : `${totalBlockers} decision${totalBlockers > 1 ? 's' : ''} outstanding`}
             </p>
           </div>
           <button
@@ -2293,7 +2339,7 @@ function ReviewPanel({
           <div
             className="h-full transition-all duration-500"
             style={{
-              width:      `${items.length > 0 ? (resolvedCount / items.length) * 100 : 0}%`,
+              width:      allDone ? '100%' : `${items.length > 0 ? (resolvedCount / items.length) * 100 : 0}%`,
               background: allDone ? '#0B5C36' : '#D97706',
             }}
           />
@@ -2493,7 +2539,7 @@ function ReviewPanel({
                         </div>
                         <p className="text-sm font-medium text-ink leading-snug mb-1">Platform subscription fee</p>
                         <p className="text-[11px] text-stone leading-relaxed mb-3">
-                          The agreement states the {fmt(baseFeeAmount, cur ?? 'EUR')} fee is billed {contractBillingFrequency ?? 'monthly'} in advance, but does not say whether billing periods reset on calendar boundaries or on the contract's own start date{contractStartDate ? ` (${contractStartDate})` : ''}. This decides whether a partial-period question exists at all.
+                          The agreement states the {fmt(baseFeeAmount, cur ?? 'EUR')} fee is billed {contractBillingFrequency ?? 'monthly'} in advance, but does not say whether billing periods reset on calendar boundaries or on the contract start date itself{contractStartDate ? ` (${contractStartDate})` : ''}. This decides whether a partial-period question exists at all.
                         </p>
                         <RuleInterpretationCard
                           jobId={jobId}
@@ -2517,7 +2563,7 @@ function ReviewPanel({
                         </div>
                         <p className="text-sm font-medium text-ink leading-snug mb-1">{f.fee_label}</p>
                         <p className="text-[11px] text-stone leading-relaxed mb-3">
-                          The agreement states the {fmt(f.amount, cur ?? 'EUR')} fee is billed {f.billing_frequency ?? contractBillingFrequency ?? 'monthly'}, but does not say whether billing periods reset on calendar boundaries or on the contract's own start date{contractStartDate ? ` (${contractStartDate})` : ''}. This decides whether a partial-period question exists at all.
+                          The agreement states the {fmt(f.amount, cur ?? 'EUR')} fee is billed {f.billing_frequency ?? contractBillingFrequency ?? 'monthly'}, but does not say whether billing periods reset on calendar boundaries or on the contract start date itself{contractStartDate ? ` (${contractStartDate})` : ''}. This decides whether a partial-period question exists at all.
                         </p>
                         <RuleInterpretationCard
                           jobId={jobId}
@@ -3938,29 +3984,36 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                                 <p className="text-[11px] text-stone">Allowance treatment: <span className="font-medium text-ink">{text}</span></p>
                               )
                             })()}
+                            {/* Two separately-labeled statuses, never one blanket "Confirmed"
+                                — "Core minimum rule: Confirmed" describes ONLY mode/amount/
+                                period/allowance (what isMinimumCommitmentModeUnresolved
+                                actually checks). Partial-period policy is a genuinely separate
+                                question with its own status line immediately below, so
+                                "Confirmed" here can never be misread as "this rule is fully
+                                billing-ready" while a partial-period decision is still open. */}
+                            <p className="text-[10px] text-stone/60 mt-2">
+                              Core minimum rule: <span className="font-medium" style={{ color: '#0B5C36' }}>{audit ? 'Confirmed' : 'Clear from source'}</span>
+                              {audit && <> by {audit.reviewer_name ?? audit.reviewer_email} · {fmtDate(audit.created_at)}</>}
+                            </p>
                             {/* Partial-quarter (etc.) treatment is only a live question under
                                 calendar anchoring — contract_start anchoring never produces a
                                 partial window at all, so this line only appears when it can
                                 actually matter (mirrors computePartialPeriodMetrics exactly). */}
                             {t.reset_anchor === 'calendar' && (
                               mc.prorate_partial_periods === 'unclear' ? (
-                                <div className="mt-1.5 flex items-center justify-between gap-2">
+                                <div className="mt-1 flex items-center justify-between gap-2">
                                   <p className="text-[11px] text-amber-700">
                                     <i className="ti ti-alert-triangle mr-1" style={{ fontSize: 10 }} />
-                                    {partialPeriodLabel(mc.period)}: Needs confirmation
+                                    Partial-period policy: Decision required
                                   </p>
                                   <button onClick={() => setEditingRule(`partial:${unitType}`)} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg flex-shrink-0" style={{ background: '#1A3D2B', color: 'white' }}>Resolve</button>
                                 </div>
                               ) : (
-                                <p className="text-[11px] text-stone">
-                                  {partialPeriodLabel(mc.period)}: <span className="font-medium text-ink">{mc.prorate_partial_periods === true ? 'Prorated' : 'Full amount charged'}</span>
+                                <p className="text-[11px] text-stone mt-1">
+                                  Partial-period policy: <span className="font-medium text-ink">{mc.prorate_partial_periods === true ? 'Prorated' : 'Full amount charged'}</span>
                                 </p>
                               )
                             )}
-                            <p className="text-[10px] text-stone/60 mt-2">
-                              Status: <span className="font-medium" style={{ color: '#0B5C36' }}>Confirmed</span>
-                              {audit && <> by {audit.reviewer_name ?? audit.reviewer_email} · {fmtDate(audit.created_at)}</>}
-                            </p>
                             <div className="flex items-center gap-3 mt-2">
                               {src.overage_tiers && (
                                 <button onClick={() => openPDF(src.overage_tiers)} className="text-[11px] font-medium text-forest hover:underline">View source ↗</button>

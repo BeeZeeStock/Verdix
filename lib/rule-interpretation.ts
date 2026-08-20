@@ -972,18 +972,43 @@ export function validateProposalState(proposal: RuleProposal, sourceClauseAvaila
   // application_state (service_credit only) — same three safety checks as
   // `state` above, applied independently and scoped to application_rule
   // specifically, so grading one aspect down never silently drags the other.
-  if (application_state) {
-    const applicationRule = proposed_interpretation && typeof proposed_interpretation === 'object'
-      ? (proposed_interpretation as Record<string, unknown>).application_rule as Record<string, unknown> | null | undefined
-      : undefined
-    if (application_state === 'decision_required' && applicationRule != null && proposed_interpretation) {
-      (proposed_interpretation as Record<string, unknown>).application_rule = null
-    }
+  //
+  // Deliberately does NOT null out the whole application_rule sub-object the
+  // way `state`/proposed_interpretation does above — "decision_required" for
+  // application_state doesn't mean "nothing to show", it means the correct,
+  // meaningful value IS eligible_component_keys: null (per
+  // buildServiceCreditProposalPrompt's own instruction). Wiping the object
+  // entirely used to strip that null down to undefined once it round-tripped
+  // through confirm-rule's buildCreditApplicationRule (`if (!source &&
+  // !existing) return null`), which persisted application_rule as an outright
+  // null field instead of a flagged {eligible_component_keys: null,
+  // requires_confirmation: true} object — invisible to every downstream
+  // readiness check, exactly the "Confirm & apply silently resolves an
+  // unstated policy" failure mode this whole split exists to prevent.
+  // Instead, this only CORRECTS a contradiction between the two signals,
+  // preserving the sub-object either way.
+  if (application_state && proposed_interpretation && typeof proposed_interpretation === 'object') {
+    const interp = proposed_interpretation as Record<string, unknown>
+    const applicationRule = interp.application_rule as Record<string, unknown> | null | undefined
+
     if (application_state === 'clear_from_source') {
       const reasoningLooksSourced = reasoning.trim().length >= 20
       if (!sourceClauseAvailable || !reasoningLooksSourced) application_state = 'verdix_recommends'
     }
-    if (application_state !== 'decision_required' && applicationRule == null) {
+
+    // Contradiction: claims a confident state but the model left the one
+    // field that actually decides scope unset — force decision_required
+    // rather than trust a state with nothing concrete behind it. Only this
+    // ONE direction is corrected: application_state can legitimately be
+    // "decision_required" while eligible_component_keys is still populated
+    // — e.g. Service Credit's eligible_component_keys is explicitly 'all'
+    // (future amounts payable) while its carry-forward/expiry duration is
+    // separately unstated, which also drives requires_confirmation true via
+    // buildCreditApplicationRule's own carry_forward==='unclear' check.
+    // Nulling eligible_component_keys just because application_state says
+    // decision_required would incorrectly erase a genuinely clear scope.
+    const eligibleKeys = applicationRule?.eligible_component_keys
+    if (application_state !== 'decision_required' && (!applicationRule || eligibleKeys == null)) {
       application_state = 'decision_required'
     }
   }

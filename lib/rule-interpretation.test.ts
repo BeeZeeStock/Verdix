@@ -643,7 +643,7 @@ describe('validateProposalState — safety net, only ever downgrades', () => {
       expect((result.proposed_interpretation as Record<string, unknown>).application_rule).not.toBeNull()
     })
 
-    it('Annual Rebate scenario: state clear_from_source (trigger/value explicit) while application_state is decision_required (offset target unstated) — nulls only application_rule, keeps the rest of proposed_interpretation', () => {
+    it('Annual Rebate scenario: state clear_from_source (trigger/value explicit) while application_state is decision_required (offset target unstated) — keeps application_rule as a flagged object (eligible_component_keys: null), never wipes it to null outright', () => {
       const result = validateProposalState(proposal({
         state: 'clear_from_source',
         application_state: 'decision_required',
@@ -654,7 +654,37 @@ describe('validateProposalState — safety net, only ever downgrades', () => {
       expect(result.application_state).toBe('decision_required')
       expect(result.proposed_interpretation).not.toBeNull()
       expect((result.proposed_interpretation as Record<string, unknown>).trigger_type).toBe('usage_threshold')
-      expect((result.proposed_interpretation as Record<string, unknown>).application_rule).toBeNull()
+      // Critical: application_rule must survive as a real object so
+      // confirm-rule's buildCreditApplicationRule computes
+      // requires_confirmation: true on it — wiping the whole sub-object to
+      // null would instead persist application_rule as an outright null
+      // field, invisible to every downstream readiness check (the exact
+      // "Confirm & apply silently resolves an unstated policy" bug).
+      const appRule = (result.proposed_interpretation as Record<string, unknown>).application_rule as Record<string, unknown>
+      expect(appRule).not.toBeNull()
+      expect(appRule.eligible_component_keys).toBeNull()
+    })
+
+    it('Service Credit scenario: application_state decision_required (carry-forward/expiry unstated) while eligible_component_keys stays populated ("all") — never erased just because application_state is decision_required, since a DIFFERENT sub-field (carry_forward) is the actual open question', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source',
+        application_state: 'decision_required',
+        proposed_interpretation: { trigger_type: 'sla_breach', credit_value: 5_500, cap_amount: 55_000, application_rule: { eligible_component_keys: 'all', carry_forward: 'unclear' } },
+        reasoning: 'The clause states the credit applies against future amounts payable but does not state how long an unused credit survives.',
+      }), true)
+      const appRule = (result.proposed_interpretation as Record<string, unknown>).application_rule as Record<string, unknown>
+      expect(appRule.eligible_component_keys).toBe('all')
+      expect(appRule.carry_forward).toBe('unclear')
+      expect(result.application_state).toBe('decision_required')
+    })
+
+    it('corrects the contradiction: application_state claims a confident state but eligible_component_keys is unset — forces decision_required rather than trusting an empty confidence claim', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source',
+        application_state: 'verdix_recommends',
+        proposed_interpretation: { trigger_type: 'usage_threshold', application_rule: { eligible_component_keys: null } },
+      }), true)
+      expect(result.application_state).toBe('decision_required')
     })
 
     it('downgrades application_state clear_from_source to verdix_recommends when no source clause is available, independent of state', () => {

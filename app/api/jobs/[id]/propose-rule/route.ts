@@ -20,6 +20,17 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
+
+// Without this, the route falls back to whatever the deployment's platform
+// default is — on some plans/configurations short enough that a live Claude
+// call (routinely 5-15s, occasionally longer under load) gets killed before
+// it returns. The client's fetch then never resolves/rejects cleanly, and
+// the calling RuleInterpretationCard is left showing its "reading the
+// source clause…" spinner indefinitely — which reads as "this card is
+// missing/stuck" rather than a timeout, exactly the symptom reported for
+// AI-dependent review cards in production but never reproducible locally
+// (a direct script call to the same AI client has no such limit).
+export const maxDuration = 60
 import { requireOrg } from '@/lib/org'
 import { getAIClient } from '@/lib/ai-client'
 import {
