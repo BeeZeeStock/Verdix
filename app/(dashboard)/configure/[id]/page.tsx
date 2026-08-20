@@ -5,6 +5,7 @@ import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
 import { BillingSummaryCard } from '@/app/_components/BillingSummaryCard'
+import { VatConfigRow } from '@/app/_components/VatConfigRow'
 import { MeterMappingPanel } from '@/app/_components/MeterMappingPanel'
 import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCard'
@@ -2569,6 +2570,13 @@ function ReviewPanel({
                     )
                   }
 
+                  // Plain (non-metric) value-confirmation cards still gate
+                  // on extraction confidence — unlike the metric-scoped
+                  // branch above, there's no structural ambiguity signal
+                  // here independent of confidence, so a confidently
+                  // extracted value has nothing left to review.
+                  if (item.confidence_score >= 0.95) return null
+
                   const kind        = classifyItem(item, escalators ?? [])
                   const ctx         = getReviewContext(item, kind, numberFormat, overageTiers ?? [])
                   const isResolved  = !!(resolved[item.id] || item.id in corrections)
@@ -2955,6 +2963,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [corrections, setCorrections] = useState<Record<string, { value: string; remember: boolean }>>({})
   const [approving, setApproving]     = useState(false)
   const [approveError, setApproveError] = useState<string | null>(null)
+  // Reported by VatConfigRow (job-scoped pending_vat_* pre-approval, or the
+  // real customer_vat_config once approved) — undefined while its own fetch
+  // is still in flight, so the Approve button isn't briefly enabled before
+  // the real status is known.
+  const [vatConfigured, setVatConfigured] = useState<boolean | undefined>(undefined)
   const [billingEdit, setBillingEdit] = useState<{ itemId: string; field: 'quantity' | 'unit_price' | 'billing_period'; value: string } | null>(null)
   const [approved, setApproved]       = useState<{ stripeSubscriptionId: string; dashboardUrl?: string; customerId?: string } | null>(null)
   const [meterMappingsConfirmed, setMeterMappingsConfirmed] = useState(false)
@@ -4831,19 +4844,54 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 confirmedRuleLines.push({ label: 'Usage meter', value: 'Confirmed' })
               }
 
+              // This banner reports ONE specific thing — every rule
+              // interpretation (minimum floors, tier methods, escalation,
+              // discounts, service credits, rule interactions) and usage
+              // meter has a reviewer decision on file. It deliberately does
+              // NOT claim the contract is ready to push: VAT and the
+              // billing-schedule dates are separate readiness checks with
+              // their own gates (see the VAT row and Approve button below),
+              // and are called out here by name rather than folded
+              // silently into one blanket "confirmed" claim — a reviewer
+              // seeing this banner while VAT is still unset previously had
+              // no way to tell the two apart.
+              const billingReady = vatConfigured === true
               return (
                 <div className="bg-white rounded-2xl border px-7 py-5" style={{ borderColor: 'rgba(11,92,54,0.2)', background: '#F8FDF9' }}>
-                  <p className="text-sm font-semibold flex items-center gap-1.5 mb-3" style={{ color: '#0B5C36' }}>
-                    <i className="ti ti-circle-check-filled" style={{ fontSize: 15 }} /> All commercial rules confirmed
+                  <p className="text-sm font-semibold flex items-center gap-1.5 mb-1" style={{ color: '#0B5C36' }}>
+                    <i className="ti ti-circle-check-filled" style={{ fontSize: 15 }} /> Rule interpretations confirmed
+                  </p>
+                  <p className="text-[11px] text-stone mb-3">
+                    Every minimum floor, tier method, escalator, discount, service credit, rule interaction, and usage meter has a reviewer decision on file.
                   </p>
                   <div className="grid gap-x-8 gap-y-1.5 text-[12px]" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
                     {confirmedRuleLines.map((line, i) => (
                       <p key={i}><span className="text-stone">{line.label}:</span> <span className="font-medium text-ink">{line.value}</span></p>
                     ))}
                   </div>
+                  <div className="mt-3 pt-3 flex items-center gap-1.5" style={{ borderTop: '1px solid rgba(11,92,54,0.12)' }}>
+                    <i className={`ti ${billingReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: billingReady ? '#0B5C36' : '#D97706' }} />
+                    <p className="text-[11px] font-medium" style={{ color: billingReady ? '#0B5C36' : '#92400E' }}>
+                      {billingReady ? 'Billing readiness: ready to push' : 'Billing readiness: VAT treatment still required before push'}
+                    </p>
+                  </div>
                 </div>
               )
             })()}
+
+            {/* ── VAT (pre-approval) ── Surfaced here, not only after push,
+                 so it can actually block Approve rather than only failing
+                 closed server-side after the reviewer has already clicked
+                 it. Staged on the job itself (pending_vat_*) until a real
+                 billing customer exists; promoted into customer_vat_config
+                 at approve time. BillingSummaryCard renders the same
+                 component post-approval, reading/writing the real
+                 customer_vat_config row directly — never both at once. */}
+            {!isConfigured && (
+              <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
+                <VatConfigRow jobId={id} onStatusChange={setVatConfigured} />
+              </div>
+            )}
 
             {/* ── Fixed fees + Approve footer ── */}
             <div className="bg-white rounded-2xl border border-forest/10 px-7 py-5 flex items-center justify-between gap-8">
@@ -4853,15 +4901,33 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/50">
                       Fixed fees
                     </p>
-                    <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
-                      {tcv > 0
-                        ? fmt(tcv, cur)
-                        : billingModel === 'consumption'
-                          ? <span className="text-[22px] text-stone/60">Usage-based</span>
-                          : <span className="text-stone/30">—</span>}
-                    </p>
+                    {/* Never shown as a final authoritative total while the
+                        dates it depends on are unresolved — computeBaseTcv
+                        multiplies each line item's rate by a period count
+                        derived from contract_start_date/contract_end_date/
+                        contract_term_months, so a total computed before
+                        those were known (or surviving in state from before
+                        they were cleared) must not be presented as if it
+                        were final. This is what previously let "24 ×
+                        38,500 = 924,000" show at the same time as "dates
+                        are missing" below. */}
+                    {(() => {
+                      const datesResolved = !!terms?.contract_start_date && (!!terms?.contract_end_date || !!terms?.contract_term_months)
+                      return (
+                        <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
+                          {tcv > 0 && datesResolved
+                            ? fmt(tcv, cur)
+                            : billingModel === 'consumption'
+                              ? <span className="text-[22px] text-stone/60">Usage-based</span>
+                              : <span className="text-stone/30">—</span>}
+                        </p>
+                      )
+                    })()}
                     {tcv === 0 && billingModel === 'consumption' && terms?.contract_start_date && terms?.contract_end_date && (
                       <p className="text-[10px] text-stone/40 mt-2">Fixed fees depend on usage volume</p>
+                    )}
+                    {tcv > 0 && (!terms?.contract_start_date || (!terms?.contract_end_date && !terms?.contract_term_months)) && (
+                      <p className="text-[10px] text-amber-600 mt-2">Contract dates unresolved — fixed-fee total withheld until confirmed above</p>
                     )}
                     {tcv === 0 && billingModel !== 'consumption' && terms?.contract_start_date && terms?.contract_end_date &&
                       parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date) && (
@@ -4908,7 +4974,19 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   if (!terms?.contract_start_date) scheduleBlockers.push('contract start date')
                   if (!terms?.contract_term_months && !terms?.contract_end_date) scheduleBlockers.push('contract end date or term length')
                   const needsPlatformChoice = connectedBillingPlatforms.length > 1 && !selectedBillingPlatform
-                  const blocked = approving || needsReview > 0 || (tiers.length > 0 && !meterMappingsConfirmed) || scheduleBlockers.length > 0 || needsPlatformChoice
+                  // Unresolved commercial rules (minimum floors, tier
+                  // calculation methods, escalators, discounts, service
+                  // credits, rule interactions) and unconfigured VAT must
+                  // block Approve exactly like the server-side check in
+                  // app/api/jobs/[id]/approve/route.ts — this is the
+                  // client-side mirror of that gate, not a substitute for
+                  // it. needsReview (confidence-only) alone previously let
+                  // a fully-ambiguous but confidently-worded contract like
+                  // TEST-PAY-002 show as pushable.
+                  const rulesOutstanding = commercialRuleWorkload.totalToConfirm + commercialRuleWorkload.interactionsToConfirm
+                  const vatUnconfigured = vatConfigured === false
+                  const blocked = approving || needsReview > 0 || rulesOutstanding > 0 || vatConfigured === undefined || vatUnconfigured
+                    || (tiers.length > 0 && !meterMappingsConfirmed) || scheduleBlockers.length > 0 || needsPlatformChoice
                   const platformLabel = selectedBillingPlatform
                     ? selectedBillingPlatform.charAt(0).toUpperCase() + selectedBillingPlatform.slice(1)
                     : connectedBillingPlatforms.length === 1
@@ -4959,6 +5037,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         Review {needsReview} flagged item{needsReview > 1 ? 's' : ''} above first
                       </p>
                     )}
+                    {needsReview === 0 && rulesOutstanding > 0 && (
+                      <button onClick={() => setReviewPanelOpen(true)} className="text-[10px] text-amber-600 underline underline-offset-2 hover:text-amber-700 text-right max-w-[220px]">
+                        {rulesOutstanding} reviewer-policy decision{rulesOutstanding > 1 ? 's' : ''} outstanding — open Review panel
+                      </button>
+                    )}
+                    {needsReview === 0 && rulesOutstanding === 0 && vatUnconfigured && (
+                      <p className="text-[10px] text-amber-600 text-right max-w-[220px]">
+                        VAT treatment not confirmed — set it below first
+                      </p>
+                    )}
                     {tiers.length > 0 && !meterMappingsConfirmed && needsReview === 0 && scheduleBlockers.length === 0 && (
                       <button onClick={() => setReviewPanelOpen(true)} className="text-[10px] text-amber-600 underline underline-offset-2 hover:text-amber-700">
                         Confirm billing meter mappings in Review panel
@@ -4978,7 +5066,21 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       {/* ── Review panel ────────────────────────────────────────────────── */}
       {reviewPanelOpen && (
         <ReviewPanel
-          items={items.filter(i => i.confidence_score < 0.95)}
+          // Full, unfiltered list — a metric-scoped ambiguity (minimum
+          // commitment, tier calculation, partial-period treatment) is
+          // driven by overageTiers' own requires_confirmation flags, not by
+          // extraction confidence, and needs an anchor item to render under
+          // regardless of how confidently that item's own VALUE was
+          // extracted. A contract can state SEK 1.05/unit completely
+          // unambiguously (high confidence) while still leaving open
+          // whether an attached minimum floor prorates for a partial month
+          // (a genuine business-rule question extraction confidence says
+          // nothing about) — filtering by confidence here used to hide
+          // that card entirely whenever every line item for the metric
+          // happened to be high-confidence, which is the common case for a
+          // clearly-worded contract. The plain (non-metric) per-item
+          // confirm-card path still gates on confidence itself, just below.
+          items={items}
           corrections={corrections}
           onCorrect={(itemId, value) => setCorr(itemId, value)}
           onClose={() => setReviewPanelOpen(false)}

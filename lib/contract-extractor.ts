@@ -158,7 +158,7 @@ export async function extractContractTerms(
 
   const chunks = splitIntoChunks(contractText, 12000)
   if (chunks.length === 1) {
-    return extractFromChunk(chunks[0], learningContext, piiMasked)
+    return applyExtractionSafetyNets(await extractFromChunk(chunks[0], learningContext, piiMasked))
   }
 
   // Map-reduce for long contracts
@@ -301,26 +301,83 @@ export function mergeExtractions(results: ContractTerms[]): ContractTerms {
     number_format: results.some(r => r.number_format === 'comma') ? 'comma' : 'dot',
   }
 
+  return applyExtractionSafetyNets(merged)
+}
+
+// The post-processing every extraction result must go through regardless of
+// how many chunks it came from — this used to run only inside
+// mergeExtractions, which the single-chunk path (the common case for a
+// contract under ~12,000 chars) never calls at all, so a short contract's
+// discounts/service_credits came back with NO discount_rule_id/
+// credit_rule_id whatsoever (nothing to address them by — confirm-rule,
+// propose-rule, and lib/commercial-rule-status.ts's workload count all
+// silently skip an item with no id, which is exactly how a real, correctly
+// -extracted credit like TEST-PAY-002's Annual Rebate/Growth Credit/Service
+// Availability Credit went completely invisible to review). Applied exactly
+// once, after chunking/merging is fully resolved either way.
+export function applyExtractionSafetyNets(terms: ContractTerms): ContractTerms {
   // Guard: end_date must be after start_date. If the model extracted a wrong year
   // (e.g. "2026-07-31" for a 36-month contract starting 2026-08-01), auto-correct
   // using contract_term_months when available.
-  if (merged.contract_start_date && merged.contract_end_date && merged.contract_term_months) {
-    const start = new Date(merged.contract_start_date)
-    const end   = new Date(merged.contract_end_date)
+  if (terms.contract_start_date && terms.contract_end_date && terms.contract_term_months) {
+    const start = new Date(terms.contract_start_date)
+    const end   = new Date(terms.contract_end_date)
     if (end <= start) {
       const corrected = new Date(start)
-      corrected.setMonth(corrected.getMonth() + merged.contract_term_months)
+      corrected.setMonth(corrected.getMonth() + terms.contract_term_months)
       corrected.setDate(corrected.getDate() - 1) // last day of term
-      merged.contract_end_date = corrected.toISOString().slice(0, 10)
+      terms.contract_end_date = corrected.toISOString().slice(0, 10)
     }
   }
 
-  merged.overage_tiers = flagAmbiguousMinimumCommitments(merged.overage_tiers)
-  merged.overage_tiers = flagAmbiguousTierCalculation(merged.overage_tiers)
-  merged.discounts = assignDiscountRuleIds(merged.discounts)
-  merged.service_credits = assignServiceCreditRuleIds(merged.service_credits)
+  terms.overage_tiers = flagAmbiguousMinimumCommitments(terms.overage_tiers)
+  terms.overage_tiers = flagAmbiguousTierCalculation(terms.overage_tiers)
+  terms.discounts = assignDiscountRuleIds(terms.discounts)
+  terms.service_credits = assignServiceCreditRuleIds(terms.service_credits ?? [])
+  flagAmbiguousBaseFeeProration(terms)
 
-  return merged
+  return terms
+}
+
+// base_fee_proration/AdditionalRecurringFee.proration are only ever
+// populated by the extraction PROMPT when the contract explicitly ties a
+// fee to calendar boundaries ("billed each calendar month") — deliberately
+// left null for the far more common contract-start-anchored case, per the
+// prompt's own rule. But that rule has a real gap: a fee that just says
+// "billed monthly" with NO anchor language at all (TEST-PAY-002's actual
+// §2: "SEK 38,500 per month... billed monthly in advance", nothing more)
+// is genuinely silent on the question, not evidence that contract-start
+// anchoring applies — silently defaulting to "no partial period" here is
+// exactly the kind of unreviewed assumption this whole pipeline exists to
+// prevent. This safety net catches it deterministically: whenever the
+// contract starts mid-month (or mid-quarter/year, per billing_frequency)
+// and extraction found no explicit anchor statement, the fee is flagged as
+// requiring a reviewer decision — never silently billed either way. Uses
+// the SAME partial-period confirm-rule flow (reset_anchor stays 'calendar'
+// once a reviewer resolves it, matching how confirm-rule's
+// buildPeriodProrationRule already defaults) rather than inventing a
+// separate "unknown anchor" state through the billing engine.
+function flagAmbiguousBaseFeeProration(terms: ContractTerms): void {
+  if (!terms.contract_start_date) return
+  const startDay = new Date(terms.contract_start_date + 'T00:00:00').getDate()
+  if (startDay === 1) return // already calendar-aligned — no partial-period question exists either way
+
+  const reason = 'The contract does not state whether this fee resets on the contract’s own start-date anniversary or on calendar boundaries, and the agreement begins mid-period.'
+
+  if ((terms.base_monthly_fee || terms.base_annual_fee) && !terms.base_fee_proration) {
+    terms.base_fee_proration = {
+      reset_anchor: 'calendar', prorate_partial_periods: 'unclear',
+      requires_confirmation: true, confirmation_reason: reason, source_clause: null,
+    }
+  }
+  for (const fee of terms.additional_recurring_fees ?? []) {
+    if (fee.amount && !fee.proration) {
+      fee.proration = {
+        reset_anchor: 'calendar', prorate_partial_periods: 'unclear',
+        requires_confirmation: true, confirmation_reason: reason, source_clause: null,
+      }
+    }
+  }
 }
 
 // Every discount must be independently addressable (review, interpretation,

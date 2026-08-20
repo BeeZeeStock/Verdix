@@ -28,11 +28,19 @@ type CreditLike = {
   interpretation?: (UnresolvedFlag & { interaction_note?: string | null }) | null
 }
 
+type ProrationLike = { requires_confirmation: boolean } | null | undefined
+
 export type CommercialRuleTerms = {
   overage_tiers?: TierLike[] | null
   escalators?: EscalatorLike[] | null
   discounts?: DiscountLike[] | null
   service_credits?: CreditLike[] | null
+  // Job-level (base_fee_proration) and per-fee (additional_recurring_fees[].proration)
+  // partial-period ambiguities — genuinely separate from the tier-scoped
+  // minimum_commitment/tier_calculation checks above (this can apply even
+  // to a contract with no usage-based tiers at all, a flat-fee-only deal).
+  base_fee_proration?: ProrationLike
+  additional_recurring_fees?: Array<{ fee_label?: string; amount?: number; proration?: ProrationLike }> | null
 }
 
 export type CommercialRuleStatus =
@@ -110,6 +118,14 @@ export function computeCommercialRuleWorkload(
       const tc = group.find(t => t.tier_calculation)?.tier_calculation
       countItem(`tier_calculation:${unitType}`, !tc || tc.requires_confirmation)
     }
+  }
+
+  if (terms?.base_fee_proration) {
+    countItem('base_fee_proration', !!terms.base_fee_proration.requires_confirmation)
+  }
+  for (const fee of terms?.additional_recurring_fees ?? []) {
+    if (!fee.proration) continue
+    countItem(`recurring_fee_proration:${fee.fee_label}`, !!fee.proration.requires_confirmation)
   }
 
   const escalator = terms?.escalators?.[0]

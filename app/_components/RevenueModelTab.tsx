@@ -1853,6 +1853,32 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                     )}
                   </div>
                 )}
+                {/* Tier calculation method — deliberately NOT nested inside
+                    the minimum-commitment block below: the two are
+                    independent confirmable facts about this metric (a
+                    contract can state an unambiguous all-units rate table
+                    while its minimum floor's partial-period treatment is
+                    still genuinely open, or vice versa), so this must stay
+                    visible on its own rather than being hidden behind an
+                    unrelated confirmation. Spelled out explicitly, not just
+                    the internal label — a plain "Volume / all-units" tag
+                    doesn't by itself rule out reading the tier list above
+                    as progressive/graduated. */}
+                {confirmedGenericTierMethod && (
+                  <div>
+                    <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Tier calculation method</p>
+                    <p className="text-[13px] font-medium text-ink leading-tight">{TIER_METHOD_DISPLAY[confirmedGenericTierMethod] ?? confirmedGenericTierMethod}</p>
+                    <p className="text-[10px] text-stone/60 mt-0.5">
+                      {confirmedGenericTierMethod === 'volume'
+                        ? 'The rate for the band matching total monthly volume applies to every unit that month — not progressively by band.'
+                        : confirmedGenericTierMethod === 'graduated'
+                          ? 'Each band’s rate applies only to the units within that band.'
+                          : confirmedGenericTierMethod === 'block'
+                            ? 'Reaching a band charges a flat fee for that block, not a per-unit rate.'
+                            : 'Contract language does not map cleanly onto a standard tier method.'}
+                    </p>
+                  </div>
+                )}
                 {confirmedGenericCommitment && (
                   <div>
                     <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-stone/50 mb-1">Confirmed commercial rule</p>
@@ -1864,9 +1890,6 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                       <p className="text-[10px] text-stone/60 mt-0.5">
                         Partial-period treatment: {confirmedGenericCommitment.prorate_partial_periods === true ? 'Prorated by days' : confirmedGenericCommitment.prorate_partial_periods === false ? 'Full amount charged' : 'Needs confirmation'}
                       </p>
-                    )}
-                    {confirmedGenericTierMethod && (
-                      <p className="text-[10px] text-stone/60 mt-0.5">Tier method: {TIER_METHOD_DISPLAY[confirmedGenericTierMethod] ?? confirmedGenericTierMethod}</p>
                     )}
                     <p className="text-[10px] text-stone/60 mt-0.5">
                       {commitmentNeedsConfirmation

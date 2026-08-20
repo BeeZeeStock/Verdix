@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { configureBilling } from '@/lib/billing-writer'
+import { computeCommercialRuleWorkload } from '@/lib/commercial-rule-status'
+import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
+import { setCustomerVatConfig } from '@/lib/vat-service'
 import type { ContractTerms } from '@/lib/types'
 
 export async function POST(
@@ -42,6 +45,7 @@ export async function POST(
   // its usage-based overage silently has no meter mapped to pull from —
   // real billing would then skip it every cycle with no visible error.
   const unitTypes = Array.from(new Set((terms.overage_tiers ?? []).map(t => t.unit_type).filter(Boolean)))
+  let meterMappingWorkload = { total: 0, confirmed: 1 }
   if (unitTypes.length > 0) {
     const { data: mappings } = await supabaseServer
       .from('contract_meter_mappings')
@@ -49,6 +53,7 @@ export async function POST(
       .eq('job_id', id)
     const confirmedTypes = new Set((mappings ?? []).filter(m => m.confirmed).map(m => m.contract_unit_type))
     const unconfirmed = unitTypes.filter(u => !confirmedTypes.has(u))
+    meterMappingWorkload = { total: 1, confirmed: unconfirmed.length === 0 ? 1 : 0 }
     if (unconfirmed.length > 0) {
       return NextResponse.json(
         { error: `Confirm billing meter mappings before approving: ${unconfirmed.join(', ')}` },
@@ -57,8 +62,42 @@ export async function POST(
     }
   }
 
+  // Server-side mirror of the Configure page's commercial-rule-workload gate
+  // (lib/commercial-rule-status.ts) — a minimum-commitment/tier-calculation/
+  // escalator/discount/service-credit/rule-interaction left genuinely
+  // unresolved must block the push, not just show a client-side badge that
+  // a race or a bypassed request could skip past. This is the actual
+  // enforcement the "Do not push this invoice" requirement depends on.
+  const unresolvedInteractions = detectRuleInteractionCandidates({
+    service_credits: terms.service_credits, discounts: terms.discounts, escalators: terms.escalators,
+  }).filter(cand => {
+    const credit = (terms.service_credits ?? []).find(c => c.credit_rule_id === cand.creditId)
+    return !!credit?.interpretation && !credit.interpretation.requires_confirmation && !credit.interpretation.interaction_note
+  })
+  const workload = computeCommercialRuleWorkload(terms, meterMappingWorkload, unresolvedInteractions.length)
+  if (workload.totalToConfirm > 0 || workload.interactionsToConfirm > 0) {
+    return NextResponse.json(
+      { error: `Confirm all commercial rules before approving — ${workload.totalToConfirm + workload.interactionsToConfirm} decision(s) outstanding.` },
+      { status: 400 },
+    )
+  }
+
+  // VAT must be explicitly configured (rate or zero-rated) before push —
+  // never inferred, never silently defaulted. Staged on the job itself
+  // (jobs.pending_vat_mode) until a billing_customer_id exists; promoted
+  // into customer_vat_config below once configureBilling creates one.
+  const existingCustomerId = (job as unknown as Record<string, unknown>).billing_customer_id as string | undefined
+  if (!existingCustomerId) {
+    const { data: vatRow } = await supabaseServer.from('jobs').select('pending_vat_mode').eq('id', id).single()
+    if (!vatRow?.pending_vat_mode || vatRow.pending_vat_mode === 'not_configured') {
+      return NextResponse.json(
+        { error: 'Billing blocked: VAT treatment has not been confirmed for this customer/invoice.' },
+        { status: 400 },
+      )
+    }
+  }
+
   try {
-    const existingCustomerId = (job as unknown as Record<string, unknown>).billing_customer_id as string | undefined
     // A job already configured on a platform must stay on it — repushing
     // (e.g. to sync edited terms) must never silently switch platforms.
     // detectOrgPlatform() inside configureBilling picks arbitrarily among an
@@ -74,6 +113,24 @@ export async function POST(
       billing_subscription_id: result.subscriptionId,
       billing_customer_id: result.customerId,
     }).eq('id', id)
+
+    // Promote the job's pending VAT treatment (set pre-approval, since no
+    // billing_customer_id existed to key customer_vat_config on yet) into
+    // the real customer_vat_config row now that configureBilling has
+    // created one — every future invoice for this customer inherits it as
+    // its standing default from here on. A re-push that already has a
+    // customer (existingCustomerId was set) already has its VAT configured
+    // via customer_vat_config directly and skips this.
+    if (!existingCustomerId) {
+      const { data: vatRow } = await supabaseServer.from('jobs').select('pending_vat_mode, pending_vat_rate_pct').eq('id', id).single()
+      if (vatRow?.pending_vat_mode && vatRow.pending_vat_mode !== 'not_configured') {
+        await setCustomerVatConfig(
+          org.orgId, result.customerId,
+          { mode: vatRow.pending_vat_mode, ratePct: vatRow.pending_vat_mode === 'rate' ? vatRow.pending_vat_rate_pct : null },
+          org.userEmail,
+        ).then(({ error: vatError }) => { if (vatError) console.error('[approve] VAT promotion failed', vatError) })
+      }
+    }
 
     // Only count a sync event on the first successful configuration.
     // Re-pushing an already-configured contract to fix a mismatch does not

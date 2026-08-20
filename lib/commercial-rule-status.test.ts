@@ -60,4 +60,37 @@ describe('computeCommercialRuleWorkload — "all confirmed" must check every rul
     const workload = computeCommercialRuleWorkload({ overage_tiers: [], escalators: [], discounts: [], service_credits: [] }, { total: 0, confirmed: 0 })
     expect(workload.status).toBe('all_commercial_rules_confirmed')
   })
+
+  // scenario: TEST-PAY-002 — a flat-fee-only ambiguity (the platform fee's
+  // partial-period treatment) with zero usage-based tiers at all must still
+  // block "all confirmed"; base_fee_proration is a job-level field, not
+  // tier-scoped, so it needs its own check independent of overage_tiers.
+  it('an unresolved base_fee_proration alone blocks all_commercial_rules_confirmed, even with no overage tiers', () => {
+    const terms: CommercialRuleTerms = {
+      overage_tiers: [], escalators: [], discounts: [], service_credits: [],
+      base_fee_proration: { requires_confirmation: true },
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).not.toBe('all_commercial_rules_confirmed')
+    expect(workload.totalToConfirm).toBe(1)
+  })
+
+  it('a confirmed base_fee_proration does not block all_commercial_rules_confirmed', () => {
+    const terms: CommercialRuleTerms = {
+      overage_tiers: [], escalators: [], discounts: [], service_credits: [],
+      base_fee_proration: { requires_confirmation: false },
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+
+  it('an unresolved proration on an additional recurring fee blocks all_commercial_rules_confirmed', () => {
+    const terms: CommercialRuleTerms = {
+      overage_tiers: [], escalators: [], discounts: [], service_credits: [],
+      additional_recurring_fees: [{ fee_label: 'Support retainer', amount: 3_100, proration: { requires_confirmation: true } }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).not.toBe('all_commercial_rules_confirmed')
+    expect(workload.totalToConfirm).toBe(1)
+  })
 })
