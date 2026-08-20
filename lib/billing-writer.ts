@@ -2,7 +2,7 @@ import { ContractTerms, PeriodProrationRule } from './types'
 import { billingInterval } from './stripe-meter'
 import { supabaseServer } from './supabase'
 import { monthCursor, enumerateContractWindows, isPartialWindow } from './tariff'
-import { resolveVatTreatment, computeVat } from './vat'
+import { resolveVatTreatment, computeVat, type VatMode, type VatTreatment } from './vat'
 import { getCustomerVatConfig } from './vat-service'
 
 // Re-exported so existing importers of monthCursor from this file (e.g.
@@ -1101,17 +1101,39 @@ export async function createAdHocInvoice(params: {
   lineItems: Array<{ description: string; quantity: number; unitPrice: number }>
   idempotencyKey: string
   metadata?: Record<string, string>
-}): Promise<{ invoiceId: string; hostedUrl: string | null }> {
-  const { orgId, billingPlatform, customerId, currency, netDays, lineItems, idempotencyKey, metadata } = params
+  // Per-invoice VAT override, when the caller already knows one applies
+  // (e.g. a correction's replacement invoice) — previously hardcoded to
+  // null here regardless of caller, meaning an invoice-level override was
+  // silently ignored on the ACTUAL Remembill/Stripe push even when a
+  // caller had separately computed one for its own bookkeeping. Falls
+  // through to the customer default when omitted, same as resolveVatTreatment
+  // everywhere else.
+  vatOverride?: VatTreatment | null
+}): Promise<{
+  invoiceId: string
+  hostedUrl: string | null
+  // The exact VAT treatment/figures actually applied to this invoice —
+  // callers must persist this as a snapshot on their own planned_invoices
+  // row (see 20260821000007_vat_config.sql's vat_mode/vat_rate_pct/
+  // net_amount/vat_amount/gross_amount columns) rather than recomputing
+  // from customer_vat_config later, which could drift from what was
+  // actually charged if the customer's default VAT changes afterward.
+  vat: { mode: VatMode; ratePct: number | null; netAmount: number; vatAmount: number; grossAmount: number }
+}> {
+  const { orgId, billingPlatform, customerId, currency, netDays, lineItems, idempotencyKey, metadata, vatOverride } = params
   const today = new Date()
   const fmtDate = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
   const adHocNet = lineItems.reduce((s, i) => s + i.quantity * i.unitPrice, 0)
-  const adHocVatTreatment = resolveVatTreatment(await getCustomerVatConfig(orgId, customerId), null)
+  const adHocVatTreatment = resolveVatTreatment(await getCustomerVatConfig(orgId, customerId), vatOverride ?? null)
   const adHocVat = computeVat(adHocNet, adHocVatTreatment)
   if (!adHocVat.ok) throw new Error(`Billing blocked: ${adHocVat.reason}`)
   const adHocVatRatePct = Math.round(adHocVat.calculation.vatRatePct)
+  const vatSnapshot = {
+    mode: adHocVatTreatment.mode, ratePct: adHocVatTreatment.ratePct,
+    netAmount: adHocVat.calculation.netAmount, vatAmount: adHocVat.calculation.vatAmount, grossAmount: adHocVat.calculation.grossAmount,
+  }
 
   if (billingPlatform === 'remembill') {
     const orgConfig = await getOrgConfig(orgId, 'remembill')
@@ -1151,7 +1173,7 @@ export async function createAdHocInvoice(params: {
       method: 'POST', headers: h, body: JSON.stringify({}),
     }).catch(() => {})
 
-    return { invoiceId, hostedUrl: remembillAppUrl('') }
+    return { invoiceId, hostedUrl: remembillAppUrl(''), vat: vatSnapshot }
   }
 
   // ── Stripe ──────────────────────────────────────────────────────────────────
@@ -1190,7 +1212,7 @@ export async function createAdHocInvoice(params: {
   }
 
   const finalized = await stripe.invoices.finalizeInvoice(inv.id).catch(() => inv)
-  return { invoiceId: inv.id, hostedUrl: finalized.hosted_invoice_url ?? null }
+  return { invoiceId: inv.id, hostedUrl: finalized.hosted_invoice_url ?? null, vat: vatSnapshot }
 }
 
 // Re-export computeBillingSchedule for use by the invoice scheduler

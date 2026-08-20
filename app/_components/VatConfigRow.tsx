@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useVatConfig } from './useVatConfig'
 
 // Customer-level VAT default — "User-provided billing configuration", never
 // "Clear from contract" (this is an operational billing input Verdix never
@@ -9,82 +9,36 @@ import { useState, useEffect } from 'react'
 // lib/vat.ts/computeVat and its use in the invoice-scheduler/parked-invoices/
 // billing-writer send paths.
 //
-// Reused in two places: BillingSummaryCard (post-approval — reads/writes
-// customer_vat_config directly) and the pre-approval Configure page (writes
-// to the job's own pending_vat_* staging fields via the same
-// /api/jobs/[id]/vat-config route, which picks the right target server-side
-// depending on whether a billing_customer_id exists yet).
-type VatTreatment = { mode: 'rate' | 'zero_rated' | 'not_configured'; ratePct: number | null }
+// Reused in three places, all sharing the same canonical state via
+// useVatConfig (never a second, independent VAT value): BillingSummaryCard
+// (post-approval — reads/writes customer_vat_config directly), the
+// pre-approval Configure page (writes to the job's own pending_vat_*
+// staging fields via the same /api/jobs/[id]/vat-config route, which picks
+// the right target server-side depending on whether a billing_customer_id
+// exists yet), and the Review Panel's VatReviewCard (a differently-styled
+// presentation of this exact same hook, not a second data path).
+export function VatConfigRow({
+  jobId, onStatusChange, refreshSignal, onSaved,
+}: {
+  jobId: string
+  onStatusChange?: (configured: boolean) => void
+  // Bumped by a sibling VAT surface (e.g. the Review Panel's VatReviewCard)
+  // when IT saves, so this instance picks up the fresh value immediately
+  // instead of showing stale state until the next full reload.
+  refreshSignal?: number
+  // Called after THIS instance successfully saves, so a parent can bump its
+  // own refreshSignal for any sibling VAT surfaces to pick up in turn.
+  onSaved?: () => void
+}) {
+  const vat = useVatConfig(jobId, refreshSignal, onStatusChange)
+  const { treatment, loading, editing, startEdit, cancelEdit, draftMode, setDraftMode, draftRate, setDraftRate, saving, saveError, configured } = vat
 
-export function VatConfigRow({ jobId, onStatusChange }: { jobId: string; onStatusChange?: (configured: boolean) => void }) {
-  const [treatment, setTreatment] = useState<VatTreatment | null>(null)
-  const [loading, setLoading]     = useState(true)
-  const [editing, setEditing]     = useState(false)
-  const [draftMode, setDraftMode] = useState<'rate' | 'zero_rated'>('rate')
-  const [draftRate, setDraftRate] = useState('25')
-  const [saving, setSaving]       = useState(false)
-  const [saveError, setSaveError] = useState<string | null>(null)
-
-  // Fetch defined inline inside the effect (not an extracted, reusable
-  // callback) — the stricter set-state-in-effect lint rule requires this
-  // shape. save() below performs its own separate fetch-and-refresh rather
-  // than sharing this closure.
-  useEffect(() => {
-    let cancelled = false
-    async function doLoad() {
-      try {
-        const res = await fetch(`/api/jobs/${jobId}/vat-config`)
-        const data = await res.json()
-        if (cancelled) return
-        const t = data.treatment ?? { mode: 'not_configured', ratePct: null }
-        setTreatment(t)
-        onStatusChange?.(t.mode !== 'not_configured')
-      } catch {
-        if (!cancelled) { setTreatment({ mode: 'not_configured', ratePct: null }); onStatusChange?.(false) }
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    doLoad()
-    return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId])
-
-  const startEdit = () => {
-    setDraftMode(treatment?.mode === 'zero_rated' ? 'zero_rated' : 'rate')
-    setDraftRate(treatment?.ratePct != null ? String(treatment.ratePct) : '25')
-    setSaveError(null)
-    setEditing(true)
-  }
-
-  const save = async () => {
-    setSaving(true)
-    setSaveError(null)
-    try {
-      const res = await fetch(`/api/jobs/${jobId}/vat-config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(draftMode === 'rate' ? { mode: 'rate', ratePct: Number(draftRate) } : { mode: 'zero_rated' }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) { setSaveError(data.error ?? 'Could not save VAT configuration.'); return }
-      setEditing(false)
-      // The POST endpoint only confirms { ok: true } — apply the
-      // just-saved value locally rather than issuing a second fetch for
-      // data this component already has.
-      const t: VatTreatment = draftMode === 'rate' ? { mode: 'rate', ratePct: Number(draftRate) } : { mode: 'zero_rated', ratePct: null }
-      setTreatment(t)
-      onStatusChange?.(true)
-    } catch {
-      setSaveError('Network error — could not save VAT configuration.')
-    } finally {
-      setSaving(false)
-    }
+  const handleSave = async () => {
+    const ok = await vat.save()
+    if (ok) onSaved?.()
   }
 
   if (loading) return null
-
-  const configured = treatment && treatment.mode !== 'not_configured'
 
   return (
     <div className="px-6 py-3" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)', background: configured ? 'transparent' : '#FEF2F2' }}>
@@ -129,13 +83,13 @@ export function VatConfigRow({ jobId, onStatusChange }: { jobId: string; onStatu
           {saveError && <p className="text-[11px]" style={{ color: '#DC2626' }}>{saveError}</p>}
           <div className="flex items-center gap-2">
             <button
-              onClick={save} disabled={saving}
+              onClick={handleSave} disabled={saving}
               className="text-[11px] font-semibold px-3 py-1.5 rounded-lg disabled:opacity-40"
               style={{ background: '#1A3D2B', color: 'white' }}
             >
               {saving ? 'Saving…' : 'Save'}
             </button>
-            <button onClick={() => setEditing(false)} disabled={saving} className="text-[11px] text-stone hover:text-ink">Cancel</button>
+            <button onClick={cancelEdit} disabled={saving} className="text-[11px] text-stone hover:text-ink">Cancel</button>
           </div>
         </div>
       )}

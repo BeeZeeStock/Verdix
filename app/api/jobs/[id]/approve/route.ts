@@ -4,7 +4,7 @@ import { requireOrg } from '@/lib/org'
 import { configureBilling } from '@/lib/billing-writer'
 import { computeCommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
-import { setCustomerVatConfig } from '@/lib/vat-service'
+import { setCustomerVatConfig, getCustomerVatConfig } from '@/lib/vat-service'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { ContractTerms } from '@/lib/types'
 
@@ -67,6 +67,26 @@ export async function POST(
     }
   }
 
+  // VAT must be explicitly configured (rate or zero-rated) before push —
+  // never inferred, never silently defaulted. Staged on the job itself
+  // (jobs.pending_vat_mode) until a billing_customer_id exists; promoted
+  // into customer_vat_config below once configureBilling creates one.
+  // Checked here for BOTH a first push and a re-push — previously this was
+  // only checked when no billing_customer_id existed yet, silently trusting
+  // that customer_vat_config could never regress to unconfigured for an
+  // already-approved job. Feeds computeCommercialRuleWorkload's vat field
+  // below so this is the exact same canonical signal the client's
+  // vatConfigured state and the Review Panel's VAT card are built from.
+  const existingCustomerId = (job as unknown as Record<string, unknown>).billing_customer_id as string | undefined
+  let vatConfigured: boolean
+  if (existingCustomerId) {
+    const treatment = await getCustomerVatConfig(org.orgId, existingCustomerId)
+    vatConfigured = !!treatment && treatment.mode !== 'not_configured'
+  } else {
+    const { data: vatRow } = await supabaseServer.from('jobs').select('pending_vat_mode').eq('id', id).single()
+    vatConfigured = !!vatRow?.pending_vat_mode && vatRow.pending_vat_mode !== 'not_configured'
+  }
+
   // Server-side mirror of the Configure page's commercial-rule-workload gate
   // (lib/commercial-rule-status.ts) — a minimum-commitment/tier-calculation/
   // escalator/discount/service-credit/rule-interaction left genuinely
@@ -79,27 +99,20 @@ export async function POST(
     const credit = (terms.service_credits ?? []).find(c => c.credit_rule_id === cand.creditId)
     return !!credit?.interpretation && !credit.interpretation.requires_confirmation && !credit.interpretation.interaction_note
   })
-  const workload = computeCommercialRuleWorkload(terms, meterMappingWorkload, unresolvedInteractions.length)
+  const workload = computeCommercialRuleWorkload(
+    terms, meterMappingWorkload, unresolvedInteractions.length, undefined, { configured: vatConfigured },
+  )
   if (workload.totalToConfirm > 0 || workload.interactionsToConfirm > 0) {
     return NextResponse.json(
       { error: `Confirm all commercial rules before approving — ${workload.totalToConfirm + workload.interactionsToConfirm} decision(s) outstanding.` },
       { status: 400 },
     )
   }
-
-  // VAT must be explicitly configured (rate or zero-rated) before push —
-  // never inferred, never silently defaulted. Staged on the job itself
-  // (jobs.pending_vat_mode) until a billing_customer_id exists; promoted
-  // into customer_vat_config below once configureBilling creates one.
-  const existingCustomerId = (job as unknown as Record<string, unknown>).billing_customer_id as string | undefined
-  if (!existingCustomerId) {
-    const { data: vatRow } = await supabaseServer.from('jobs').select('pending_vat_mode').eq('id', id).single()
-    if (!vatRow?.pending_vat_mode || vatRow.pending_vat_mode === 'not_configured') {
-      return NextResponse.json(
-        { error: 'Billing blocked: VAT treatment has not been confirmed for this customer/invoice.' },
-        { status: 400 },
-      )
-    }
+  if (!workload.vat.configured) {
+    return NextResponse.json(
+      { error: 'Billing blocked: VAT treatment has not been confirmed for this customer/invoice.' },
+      { status: 400 },
+    )
   }
 
   try {

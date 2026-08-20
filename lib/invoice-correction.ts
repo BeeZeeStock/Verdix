@@ -200,6 +200,13 @@ export async function requestInvoiceCorrection(params: RequestParams): Promise<R
       orgId, billingPlatform: 'remembill', customerId, currency: invoice.currency, netDays: 30,
       lineItems, idempotencyKey: `verdix-replacement-${correctionId}`,
       metadata: { verdix_job: jobId, correction_id: correctionId, original_invoice: invoice.stripe_invoice_id as string },
+      // Previously computed here but never actually passed through —
+      // createAdHocInvoice always resolved VAT off the customer default
+      // only, silently ignoring a per-invoice override on the REAL pushed
+      // invoice while this file's own bookkeeping below claimed the
+      // override had been applied. Passing it through is what makes
+      // created.vat below the authoritative record of what was truly charged.
+      vatOverride: invoiceVatOverride,
     })
 
     const { data: replacementRow } = await supabaseServer
@@ -209,9 +216,13 @@ export async function requestInvoiceCorrection(params: RequestParams): Promise<R
         base_amount: invoice.base_amount, currency: invoice.currency, fee_label: invoice.fee_label, invoice_type: invoice.invoice_type,
         status: 'sent', stripe_invoice_id: created.invoiceId, stripe_invoice_url: created.hostedUrl, sent_at: new Date().toISOString(),
         overage_line_items: overageLineItems, overage_total: overageLineItems.reduce((s, i) => s + i.amount, 0),
-        vat_mode: vatTreatment.mode, vat_rate_pct: vatTreatment.mode === 'rate' ? vatResult.calculation.vatRatePct : null,
+        // Sourced from created.vat — the figures createAdHocInvoice actually
+        // applied to the real Remembill push — not the vatTreatment/vatResult
+        // computed above, which only ever existed for the early fail-closed
+        // check and could otherwise drift from what was truly charged.
+        vat_mode: created.vat.mode, vat_rate_pct: created.vat.mode === 'rate' ? created.vat.ratePct : null,
         vat_source: invoiceVatOverride ? 'override' : 'customer_default',
-        net_amount: vatResult.calculation.netAmount, vat_amount: vatResult.calculation.vatAmount, gross_amount: vatResult.calculation.grossAmount,
+        net_amount: created.vat.netAmount, vat_amount: created.vat.vatAmount, gross_amount: created.vat.grossAmount,
       })
       .select('id')
       .single()

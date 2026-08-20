@@ -184,7 +184,7 @@ export async function POST(
   }
 
   try {
-    const { invoiceId, hostedUrl } = await createAdHocInvoice({
+    const created = await createAdHocInvoice({
       orgId:           org.orgId,
       billingPlatform: ((job.billing_platform as string | null) ?? 'stripe') as 'stripe' | 'remembill',
       customerId:      job.billing_customer_id as string,
@@ -194,6 +194,7 @@ export async function POST(
       idempotencyKey: `verdix-manual-${jobId}-${Date.now()}`,
       metadata: { verdix_job: jobId, invoice_type: 'manual_verification' },
     })
+    const { invoiceId, hostedUrl } = created
 
     const todayStr = new Date().toISOString().slice(0, 10)
     await supabaseServer.from('planned_invoices').insert({
@@ -218,6 +219,17 @@ export async function POST(
       // (billing-summary's mapPlanned) double-counts it.
       overage_line_items: overageSnapshot ? [overageSnapshot] : [],
       overage_total:      0,
+      // Snapshot of the VAT actually applied to this real push — previously
+      // missing here (createAdHocInvoice always computed/applied real VAT to
+      // the Remembill/Stripe invoice, but this row never recorded it), so a
+      // later customer-default VAT change could make this row look like it
+      // charged something other than what the customer was actually billed.
+      vat_mode:     created.vat.mode,
+      vat_rate_pct: created.vat.mode === 'rate' ? created.vat.ratePct : null,
+      vat_source:   'customer_default',
+      net_amount:   created.vat.netAmount,
+      vat_amount:   created.vat.vatAmount,
+      gross_amount: created.vat.grossAmount,
     })
 
     return NextResponse.json({ ok: true, invoiceId, hostedUrl, total })

@@ -146,6 +146,14 @@ export type CommercialRuleWorkload = {
   decisionRequired: number
   interactionsToConfirm: number
   meterMapping: { total: number; confirmed: number }
+  // Same treatment as meterMapping — kept as its own bucket rather than
+  // folded into totalToConfirm, since VAT is never a contract-derived
+  // "commercial rule" (no AI proposal, no Clear-from-source/Verdix-
+  // recommendation state; it's a plain user-provided operational input —
+  // see lib/vat.ts). Callers combine totalToConfirm + interactionsToConfirm
+  // + (meterMapping outstanding) + (vat outstanding) into one canonical
+  // "N items to review" count, but each stays separately labeled.
+  vat: { configured: boolean }
 }
 
 function groupTiersByUnitType(tiers: TierLike[]): Map<string, TierLike[]> {
@@ -168,6 +176,10 @@ export function computeCommercialRuleWorkload(
   // in rather than re-derived here, since it comes from raw jsonb fields
   // this structural type deliberately doesn't carry.
   flaggedAsAmbiguous: Set<string> = new Set(),
+  // Defaults to "configured" so every pre-existing caller/fixture that
+  // predates VAT-awareness keeps its exact prior behavior unless it
+  // explicitly opts in by passing the job's real VAT status.
+  vat: { configured: boolean } = { configured: true },
 ): CommercialRuleWorkload {
   const tiers = terms?.overage_tiers ?? []
   const groups = groupTiersByUnitType(tiers)
@@ -246,7 +258,7 @@ export function computeCommercialRuleWorkload(
   // "has anyone opened the review panel yet" signal may downgrade
   // 'review_required' to it for copy purposes.
   let status: CommercialRuleStatus
-  if (commercialRulesConfirmed && meterMappingOk) status = 'all_commercial_rules_confirmed'
+  if (commercialRulesConfirmed && meterMappingOk && vat.configured) status = 'all_commercial_rules_confirmed'
   else if (commercialRulesConfirmed) status = 'ready_for_billing_configuration'
   else if (totalToConfirm < totalItems) status = 'partially_confirmed'
   else status = 'review_required'
@@ -258,5 +270,6 @@ export function computeCommercialRuleWorkload(
     decisionRequired,
     interactionsToConfirm,
     meterMapping,
+    vat,
   }
 }

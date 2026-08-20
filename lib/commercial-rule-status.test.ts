@@ -61,6 +61,30 @@ describe('computeCommercialRuleWorkload — "all confirmed" must check every rul
     expect(workload.status).toBe('all_commercial_rules_confirmed')
   })
 
+  // VAT is kept as its own bucket (vat.configured), same treatment as
+  // meterMapping — never folded into totalToConfirm, since it's a plain
+  // user-provided operational input, not a contract-derived rule.
+  it('unresolved VAT alone blocks all_commercial_rules_confirmed, even with every other rule and meter mapping confirmed', () => {
+    const terms: CommercialRuleTerms = { overage_tiers: [], escalators: [], discounts: [], service_credits: [] }
+    const workload = computeCommercialRuleWorkload(terms, { total: 1, confirmed: 1 }, 0, new Set(), { configured: false })
+    expect(workload.status).not.toBe('all_commercial_rules_confirmed')
+    expect(workload.vat.configured).toBe(false)
+    // Deliberately NOT counted in totalToConfirm — VAT stays a separate
+    // bucket a caller adds in on top, exactly like meterMapping.
+    expect(workload.totalToConfirm).toBe(0)
+  })
+
+  it('VAT configured, everything else confirmed: all_commercial_rules_confirmed', () => {
+    const terms: CommercialRuleTerms = { overage_tiers: [], escalators: [], discounts: [], service_credits: [] }
+    const workload = computeCommercialRuleWorkload(terms, { total: 1, confirmed: 1 }, 0, new Set(), { configured: true })
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+
+  it('defaults vat.configured to true when the caller omits it entirely — no regression for pre-existing callers', () => {
+    const workload = computeCommercialRuleWorkload({ overage_tiers: [], escalators: [], discounts: [], service_credits: [] }, { total: 0, confirmed: 0 })
+    expect(workload.vat.configured).toBe(true)
+  })
+
   // scenario: TEST-PAY-002 — a flat-fee-only ambiguity (the platform fee's
   // partial-period treatment) with zero usage-based tiers at all must still
   // block "all confirmed"; base_fee_proration is a job-level field, not

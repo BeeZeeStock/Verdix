@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
 import { BillingSummaryCard } from '@/app/_components/BillingSummaryCard'
 import { VatConfigRow } from '@/app/_components/VatConfigRow'
+import { useVatConfig } from '@/app/_components/useVatConfig'
 import { MeterMappingPanel } from '@/app/_components/MeterMappingPanel'
 import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCard'
@@ -1895,6 +1896,8 @@ function ReviewPanel({
   isConfigured,
   contractBillingFrequency,
   onMeterMappingsConfirmedChange,
+  onVatStatusChange,
+  onVatSaved,
   refreshSignal,
 }: {
   items: LineItem[]
@@ -1925,10 +1928,20 @@ function ReviewPanel({
   isConfigured?: boolean
   contractBillingFrequency?: string | null
   onMeterMappingsConfirmedChange?: (confirmed: boolean) => void
+  // Feeds the page's own vatConfigured state (same canonical status the
+  // main GUI's VatConfigRow instance reports) — the Approve gate must see
+  // the same boolean regardless of which surface last changed it.
+  onVatStatusChange?: (configured: boolean) => void
+  // Called after the drawer's own VAT card successfully saves, so the page
+  // can bump its refreshSignal for every other mounted VAT surface (the
+  // main GUI's VatConfigRow) to pick up immediately.
+  onVatSaved?: () => void
   // Bumped by the parent whenever its own job/terms data refreshes, so the
   // embedded MeterMappingPanel (which manages its own independent fetch)
   // re-syncs after a rule interpretation confirmed elsewhere in this same
-  // panel — otherwise it keeps showing stale "unconfirmed" state until reload.
+  // panel — otherwise it keeps showing stale "unconfirmed" state until
+  // reload. Also used by the drawer's own VatReviewCard so a VAT save from
+  // the main GUI (or vice versa) is reflected here without a manual reload.
   refreshSignal?: number
 }) {
   const [saving,    setSaving]    = useState<string | null>(null)
@@ -1989,6 +2002,13 @@ function ReviewPanel({
       classification: s.input_classification ?? 'meter', confirmed: s.confirmed, meter_key: s.meter_key, manual_value_configured: s.manual_value_configured,
     })).length,
   }
+  // Same canonical useVatConfig hook every VAT surface in the product uses
+  // (main GUI's pre-approval row, BillingSummaryCard, and this drawer's own
+  // VatReviewCard below) — refreshSignal keeps this in sync with whichever
+  // surface last saved, and onVatStatusChange feeds the page's own
+  // vatConfigured state so the Approve gate sees one canonical value.
+  const vat = useVatConfig(jobId, refreshSignal, onVatStatusChange)
+
   const commercialWorkload = computeCommercialRuleWorkload(
     {
       overage_tiers: overageTiers, escalators, discounts, service_credits: serviceCredits,
@@ -1997,11 +2017,14 @@ function ReviewPanel({
     },
     meterMappingWorkload,
     unresolvedInteractionsForWorkload.length,
+    undefined,
+    { configured: vat.configured },
   )
   const usageMappingsOutstanding = Math.max(0, commercialWorkload.meterMapping.total - commercialWorkload.meterMapping.confirmed)
   const commercialDecisionsOutstanding = commercialWorkload.totalToConfirm + commercialWorkload.interactionsToConfirm
+  const vatOutstandingInPanel = !commercialWorkload.vat.configured
   const needsReviewInPanel = items.filter(i => i.confidence_score < 0.95 && !(i.id in corrections)).length
-  const totalBlockers = commercialDecisionsOutstanding + usageMappingsOutstanding + needsReviewInPanel
+  const totalBlockers = commercialDecisionsOutstanding + usageMappingsOutstanding + (vatOutstandingInPanel ? 1 : 0) + needsReviewInPanel
 
   const resolvedCount = items.filter(i => resolved[i.id] || i.id in corrections).length
   // Same canonical readiness as totalBlockers above — not the old
@@ -2583,6 +2606,95 @@ function ReviewPanel({
             )
           })()}
 
+          {/* VAT — a required approval blocker, but deliberately never
+              presented as a "rule interpretation": no AI proposal, no
+              Clear-from-source/Verdix-recommendation state, because VAT is
+              a plain user-provided operational input the contract is never
+              read for (see lib/vat.ts). Reuses the exact same useVatConfig
+              hook (and therefore the exact same customer_vat_config/
+              pending_vat_* state) as the main GUI's VatConfigRow — never a
+              second, independently-tracked VAT value. Guarded on !vat.loading
+              so the brief initial fetch never flashes "not configured"
+              (the hook's default state) before the real value arrives. */}
+          {!vat.loading && (
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-stone">VAT</p>
+              <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+            </div>
+            <div
+              className="rounded-2xl border overflow-hidden"
+              style={{ borderColor: vat.configured ? 'rgba(11,92,54,0.2)' : '#FAC775', background: vat.configured ? '#F8FDF9' : 'white' }}
+            >
+              <div className="px-4 pt-4 pb-3">
+                {!vat.editing ? (
+                  <>
+                    <div className="flex items-center gap-1.5 mb-2.5">
+                      <i className={`ti ${vat.configured ? 'ti-circle-check-filled' : 'ti-calendar-exclamation'} text-stone`} style={{ fontSize: 12, color: vat.configured ? '#0B5C36' : undefined }} />
+                      <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">VAT treatment</span>
+                      {!vat.configured && (
+                        <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(153,27,27,0.1)', color: '#991B1B' }}>
+                          Required before approval
+                        </span>
+                      )}
+                    </div>
+                    {vat.configured ? (
+                      <>
+                        <p className="text-sm font-medium text-ink leading-snug mb-0.5">
+                          VAT: {vat.treatment!.mode === 'zero_rated' ? '0% (zero-rated)' : `${vat.treatment!.ratePct}%`}
+                        </p>
+                        <p className="text-[11px] text-stone leading-relaxed mb-3">Source: User-provided billing configuration</p>
+                      </>
+                    ) : (
+                      <p className="text-sm font-medium text-ink leading-snug mb-3">No VAT treatment configured</p>
+                    )}
+                    <button
+                      onClick={vat.startEdit}
+                      className="text-[11px] font-semibold px-3 py-1.5 rounded-lg"
+                      style={vat.configured ? { color: '#1A3D2B', background: 'transparent', border: '1px solid rgba(26,61,43,0.15)' } : { background: '#1A3D2B', color: 'white' }}
+                    >
+                      {vat.configured ? 'Edit' : 'Configure'}
+                    </button>
+                  </>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-stone mb-1">How is this customer taxed?</p>
+                    <div className="flex items-center gap-4">
+                      <label className="flex items-center gap-1.5 text-[12px] text-ink cursor-pointer">
+                        <input type="radio" checked={vat.draftMode === 'rate'} onChange={() => vat.setDraftMode('rate')} /> Rate
+                      </label>
+                      {vat.draftMode === 'rate' && (
+                        <input
+                          type="number" min={0} max={100} step="0.01" value={vat.draftRate}
+                          onChange={e => vat.setDraftRate(e.target.value)}
+                          className="w-20 text-[12px] border rounded-lg px-2 py-1 outline-none"
+                          style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                        />
+                      )}
+                      {vat.draftMode === 'rate' && <span className="text-[12px] text-stone">%</span>}
+                      <label className="flex items-center gap-1.5 text-[12px] text-ink cursor-pointer">
+                        <input type="radio" checked={vat.draftMode === 'zero_rated'} onChange={() => vat.setDraftMode('zero_rated')} /> Zero-rated (0%)
+                      </label>
+                    </div>
+                    {vat.saveError && <p className="text-[11px]" style={{ color: '#DC2626' }}>{vat.saveError}</p>}
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={async () => { const ok = await vat.save(); if (ok) onVatSaved?.() }}
+                        disabled={vat.saving}
+                        className="text-[11px] font-semibold px-3 py-1.5 rounded-lg disabled:opacity-40"
+                        style={{ background: '#1A3D2B', color: 'white' }}
+                      >
+                        {vat.saving ? 'Saving…' : 'Save'}
+                      </button>
+                      <button onClick={vat.cancelEdit} disabled={vat.saving} className="text-[11px] text-stone hover:text-ink">Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          )}
+
           {/* Extraction notes — free-text flags for anything the model
               noticed but couldn't fit into a structured field (e.g. a
               penalty clause, which is the opposite polarity from
@@ -3071,6 +3183,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     lastConfirmedRef.current = c
     setRefreshSignal(s => s + 1)
   }, [])
+  // Bumped whenever EITHER VAT surface (this page's own VatConfigRow, or
+  // the Review Panel drawer's VatReviewCard) saves — no dedup guard needed
+  // here the way handleMeterMappingsConfirmedChange needs one: useVatConfig's
+  // save() only ever calls this on a genuine successful write, never on the
+  // mount-driven initial load, so there is no repeated-call/ping-pong risk
+  // to guard against.
+  const handleVatSaved = useCallback(() => setRefreshSignal(s => s + 1), [])
   const [drawer, setDrawer]   = useState<{ open: boolean; section?: string }>({ open: false })
   const [pdfUrl, setPdfUrl]   = useState<string | null>(null)
   const [pdfUrlError, setPdfUrlError] = useState(false)
@@ -3526,6 +3645,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     terms ?? null,
     { total: tiers.length > 0 ? 1 : 0, confirmed: tiers.length === 0 || meterMappingsConfirmed ? 1 : 0 },
     unresolvedInteractions.length,
+    undefined,
+    // vatConfigured is undefined while still loading — treated as "not yet
+    // known to be unconfigured" (configured: true) rather than outstanding,
+    // so the readiness count doesn't flash "+1" the instant the page mounts
+    // and settles back down a moment later once the real value arrives.
+    { configured: vatConfigured !== false },
   )
 
   // ── Unified readiness model ── The single source every readiness
@@ -3543,7 +3668,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // means 5, matching commercialRuleWorkload's own arithmetic.
   const usageMappingsOutstanding = tiers.length > 0 ? Math.max(0, meterMappingSummary.total - meterMappingSummary.confirmed) : 0
   const commercialDecisionsOutstanding = commercialRuleWorkload.totalToConfirm + commercialRuleWorkload.interactionsToConfirm
-  const vatOutstanding = vatConfigured === false
+  // Canonical — sourced from commercialRuleWorkload.vat (the same object the
+  // Review Panel and server approve gate consume), not a second, separately
+  // computed boolean, so this page and the drawer can never disagree about
+  // whether VAT is outstanding.
+  const vatOutstanding = !commercialRuleWorkload.vat.configured
   const readinessBreakdown = [
     commercialDecisionsOutstanding > 0 && `${commercialDecisionsOutstanding} commercial decision${commercialDecisionsOutstanding > 1 ? 's' : ''} outstanding`,
     usageMappingsOutstanding > 0 && `${usageMappingsOutstanding} usage mapping${usageMappingsOutstanding > 1 ? 's' : ''} outstanding`,
@@ -5016,7 +5145,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                  customer_vat_config row directly — never both at once. */}
             {!isConfigured && (
               <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
-                <VatConfigRow jobId={id} onStatusChange={setVatConfigured} />
+                <VatConfigRow jobId={id} onStatusChange={setVatConfigured} refreshSignal={refreshSignal} onSaved={handleVatSaved} />
               </div>
             )}
 
@@ -5229,6 +5358,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           isConfigured={isConfigured}
           contractBillingFrequency={terms?.billing_frequency ?? null}
           onMeterMappingsConfirmedChange={handleMeterMappingsConfirmedChange}
+          onVatStatusChange={setVatConfigured}
+          onVatSaved={handleVatSaved}
           refreshSignal={refreshSignal}
         />
       )}
