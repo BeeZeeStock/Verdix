@@ -94,12 +94,12 @@ export function VatConfigRow({ jobId, onStatusChange }: { jobId: string; onStatu
             <i className={`ti ${configured ? 'ti-percentage' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: configured ? '#6B7280' : '#DC2626' }} />
             {configured ? (
               <span className="text-[12px] text-ink">
-                VAT treatment — <span className="font-semibold">{treatment!.mode === 'zero_rated' ? '0% (zero-rated)' : `${treatment!.ratePct}%`}</span>
-                <span className="text-stone"> — from customer billing configuration</span>
+                VAT: <span className="font-semibold">{treatment!.mode === 'zero_rated' ? '0% (zero-rated)' : `${treatment!.ratePct}%`}</span>
+                <span className="text-stone"> — user-provided billing configuration</span>
               </span>
             ) : (
               <span className="text-[12px]" style={{ color: '#991B1B' }}>
-                VAT treatment has not been confirmed for this customer — invoicing is blocked until this is set.
+                VAT not configured — billing blocked
               </span>
             )}
           </div>

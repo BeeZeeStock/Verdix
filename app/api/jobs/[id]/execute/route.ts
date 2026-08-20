@@ -319,7 +319,12 @@ function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: st
       billing_period: tier.measurement_period ?? terms.billing_frequency ?? 'monthly',
       total_amount: 0,
       currency: cur,
-      confidence_score: 0.88,
+      // Previously hardcoded to 0.88 regardless of how explicitly the
+      // contract stated the rate — an unambiguous per-unit price (e.g.
+      // "SEK 195 per chargeback") was flagged "Needs confirmation" purely
+      // because 0.88 < the 0.95 review threshold. Use the same
+      // extraction-confidence signal as every other line item kind above.
+      confidence_score: conf,
       source_section: src.overage_tiers ?? null,
     })
   }

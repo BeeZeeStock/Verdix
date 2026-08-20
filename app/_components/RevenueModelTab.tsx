@@ -1870,7 +1870,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                     <p className="text-[13px] font-medium text-ink leading-tight">{TIER_METHOD_DISPLAY[confirmedGenericTierMethod] ?? confirmedGenericTierMethod}</p>
                     <p className="text-[10px] text-stone/60 mt-0.5">
                       {confirmedGenericTierMethod === 'volume'
-                        ? 'The rate for the band matching total monthly volume applies to every unit that month — not progressively by band.'
+                        ? 'The rate corresponding to total monthly transaction volume applies to all transactions in that calendar month; tiers are not progressive.'
                         : confirmedGenericTierMethod === 'graduated'
                           ? 'Each band’s rate applies only to the units within that band.'
                           : confirmedGenericTierMethod === 'block'

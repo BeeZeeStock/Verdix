@@ -26,6 +26,8 @@ type MeterSuggestion = {
    *  = a mapped source OR a manual value satisfies it; derived/persisted_balance
    *  are never meter-mapped at all — see lib/meter-mapping-status.ts. */
   input_classification?: 'meter' | 'meter_or_manual_input' | 'derived' | 'persisted_balance'
+  /** 'meter_or_manual_input' only — reviewer chose manual entry over a meter. */
+  manual_value_configured?: boolean
   included_units: number
   overage_tiers: Array<{
     from_unit: number | null
@@ -115,6 +117,7 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
     classification: s.input_classification ?? 'meter',
     confirmed: get(s.contract_unit_type, 'confirmed', s.confirmed),
     meter_key: get(s.contract_unit_type, 'meter_key', s.meter_key),
+    manual_value_configured: get(s.contract_unit_type, 'manual_value_configured', s.manual_value_configured ?? false),
   })))
 
   // A minimum commitment still awaiting a reviewer's interpretation blocks
@@ -162,6 +165,13 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
       overage_tiers:      get(s.contract_unit_type, 'overage_tiers', s.overage_tiers),
       billing_cycle:      get(s.contract_unit_type, 'billing_cycle', s.billing_cycle),
       confidence:         s.confidence,
+      // Never omitted — the server upsert overwrites every column in the
+      // row on every save, so leaving this out silently reset every
+      // metric's classification back to the 'meter' default each time a
+      // reviewer saved anything, erasing meter_or_manual_input/derived/
+      // persisted_balance regardless of what extraction actually said.
+      input_classification:    s.input_classification ?? 'meter',
+      manual_value_configured: get(s.contract_unit_type, 'manual_value_configured', s.manual_value_configured ?? false),
     }))
 
     // Without try/catch/finally here, a thrown fetch (network hiccup) or a
@@ -314,9 +324,16 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
           const matchedMeter = meters.find(m => m.meter_key === meterKey)
           const minCommitment = resolveMinimumCommitment(s)
           const classification = s.input_classification ?? 'meter'
+          const manualConfigured = classification === 'meter_or_manual_input' && get(s.contract_unit_type, 'manual_value_configured', s.manual_value_configured ?? false)
+          const chooseManual = () => {
+            setEdit(s.contract_unit_type, 'manual_value_configured', true)
+            setEdit(s.contract_unit_type, 'meter_key', '')
+            setEdit(s.contract_unit_type, 'confirmed', true)
+          }
 
           const choose = (key: string) => {
             setEdit(s.contract_unit_type, 'meter_key', key)
+            setEdit(s.contract_unit_type, 'manual_value_configured', false)
             setEdit(s.contract_unit_type, 'confirmed', true)
           }
 
@@ -357,10 +374,13 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
                   // meterKey can be empty on a legacy row confirmed before
                   // the no-match safeguard existed — shown as its own
                   // distinct, flagged state rather than a blank "Mapped to"
-                  // with nothing after it.
-                  <div className="flex items-center gap-2 text-xs font-medium" style={{ color: meterKey ? '#0B5C36' : '#991B1B' }}>
-                    <i className={`ti ${meterKey ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 14 }} />
-                    {meterKey ? `Mapped to ${matchedMeter?.display_name ?? meterKey}` : 'No meter selected'}
+                  // with nothing after it. manualConfigured is a third,
+                  // deliberate state (meter_or_manual_input only) — empty
+                  // meterKey there is not an error, it's the reviewer's
+                  // actual choice.
+                  <div className="flex items-center gap-2 text-xs font-medium" style={{ color: manualConfigured || meterKey ? '#0B5C36' : '#991B1B' }}>
+                    <i className={`ti ${manualConfigured || meterKey ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 14 }} />
+                    {manualConfigured ? 'Configured for manual entry each period' : meterKey ? `Mapped to ${matchedMeter?.display_name ?? meterKey}` : 'No meter selected'}
                     <button onClick={() => setEdit(s.contract_unit_type, 'confirmed', false)} className="ml-auto text-stone hover:text-ink underline underline-offset-2 font-normal">
                       Change
                     </button>
@@ -397,6 +417,26 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
                         </label>
                       ))}
                     </div>
+
+                    {/* meter_or_manual_input is the only classification where
+                        a reviewer legitimately has no meter to pick — the
+                        contract still needs a value each period, just not
+                        one Verdix pulls automatically. Shown as a peer
+                        choice to the meter list above, not a replacement
+                        for it — transaction-count-style metrics never see
+                        this option (classification stays 'meter'). */}
+                    {classification === 'meter_or_manual_input' && (
+                      <div className="mt-2 pt-2" style={{ borderTop: '1px dashed rgba(26,61,43,0.15)' }}>
+                        <label className="flex items-start gap-2 p-2 rounded-lg cursor-pointer transition-colors"
+                          style={{ background: 'transparent', border: '1px solid rgba(26,61,43,0.1)' }}>
+                          <input type="radio" name={`meter-${s.contract_unit_type}`} className="mt-0.5" checked={false} onChange={chooseManual} />
+                          <span>
+                            <span className="block text-xs font-semibold text-ink">Configure manually instead</span>
+                            <span className="block text-[11px] text-stone">No billing meter — the reviewer enters this value each period.</span>
+                          </span>
+                        </label>
+                      </div>
+                    )}
                   </>
                 )}
               </div>

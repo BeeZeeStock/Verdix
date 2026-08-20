@@ -314,6 +314,7 @@ export async function GET(
         no_match,
         input_classification: db ? ((db.input_classification as string) ?? 'meter') : classifyInput(unitType),
         confirmed:      db ? Boolean(db.confirmed) : false,
+        manual_value_configured: db ? Boolean(db.manual_value_configured) : false,
         included_units: db ? (db.included_units as number) : includedUnits,
         overage_tiers:  db ? (db.overage_tiers as unknown) : sortedTiers,
         billing_cycle:  db ? (db.billing_cycle as string) : (unitCycles.get(unitType) ?? contractBillingCycle),
@@ -376,6 +377,10 @@ export async function POST(
       // minimum_commitment ItemKind in configure/[id]/page.tsx.
       minimum_commitment_note?: string | null
       input_classification?: 'meter' | 'meter_or_manual_input' | 'derived' | 'persisted_balance'
+      // 'meter_or_manual_input' only — the reviewer chose "we'll enter this
+      // manually each period" instead of picking a billing meter. See
+      // lib/meter-mapping-status.ts's isMeterMappingResolved.
+      manual_value_configured?: boolean
     }>
   }
 
@@ -428,6 +433,7 @@ export async function POST(
       overage_tiers:      sanitiseTiers(m.overage_tiers),
       billing_cycle:      m.billing_cycle,
       input_classification: m.input_classification ?? 'meter',
+      manual_value_configured: m.manual_value_configured ?? false,
       minimum_commitment_mode: mc?.mode ?? null,
       minimum_commitment_requires_confirmation: mc?.requires_confirmation ?? false,
       // Only stamp confirmed_by/at for the minimum commitment once it's no
@@ -443,19 +449,20 @@ export async function POST(
     .from('contract_meter_mappings')
     .upsert(rows, { onConflict: 'job_id,contract_unit_type' })
 
-  // The minimum_commitment_* columns require a migration
-  // (20260811000001_minimum_commitment_confirmation.sql) that may not have
-  // run yet in every environment. Rather than hard-failing every mapping
-  // save until it does, degrade to the columns that definitely exist — the
-  // ambiguity itself still lives in overage_tiers JSONB (already written
-  // above) and is what the UI actually reads to flag it, so nothing about
-  // the "never silently apply" guarantee depends on these columns existing.
-  if (error?.message?.includes('minimum_commitment')) {
-    console.warn('[meter-mappings] minimum_commitment_* columns missing — run the pending migration. Falling back without them.')
+  // The minimum_commitment_* and manual_value_configured columns each
+  // require their own migration that may not have run yet in every
+  // environment. Rather than hard-failing every mapping save until it does,
+  // degrade to the columns that definitely exist — the ambiguity itself
+  // still lives in overage_tiers JSONB (already written above) and is what
+  // the UI actually reads to flag it, so nothing about the "never silently
+  // apply" guarantee depends on these columns existing.
+  if (error?.message?.includes('minimum_commitment') || error?.message?.includes('manual_value_configured')) {
+    console.warn('[meter-mappings] minimum_commitment_*/manual_value_configured columns missing — run the pending migration. Falling back without them.')
     const fallbackRows = rows.map(r => ({
       job_id: r.job_id, contract_unit_type: r.contract_unit_type, meter_key: r.meter_key,
       confidence: r.confidence, confirmed: r.confirmed, confirmed_by: r.confirmed_by, confirmed_at: r.confirmed_at,
       included_units: r.included_units, overage_tiers: r.overage_tiers, billing_cycle: r.billing_cycle,
+      input_classification: r.input_classification,
     }))
     ;({ error } = await supabaseServer
       .from('contract_meter_mappings')
@@ -471,7 +478,7 @@ export async function POST(
   // since org_billing_config.meter_key would then never match any real
   // usage, silently zeroing out that metric's billing going forward.
   const allConfirmed = allMeterMappingsResolved(
-    mappings.map(m => ({ classification: m.input_classification ?? 'meter', confirmed: m.confirmed, meter_key: m.meter_key }))
+    mappings.map(m => ({ classification: m.input_classification ?? 'meter', confirmed: m.confirmed, meter_key: m.meter_key, manual_value_configured: m.manual_value_configured ?? false }))
   )
   if (allConfirmed) {
     const { data: job } = await supabaseServer
@@ -481,21 +488,33 @@ export async function POST(
       .single()
 
     if (job?.org_id) {
-      const configRows = mappings.map(m => ({
-        org_id:         job.org_id,
-        meter_key:      m.meter_key,
-        included_units: Math.round(m.included_units ?? 0),
-        overage_tiers:  sanitiseTiers(m.overage_tiers),
-        billing_cycle:  m.billing_cycle,
-        source:         'agreement',
-        job_id:         jobId,
-        active:         true,
-        updated_at:     new Date().toISOString(),
-      }))
+      // A meter_or_manual_input metric configured manually has no meter_key
+      // at all (by design — that's the whole point of the option) and
+      // never had a row to write here. org_billing_config is keyed on
+      // (org_id, meter_key) — writing a row with an empty meter_key for
+      // every manually-configured metric on this org would collide across
+      // all of them and produce a meaningless config nothing can ever match
+      // usage against. Excluded from this write entirely; the manual value
+      // itself is entered per-period elsewhere, not sourced from a meter.
+      const configRows = mappings
+        .filter(m => m.meter_key)
+        .map(m => ({
+          org_id:         job.org_id,
+          meter_key:      m.meter_key,
+          included_units: Math.round(m.included_units ?? 0),
+          overage_tiers:  sanitiseTiers(m.overage_tiers),
+          billing_cycle:  m.billing_cycle,
+          source:         'agreement',
+          job_id:         jobId,
+          active:         true,
+          updated_at:     new Date().toISOString(),
+        }))
 
-      await supabaseServer
-        .from('org_billing_config')
-        .upsert(configRows, { onConflict: 'org_id,meter_key' })
+      if (configRows.length > 0) {
+        await supabaseServer
+          .from('org_billing_config')
+          .upsert(configRows, { onConflict: 'org_id,meter_key' })
+      }
 
       // Initialise org_subscriptions billing period from the contract start date.
       // This makes the cron pick up enterprise customers the same way as self-service.

@@ -3026,11 +3026,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   useEffect(() => {
     fetch(`/api/jobs/${id}/meter-mappings`)
       .then(r => r.json())
-      .then((res: { suggestions?: Array<{ confirmed: boolean; meter_key: string; input_classification?: 'meter' | 'meter_or_manual_input' | 'derived' | 'persisted_balance' }> }) => {
+      .then((res: { suggestions?: Array<{ confirmed: boolean; meter_key: string; input_classification?: 'meter' | 'meter_or_manual_input' | 'derived' | 'persisted_balance'; manual_value_configured?: boolean }> }) => {
         const suggestions = res.suggestions ?? []
         setMeterMappingSummary({
           total: suggestions.length,
-          confirmed: suggestions.filter(s => isMeterMappingResolved({ classification: s.input_classification ?? 'meter', confirmed: s.confirmed, meter_key: s.meter_key })).length,
+          confirmed: suggestions.filter(s => isMeterMappingResolved({ classification: s.input_classification ?? 'meter', confirmed: s.confirmed, meter_key: s.meter_key, manual_value_configured: s.manual_value_configured })).length,
         })
       })
       .catch(() => {})
@@ -3452,6 +3452,30 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     unresolvedInteractions.length,
   )
 
+  // ── Unified readiness model ── The single source every readiness
+  // indicator on this page reads from — the top "items to review" callout,
+  // the meter-mapping summary chip, and the Approve footer's blocked state
+  // and inline hint text. Previously each of those computed its own count
+  // from a different subset (needsReview alone drove the top callout and
+  // gated whether it even appeared; commercialRuleWorkload drove the Approve
+  // footer; the meter-mapping widget had its own total/confirmed) — a
+  // confidently-worded contract with outstanding commercial-rule or VAT
+  // decisions could show "Ready to approve"-adjacent language in one place
+  // while a different area of the same page said items were still
+  // outstanding. Every count below is real (not a boolean folded into a
+  // count of 1), so "5 commercial decisions outstanding" always literally
+  // means 5, matching commercialRuleWorkload's own arithmetic.
+  const usageMappingsOutstanding = tiers.length > 0 ? Math.max(0, meterMappingSummary.total - meterMappingSummary.confirmed) : 0
+  const commercialDecisionsOutstanding = commercialRuleWorkload.totalToConfirm + commercialRuleWorkload.interactionsToConfirm
+  const vatOutstanding = vatConfigured === false
+  const readinessBreakdown = [
+    commercialDecisionsOutstanding > 0 && `${commercialDecisionsOutstanding} commercial decision${commercialDecisionsOutstanding > 1 ? 's' : ''} outstanding`,
+    usageMappingsOutstanding > 0 && `${usageMappingsOutstanding} usage mapping${usageMappingsOutstanding > 1 ? 's' : ''} outstanding`,
+    vatOutstanding && 'VAT not configured',
+    needsReview > 0 && `${needsReview} extracted field${needsReview > 1 ? 's' : ''} below confidence threshold`,
+  ].filter((x): x is string => typeof x === 'string')
+  const totalOutstanding = commercialDecisionsOutstanding + usageMappingsOutstanding + (vatOutstanding ? 1 : 0) + needsReview
+
   // Classify one-time fees into services / hardware / credits / other
   const allFees      = terms?.one_time_fees ?? []
   const serviceFees  = allFees.filter(f => f.amount >= 0 && classifyFee(f.fee_label) === 'service')
@@ -3534,7 +3558,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             <span className="text-xs font-medium flex items-center gap-1.5 text-red-500">
               <i className="ti ti-alert-circle" style={{ fontSize: 13 }} /> Push failed — fix &amp; retry below
             </span>
-          ) : needsReview === 0 ? (
+          ) : totalOutstanding === 0 && vatConfigured !== undefined ? (
             <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: '#4A7C59' }}>
               <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> Ready to approve
             </span>
@@ -3580,27 +3604,24 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
-            {/* ── Items need review callout ──
-                 Breakdown (not just a bare count) per item U — distinguishes
-                 items Verdix has already proposed a treatment for from
-                 genuine decision points and cross-rule interactions, and
-                 keeps "Usage mapping" its own separately-labeled line rather
-                 than folded into commercial-rule counts. */}
-            {needsReview > 0 && (
+            {/* ── Items need review callout ── Driven entirely by the
+                 unified readiness model above (totalOutstanding /
+                 readinessBreakdown) — the same numbers the meter-mapping
+                 summary chip and the Approve footer read, so this can never
+                 show a different count than either of those. Previously
+                 gated on needsReview alone (confidence-only), which could
+                 hide this banner entirely while commercial-rule or VAT
+                 decisions were still outstanding. */}
+            {totalOutstanding > 0 && (
               <div className="flex items-center justify-between gap-4 py-3 border-t border-b border-amber-200/60">
                 <div className="flex items-start gap-2.5">
                   <i className="ti ti-alert-triangle flex-shrink-0 mt-0.5" style={{ fontSize: 14, color: '#D97706' }} />
                   <div>
                     <p className="text-sm font-medium" style={{ color: '#92400E' }}>
-                      {needsReview} item{needsReview > 1 ? 's' : ''} to review
+                      {totalOutstanding} item{totalOutstanding > 1 ? 's' : ''} to review
                     </p>
                     <p className="text-xs mt-0.5 leading-relaxed" style={{ color: '#B45309' }}>
-                      {[
-                        commercialRuleWorkload.readyToConfirm > 0 && `${commercialRuleWorkload.readyToConfirm} interpretation${commercialRuleWorkload.readyToConfirm > 1 ? 's' : ''} ready to confirm`,
-                        commercialRuleWorkload.decisionRequired > 0 && `${commercialRuleWorkload.decisionRequired} decision${commercialRuleWorkload.decisionRequired > 1 ? 's' : ''} required`,
-                        commercialRuleWorkload.interactionsToConfirm > 0 && `${commercialRuleWorkload.interactionsToConfirm} interaction${commercialRuleWorkload.interactionsToConfirm > 1 ? 's' : ''} to confirm`,
-                        tiers.length > 0 && !meterMappingsConfirmed && 'usage mapping to confirm',
-                      ].filter(Boolean).join(' · ') || 'Review these items against the source agreement before approving.'}
+                      {readinessBreakdown.join(' · ') || 'Review these items against the source agreement before approving.'}
                     </p>
                   </div>
                 </div>
@@ -4054,6 +4075,14 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             </button>
                           )}
                         </div>
+                        {/* "Volume / all-units" alone reads ambiguously next
+                            to a per-band rate table — spell out the actual
+                            semantics so it can't be misread as progressive. */}
+                        {needsTierMethod && tierMethodResolved && tierCalc!.method === 'volume' && (
+                          <p className="text-[10px] text-stone/60 mb-2 -mt-0.5">
+                            The rate corresponding to total monthly transaction volume applies to all transactions in that calendar month; tiers are not progressive.
+                          </p>
+                        )}
                         {/* The tier structure itself (e.g. the 1–500 included allowance below)
                             is not what's uncertain here — it's HOW the paid bands are evaluated
                             once usage spans more than one of them. A bare "Needs interpretation"
@@ -4929,6 +4958,17 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     {tcv > 0 && (!terms?.contract_start_date || (!terms?.contract_end_date && !terms?.contract_term_months)) && (
                       <p className="text-[10px] text-amber-600 mt-2">Contract dates unresolved — fixed-fee total withheld until confirmed above</p>
                     )}
+                    {/* Distinct from the dates check above: the CONTRACTUAL
+                        value (rate × period count) is real and known even
+                        while partial-period treatment is unresolved — it
+                        just doesn't establish that the GENERATED billing
+                        schedule (which periods, and at what amount, actually
+                        get invoiced) is final. Shown as a caveat alongside
+                        the figure, not a withholding of it, unlike dates. */}
+                    {tcv > 0 && !!terms?.contract_start_date && (!!terms?.contract_end_date || !!terms?.contract_term_months) &&
+                      (!!terms?.base_fee_proration?.requires_confirmation || (terms?.additional_recurring_fees ?? []).some(f => f.proration?.requires_confirmation)) && (
+                      <p className="text-[10px] text-amber-600 mt-2">Partial-period billing treatment not yet confirmed — the generated invoice schedule is not final</p>
+                    )}
                     {tcv === 0 && billingModel !== 'consumption' && terms?.contract_start_date && terms?.contract_end_date &&
                       parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date) && (
                       <p className="text-[10px] text-amber-600 mt-2">End date is before start date — correct it above</p>
@@ -4976,17 +5016,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   const needsPlatformChoice = connectedBillingPlatforms.length > 1 && !selectedBillingPlatform
                   // Unresolved commercial rules (minimum floors, tier
                   // calculation methods, escalators, discounts, service
-                  // credits, rule interactions) and unconfigured VAT must
-                  // block Approve exactly like the server-side check in
-                  // app/api/jobs/[id]/approve/route.ts — this is the
-                  // client-side mirror of that gate, not a substitute for
-                  // it. needsReview (confidence-only) alone previously let
-                  // a fully-ambiguous but confidently-worded contract like
-                  // TEST-PAY-002 show as pushable.
-                  const rulesOutstanding = commercialRuleWorkload.totalToConfirm + commercialRuleWorkload.interactionsToConfirm
-                  const vatUnconfigured = vatConfigured === false
-                  const blocked = approving || needsReview > 0 || rulesOutstanding > 0 || vatConfigured === undefined || vatUnconfigured
-                    || (tiers.length > 0 && !meterMappingsConfirmed) || scheduleBlockers.length > 0 || needsPlatformChoice
+                  // credits, rule interactions), unconfigured usage mappings,
+                  // and unconfigured VAT must block Approve exactly like the
+                  // server-side check in app/api/jobs/[id]/approve/route.ts
+                  // — this is the client-side mirror of that gate, not a
+                  // substitute for it. needsReview (confidence-only) alone
+                  // previously let a fully-ambiguous but confidently-worded
+                  // contract like TEST-PAY-002 show as pushable. Reads the
+                  // same totalOutstanding/readinessBreakdown the top callout
+                  // and meter-mapping chip use, so this can't disagree with
+                  // either of them.
+                  const blocked = approving || totalOutstanding > 0 || vatConfigured === undefined
+                    || scheduleBlockers.length > 0 || needsPlatformChoice
                   const platformLabel = selectedBillingPlatform
                     ? selectedBillingPlatform.charAt(0).toUpperCase() + selectedBillingPlatform.slice(1)
                     : connectedBillingPlatforms.length === 1
@@ -5027,29 +5068,17 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     {needsPlatformChoice && (
                       <p className="text-[10px] text-amber-600">Select a billing platform above</p>
                     )}
-                    {scheduleBlockers.length > 0 && needsReview === 0 && (
+                    {scheduleBlockers.length > 0 && (
                       <p className="text-[10px] text-amber-600 text-right max-w-[220px]">
                         Billing schedule needs: {scheduleBlockers.join(', ')}
                       </p>
                     )}
-                    {needsReview > 0 && (
-                      <p className="text-[10px] text-stone/50">
-                        Review {needsReview} flagged item{needsReview > 1 ? 's' : ''} above first
-                      </p>
-                    )}
-                    {needsReview === 0 && rulesOutstanding > 0 && (
+                    {/* Single unified hint — same breakdown as the top
+                        callout and the meter-mapping chip, so this never
+                        shows a different outstanding count than either. */}
+                    {totalOutstanding > 0 && (
                       <button onClick={() => setReviewPanelOpen(true)} className="text-[10px] text-amber-600 underline underline-offset-2 hover:text-amber-700 text-right max-w-[220px]">
-                        {rulesOutstanding} reviewer-policy decision{rulesOutstanding > 1 ? 's' : ''} outstanding — open Review panel
-                      </button>
-                    )}
-                    {needsReview === 0 && rulesOutstanding === 0 && vatUnconfigured && (
-                      <p className="text-[10px] text-amber-600 text-right max-w-[220px]">
-                        VAT treatment not confirmed — set it below first
-                      </p>
-                    )}
-                    {tiers.length > 0 && !meterMappingsConfirmed && needsReview === 0 && scheduleBlockers.length === 0 && (
-                      <button onClick={() => setReviewPanelOpen(true)} className="text-[10px] text-amber-600 underline underline-offset-2 hover:text-amber-700">
-                        Confirm billing meter mappings in Review panel
+                        {readinessBreakdown.join(' · ')}
                       </button>
                     )}
                     {approveError && <p className="text-[10px] text-red-500 max-w-xs">{approveError}</p>}
