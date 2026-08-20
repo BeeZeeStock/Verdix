@@ -13,6 +13,7 @@ import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
 import { isAdminEmail, isRemembillTeam } from '@/lib/admin'
 import { getFastAIClient } from '@/lib/ai-client'
+import { allMeterMappingsResolved } from '@/lib/meter-mapping-status'
 
 // ── Auto-mapping heuristic ────────────────────────────────────────────────────
 const METER_RULES: Array<{ patterns: string[]; key: string; confidence: number }> = [
@@ -20,6 +21,22 @@ const METER_RULES: Array<{ patterns: string[]; key: string; confidence: number }
   { patterns: ['api', 'call', 'request', 'transaction', 'event', 'webhook'],     key: 'api_call', confidence: 0.88 },
   { patterns: ['user', 'seat', 'license', 'named user', 'active user'],          key: 'user',     confidence: 0.88 },
 ]
+
+// Everything reaching this route today is a real metered component
+// extracted into overage_tiers — a genuine external meter (transaction
+// count) or something that may need a manual reading alongside/instead of
+// one (chargeback count, excess-unavailability hours, both explicitly named
+// in the TEST-PAY-002 review). 'derived'/'persisted_balance' values
+// (cumulative annual volume, credit balances) never reach this heuristic —
+// they're computed internally (lib/credit-ledger-service.ts) rather than
+// meter-mapped at all, so they don't appear as contract_unit_type rows here.
+function classifyInput(unitType: string): 'meter' | 'meter_or_manual_input' {
+  const lower = unitType.toLowerCase()
+  if (lower.includes('chargeback') || lower.includes('downtime') || lower.includes('unavailab') || lower.includes('outage')) {
+    return 'meter_or_manual_input'
+  }
+  return 'meter'
+}
 
 function autoMap(unitType: string): { meter_key: string; confidence: number } {
   const lower = unitType.toLowerCase()
@@ -294,6 +311,7 @@ export async function GET(
         meter_key: no_match ? '' : meter_key,
         confidence,
         no_match,
+        input_classification: db ? ((db.input_classification as string) ?? 'meter') : classifyInput(unitType),
         confirmed:      db ? Boolean(db.confirmed) : false,
         included_units: db ? (db.included_units as number) : includedUnits,
         overage_tiers:  db ? (db.overage_tiers as unknown) : sortedTiers,
@@ -356,6 +374,7 @@ export async function POST(
       // alongside the meter mapping itself — see ReviewPanel's
       // minimum_commitment ItemKind in configure/[id]/page.tsx.
       minimum_commitment_note?: string | null
+      input_classification?: 'meter' | 'meter_or_manual_input' | 'derived' | 'persisted_balance'
     }>
   }
 
@@ -407,6 +426,7 @@ export async function POST(
       included_units:     Math.round(m.included_units ?? 0),
       overage_tiers:      sanitiseTiers(m.overage_tiers),
       billing_cycle:      m.billing_cycle,
+      input_classification: m.input_classification ?? 'meter',
       minimum_commitment_mode: mc?.mode ?? null,
       minimum_commitment_requires_confirmation: mc?.requires_confirmation ?? false,
       // Only stamp confirmed_by/at for the minimum commitment once it's no
@@ -443,8 +463,15 @@ export async function POST(
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  // If all confirmed, write to org_billing_config and initialise billing period
-  const allConfirmed = mappings.every(m => m.confirmed)
+  // If all confirmed, write to org_billing_config and initialise billing period.
+  // confirmed alone is not enough — a row can carry confirmed:true with an
+  // empty meter_key (legacy data from before this invariant existed); such a
+  // row must never be treated as "ready to write to live billing config",
+  // since org_billing_config.meter_key would then never match any real
+  // usage, silently zeroing out that metric's billing going forward.
+  const allConfirmed = allMeterMappingsResolved(
+    mappings.map(m => ({ classification: m.input_classification ?? 'meter', confirmed: m.confirmed, meter_key: m.meter_key }))
+  )
   if (allConfirmed) {
     const { data: job } = await supabaseServer
       .from('jobs')

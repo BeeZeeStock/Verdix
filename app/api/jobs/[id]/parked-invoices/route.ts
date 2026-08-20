@@ -10,6 +10,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl, safeHeaderValue } from '@/lib/billing-writer'
+import { resolveVatTreatment, computeVat, reconcileGrossAmount } from '@/lib/vat'
+import { getCustomerVatConfig } from '@/lib/vat-service'
 
 export async function POST(
   req: NextRequest,
@@ -71,9 +73,23 @@ export async function POST(
   const fmtDate = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
+  // Verdix owns the complete invoice instruction here too — same
+  // resolution/fail-closed gate as invoice-scheduler's real per-period
+  // invoices. No per-invoice override exists yet at this point (the
+  // planned_invoice row for this delivery is only created after send), so
+  // only the customer's standing default applies.
+  const customerVat = await getCustomerVatConfig(org.orgId, job.billing_customer_id as string)
+  const vatTreatment = resolveVatTreatment(customerVat, null)
+  const vatResult = computeVat(amount, vatTreatment)
+  if (!vatResult.ok) {
+    return NextResponse.json({ error: `Billing blocked: ${vatResult.reason}` }, { status: 400 })
+  }
+  const { vatRatePct, vatAmount, grossAmount: expectedGrossAmount } = vatResult.calculation
+
   try {
     let invoiceId:  string
     let hostedUrl:  string | null
+    let actualGrossAmount: number | null = null
 
     // ── Remembill ──────────────────────────────────────────────────────────
     if (billingPlatform === 'remembill') {
@@ -110,12 +126,13 @@ export async function POST(
       invoiceId = invObj.id as string
       if (!invoiceId) throw new Error(`Remembill invoice creation: could not extract id from response: ${JSON.stringify(invJson)}`)
 
-      // price is in öre (minor units): 1 kr = 100 öre. vat is 0–100 percent.
+      // price is in öre (minor units): 1 kr = 100 öre. vat is 0–100 percent,
+      // resolved above from customer_vat_config — never hardcoded.
       // Row is also included in the creation body (billing-writer strategy A) as a belt-and-suspenders
       // measure; here we follow up with POST /rows in case Remembill needs both.
       await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
         method: 'POST', headers: rbH,
-        body: JSON.stringify({ name: lineDesc, quantity, price: Math.round(rate_per_unit * 100), vat: 0 }),
+        body: JSON.stringify({ name: lineDesc, quantity, price: Math.round(rate_per_unit * 100), vat: Math.round(vatRatePct) }),
       })
 
       // Deliver via email
@@ -124,6 +141,20 @@ export async function POST(
       }).catch(err => console.error('[parked-invoices/remembill] email delivery failed', err))
 
       hostedUrl = remembillAppUrl('')
+
+      // Reconcile: read the invoice back and compare Remembill's own
+      // returned total against Verdix's expected gross.
+      try {
+        const getRes = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}`, { headers: rbH })
+        if (getRes.ok) {
+          const getJson = await getRes.json() as Record<string, unknown>
+          const getObj = (getJson.invoice ?? getJson.data ?? getJson) as Record<string, unknown>
+          const rawTotal = getObj.total ?? getObj.total_amount ?? getObj.amount_total
+          if (typeof rawTotal === 'number') actualGrossAmount = rawTotal / 100
+        }
+      } catch (err) {
+        console.error('[parked-invoices/remembill] post-send reconciliation fetch failed', err)
+      }
 
     // ── Stripe (default) ───────────────────────────────────────────────────
     } else {
@@ -138,6 +169,14 @@ export async function POST(
       const stripeKey = (integration?.config as Record<string, string>)?.secret_key ?? process.env.STRIPE_SECRET_KEY!
       const { default: Stripe } = await import('stripe')
       const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+
+      let stripeTaxRateId: string | null = null
+      if (vatTreatment.mode === 'rate' && vatRatePct > 0) {
+        const existing = await stripe.taxRates.list({ active: true, limit: 100 })
+        const match = existing.data.find(tr => tr.display_name === 'VAT' && tr.percentage === vatRatePct && !tr.inclusive)
+        stripeTaxRateId = match?.id
+          ?? (await stripe.taxRates.create({ display_name: 'VAT', percentage: vatRatePct, inclusive: false })).id
+      }
 
       const inv = await stripe.invoices.create({
         customer:                       job.billing_customer_id as string,
@@ -157,6 +196,7 @@ export async function POST(
         amount:      Math.round(amount * 100),
         currency:    cur.toLowerCase(),
         description: lineDesc,
+        tax_rates:   stripeTaxRateId ? [stripeTaxRateId] : undefined,
       })
 
       const finalized = await stripe.invoices.finalizeInvoice(inv.id).catch(err => {
@@ -166,6 +206,7 @@ export async function POST(
 
       invoiceId = inv.id
       hostedUrl = finalized.hosted_invoice_url ?? null
+      if (typeof finalized.total === 'number') actualGrossAmount = finalized.total / 100
     }
 
     // Insert a new planned_invoice row for this delivery (template stays as 'parked')
@@ -188,6 +229,13 @@ export async function POST(
         line_item_id:       matchingLineItem?.id ?? null,
         quantity,
         unit_price:         rate_per_unit,
+        vat_mode:                  vatTreatment.mode,
+        vat_rate_pct:              vatTreatment.mode === 'rate' ? vatRatePct : null,
+        vat_source:                'customer_default',
+        net_amount:                amount,
+        vat_amount:                vatAmount,
+        gross_amount:              expectedGrossAmount,
+        vat_reconciliation_status: reconcileGrossAmount(expectedGrossAmount, actualGrossAmount),
       })
 
     if (error) console.error('[parked-invoices] planned_invoices insert failed', error)

@@ -203,6 +203,71 @@ export interface Discount {
 // discriminator; credit_basis/basis_component describe what the credit is
 // computed FROM, which is exactly what the rule-interaction detector reads
 // to find overlaps with discounts/escalators touching the same component.
+// Growth Credit's "3 consecutive calendar months" streak, the Rebate's
+// Contract-Year threshold, and a flat SLA-style trigger are all the same
+// shape: measure a metric against a threshold over some window, optionally
+// requiring N consecutive windows before it's satisfied. window_anchor
+// reuses lib/tariff.ts's CadenceAnchorMode vocabulary exactly (not a
+// separate concept) so Contract-Year windowing is the same code path as
+// metric minimum-commitment cadence, not a reimplementation.
+export interface CreditEarnRule {
+  trigger_metric_key: string | null
+  trigger_quantity: number | null
+  trigger_comparator: 'gt' | 'gte'
+  trigger_window: 'calendar_month' | 'billing_period' | 'contract_year' | 'per_incident'
+  /** >1 for "each of N consecutive windows" triggers (Growth Credit: 3); 1 for a single-window trigger. */
+  consecutive_windows_required: number
+  window_anchor: 'contract_start' | 'calendar'
+  /** "Finalize no later than N days after the window closes" — a deadline,
+   *  not a mandatory wait. Only the Annual Rebate states one (45); null for
+   *  credits that finalize the moment their window closes. Modeled this way
+   *  (not "wait exactly N days") so a future contract's different phrasing
+   *  ("within 30 days", "on the next invoice") fits the same field without
+   *  renaming it — only day-count deadlines are implemented now, since
+   *  that's all any current contract needs. */
+  finalization_deadline_days: number | null
+  requires_confirmation: boolean
+  confirmation_reason?: string | null
+}
+
+export interface CreditApplicationRule {
+  /** For %-based credit_basis: which components the percentage is computed
+   *  FROM (e.g. the Rebate's 5% of transaction-processing fees). Null when
+   *  credit_basis isn't %-based. */
+  computed_from_component_keys: string[] | null
+  /** What this credit may reduce. 'all' = the full remaining payable pool
+   *  (Service Credit's "future amounts payable"); string[] = these specific
+   *  components only (Growth Credit's transaction-processing-only scope);
+   *  null = the contract doesn't say what it may offset (the Rebate's case —
+   *  it states the rebate's *size* but not its application scope), so this
+   *  cannot be applied until a reviewer resolves it. Never assumed/defaulted
+   *  by the engine — always exactly what was extracted/confirmed. */
+  eligible_component_keys: string[] | 'all' | null
+  excluded_component_keys: string[]
+  one_time: boolean | 'unclear'
+  /** boolean when the contract states a position (Growth Credit: true,
+   *  explicit "carries forward until consumed"); 'unclear' when it doesn't
+   *  (Service Credit and the Rebate — "applied against future amounts
+   *  payable" establishes *not-same-period*, not *indefinite* survival).
+   *  Never defaulted to true just because a credit isn't same-period-
+   *  applicable — those are different questions. */
+  carry_forward: boolean | 'unclear'
+  /** Only set when the contract states a specific bounded survival window
+   *  (e.g. "expires after 2 quarters if unused") — the real middle ground
+   *  between carry_forward: true (forever) and 'unclear' (blocked). */
+  expiry_periods?: number | null
+  /** Only value implemented — every current credit type needs "available
+   *  starting the period after it's earned", never the same period. */
+  availability: 'next_period'
+  /** Derived, not independently settable: true whenever
+   *  eligible_component_keys is null, or one_time/carry_forward is
+   *  'unclear'. A credit can still be *earned* and tracked while this is
+   *  true — it just can't be *applied* until a reviewer resolves the
+   *  remaining ambiguity via confirm-rule. */
+  requires_confirmation: boolean
+  confirmation_reason?: string | null
+}
+
 export interface ServiceCreditInterpretation {
   trigger_type: 'sla_breach' | 'usage_threshold' | 'promotional' | 'earned_milestone' | 'other'
   /** Plain-English condition, e.g. "uptime < 99.9% in a calendar month" — never fabricated. */
@@ -231,14 +296,26 @@ export interface ServiceCreditInterpretation {
   source_clause: string | null
   requires_confirmation: boolean
   confirmation_reason?: string | null
+  /** When/how this credit is earned and how it may be applied, once
+   *  resolved — same "absent means not yet interpreted" discipline as every
+   *  other field on this interpretation. */
+  earn_rule?: CreditEarnRule | null
+  application_rule?: CreditApplicationRule | null
 }
 
 export interface ServiceCredit {
   /** Stable identifier, same pattern as Discount.discount_rule_id — a
    *  contract can have several independent credit clauses addressed
-   *  independently in review/audit. Populated at extraction time. */
+   *  independently in review/audit. Populated at extraction time, and
+   *  preserved across re-extraction (see lib/rule-id-stability.ts) rather
+   *  than reassigned. */
   credit_rule_id?: string
-  credit_type: 'sla' | 'rebate' | 'promotional' | 'earned' | 'usage' | 'waiver' | 'other'
+  /** 'sla' was renamed to 'service_credit' (a 2026-08-20 migration rewrites
+   *  existing rows) — 'conditional_credit' added for milestone/multi-period
+   *  threshold credits (e.g. Growth Credit) that don't fit either a flat
+   *  service credit or a period-based rebate. Distinct types get distinct
+   *  review-UI labels rather than one flat "Service credit basis" for all. */
+  credit_type: 'service_credit' | 'rebate' | 'conditional_credit' | 'promotional' | 'earned' | 'usage' | 'waiver' | 'other'
   description: string
   source_clause: string | null
   /** Raw extracted numbers before interpretation resolves basis/cap/timing
@@ -249,6 +326,26 @@ export interface ServiceCredit {
   /** Reviewer-approved structured reading, once resolved — absent means
    *  "extracted but not yet interpreted", never inferred. */
   interpretation?: ServiceCreditInterpretation | null
+}
+
+// Job-level: which credit gets first claim on a shared, overlapping pool of
+// eligible charges when more than one credit could draw from the same
+// component. Array order in ContractTerms.service_credits is NOT this policy
+// — it's incidental extraction order, not a business rule, and defaulting to
+// it would silently make a real financial decision.
+export interface CreditApplicationPriority {
+  order: string[]   // credit_rule_id[], meaningful entry order
+  /** 'contract_stated' only when the contract text itself specifies an
+   *  order; 'verdix_recommends_constrained_first' when Verdix suggests
+   *  ordering the more narrowly-scoped credit first (nowhere else it could
+   *  draw from) but a reviewer still had to confirm it; 'reviewer_policy'
+   *  for a fully open reviewer decision. The middle case is still
+   *  reviewer_policy once confirmed — "Verdix recommended it" isn't the same
+   *  as "the contract said so". */
+  policy_source: 'contract_stated' | 'verdix_recommends_constrained_first' | 'reviewer_policy'
+  requires_confirmation: boolean
+  confirmation_reason?: string | null
+  source_clause?: string | null
 }
 
 export interface OneTimeFee {
@@ -264,12 +361,27 @@ export interface OneTimeFee {
   rate_per_unit?: number | null
 }
 
+// Same structural gap as MinimumCommitment.prorate_partial_periods, now
+// generalized: any fee whose cadence resets on fixed calendar boundaries can
+// produce a partial first/last period once the contract starts mid-cycle,
+// and whether that partial period bills in full or prorated is very rarely
+// stated for a flat recurring fee the way it might be for a metric minimum.
+// Never inferred — 'unclear' stays 'unclear' through confirmation.
+export interface PeriodProrationRule {
+  reset_anchor: 'contract_start' | 'calendar' | null
+  prorate_partial_periods: boolean | 'unclear'
+  requires_confirmation: boolean
+  confirmation_reason?: string | null
+  source_clause?: string | null
+}
+
 export interface AdditionalRecurringFee {
   fee_label: string
   amount: number          // amount per billing period
   description: string | null
   /** Billing cadence for this fee when it differs from the contract's main billing_frequency. */
   billing_frequency?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
+  proration?: PeriodProrationRule | null
 }
 
 export interface RampStep {
@@ -300,6 +412,10 @@ export interface ContractTerms {
   currency: string
   base_monthly_fee: number | null
   base_annual_fee: number | null
+  /** base_monthly_fee/base_annual_fee are singular fields, not an array, so
+   *  they need their own proration slot rather than a per-item one like
+   *  AdditionalRecurringFee.proration. */
+  base_fee_proration?: PeriodProrationRule | null
   billing_frequency: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
   payment_terms_days: number | null
   payment_terms_text: string | null
@@ -310,6 +426,12 @@ export interface ContractTerms {
   escalators: PriceEscalator[]
   discounts: Discount[]
   service_credits: ServiceCredit[]
+  /** Reviewer-confirmed ordering for when two service_credits' eligible
+   *  components overlap — see CreditApplicationPriority. Absent/null means
+   *  either no overlap exists (order genuinely doesn't matter) or an
+   *  overlap exists but hasn't been resolved yet (those credits stay
+   *  blocked from application until it is). */
+  credit_application_priority?: CreditApplicationPriority | null
   overage_tiers: OverageTier[]
   billing_metered_items?: BillingMeteredItem[]
   additional_recurring_fees: AdditionalRecurringFee[] | null

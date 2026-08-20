@@ -1,7 +1,9 @@
-import { ContractTerms } from './types'
+import { ContractTerms, PeriodProrationRule } from './types'
 import { billingInterval } from './stripe-meter'
 import { supabaseServer } from './supabase'
-import { monthCursor } from './tariff'
+import { monthCursor, enumerateContractWindows, isPartialWindow } from './tariff'
+import { resolveVatTreatment, computeVat } from './vat'
+import { getCustomerVatConfig } from './vat-service'
 
 // Re-exported so existing importers of monthCursor from this file (e.g.
 // execute/route.ts) don't need to change their import path — the function
@@ -108,6 +110,27 @@ export function computeDiscountMultiplier(terms: ContractTerms, d: Date): number
   return 1
 }
 
+// Scales a full-period component amount for a partial calendar window per
+// the confirmed (or not-yet-confirmed) PeriodProrationRule — the exact same
+// three-way answer lib/tariff.ts's resolveWindowMinimum already applies to a
+// metric's minimum commitment, generalized to a base/recurring fee. Never
+// silently assumes full-charge or proration while unresolved: an unconfirmed
+// rule withholds this component's contribution for the partial window
+// entirely (mirrors lib/usage-pull.ts's identical withhold-not-guess
+// treatment of an unconfirmed minimum commitment) rather than guessing
+// either extreme.
+function applyProrationRule(
+  fullAmount: number,
+  rule: PeriodProrationRule | null | undefined,
+  overlapDays: number,
+  windowDays: number,
+): number {
+  if (!rule) return fullAmount // no stated calendar-boundary ambiguity for this component
+  if (rule.requires_confirmation) return 0
+  if (rule.prorate_partial_periods === true) return fullAmount * (overlapDays / windowDays)
+  return fullAmount // prorate_partial_periods === false — bill the partial period in full, as confirmed
+}
+
 function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
   const cs = terms.contract_start_date
     ? new Date(terms.contract_start_date + 'T00:00:00')
@@ -124,10 +147,77 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
   const { interval, intervalCount } = billingInterval(terms.billing_frequency)
   const monthsPerPeriod = interval === 'year' ? 12 * intervalCount : intervalCount
 
-  const additionalMonthly = (terms.additional_recurring_fees ?? [])
-    .reduce((s, f) => s + (f.amount ?? 0), 0)
+  const additionalFees = terms.additional_recurring_fees ?? []
+  const additionalMonthly = additionalFees.reduce((s, f) => s + (f.amount ?? 0), 0)
+
+  // Same "exclusive nextStart minus 1 day" convention as every period
+  // boundary this function has always produced — the contract's own defined
+  // end date, used to bound the calendar-anchored path below.
+  const contractEnd = new Date(cs.getFullYear(), cs.getMonth() + termMonths, cs.getDate() - 1)
 
   const periods: BillingPeriod[] = []
+
+  // Calendar-anchored base/recurring fees: lib/contract-extractor.ts only
+  // ever populates base_fee_proration when the contract states this fee
+  // resets on fixed calendar boundaries rather than the contract's own
+  // start-date anniversary — its mere presence already settles the anchor
+  // question, which can make the first and/or last billing period shorter
+  // than a full cadence cycle. Reuses the exact window engine real billing
+  // already relies on for the identical problem on a metric minimum
+  // (enumerateContractWindows/isPartialWindow) rather than a second,
+  // parallel date calculation.
+  if (terms.base_fee_proration) {
+    const windows = enumerateContractWindows(cs, contractEnd, terms.billing_frequency, 'calendar')
+    let periodIdx  = 0
+    let monthsUsed = 0
+
+    for (const w of windows) {
+      const partial = isPartialWindow(w, cs, contractEnd)
+      const monthsInThisWindow = Math.min(monthsPerPeriod, termMonths - monthsUsed)
+      const overlapStart = w.start < cs ? cs : w.start
+      const overlapEnd   = w.end   > contractEnd ? contractEnd : w.end
+      const overlapDays  = Math.max(0, Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 86_400_000) + 1)
+      const windowDays   = Math.max(1, Math.round((w.end.getTime() - w.start.getTime()) / 86_400_000) + 1)
+
+      let baseAmount = 0
+      for (let mi = 0; mi < monthsInThisWindow; mi++) {
+        const globalMonthIdx = monthsUsed + mi
+        const d        = monthCursor(cs, globalMonthIdx)
+        const base     = computeMonthlyBaseRate(terms, globalMonthIdx, d)
+        const escMult  = computeEscalatorMultiplier(terms, d)
+        const discMult = computeDiscountMultiplier(terms, d)
+
+        const baseContribution = partial
+          ? applyProrationRule(base, terms.base_fee_proration, overlapDays, windowDays)
+          : base
+        // additional_recurring_fees don't share the base fee's proration
+        // rule — each fee states (or omits) its own. A fee with no
+        // proration entry has no stated calendar-boundary ambiguity and
+        // bills in full even inside a partial window, same as today.
+        const feesContribution = additionalFees.reduce((s, f) => {
+          const feeAmt = f.amount ?? 0
+          return s + (partial ? applyProrationRule(feeAmt, f.proration, overlapDays, windowDays) : feeAmt)
+        }, 0)
+
+        baseAmount += (baseContribution + feesContribution) * escMult * discMult
+      }
+
+      periods.push({
+        yearNum: Math.floor(monthsUsed / 12) + 1,
+        periodIndex: periodIdx,
+        periodStart: overlapStart,
+        periodEnd: overlapEnd,
+        baseAmount: Math.round(baseAmount * 100) / 100,
+      })
+      periodIdx++
+      monthsUsed += monthsInThisWindow
+    }
+
+    return periods
+  }
+
+  const additionalMonthlyFlat = additionalMonthly
+  const periodsFlat: BillingPeriod[] = []
   let periodIdx  = 0
   let monthsUsed = 0
 
@@ -156,15 +246,15 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
       const escMult = computeEscalatorMultiplier(terms, d)
       const discMult = computeDiscountMultiplier(terms, d)
 
-      baseAmount += (base + additionalMonthly) * escMult * discMult
+      baseAmount += (base + additionalMonthlyFlat) * escMult * discMult
     }
 
-    periods.push({ yearNum, periodIndex: periodIdx, periodStart, periodEnd, baseAmount })
+    periodsFlat.push({ yearNum, periodIndex: periodIdx, periodStart, periodEnd, baseAmount })
     periodIdx++
     monthsUsed += monthsInThisPeriod
   }
 
-  return periods
+  return periodsFlat
 }
 
 export type BillingPlatform = 'stripe' | 'chargebee' | 'remembill'
@@ -683,6 +773,17 @@ async function configureRememhill(
   }
   console.log('[billing-writer/remembill] customerId:', customerId, '| currency:', cur)
 
+  // Verdix owns the complete invoice instruction for any invoice pushed
+  // immediately at approval time too (a period already due today), not
+  // just the daily-cron path — same resolution/fail-closed gate as
+  // invoice-scheduler. No orgId (an internal/test caller) is treated the
+  // same as an unconfigured customer: fail closed rather than silently bill
+  // 0% VAT. Only actually enforced once a period is due right now — see the
+  // `period.periodStart <= now` guard below, which is the only place this
+  // value is used.
+  const customerVatConfig = orgId ? await getCustomerVatConfig(orgId, customerId) : null
+  const vatTreatmentForPush = resolveVatTreatment(customerVatConfig, null)
+
   // ── 1b. Preserve already-sent invoices; delete only unsent rows ─────────────
   // Sent invoices have already been delivered to the customer — never create
   // duplicates. Scheduled/parked rows are safe to delete and re-compute.
@@ -726,6 +827,7 @@ async function configureRememhill(
     invoiceCustomerId: string,
     invoiceCurrency: string,
     quantity = 1,
+    vatRatePct = 0,
   ): Promise<{ id: string; url: string | null }> {
     const dueDate = addDays(issueDate, netDays)
 
@@ -752,12 +854,13 @@ async function configureRememhill(
       throw new Error(`Remembill invoice creation: could not extract id from response: ${invRawBody}`)
     }
 
-    // price is in öre (minor units): 1 kr = 100 öre. vat is 0–100 percent.
+    // price is in öre (minor units): 1 kr = 100 öre. vat is 0–100 percent,
+    // resolved by the caller from customer_vat_config (never hardcoded).
     // quantity defaults to 1 (period/flat fees); one-time fees with a real
     // per-unit breakdown pass their actual quantity so Remembill's invoice
     // shows e.g. "4 × 45,000" instead of a single lump-sum row.
     // POST /invoices/:id/rows is the only endpoint that reliably attaches a row.
-    const rowBody = { name: description, quantity, price: Math.round(unitPrice * 100), vat: 0 }
+    const rowBody = { name: description, quantity, price: Math.round(unitPrice * 100), vat: Math.round(vatRatePct) }
     const rowRes  = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
       method: 'POST', headers: h,
       body: JSON.stringify(rowBody),
@@ -809,8 +912,10 @@ async function configureRememhill(
     const description = `Base subscription — Year ${period.yearNum} (${fmtLabel(period.periodStart)} – ${fmtLabel(period.periodEnd)})`
 
     if (period.periodStart <= now && period.baseAmount > 0) {
+      const periodVat = computeVat(period.baseAmount, vatTreatmentForPush)
+      if (!periodVat.ok) throw new Error(`Billing blocked: ${periodVat.reason}`)
       const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-${pushStamp}-period-${period.yearNum}-${period.periodIndex}`)
-      const { id, url } = await pushInvoice(description, Math.round(period.baseAmount * 100) / 100, now, key, customerId, cur)
+      const { id, url } = await pushInvoice(description, Math.round(period.baseAmount * 100) / 100, now, key, customerId, cur, 1, periodVat.calculation.vatRatePct)
       plannedRows.push({
         year_num: period.yearNum, period_start: periodStartStr, period_end: periodEndStr,
         base_amount: period.baseAmount, currency: terms.currency ?? 'SEK', fee_label: null,
@@ -868,10 +973,12 @@ async function configureRememhill(
     const hasBreakdown = !!li && li.quantity > 0 && li.unit_price > 0
 
     if (isDue) {
+      const oneTimeVat = computeVat(amount, vatTreatmentForPush)
+      if (!oneTimeVat.ok) throw new Error(`Billing blocked: ${oneTimeVat.reason}`)
       const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-${pushStamp}-onetime-${fee.fee_label}`)
       const { id, url } = hasBreakdown
-        ? await pushInvoice(fee.fee_label, li.unit_price, feeDueDate ?? now, key, customerId, cur, li.quantity)
-        : await pushInvoice(fee.fee_label, amount, feeDueDate ?? now, key, customerId, cur)
+        ? await pushInvoice(fee.fee_label, li.unit_price, feeDueDate ?? now, key, customerId, cur, li.quantity, oneTimeVat.calculation.vatRatePct)
+        : await pushInvoice(fee.fee_label, amount, feeDueDate ?? now, key, customerId, cur, 1, oneTimeVat.calculation.vatRatePct)
       plannedRows.push({
         year_num: null, period_start: dueDateStr, period_end: dueDateStr,
         base_amount: amount, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
@@ -996,6 +1103,12 @@ export async function createAdHocInvoice(params: {
   const fmtDate = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
+  const adHocNet = lineItems.reduce((s, i) => s + i.quantity * i.unitPrice, 0)
+  const adHocVatTreatment = resolveVatTreatment(await getCustomerVatConfig(orgId, customerId), null)
+  const adHocVat = computeVat(adHocNet, adHocVatTreatment)
+  if (!adHocVat.ok) throw new Error(`Billing blocked: ${adHocVat.reason}`)
+  const adHocVatRatePct = Math.round(adHocVat.calculation.vatRatePct)
+
   if (billingPlatform === 'remembill') {
     const orgConfig = await getOrgConfig(orgId, 'remembill')
     const apiKey = orgConfig?.api_key ?? process.env.REMEMBILL_API_KEY
@@ -1026,7 +1139,7 @@ export async function createAdHocInvoice(params: {
     for (const item of lineItems) {
       await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
         method: 'POST', headers: h,
-        body: JSON.stringify({ name: item.description, quantity: item.quantity, price: Math.round(item.unitPrice * 100), vat: 0 }),
+        body: JSON.stringify({ name: item.description, quantity: item.quantity, price: Math.round(item.unitPrice * 100), vat: adHocVatRatePct }),
       })
     }
 
@@ -1042,6 +1155,14 @@ export async function createAdHocInvoice(params: {
   const orgConfig = await getOrgConfig(orgId, 'stripe')
   const stripeKey = orgConfig?.secret_key ?? process.env.STRIPE_SECRET_KEY!
   const stripe    = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+
+  let adHocTaxRateId: string | null = null
+  if (adHocVatTreatment.mode === 'rate' && adHocVatRatePct > 0) {
+    const existing = await stripe.taxRates.list({ active: true, limit: 100 })
+    const match = existing.data.find(tr => tr.display_name === 'VAT' && tr.percentage === adHocVatRatePct && !tr.inclusive)
+    adHocTaxRateId = match?.id
+      ?? (await stripe.taxRates.create({ display_name: 'VAT', percentage: adHocVatRatePct, inclusive: false })).id
+  }
 
   const inv = await stripe.invoices.create({
     customer:                       customerId,
@@ -1060,6 +1181,7 @@ export async function createAdHocInvoice(params: {
       description: item.quantity !== 1
         ? `${item.description} — ${item.quantity} × ${currency.toUpperCase()} ${item.unitPrice}`
         : item.description,
+      tax_rates:   adHocTaxRateId ? [adHocTaxRateId] : undefined,
     })
   }
 

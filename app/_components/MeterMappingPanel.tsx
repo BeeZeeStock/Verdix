@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { allMeterMappingsResolved } from '@/lib/meter-mapping-status'
 
 type MinimumCommitment = {
   mode: 'floor' | 'additive' | 'minimum_spend' | 'prepaid_commitment' | 'minimum_quantity'
@@ -21,6 +22,10 @@ type MeterSuggestion = {
   // — nothing is pre-selected, the reviewer must pick one explicitly.
   no_match?: boolean
   confirmed: boolean
+  /** meter = needs a real mapped usage source (default); meter_or_manual_input
+   *  = a mapped source OR a manual value satisfies it; derived/persisted_balance
+   *  are never meter-mapped at all — see lib/meter-mapping-status.ts. */
+  input_classification?: 'meter' | 'meter_or_manual_input' | 'derived' | 'persisted_balance'
   included_units: number
   overage_tiers: Array<{
     from_unit: number | null
@@ -106,9 +111,11 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
     return null
   }
 
-  const allConfirmed = suggestions.length > 0 && suggestions.every(s =>
-    get(s.contract_unit_type, 'confirmed', s.confirmed)
-  )
+  const allConfirmed = allMeterMappingsResolved(suggestions.map(s => ({
+    classification: s.input_classification ?? 'meter',
+    confirmed: get(s.contract_unit_type, 'confirmed', s.confirmed),
+    meter_key: get(s.contract_unit_type, 'meter_key', s.meter_key),
+  })))
 
   // A minimum commitment still awaiting a reviewer's interpretation blocks
   // "all confirmed" the same way an unmapped meter does — surfaced, never
@@ -306,10 +313,32 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
           const noMatch      = !meterKey
           const matchedMeter = meters.find(m => m.meter_key === meterKey)
           const minCommitment = resolveMinimumCommitment(s)
+          const classification = s.input_classification ?? 'meter'
 
           const choose = (key: string) => {
             setEdit(s.contract_unit_type, 'meter_key', key)
             setEdit(s.contract_unit_type, 'confirmed', true)
+          }
+
+          // derived/persisted_balance values are never meter-mapped — no
+          // picker to show, just a short note explaining where the value
+          // actually comes from. isMeterMappingResolved already treats these
+          // as resolved, so this never blocks "All confirmed".
+          if (classification === 'derived' || classification === 'persisted_balance') {
+            return (
+              <div key={s.contract_unit_type} className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(11,92,54,0.2)', background: '#F8FDF9' }}>
+                <div className="px-4 pt-4 pb-3">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-stone mb-1.5">Contract says</div>
+                  <div className="text-sm font-medium text-ink font-mono bg-cream px-2.5 py-1.5 rounded-lg inline-block mb-3">
+                    {s.contract_unit_type}
+                  </div>
+                  <div className="flex items-center gap-2 text-xs font-medium" style={{ color: '#0B5C36' }}>
+                    <i className="ti ti-circle-check-filled" style={{ fontSize: 14 }} />
+                    {classification === 'derived' ? 'Computed automatically from other usage data' : 'Tracked automatically by Verdix\'s credit ledger'}
+                  </div>
+                </div>
+              </div>
+            )
           }
 
           return (

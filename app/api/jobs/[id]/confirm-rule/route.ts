@@ -24,7 +24,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
 import type { RuleType } from '@/lib/rule-interpretation'
-import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation } from '@/lib/types'
+import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation, CreditEarnRule, CreditApplicationRule, PeriodProrationRule, AdditionalRecurringFee } from '@/lib/types'
 
 type Body = {
   ruleType: RuleType
@@ -50,6 +50,57 @@ function buildTierCalculation(approved: Record<string, unknown>): TierCalculatio
   }
 }
 
+// earn_rule: when/how this credit is earned. Same explicit-fields/existing-
+// fallback discipline as every other builder here — the top-level
+// interpretation's own requires_confirmation still resets to false (the
+// reviewer just confirmed THIS interpretation), but earn_rule has no
+// separate ambiguity gate of its own the way application_rule does below.
+function buildCreditEarnRule(approved: Record<string, unknown>, existing: CreditEarnRule | null | undefined): CreditEarnRule | null {
+  const source = approved.earn_rule as Record<string, unknown> | undefined
+  if (!source && !existing) return null
+  return {
+    trigger_metric_key: (source?.trigger_metric_key as string | null | undefined) ?? existing?.trigger_metric_key ?? null,
+    trigger_quantity: typeof source?.trigger_quantity === 'number' ? source.trigger_quantity : existing?.trigger_quantity ?? null,
+    trigger_comparator: (source?.trigger_comparator as CreditEarnRule['trigger_comparator']) ?? existing?.trigger_comparator ?? 'gt',
+    trigger_window: (source?.trigger_window as CreditEarnRule['trigger_window']) ?? existing?.trigger_window ?? 'billing_period',
+    consecutive_windows_required: typeof source?.consecutive_windows_required === 'number' ? source.consecutive_windows_required : existing?.consecutive_windows_required ?? 1,
+    window_anchor: (source?.window_anchor as CreditEarnRule['window_anchor']) ?? existing?.window_anchor ?? 'contract_start',
+    finalization_deadline_days: typeof source?.finalization_deadline_days === 'number' ? source.finalization_deadline_days : existing?.finalization_deadline_days ?? null,
+    requires_confirmation: false,
+    confirmation_reason: null,
+  }
+}
+
+// application_rule: what this credit may reduce, and its one-time/carry-
+// forward semantics. Unlike every other field in this file,
+// requires_confirmation here is DERIVED, not hardcoded false on confirm —
+// a reviewer confirming "this is a rebate worth 5% of X" does not, by
+// itself, resolve "and it may reduce which future charges" if the contract
+// genuinely doesn't say. Those are separate questions; this stays a live
+// gate on the credit-ledger's application step even after the interpretation
+// itself is confirmed.
+function buildCreditApplicationRule(approved: Record<string, unknown>, existing: CreditApplicationRule | null | undefined): CreditApplicationRule | null {
+  const source = approved.application_rule as Record<string, unknown> | undefined
+  if (!source && !existing) return null
+  const eligible_component_keys = (source?.eligible_component_keys as string[] | 'all' | null | undefined) ?? existing?.eligible_component_keys ?? null
+  const one_time = (source?.one_time as boolean | 'unclear' | undefined) ?? existing?.one_time ?? 'unclear'
+  const carry_forward = (source?.carry_forward as boolean | 'unclear' | undefined) ?? existing?.carry_forward ?? 'unclear'
+  const requiresConfirmation = eligible_component_keys === null || one_time === 'unclear' || carry_forward === 'unclear'
+  return {
+    computed_from_component_keys: (source?.computed_from_component_keys as string[] | null | undefined) ?? existing?.computed_from_component_keys ?? null,
+    eligible_component_keys,
+    excluded_component_keys: (source?.excluded_component_keys as string[] | undefined) ?? existing?.excluded_component_keys ?? [],
+    one_time,
+    carry_forward,
+    expiry_periods: (source?.expiry_periods as number | null | undefined) ?? existing?.expiry_periods ?? null,
+    availability: 'next_period',
+    requires_confirmation: requiresConfirmation,
+    confirmation_reason: requiresConfirmation
+      ? ((source?.confirmation_reason as string | null | undefined) ?? existing?.confirmation_reason ?? 'Application scope not fully resolved by the contract')
+      : null,
+  }
+}
+
 function buildServiceCreditInterpretation(approved: Record<string, unknown>, existing: ServiceCreditInterpretation | null | undefined): ServiceCreditInterpretation {
   return {
     trigger_type: (approved.trigger_type as ServiceCreditInterpretation['trigger_type']) ?? existing?.trigger_type ?? 'other',
@@ -63,6 +114,18 @@ function buildServiceCreditInterpretation(approved: Record<string, unknown>, exi
     settlement_period: (approved.settlement_period as ServiceCreditInterpretation['settlement_period']) ?? existing?.settlement_period ?? null,
     cash_redeemable: typeof approved.cash_redeemable === 'boolean' ? approved.cash_redeemable : existing?.cash_redeemable ?? false,
     interaction_note: existing?.interaction_note ?? null,
+    source_clause: (approved.source_clause as string | undefined) ?? existing?.source_clause ?? null,
+    requires_confirmation: false,
+    confirmation_reason: null,
+    earn_rule: buildCreditEarnRule(approved, existing?.earn_rule),
+    application_rule: buildCreditApplicationRule(approved, existing?.application_rule),
+  }
+}
+
+function buildPeriodProrationRule(approved: Record<string, unknown>, existing: PeriodProrationRule | null | undefined): PeriodProrationRule {
+  return {
+    reset_anchor: (approved.reset_anchor as PeriodProrationRule['reset_anchor']) ?? existing?.reset_anchor ?? 'calendar',
+    prorate_partial_periods: (approved.prorate_partial_periods as PeriodProrationRule['prorate_partial_periods']) ?? existing?.prorate_partial_periods ?? 'unclear',
     source_clause: (approved.source_clause as string | undefined) ?? existing?.source_clause ?? null,
     requires_confirmation: false,
     confirmation_reason: null,
@@ -106,7 +169,7 @@ export async function POST(
   // and billing configuration just by knowing/guessing a job id.
   const { data: ownedJob } = await supabaseServer
     .from('jobs')
-    .select('id')
+    .select('id, contract_terms_id')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .maybeSingle()
@@ -171,12 +234,46 @@ export async function POST(
   // Fetched before any write this request makes, so original_extraction is a
   // true "before" snapshot — the specific sub-object this confirmation is
   // about to overwrite, not a post-hoc reconstruction. Reused by Step 2
-  // below rather than queried twice.
-  const { data: termsRow } = await supabaseServer
-    .from('contract_terms')
-    .select('id, overage_tiers, escalators, discounts, service_credits')
-    .eq('job_id', jobId)
-    .maybeSingle()
+  // below rather than queried twice. Addressed via jobs.contract_terms_id
+  // (a single-row primary-key lookup) rather than querying contract_terms by
+  // job_id — the latter used .maybeSingle(), which silently returns no row
+  // (and no error surfaced to the caller) the moment more than one
+  // contract_terms row exists for a job, which re-extraction used to cause.
+  const { data: termsRow } = ownedJob.contract_terms_id
+    ? await supabaseServer
+        .from('contract_terms')
+        .select('id, overage_tiers, escalators, discounts, service_credits, ai_proposal_cache, base_fee_proration, additional_recurring_fees')
+        .eq('id', ownedJob.contract_terms_id)
+        .maybeSingle()
+    : { data: null }
+
+  // Server-side lookup of what the AI actually showed the reviewer at
+  // proposal time — never trusted from a client-supplied value, so the audit
+  // row can't diverge from the real proposal cache. Same cacheKey
+  // convention propose-rule/route.ts uses when writing to this cache
+  // (deliberately NOT auditUnitKey, which is a different addressing scheme
+  // for a different column).
+  const proposalCacheKey = ruleType === 'discount' ? `discount:${discountId}`
+    : ruleType === 'service_credit' ? `service_credit:${creditId}`
+    : ruleType === 'rule_interaction' ? `rule_interaction:${interactionKey}`
+    : ruleType === 'escalator' ? 'escalator'
+    : `${ruleType}:${contractUnitType}`
+  const proposalCache = (termsRow?.ai_proposal_cache as Record<string, { proposal?: { state?: string; proposed_interpretation?: unknown; reasoning?: string; calculation_preview?: unknown } } > | null) ?? {}
+  const cachedProposal = proposalCache[proposalCacheKey]?.proposal ?? null
+
+  // partial_period is always a reviewer's own policy decision by definition
+  // — the whole point of surfacing it is that the contract doesn't specify a
+  // treatment, so there is no "the contract said so" reading available.
+  // Everything else derives from what the AI actually proposed: an
+  // interpretation the AI itself marked as explicitly grounded in the
+  // contract text stays contract_derived once confirmed; anything the AI
+  // only recommended or couldn't determine at all required the reviewer's
+  // own judgment to resolve, so it's reviewer_policy even though a human
+  // clicked confirm on both.
+  const decisionProvenance: 'reviewer_policy' | 'contract_derived' =
+    ruleType === 'partial_period' || ruleType === 'base_fee_proration' || ruleType === 'recurring_fee_proration' ? 'reviewer_policy'
+      : cachedProposal?.state === 'clear_from_source' ? 'contract_derived'
+      : 'reviewer_policy'
 
   const originalExtraction: unknown = !termsRow ? null
     : ruleType === 'minimum_commitment' || ruleType === 'partial_period'
@@ -192,7 +289,7 @@ export async function POST(
           .find(c => c.credit_rule_id === (interactionKey ?? '').split('|').find(p => p.startsWith('service_credit:'))?.split(':')[1])?.interpretation ?? null
     : (termsRow.escalators as unknown[] ?? [])[0] ?? null
 
-  const { error: auditError } = await supabaseServer.from('commercial_rule_interpretations').insert({
+  let { error: auditError } = await supabaseServer.from('commercial_rule_interpretations').insert({
     job_id: jobId,
     rule_type: ruleType,
     contract_unit_type: auditUnitKey,
@@ -208,7 +305,27 @@ export async function POST(
     reviewer_name: reviewerName,
     affected_components: affectedComponents,
     propagation_status: {},
+    decision_provenance: decisionProvenance,
+    ai_proposal_state: cachedProposal,
   })
+
+  // decision_provenance/ai_proposal_state require a migration
+  // (20260821000003_commercial_rule_provenance.sql) that may not have run
+  // yet in every environment — same degrade-gracefully pattern already used
+  // for minimum_commitment_* (meter-mappings) and ai_proposal_cache
+  // (propose-rule): confirming a rule must not hard-fail just because this
+  // additional provenance metadata can't be stored yet.
+  if (auditError?.message?.includes('decision_provenance') || auditError?.message?.includes('ai_proposal_state')) {
+    console.warn('[confirm-rule] decision_provenance/ai_proposal_state columns missing — run the pending migration. Falling back without them.')
+    ;({ error: auditError } = await supabaseServer.from('commercial_rule_interpretations').insert({
+      job_id: jobId, rule_type: ruleType, contract_unit_type: auditUnitKey, revision_number: nextRevision,
+      is_current: true, source_clause: sourceClause ?? null, source_text: sourceClause ?? null,
+      original_extraction: originalExtraction, reviewer_input: reviewerInput ?? null,
+      ai_proposed_interpretation: aiProposedInterpretation, approved_interpretation: approvedInterpretation,
+      reviewer_email: reviewerEmail, reviewer_name: reviewerName, affected_components: affectedComponents,
+      propagation_status: {},
+    }))
+  }
 
   if (auditError) {
     // The audit table itself missing (pending migration) is a hard stop —
@@ -246,6 +363,29 @@ export async function POST(
           : t
       )
       const { error } = await supabaseServer.from('contract_terms').update({ overage_tiers: newTiers }).eq('id', termsRow.id)
+      propagation['contract_terms'] = error ? 'failed' : 'applied'
+    }
+  } else if (ruleType === 'base_fee_proration') {
+    // Job-level, like escalator — no contractUnitType/fee_label to address by.
+    const existing = (termsRow as { base_fee_proration?: PeriodProrationRule | null }).base_fee_proration
+    const { error } = await supabaseServer.from('contract_terms')
+      .update({ base_fee_proration: buildPeriodProrationRule(approvedInterpretation, existing) })
+      .eq('id', termsRow.id)
+    propagation['contract_terms'] = error ? 'failed' : 'applied'
+  } else if (ruleType === 'recurring_fee_proration') {
+    // contractUnitType is repurposed to carry the fee_label here — same
+    // "reuse the existing addressing column rather than a new migration"
+    // approach discount_rule_id/credit_rule_id already use.
+    if (!contractUnitType) {
+      propagation['contract_terms'] = 'failed'
+    } else {
+      const fees = ((termsRow as { additional_recurring_fees?: AdditionalRecurringFee[] | null }).additional_recurring_fees ?? []) as AdditionalRecurringFee[]
+      const newFees = fees.map(f =>
+        f.fee_label === contractUnitType
+          ? { ...f, proration: buildPeriodProrationRule(approvedInterpretation, f.proration) }
+          : f
+      )
+      const { error } = await supabaseServer.from('contract_terms').update({ additional_recurring_fees: newFees }).eq('id', termsRow.id)
       propagation['contract_terms'] = error ? 'failed' : 'applied'
     }
   } else if (ruleType === 'escalator') {

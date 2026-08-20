@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { monthCursor, computeDiscountMultiplier, computeEscalatorMultiplier } from './billing-writer'
+import { monthCursor, computeDiscountMultiplier, computeEscalatorMultiplier, computeBillingSchedule } from './billing-writer'
 import type { ContractTerms } from './types'
 
 // Only a handful of ContractTerms fields are ever read by the functions
@@ -105,5 +105,74 @@ describe('computeEscalatorMultiplier — renewal-triggered vs ordinary annual es
       }],
     })
     expect(computeEscalatorMultiplier(contractTerms, new Date(2028, 7, 17))).toBe(1)
+  })
+})
+
+describe('computeBillingSchedule — calendar-anchored base fee proration (TEST-PAY-002 scenario)', () => {
+  // Contract starts mid-month (17 Aug 2026), monthly platform fee of SEK
+  // 38,500 stated to bill "each calendar month" — a genuine partial first
+  // period (17-31 Aug) whose treatment the contract doesn't state.
+  const baseFixture = {
+    contract_start_date: '2026-08-17',
+    contract_term_months: 12,
+    billing_frequency: 'monthly' as const,
+    base_monthly_fee: 38_500,
+    currency: 'SEK',
+    discounts: [], escalators: [],
+  }
+
+  it('unresolved (requires_confirmation: true) withholds the stub period amount — never guesses full or prorated', () => {
+    const contractTerms = terms({
+      ...baseFixture,
+      base_fee_proration: { reset_anchor: 'calendar', prorate_partial_periods: 'unclear', requires_confirmation: true },
+    })
+    const periods = computeBillingSchedule(contractTerms)
+    expect(periods[0].periodStart).toEqual(new Date(2026, 7, 17))
+    expect(periods[0].periodEnd).toEqual(new Date(2026, 7, 31))
+    expect(periods[0].baseAmount).toBe(0)
+    // Subsequent full calendar months bill the full 38,500.
+    expect(periods[1].periodStart).toEqual(new Date(2026, 8, 1))
+    expect(periods[1].baseAmount).toBe(38_500)
+  })
+
+  it('reviewer confirms "full month applies" — the stub period bills the complete 38,500, not a fraction', () => {
+    const contractTerms = terms({
+      ...baseFixture,
+      base_fee_proration: { reset_anchor: 'calendar', prorate_partial_periods: false, requires_confirmation: false },
+    })
+    const periods = computeBillingSchedule(contractTerms)
+    expect(periods[0].baseAmount).toBe(38_500)
+  })
+
+  it('reviewer confirms "prorate by days" — the stub period (15 of 31 days) bills 15/31 of 38,500', () => {
+    const contractTerms = terms({
+      ...baseFixture,
+      base_fee_proration: { reset_anchor: 'calendar', prorate_partial_periods: true, requires_confirmation: false },
+    })
+    const periods = computeBillingSchedule(contractTerms)
+    // 17-31 Aug inclusive = 15 days, out of 31 days in August.
+    expect(periods[0].baseAmount).toBeCloseTo(38_500 * (15 / 31), 2)
+  })
+
+  it('no base_fee_proration at all (the common, unambiguous case) preserves the original contract-start-anchored schedule unchanged', () => {
+    const contractTerms = terms(baseFixture)
+    const periods = computeBillingSchedule(contractTerms)
+    expect(periods[0].periodStart).toEqual(new Date(2026, 7, 17))
+    expect(periods[0].periodEnd).toEqual(new Date(2026, 8, 16))
+    expect(periods[0].baseAmount).toBe(38_500)
+  })
+
+  it('an additional recurring fee with its own confirmed proration prorates independently of the base fee', () => {
+    const contractTerms = terms({
+      ...baseFixture,
+      base_fee_proration: { reset_anchor: 'calendar', prorate_partial_periods: false, requires_confirmation: false },
+      additional_recurring_fees: [{
+        fee_label: 'Support retainer', amount: 3_100, description: null,
+        proration: { reset_anchor: 'calendar', prorate_partial_periods: true, requires_confirmation: false },
+      }],
+    })
+    const periods = computeBillingSchedule(contractTerms)
+    // Base fee bills in full (38,500); the support retainer prorates (15/31 x 3,100).
+    expect(periods[0].baseAmount).toBeCloseTo(38_500 + 3_100 * (15 / 31), 2)
   })
 })

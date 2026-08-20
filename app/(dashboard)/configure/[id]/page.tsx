@@ -15,6 +15,7 @@ import { ruleCadenceLabel, partialPeriodLabel, cadenceNoun } from '@/lib/cadence
 import { optionsForRuleType, optionsForEdit, deriveSelectedOption, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload } from '@/lib/commercial-rule-status'
+import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
@@ -91,7 +92,14 @@ type Tier       = {
 }
 
 type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null; description?: string | null; manual_trigger?: boolean; metric_name?: string | null; rate_per_unit?: number | null }
-type AdditionalRecurringFee = { fee_label: string; amount: number; description?: string | null; billing_frequency?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null }
+type PeriodProrationRule = {
+  reset_anchor: 'contract_start' | 'calendar' | null
+  prorate_partial_periods: boolean | 'unclear'
+  requires_confirmation: boolean
+  confirmation_reason?: string | null
+  source_clause?: string | null
+}
+type AdditionalRecurringFee = { fee_label: string; amount: number; description?: string | null; billing_frequency?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null; proration?: PeriodProrationRule | null }
 
 type Terms = {
   id?: string
@@ -103,6 +111,7 @@ type Terms = {
   auto_renews?: boolean; renewal_notice_days?: number; renewal_term_months?: number | null
   currency?: string
   base_monthly_fee?: number; base_annual_fee?: number
+  base_fee_proration?: PeriodProrationRule | null
   billing_frequency?: string; payment_terms_days?: number; payment_terms_text?: string
   included_units?: number; included_unit_type?: string
   year_pricing?: Record<string, number>
@@ -710,7 +719,7 @@ function SectionHeader({ title, section, onSection }: { title: string; section?:
 // 'discount' is never produced by classifyItem (discounts aren't LineItems)
 // — it exists purely so RuleInterpretationCard's kind→ruleType mapping can
 // be reused for the Review panel's dedicated Discounts section below.
-type ItemKind = 'overage_tier' | 'escalator' | 'escalator_interpretation' | 'base_fee' | 'user_seat' | 'one_time' | 'minimum_commitment' | 'partial_period' | 'tier_calculation' | 'discount' | 'service_credit' | 'rule_interaction' | 'unknown'
+type ItemKind = 'overage_tier' | 'escalator' | 'escalator_interpretation' | 'base_fee' | 'user_seat' | 'one_time' | 'minimum_commitment' | 'partial_period' | 'tier_calculation' | 'discount' | 'service_credit' | 'rule_interaction' | 'base_fee_proration' | 'recurring_fee_proration' | 'unknown'
 // The subset of ItemKind that's metric-scoped rather than tied to any one
 // tariff-tier row — a single metric can need more than one of these at
 // once (see metricNeededKinds in ReviewPanel).
@@ -986,7 +995,15 @@ const ITEM_KIND_TO_RULE_TYPE: Partial<Record<ItemKind, RuleType>> = {
   discount: 'discount',
   service_credit: 'service_credit',
   rule_interaction: 'rule_interaction',
+  base_fee_proration: 'base_fee_proration',
+  recurring_fee_proration: 'recurring_fee_proration',
 }
+
+// base_fee_proration is job-level (one instance per job, unlike every other
+// rule type which is addressed by a real id) — a fixed sentinel keeps its
+// propose/interpret/confirm cache key and audit addressing stable across
+// every render and every re-open of the panel.
+const BASE_FEE_PRORATION_SENTINEL = '__base_fee__'
 
 // Reverse-maps a previously approved interpretation back to the structured
 // option the reviewer most likely picked — so "Edit interpretation" can
@@ -1494,6 +1511,21 @@ const TIER_METHOD_DISPLAY: Record<string, string> = {
   graduated: 'Graduated / staircase', volume: 'Volume / all-units', block: 'Block-based', custom: 'Custom',
 }
 
+// A rebate, a conditional/milestone credit, and a flat availability credit
+// are genuinely different rule types with different timing/basis mechanics
+// — labeling all of them "Service credit basis" hid that distinction from
+// reviewers. Keyed by ServiceCredit['credit_type'].
+const CREDIT_BASIS_LABEL: Record<string, string> = {
+  rebate: 'Rebate basis',
+  conditional_credit: 'Credit basis',
+  service_credit: 'Service credit basis',
+  promotional: 'Promotional credit basis',
+  earned: 'Earned credit basis',
+  usage: 'Usage credit basis',
+  waiver: 'Waiver basis',
+  other: 'Credit basis',
+}
+
 function formatFieldValue(field: string, value: unknown, currency: string): string {
   if (value == null) return '—'
   if (field === 'amount' && typeof value === 'number') return fmt(value, currency)
@@ -1828,6 +1860,9 @@ function ReviewPanel({
   escalators,
   discounts,
   serviceCredits,
+  baseFeeAmount,
+  baseFeeProration,
+  additionalRecurringFees,
   extractionNotes,
   contractStartDate,
   contractEndDate,
@@ -1849,6 +1884,9 @@ function ReviewPanel({
   escalators?: Escalator[]
   discounts?: Discount[]
   serviceCredits?: ServiceCredit[]
+  baseFeeAmount?: number | null
+  baseFeeProration?: PeriodProrationRule | null
+  additionalRecurringFees?: AdditionalRecurringFee[]
   // Free-text notes the extraction model writes for anything it noticed but
   // couldn't fit into a structured field — e.g. a penalty clause, which
   // is the opposite polarity from service_credits (an additional charge,
@@ -2328,7 +2366,7 @@ function ReviewPanel({
                         <div className="px-4 pt-4 pb-3">
                           <div className="flex items-center gap-1.5 mb-2.5">
                             <i className="ti ti-receipt-refund text-stone" style={{ fontSize: 12 }} />
-                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Service credit basis</span>
+                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">{CREDIT_BASIS_LABEL[c.credit_type ?? 'other'] ?? 'Credit basis'}</span>
                           </div>
                           <p className="text-sm font-medium text-ink leading-snug mb-3">{label}</p>
                           {/* Same as the Discounts section above — no separate
@@ -2389,6 +2427,74 @@ function ReviewPanel({
                           creditId={cand.creditId}
                           interactionKey={cand.interactionKey}
                           sourceClause={cand.overlapReason}
+                          currency={cur ?? 'EUR'}
+                          onApplied={onRefresh}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Partial-period treatment for the base fee and any additional
+              recurring fees — same independent-addressing pattern as
+              Discounts/Service credits above. Only surfaced once extraction
+              has actually flagged a calendar-anchored ambiguity
+              (requires_confirmation === true); a contract with no such
+              ambiguity (or one already resolved) shows nothing here. */}
+          {(() => {
+            const baseUnresolved = !!baseFeeProration?.requires_confirmation && !!baseFeeAmount
+            const unresolvedFees = (additionalRecurringFees ?? []).filter(f => f.proration?.requires_confirmation)
+            if (!baseUnresolved && unresolvedFees.length === 0) return null
+            return (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Partial-period treatment</p>
+                  <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                </div>
+                <div className="space-y-3">
+                  {baseUnresolved && (
+                    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FAC775', background: 'white' }}>
+                      <div className="px-4 pt-4 pb-3">
+                        <div className="flex items-center gap-1.5 mb-2.5">
+                          <i className="ti ti-calendar-exclamation text-stone" style={{ fontSize: 12 }} />
+                          <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Partial-period treatment</span>
+                        </div>
+                        <p className="text-sm font-medium text-ink leading-snug mb-1">Platform subscription fee</p>
+                        <p className="text-[11px] text-stone leading-relaxed mb-3">
+                          The agreement begins or ends part-way through a calendar {cadenceNoun(contractBillingFrequency)}, but the {fmt(baseFeeAmount, cur ?? 'EUR')} recurring fee resets on calendar boundaries. No explicit proration rule was identified.
+                        </p>
+                        <RuleInterpretationCard
+                          jobId={jobId}
+                          kind="base_fee_proration"
+                          contractUnitType={BASE_FEE_PRORATION_SENTINEL}
+                          cadenceLabel={cadenceNoun(contractBillingFrequency)}
+                          sourceClause={baseFeeProration?.source_clause ?? ''}
+                          currency={cur ?? 'EUR'}
+                          onApplied={onRefresh}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {unresolvedFees.map((f, i) => (
+                    <div key={f.fee_label ?? i} className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FAC775', background: 'white' }}>
+                      <div className="px-4 pt-4 pb-3">
+                        <div className="flex items-center gap-1.5 mb-2.5">
+                          <i className="ti ti-calendar-exclamation text-stone" style={{ fontSize: 12 }} />
+                          <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Partial-period treatment</span>
+                        </div>
+                        <p className="text-sm font-medium text-ink leading-snug mb-1">{f.fee_label}</p>
+                        <p className="text-[11px] text-stone leading-relaxed mb-3">
+                          The agreement begins or ends part-way through a calendar {cadenceNoun(f.billing_frequency ?? contractBillingFrequency)}, but the {fmt(f.amount, cur ?? 'EUR')} recurring fee resets on calendar boundaries. No explicit proration rule was identified.
+                        </p>
+                        <RuleInterpretationCard
+                          jobId={jobId}
+                          kind="recurring_fee_proration"
+                          contractUnitType={f.fee_label}
+                          cadenceLabel={cadenceNoun(f.billing_frequency ?? contractBillingFrequency)}
+                          sourceClause={f.proration?.source_clause ?? f.description ?? ''}
                           currency={cur ?? 'EUR'}
                           onApplied={onRefresh}
                         />
@@ -2514,12 +2620,32 @@ function ReviewPanel({
                               sitting right next to it just contradicted
                               whatever the AI card said underneath. */}
                           {!isRuleInterpretation && (
-                            <span
-                              className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                              style={{ color: scoreColor, background: `${scoreColor}15` }}
-                            >
-                              Needs confirmation
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              {/* "Clear from source" and "Needs confirmation"
+                                  answer different questions — source
+                                  confidence vs. the human-confirmation
+                                  workflow gate — and can both be true at
+                                  once (e.g. an explicit "SEK 195 per
+                                  chargeback" that's still awaiting a
+                                  reviewer's click). One must never imply the
+                                  absence of the other, so both render
+                                  alongside each other rather than one
+                                  replacing the other. */}
+                              {score >= 0.95 && !!item.source_section && (
+                                <span
+                                  className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                                  style={{ color: '#0B5C36', background: 'rgba(11,92,54,0.1)' }}
+                                >
+                                  Clear from source
+                                </span>
+                              )}
+                              <span
+                                className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                                style={{ color: scoreColor, background: `${scoreColor}15` }}
+                              >
+                                Needs confirmation
+                              </span>
+                            </div>
                           )}
                         </div>
 
@@ -2887,9 +3013,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   useEffect(() => {
     fetch(`/api/jobs/${id}/meter-mappings`)
       .then(r => r.json())
-      .then((res: { suggestions?: Array<{ confirmed: boolean }> }) => {
+      .then((res: { suggestions?: Array<{ confirmed: boolean; meter_key: string; input_classification?: 'meter' | 'meter_or_manual_input' | 'derived' | 'persisted_balance' }> }) => {
         const suggestions = res.suggestions ?? []
-        setMeterMappingSummary({ total: suggestions.length, confirmed: suggestions.filter(s => s.confirmed).length })
+        setMeterMappingSummary({
+          total: suggestions.length,
+          confirmed: suggestions.filter(s => isMeterMappingResolved({ classification: s.input_classification ?? 'meter', confirmed: s.confirmed, meter_key: s.meter_key })).length,
+        })
       })
       .catch(() => {})
   }, [id, refreshSignal])
@@ -4859,6 +4988,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           escalators={terms?.escalators}
           discounts={terms?.discounts}
           serviceCredits={terms?.service_credits}
+          baseFeeAmount={terms?.base_monthly_fee ?? terms?.base_annual_fee ?? null}
+          baseFeeProration={terms?.base_fee_proration}
+          additionalRecurringFees={terms?.additional_recurring_fees}
           extractionNotes={terms?.extraction_notes}
           contractStartDate={terms?.contract_start_date}
           contractEndDate={terms?.contract_end_date}

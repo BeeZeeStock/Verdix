@@ -59,3 +59,26 @@ export interface BillingLineItem {
   currency: string
   source_section?: string
 }
+
+// Whether a connector has a verified, working way to represent a credit
+// adjustment on an invoice. 'supported' means real API-level evidence exists
+// (Stripe's negative invoice-item amounts are standard, well-documented
+// behavior). 'unsupported_pending_vendor_guidance' means the opposite was
+// verified — for Remembill, a live sandbox probe (2026-08-21) found no
+// working mechanism: negative row amounts are rejected, rows have no
+// addressable id to update, no invoice-level discount/adjustment endpoint
+// exists, and the `credit_rows` field their own invoice schema exposes has
+// no discoverable write path despite trying every plausible variant. This is
+// a small, explicit lookup — not a capability framework — extend it only
+// when a connector's real, verified capability changes (e.g. once Remembill
+// confirms how credit_rows is actually populated).
+export type CreditRepresentationCapability = 'supported' | 'unsupported_pending_vendor_guidance'
+
+export const CREDIT_REPRESENTATION_CAPABILITY: Record<string, CreditRepresentationCapability> = {
+  stripe: 'supported',
+  remembill: 'unsupported_pending_vendor_guidance',
+}
+
+export function getCreditRepresentationCapability(billingPlatform: string): CreditRepresentationCapability {
+  return CREDIT_REPRESENTATION_CAPABILITY[billingPlatform] ?? 'unsupported_pending_vendor_guidance'
+}

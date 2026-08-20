@@ -4,7 +4,7 @@
 // summary / billing-test simulator (preview only) alike, so they can never
 // silently diverge from each other.
 import { supabaseServer } from '@/lib/supabase'
-import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining, isPartialWindow, type CadenceAnchorMode } from '@/lib/tariff'
+import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining, isPartialWindow, resolveWindowMinimum, type CadenceAnchorMode } from '@/lib/tariff'
 import { createRemembillUsageConnector } from '@/lib/connectors/usage/remembill'
 import type { ContractTerms, MinimumCommitment, TierCalculationMethod } from '@/lib/types'
 
@@ -251,12 +251,38 @@ export async function computeOverageForPeriod(params: {
         }))
         const includedUnits = cfg.included_units ?? 0
         // A minimum commitment guarantees a full cadence period's worth of
-        // payment — never applied to a window that hasn't closed (isOpen)
-        // or that the contract wasn't actually in effect for the whole span
-        // of (isPartial, calendar-anchored only). Usage-based charges still
-        // bill either way; only the minimum-floor/additive/etc. amount is withheld.
-        const applyMinimum = !window.isOpen && !window.isPartial
-        const overageResult = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, applyMinimum) : null
+        // payment — never applied to a window that hasn't closed (isOpen).
+        // For a window the contract wasn't in effect for the whole of
+        // (isPartial, calendar-anchored only), the applicable amount is
+        // resolved through the SAME confirmed prorate_partial_periods
+        // treatment real billing already uses for this exact question
+        // (lib/tariff.ts's resolveWindowMinimum) — full, prorated by days,
+        // or (while genuinely unconfirmed) withheld entirely. This used to
+        // unconditionally withhold the minimum for every partial window
+        // regardless of what a reviewer had actually confirmed; that was
+        // never wrong for an unresolved treatment, but silently ignored a
+        // reviewer's explicit "bill in full"/"prorate by days" decision
+        // once one existed. Usage-based charges still bill either way;
+        // only the minimum-floor/additive/etc. amount is affected.
+        let applyMinimum = !window.isOpen && !window.isPartial
+        let minimumTiers = tiers
+        if (!window.isOpen && window.isPartial) {
+          const activeMc = tiers.find(t => t.minimum_commitment && !t.minimum_commitment.requires_confirmation)?.minimum_commitment
+          if (activeMc) {
+            const wm = resolveWindowMinimum(
+              { start: window.start, end: window.end },
+              anchorDate, contractEndDate ?? window.end, cadenceAnchor,
+              activeMc,
+            )
+            if (!wm.requiresConfirmation && wm.amount != null) {
+              applyMinimum = true
+              minimumTiers = tiers.map(t => t.minimum_commitment === activeMc
+                ? { ...t, minimum_commitment: { ...activeMc, amount: wm.amount! } }
+                : t)
+            }
+          }
+        }
+        const overageResult = tiers.length > 0 ? computeMetricOverage(totalUnits, minimumTiers, includedUnits, applyMinimum) : null
         // A metric whose tier method (graduated/volume/block) isn't
         // confirmed can't be invoiced off — the same rate table produces
         // different totals under different methods, so there's no safe
@@ -273,7 +299,10 @@ export async function computeOverageForPeriod(params: {
         // timeline can show "Minimum floor applies: X" as a first-class
         // line instead of it being buried in the description tooltip only.
         const rawUsageCharge = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, false).amount : 0
-        const activeCommitment = tiers.find(t => t.minimum_commitment && !t.minimum_commitment.requires_confirmation)?.minimum_commitment
+        // Derived from minimumTiers (not tiers) so a prorated partial-window
+        // floor is reported at its actual, prorated amount rather than the
+        // contract's full, unprorated figure.
+        const activeCommitment = minimumTiers.find(t => t.minimum_commitment && !t.minimum_commitment.requires_confirmation)?.minimum_commitment
         const minimumFloorApplied = applyMinimum && overageEur !== rawUsageCharge
           && (activeCommitment ? (activeCommitment.mode === 'floor' || activeCommitment.mode === 'minimum_spend') : true)
         const minimumFloorAmount = minimumFloorApplied

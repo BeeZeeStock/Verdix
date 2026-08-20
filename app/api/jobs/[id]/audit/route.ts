@@ -6,6 +6,8 @@ import { parseBillingCSV } from '@/lib/billing-parser'
 import { reconcile } from '@/lib/reconciler'
 import { resolveStorageUrl } from '@/lib/storage'
 import { extractDocumentText } from '@/lib/ai-client'
+import { preserveStableRuleIds } from '@/lib/rule-id-stability'
+import type { Discount, ServiceCredit } from '@/lib/types'
 
 export async function POST(
   _req: NextRequest,
@@ -18,7 +20,7 @@ export async function POST(
 
   const { data: job, error: jobError } = await supabaseServer
     .from('jobs')
-    .select('id, name, currency, contract_pdf_url, billing_csv_url')
+    .select('id, name, currency, contract_pdf_url, billing_csv_url, contract_terms_id')
     .eq('id', id)
     .eq('org_id', org.orgId)
     .single()
@@ -30,7 +32,7 @@ export async function POST(
   await supabaseServer.from('jobs').update({ status: 'PROCESSING' }).eq('id', id)
 
   // Run pipeline asynchronously — respond immediately
-  runAuditPipeline(id, job.contract_pdf_url, job.billing_csv_url, job.currency, org.orgId).catch(async (err) => {
+  runAuditPipeline(id, job.contract_pdf_url, job.billing_csv_url, job.currency, org.orgId, job.contract_terms_id).catch(async (err) => {
     await supabaseServer.from('jobs').update({
       status: 'FAILED',
       error_message: err instanceof Error ? err.message : String(err),
@@ -46,6 +48,7 @@ async function runAuditPipeline(
   billingUrl: string | null,
   currency: string,
   orgId: string,
+  existingContractTermsId: string | null,
 ) {
   if (!contractUrl || !billingUrl) throw new Error('Missing contract or billing file')
 
@@ -67,10 +70,29 @@ async function runAuditPipeline(
   // Extract contract terms
   const contractTerms = await extractContractTerms(contractText)
 
-  // Save contract terms
+  // Same identity-preservation requirement as execute/route.ts — see comment
+  // there for why this matters (orphaned interpretations/audit rows on
+  // re-extraction otherwise).
+  if (existingContractTermsId) {
+    const { data: priorTerms } = await supabaseServer
+      .from('contract_terms')
+      .select('discounts, service_credits')
+      .eq('id', existingContractTermsId)
+      .maybeSingle()
+    if (priorTerms) {
+      contractTerms.discounts = preserveStableRuleIds(
+        (priorTerms.discounts ?? []) as Discount[], contractTerms.discounts ?? [], 'discount_rule_id',
+      )
+      contractTerms.service_credits = preserveStableRuleIds(
+        (priorTerms.service_credits ?? []) as ServiceCredit[], contractTerms.service_credits ?? [], 'credit_rule_id',
+      )
+    }
+  }
+
+  // Save contract terms — upsert on job_id, see execute/route.ts for why.
   const { data: savedTerms } = await supabaseServer
     .from('contract_terms')
-    .insert({ job_id: jobId, ...contractTerms })
+    .upsert({ job_id: jobId, ...contractTerms }, { onConflict: 'job_id' })
     .select('id')
     .single()
 

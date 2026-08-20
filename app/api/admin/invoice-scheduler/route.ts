@@ -19,8 +19,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl } from '@/lib/billing-writer'
 import { computeOverageForPeriod, type OverageLineItem } from '@/lib/usage-pull'
+import { applyCreditLedgerForPeriod } from '@/lib/credit-ledger-service'
 import type { ContractTerms } from '@/lib/types'
 import { isAuthorizedCronRequest } from '@/lib/cron-auth'
+import { resolveVatTreatment, computeVat, reconcileGrossAmount } from '@/lib/vat'
+import { getCustomerVatConfig, getInvoiceVatOverride } from '@/lib/vat-service'
 
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCronRequest(req)) {
@@ -110,6 +113,8 @@ export async function GET(req: NextRequest) {
       // recorded on that period's own (necessarily $0, prematurely-computed)
       // invoice.
       let overageLineItems: OverageLineItem[] = []
+      let scanStart: string | null = null
+      let scanEnd: string | null = null
       if (row.invoice_type === 'period') {
         const { data: prevPeriod } = await supabaseServer
           .from('planned_invoices')
@@ -127,11 +132,11 @@ export async function GET(req: NextRequest) {
         // period (e.g. a monthly-measured metric inside a quarterly-billed
         // first invoice) can still have closed windows to bill even before
         // any invoice has ever gone out.
-        const scanStart = prevPeriod?.period_start ?? terms.contract_start_date
+        scanStart = prevPeriod?.period_start ?? terms.contract_start_date
         // toISOString() converts to UTC first — on a server not running in
         // UTC that silently shifts this a day off from the local calendar
         // date d was built from. Format from d's own local fields instead.
-        const scanEnd    = prevPeriod?.period_end
+        scanEnd    = prevPeriod?.period_end
           ?? (() => {
             const d = new Date(row.period_start + 'T00:00:00')
             d.setDate(d.getDate() - 1)
@@ -148,6 +153,74 @@ export async function GET(req: NextRequest) {
           })
         }
       }
+
+      // ── Credits/rebates ──────────────────────────────────────────────────
+      // Computed once, platform-agnostically, before either downstream
+      // branch runs — the fail-closed capability gate must be checked (and
+      // must be able to throw) BEFORE a Remembill invoice is ever created,
+      // not after. Zero reservation happens in the blocked case, so a
+      // credit whose invoice can't be sent correctly is never consumed.
+      let creditLineItems: import('@/lib/credit-ledger-service').CreditLineItem[] = []
+      if (row.invoice_type === 'period') {
+        const fullComponentPool = [
+          { key: 'platform_fee', amountMinor: Math.round(Number(row.base_amount) * 100) },
+          ...overageLineItems.map(i => ({ key: i.meter_key, amountMinor: Math.round(i.amount * 100) })),
+        ]
+        const outcome = await applyCreditLedgerForPeriod({
+          jobId: row.job_id, orgId: job.org_id, terms, customerId, billingPlatform,
+          plannedInvoiceId: row.id, periodStart: row.period_start, periodEnd: row.period_end,
+          fullComponentPool,
+          scanStart: new Date((scanStart ?? row.period_start) + 'T00:00:00'),
+          scanEnd: new Date((scanEnd ?? row.period_end) + 'T00:00:00'),
+        })
+        if (outcome.status === 'blocked') {
+          // Fail closed — do not create/send an invoice missing a
+          // contractual credit. Nothing was reserved, so the balance stays
+          // fully available for the next attempt (e.g. once a verified
+          // Remembill representation exists). Verdix's own calculated
+          // figures (gross/available/proposed/net) remain inspectable via
+          // the credit_ledger_entries rows the earning pass already wrote,
+          // independent of this delivery block.
+          throw new Error(outcome.reason)
+        }
+        if (outcome.status === 'applied') creditLineItems = outcome.creditLineItems
+      }
+
+      // ── VAT ──────────────────────────────────────────────────────────────
+      // Verdix owns the complete invoice instruction — net/VAT/gross is
+      // calculated here, once, platform-agnostically, before either
+      // downstream branch runs (same placement discipline as the credit
+      // ledger's fail-closed gate above). Neither Remembill nor Stripe ever
+      // decides which rate applies; they only mechanically apply the value
+      // already resolved here. Invoice-level override (if ever set for this
+      // specific planned_invoice) wins over the customer's standing default.
+      const netAmount = Number(row.base_amount)
+        + overageLineItems.reduce((s, i) => s + i.amount, 0)
+        + creditLineItems.reduce((s, i) => s + i.amount, 0)
+      const [customerVat, invoiceVatOverride] = await Promise.all([
+        getCustomerVatConfig(job.org_id, customerId),
+        getInvoiceVatOverride(row.id),
+      ])
+      const vatTreatment = resolveVatTreatment(customerVat, invoiceVatOverride)
+      const vatResult = computeVat(netAmount, vatTreatment)
+      if (!vatResult.ok) {
+        // Fail closed — do not create/send an invoice with an unconfirmed
+        // VAT treatment. Mirrors the credit ledger's identical throw-before-
+        // either-platform-branch pattern above.
+        throw new Error(`Billing blocked: ${vatResult.reason}`)
+      }
+      const { netAmount: vatNetAmount, vatRatePct, vatAmount, grossAmount: expectedGrossAmount } = vatResult.calculation
+      const vatModeUsed = vatTreatment.mode
+      const vatSourceUsed = invoiceVatOverride ? 'override' : 'customer_default'
+      // Stripe Tax Rate objects are reused across invoices (one per unique
+      // percentage), not recreated every run — created lazily just before
+      // the Stripe branch needs one, so the Remembill branch never touches
+      // the Stripe SDK/API at all.
+      let stripeTaxRateId: string | null = null
+      // The platform's own returned total for the created invoice, when
+      // fetchable — compared against expectedGrossAmount below to detect a
+      // real VAT/rounding divergence rather than assuming they match.
+      let actualGrossAmount: number | null = null
 
       // ── Remembill path ────────────────────────────────────────────────────
       if (billingPlatform === 'remembill') {
@@ -186,18 +259,27 @@ export async function GET(req: NextRequest) {
         // Add line item row (amount in minor units, e.g. öre for SEK).
         // Real quantity/unit_price when we have a per-unit breakdown, else
         // the previous flat quantity=1/total-as-price behavior.
+        // vat: integer percent (0-100), per Remembill's row schema — never
+        // omitted (was previously hardcoded to 0 elsewhere in this
+        // codebase; this row body simply never included the field at all).
+        // Remembill only accepts a per-row percentage, not an invoice-level
+        // VAT object or a "code" — the same resolved rate is applied to
+        // every row of a given invoice; Verdix's own net/VAT/gross figures
+        // (computed above, persisted below) remain the authoritative record
+        // regardless of how Remembill's own totals present it.
+        const rbVat = Math.round(vatRatePct)
         await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
           method: 'POST', headers: rbH,
           body: JSON.stringify(hasBreakdown
-            ? { description, quantity: rowQuantity, unit_price: Math.round(rowUnitPrice * 100) }
-            : { description, quantity: 1, unit_price: Math.round(Number(row.base_amount) * 100) }),
+            ? { description, quantity: rowQuantity, unit_price: Math.round(rowUnitPrice * 100), vat: rbVat }
+            : { description, quantity: 1, unit_price: Math.round(Number(row.base_amount) * 100), vat: rbVat }),
         })
 
         // Overage rows — one per metered item with usage above its included allowance
         for (const item of overageLineItems) {
           await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
             method: 'POST', headers: rbH,
-            body: JSON.stringify({ description: item.description, quantity: 1, unit_price: Math.round(item.amount * 100) }),
+            body: JSON.stringify({ description: item.description, quantity: 1, unit_price: Math.round(item.amount * 100), vat: rbVat }),
           }).catch(err => console.error(`[invoice-scheduler/remembill] overage row failed for meter '${item.meter_key}'`, err))
         }
 
@@ -208,6 +290,21 @@ export async function GET(req: NextRequest) {
 
         sentInvoiceId  = invoiceId
         sentInvoiceUrl = remembillAppUrl(`/invoices/${invoiceId}`)
+
+        // Reconcile: read the invoice back and compare Remembill's own
+        // returned total against Verdix's expected gross — never assumed
+        // to match just because the calls above succeeded.
+        try {
+          const getRes = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}`, { headers: rbH })
+          if (getRes.ok) {
+            const invJson = await getRes.json() as Record<string, unknown>
+            const invObj = (invJson.invoice ?? invJson.data ?? invJson) as Record<string, unknown>
+            const rawTotal = invObj.total ?? invObj.total_amount ?? invObj.amount_total
+            if (typeof rawTotal === 'number') actualGrossAmount = rawTotal / 100
+          }
+        } catch (err) {
+          console.error('[invoice-scheduler/remembill] post-send reconciliation fetch failed', err)
+        }
 
       // ── Stripe path (default) ─────────────────────────────────────────────
       } else {
@@ -224,6 +321,20 @@ export async function GET(req: NextRequest) {
 
         const { default: Stripe } = await import('stripe')
         const stripe = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
+
+        // A Stripe Tax Rate object, reused across invoices for the same
+        // percentage rather than recreated every run — this is purely a
+        // mechanical container for a rate Verdix already decided, not tax
+        // determination: Stripe never picks the percentage, it only applies
+        // the one already resolved above. zero_rated needs no tax_rates
+        // attachment at all (no monetary effect either way).
+        if (vatModeUsed === 'rate' && vatRatePct > 0) {
+          const existing = await stripe.taxRates.list({ active: true, limit: 100 })
+          const match = existing.data.find(tr => tr.display_name === 'VAT' && tr.percentage === vatRatePct && !tr.inclusive)
+          stripeTaxRateId = match?.id
+            ?? (await stripe.taxRates.create({ display_name: 'VAT', percentage: vatRatePct, inclusive: false })).id
+        }
+        const taxRates = stripeTaxRateId ? [stripeTaxRateId] : undefined
 
         const inv = await stripe.invoices.create({
           customer:                       customerId,
@@ -246,6 +357,7 @@ export async function GET(req: NextRequest) {
             amount:      Math.round(Number(row.base_amount) * 100),
             currency:    cur,
             description,
+            tax_rates:   taxRates,
           })
         }
 
@@ -257,26 +369,57 @@ export async function GET(req: NextRequest) {
             amount:      Math.round(item.amount * 100),
             currency:    cur,
             description: item.description,
+            tax_rates:   taxRates,
             metadata: { metric_source: item.metric_source, meter_key: item.meter_key, total_units: String(item.total_units), verdix_job: row.job_id },
           })
+        }
+
+        // ── Credit/rebate adjustments (Stripe supports negative invoice-item
+        // amounts natively — standard, well-documented behavior). Remembill
+        // never reaches this point with a non-empty creditLineItems: the
+        // fail-closed gate above already threw before either platform branch
+        // if a Remembill job needed one.
+        for (const item of creditLineItems) {
+          await stripe.invoiceItems.create({
+            customer:    customerId,
+            invoice:     inv.id,
+            amount:      Math.round(item.amount * 100),
+            currency:    cur,
+            description: item.description,
+            tax_rates:   taxRates,
+            metadata: { credit_rule_id: item.credit_rule_id, verdix_job: row.job_id },
+          }, { idempotencyKey: `verdix-credit-${row.id}-${item.credit_rule_id}` })
         }
 
         const finalized = await stripe.invoices.finalizeInvoice(inv.id)
         sentInvoiceId  = inv.id
         sentInvoiceUrl = finalized.hosted_invoice_url ?? null
+        // Reconcile: Stripe's own computed total (net + its own tax
+        // calculation off the attached tax_rates) against Verdix's expected
+        // gross — never assumed to match just because finalization succeeded.
+        if (typeof finalized.total === 'number') actualGrossAmount = finalized.total / 100
       }
 
       // ── Mark planned_invoice as sent ──────────────────────────────────────
       await supabaseServer
         .from('planned_invoices')
         .update({
-          status:              'sent',
-          stripe_invoice_id:   sentInvoiceId,
-          stripe_invoice_url:  sentInvoiceUrl,
-          sent_at:             new Date().toISOString(),
-          error_message:       null,
-          overage_line_items:  overageLineItems,
-          overage_total:       overageLineItems.reduce((s, i) => s + i.amount, 0),
+          status:                    'sent',
+          stripe_invoice_id:         sentInvoiceId,
+          stripe_invoice_url:        sentInvoiceUrl,
+          sent_at:                   new Date().toISOString(),
+          error_message:             null,
+          overage_line_items:        overageLineItems,
+          overage_total:             overageLineItems.reduce((s, i) => s + i.amount, 0),
+          credit_line_items:         creditLineItems,
+          credit_total:              creditLineItems.reduce((s, i) => s + i.amount, 0),
+          vat_mode:                  vatModeUsed,
+          vat_rate_pct:              vatModeUsed === 'rate' ? vatRatePct : null,
+          vat_source:                vatSourceUsed,
+          net_amount:                vatNetAmount,
+          vat_amount:                vatAmount,
+          gross_amount:              expectedGrossAmount,
+          vat_reconciliation_status: reconcileGrossAmount(expectedGrossAmount, actualGrossAmount),
         })
         .eq('id', row.id)
 

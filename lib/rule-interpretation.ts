@@ -5,7 +5,7 @@
 // API route and the review-panel UI (describeWhatWillChange in particular
 // must never diverge between what the API reports and what the UI shows).
 
-export type RuleType = 'minimum_commitment' | 'escalator' | 'partial_period' | 'discount' | 'tier_calculation' | 'service_credit' | 'rule_interaction'
+export type RuleType = 'minimum_commitment' | 'escalator' | 'partial_period' | 'discount' | 'tier_calculation' | 'service_credit' | 'rule_interaction' | 'base_fee_proration' | 'recurring_fee_proration'
 
 export type StructuredOption = {
   id: string
@@ -97,6 +97,11 @@ export function optionsForRuleType(ruleType: RuleType, cadenceLabel?: string): S
   switch (ruleType) {
     case 'minimum_commitment': return MINIMUM_COMMITMENT_OPTIONS
     case 'partial_period': return getPartialPeriodOptions(cadenceLabel)
+    // Same underlying question as partial_period (prorate or bill in full?),
+    // just applied to a base/recurring fee instead of a metric minimum — the
+    // options genuinely are identical, not a placeholder reuse.
+    case 'base_fee_proration': return getPartialPeriodOptions(cadenceLabel)
+    case 'recurring_fee_proration': return getPartialPeriodOptions(cadenceLabel)
     case 'escalator': return ESCALATOR_OPTIONS
     case 'discount': return DISCOUNT_OPTIONS
     case 'tier_calculation': return TIER_CALCULATION_OPTIONS
@@ -126,7 +131,7 @@ export function deriveSelectedOption(ruleType: RuleType, approved: Record<string
     if (approved.index === 'fixed_pct') return 'fixed_pct'
     return 'other'
   }
-  if (ruleType === 'partial_period') {
+  if (ruleType === 'partial_period' || ruleType === 'base_fee_proration' || ruleType === 'recurring_fee_proration') {
     if (approved.prorate_partial_periods === false) return 'full'
     if (approved.prorate_partial_periods === true && approved.proration_method === 'days') return 'prorate_days'
     if (approved.prorate_partial_periods === true && approved.proration_method === 'months') return 'prorate_months'
@@ -198,6 +203,13 @@ export type PartialPeriodContext = {
   contractEndDate: string | null
   measurementPeriod: string | null
   minimumAmount: number | null
+  // Lets the same partial-period question ("prorate or bill in full for a
+  // partial calendar period?") read naturally whether it's asked about a
+  // metric's minimum commitment (the original case) or a base/recurring fee
+  // (base_fee_proration / recurring_fee_proration) — the mechanics and
+  // options are identical either way, only the noun in the prompt changes.
+  // Defaults to 'minimum commitment' so every existing caller is unaffected.
+  subjectNoun?: string
 }
 
 export type EscalatorContext = {
@@ -290,7 +302,8 @@ export function buildPartialPeriodPrompt(
   reviewerInput: string,
   selectedOption?: string,
 ): string {
-  return `A SaaS contract runs from ${context.contractStartDate ?? 'unknown'} to ${context.contractEndDate ?? 'unknown'}, but the "${context.contractUnitType}" metric's minimum commitment resets on calendar-quarter boundaries stated in the contract, creating a partial first and/or final quarter. A human reviewer is resolving how the ${context.minimumAmount != null ? `${context.minimumAmount} ${context.currency}` : ''} minimum should apply to a period the contract wasn't in effect for the whole of.
+  const subject = context.subjectNoun ?? 'minimum commitment'
+  return `A SaaS contract runs from ${context.contractStartDate ?? 'unknown'} to ${context.contractEndDate ?? 'unknown'}, but the "${context.contractUnitType}" ${subject} resets on calendar boundaries stated in the contract, creating a partial first and/or final period. A human reviewer is resolving how the ${context.minimumAmount != null ? `${context.minimumAmount} ${context.currency}` : ''} ${subject} should apply to a period the contract wasn't in effect for the whole of.
 
 Source clause: ${context.sourceClause ?? '(not captured)'}
 ${optionContext('partial_period', selectedOption)}
@@ -476,6 +489,8 @@ const REQUIRED_FIELDS: Record<RuleType, string[]> = {
   tier_calculation: ['method', 'calculation_summary'],
   service_credit: ['trigger_type', 'credit_basis', 'basis_component'],
   rule_interaction: ['resolution', 'note'],
+  base_fee_proration: ['prorate_partial_periods'],
+  recurring_fee_proration: ['prorate_partial_periods'],
 }
 
 // Only a tiered/volume discount needs its tier structure spelled out — a
@@ -764,15 +779,21 @@ Specific guidance: language like "for the first X units... for units above X..."
 
 export type ServiceCreditProposalContext = ServiceCreditContext
 export function buildServiceCreditProposalPrompt(context: ServiceCreditProposalContext): string {
-  return `A SaaS contract has a service-credit clause. Before any human reviewer has said anything, determine Verdix's own best interpretation of its calculation basis.
+  return `A SaaS contract has a service-credit/rebate clause. Before any human reviewer has said anything, determine Verdix's own best interpretation of its calculation basis AND when/how it applies.
 
 Source clause / description: ${context.sourceClause ?? context.description}
 Extraction's own classification: ${context.creditType}
 Stated value: ${context.statedPct != null ? `${context.statedPct}%` : context.statedAmount != null ? `${context.statedAmount} ${context.currency}` : 'not captured as a single value'}
 
-${proposalSchemaBlock('{"trigger_type": "sla_breach"|"usage_threshold"|"promotional"|"earned_milestone"|"other", "trigger_description": "<plain-English condition>", "credit_basis": "pct_of_period_fee"|"pct_of_affected_component"|"flat_amount"|"usage_units", "basis_component": "<what the value is computed from>", "credit_value": <number>, "cap_amount": <number or null>, "cap_pct": <number or null>, "settlement_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"per_incident"|null, "cash_redeemable": true|false, "calculation_summary": "<one sentence>"}')}
+${proposalSchemaBlock('{"trigger_type": "sla_breach"|"usage_threshold"|"promotional"|"earned_milestone"|"other", "trigger_description": "<plain-English condition>", "credit_basis": "pct_of_period_fee"|"pct_of_affected_component"|"flat_amount"|"usage_units", "basis_component": "<what the value is computed from>", "credit_value": <number>, "cap_amount": <number or null>, "cap_pct": <number or null>, "settlement_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"per_incident"|null, "cash_redeemable": true|false, "earn_rule": {"trigger_metric_key": "<metric name, e.g. transactions>", "trigger_quantity": <number>, "trigger_comparator": "gt"|"gte", "trigger_window": "calendar_month"|"billing_period"|"contract_year"|"per_incident", "consecutive_windows_required": <number, 1 if the clause does not require a streak>, "window_anchor": "contract_start"|"calendar", "finalization_deadline_days": <number or null>}, "application_rule": {"computed_from_component_keys": [<string>]|null, "eligible_component_keys": [<string>]|"all"|null, "excluded_component_keys": [<string>], "one_time": true|false|"unclear", "carry_forward": true|false|"unclear"}, "calculation_summary": "<one sentence>"}')}
 
-Specific guidance: the trigger condition, credit value, cap, and settlement timing are usually stated explicitly — resolve these as "clear_from_source" when the wording is direct. basis_component (WHAT the percentage/amount is computed from — e.g. "the affected month's subscription fee") is the field most often left genuinely ambiguous, especially when another rule (like an introductory discount) could change what "the fee" means for a given period — if the clause doesn't specify and no other context resolves it, use "decision_required" for basis_component specifically rather than assuming the standard/undiscounted fee.`
+Specific guidance, by field:
+- trigger condition, credit value, cap, and settlement timing are usually stated explicitly — resolve these as "clear_from_source" when the wording is direct.
+- basis_component (WHAT the percentage/amount is computed from — e.g. "the affected month's subscription fee") is often genuinely ambiguous, especially when another rule (like an introductory discount) could change what "the fee" means for a given period — if the clause doesn't specify and no other context resolves it, use "decision_required" for basis_component specifically rather than assuming the standard/undiscounted fee.
+- earn_rule.consecutive_windows_required: only set above 1 when the clause explicitly requires a streak across multiple windows (e.g. "in each of 3 consecutive calendar months") — a single-period threshold is 1, never inferred as a streak just because it recurs.
+- application_rule.eligible_component_keys is the single most commonly UNSTATED field — a clause can state a credit's SIZE (e.g. "5% of transaction-processing fees paid") without ever stating what future charges that resulting credit may reduce. Do not assume it may offset "all amounts payable" or "the same component it was computed from" unless the contract actually says so. If the clause is silent on what the credit may be applied against, set eligible_component_keys to null and mark this field's own requires_confirmation true in your reasoning — this is one of the most important distinctions in this prompt, and getting it wrong risks a credit silently reducing the wrong charge.
+- application_rule.carry_forward: only true when the clause explicitly says the credit persists/carries forward until consumed. A clause establishing that a credit applies to FUTURE periods (i.e. not the same period it was earned) is not, by itself, evidence that it survives indefinitely — those are different questions. If unstated, use "unclear", never default to true just because the credit is clearly not same-period-applicable.
+- application_rule.one_time: true only when the clause says the credit can be earned once ("a one-time credit," "cannot be earned again"). If the clause is silent on repeatability, use "unclear" rather than assuming either repeatable or one-time.`
 }
 
 export type RuleInteractionProposalContext = RuleInteractionContext

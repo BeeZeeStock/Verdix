@@ -8,6 +8,8 @@ import { maskText, restoreTokensInObject } from '@/lib/pii-detector'
 import { computeMonthlyBaseRate, computeEscalatorMultiplier, computeDiscountMultiplier, monthCursor } from '@/lib/billing-writer'
 import { billingInterval } from '@/lib/stripe-meter'
 import { extractDocumentText, isAIInfraError, AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
+import { preserveStableRuleIds } from '@/lib/rule-id-stability'
+import type { Discount, ServiceCredit } from '@/lib/types'
 
 
 // Allow up to 5 minutes — PDF extraction + two Anthropic calls can exceed the default 10s limit
@@ -24,7 +26,7 @@ export async function POST(
 
   const { data: job, error: jobError } = await supabaseServer
     .from('jobs')
-    .select('id, name, currency, contract_pdf_url')
+    .select('id, name, currency, contract_pdf_url, contract_terms_id')
     .eq('id', id)
     .eq('org_id', org.orgId)
     .single()
@@ -36,7 +38,7 @@ export async function POST(
   await supabaseServer.from('jobs').update({ execute_status: 'EXTRACTING' }).eq('id', id)
 
   waitUntil(
-    runExecutePipeline(id, org.orgId, job.contract_pdf_url, job.currency).catch(async (err) => {
+    runExecutePipeline(id, org.orgId, job.contract_pdf_url, job.currency, job.contract_terms_id).catch(async (err) => {
       const rawMessage = err instanceof Error ? err.message : String(err)
       // AI-infra failures (out of Anthropic credit, rate-limited, timed out,
       // etc.) are an admin problem to fix, not something a customer can act
@@ -54,7 +56,7 @@ export async function POST(
   return NextResponse.json({ jobId: id, status: 'EXTRACTING' })
 }
 
-async function runExecutePipeline(jobId: string, orgId: string, contractUrl: string | null, currency: string) {
+async function runExecutePipeline(jobId: string, orgId: string, contractUrl: string | null, currency: string, existingContractTermsId: string | null) {
   if (!contractUrl) throw new Error('Missing contract file')
 
   // Reuse detect-pii's extraction if this job already went through PII
@@ -89,15 +91,42 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
   // Restore PII tokens in string fields so the saved record has real values.
   const terms = restoreTokensInObject(rawTerms, reverseMap)
 
+  // Re-extraction must not reassign discount_rule_id/credit_rule_id for
+  // items that already existed — that would orphan any reviewer-confirmed
+  // .interpretation and the commercial_rule_interpretations audit rows that
+  // address it by that id. Match by description against whatever this job's
+  // prior contract_terms row had (if any) and carry the id + interpretation
+  // forward; a genuinely new item still gets a fresh id via
+  // assignDiscountRuleIds/assignServiceCreditRuleIds inside extraction.
+  if (existingContractTermsId) {
+    const { data: priorTerms } = await supabaseServer
+      .from('contract_terms')
+      .select('discounts, service_credits')
+      .eq('id', existingContractTermsId)
+      .maybeSingle()
+    if (priorTerms) {
+      terms.discounts = preserveStableRuleIds(
+        (priorTerms.discounts ?? []) as Discount[], terms.discounts ?? [], 'discount_rule_id',
+      )
+      terms.service_credits = preserveStableRuleIds(
+        (priorTerms.service_credits ?? []) as ServiceCredit[], terms.service_credits ?? [], 'credit_rule_id',
+      )
+    }
+  }
+
   // Build proposed line items from contract terms
   const lineItems = buildLineItems(terms, currency)
 
   // Save contract terms — pick only known schema columns explicitly so any
-  // novel LLM-extracted field (e.g. ramp_schedule) doesn't break the insert.
+  // novel LLM-extracted field (e.g. ramp_schedule) doesn't break the write.
   // The full raw extraction is stored in raw_extraction for auditability.
+  // Upsert on job_id (contract_terms_job_id_unique) rather than insert —
+  // contract_terms is one canonical row per job; a plain insert on
+  // re-extraction used to silently create a second row, breaking confirm-rule
+  // and letting other routes read stale data.
   const { data: savedTerms, error: termsError } = await supabaseServer
     .from('contract_terms')
-    .insert({
+    .upsert({
       job_id:               jobId,
       // Identity
       contract_id:          terms.contract_id,
@@ -137,7 +166,7 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
       number_format:        terms.number_format ?? 'dot',
       // Full LLM output preserved for future fields
       raw_extraction:       terms,
-    })
+    }, { onConflict: 'job_id' })
     .select('id')
     .single()
   if (termsError) throw new Error(`Failed to save contract terms: ${termsError.message}`)

@@ -104,16 +104,21 @@ export async function POST(
 
   // Context is built entirely from this job's own stored data — never from
   // client-supplied contract fields — so a reviewer can't smuggle arbitrary
-  // "facts" about the contract into the AI prompt.
+  // "facts" about the contract into the AI prompt. Addressed via
+  // jobs.contract_terms_id (a single-row primary-key lookup) rather than an
+  // unordered jobs -> contract_terms(...) join + [0] — see propose-rule for
+  // why that matters once re-extraction is in play.
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('id, org_id, contract_terms ( currency, overage_tiers, escalators, discounts, service_credits, contract_start_date, contract_end_date )')
+    .select('id, org_id, contract_terms_id')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .single()
 
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
-  const terms = (job.contract_terms as unknown as Array<{
+  if (!job.contract_terms_id) return NextResponse.json({ error: 'Contract terms not found' }, { status: 404 })
+
+  type TermsRow = {
     currency: string | null
     overage_tiers: TierRow[] | null
     escalators: Array<{ escalator_pct: number | null; cap_pct: number | null; effective_date: string | null; applies_from_year: number | null; description: string }> | null
@@ -121,7 +126,18 @@ export async function POST(
     service_credits: Array<{ credit_rule_id?: string; credit_type: string | null; description: string | null; source_clause: string | null; stated_pct: number | null; stated_amount: number | null }> | null
     contract_start_date: string | null
     contract_end_date: string | null
-  }>)?.[0]
+    base_monthly_fee: number | null
+    base_annual_fee: number | null
+    billing_frequency: string | null
+    base_fee_proration: { source_clause?: string | null } | null
+    additional_recurring_fees: Array<{ fee_label: string; amount: number; description: string | null; proration?: { source_clause?: string | null } | null }> | null
+  }
+  const { data: termsRaw } = await supabaseServer
+    .from('contract_terms')
+    .select('currency, overage_tiers, escalators, discounts, service_credits, contract_start_date, contract_end_date, base_monthly_fee, base_annual_fee, billing_frequency, base_fee_proration, additional_recurring_fees')
+    .eq('id', job.contract_terms_id)
+    .single()
+  const terms = termsRaw as unknown as TermsRow | null
   if (!terms) return NextResponse.json({ error: 'Contract terms not found' }, { status: 404 })
 
   const currency = terms.currency ?? 'EUR'
@@ -158,6 +174,34 @@ export async function POST(
       contractEndDate: terms.contract_end_date,
       measurementPeriod: tiers[0]?.measurement_period ?? null,
       minimumAmount: existingMinimum > 0 ? existingMinimum : null,
+    }
+    prompt = buildPartialPeriodPrompt(context, reviewerInput, selectedOption)
+  } else if (ruleType === 'base_fee_proration' || ruleType === 'recurring_fee_proration') {
+    const isBase = ruleType === 'base_fee_proration'
+    let amount: number | null
+    let extractedClause: string | null | undefined
+    let subjectLabel: string
+    if (isBase) {
+      amount = terms.base_monthly_fee ?? terms.base_annual_fee ?? null
+      subjectLabel = 'platform subscription fee'
+      extractedClause = terms.base_fee_proration?.source_clause
+    } else {
+      if (!contractUnitType) return NextResponse.json({ error: 'contractUnitType (fee label) is required for recurring_fee_proration' }, { status: 400 })
+      const fee = (terms.additional_recurring_fees ?? []).find(f => f.fee_label === contractUnitType)
+      if (!fee) return NextResponse.json({ error: `Recurring fee '${contractUnitType}' not found on this job` }, { status: 404 })
+      amount = fee.amount ?? null
+      subjectLabel = fee.fee_label
+      extractedClause = fee.proration?.source_clause ?? fee.description
+    }
+    const context: PartialPeriodContext = {
+      contractUnitType: subjectLabel,
+      sourceClause: sourceClauseFor(extractedClause, sourceClause),
+      currency,
+      contractStartDate: terms.contract_start_date,
+      contractEndDate: terms.contract_end_date,
+      measurementPeriod: terms.billing_frequency,
+      minimumAmount: amount,
+      subjectNoun: 'recurring fee',
     }
     prompt = buildPartialPeriodPrompt(context, reviewerInput, selectedOption)
   } else if (ruleType === 'escalator') {
