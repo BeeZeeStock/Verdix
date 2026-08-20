@@ -1024,6 +1024,16 @@ const BASE_FEE_PRORATION_SENTINEL = '__base_fee__'
 // there was never anything pre-selected).
 type RulePhase = 'proposing' | 'proposed' | 'input' | 'loading' | 'missing' | 'proposal' | 'confirming' | 'applied' | 'partial' | 'error'
 
+// Mirrors confirm-rule/route.ts's buildCreditApplicationRule requiresConfirmation
+// predicate exactly — confirming a credit's trigger/rate/cap (via
+// confirmProposal, or a freeText override via confirmAndApply) does NOT by
+// itself resolve what the credit may reduce when the contract doesn't state
+// it; that stays a live, separate gate even after this confirmation succeeds.
+function applicationRuleStillOpen(appRule: Record<string, unknown> | null | undefined): boolean {
+  if (!appRule) return false
+  return appRule.eligible_component_keys == null || appRule.one_time === 'unclear' || appRule.carry_forward === 'unclear'
+}
+
 function RuleInterpretationCard({
   jobId, kind, contractUnitType, discountId, creditId, interactionKey, cadenceLabel, contractPeriodLabel, sourceClause, currency, meterMappingConfirmed, meterSuggestion, showMeterDependencyNotice, onApplied,
   initialSelectedOption, initialFreeText,
@@ -1081,6 +1091,11 @@ function RuleInterpretationCard({
   const [propagation, setPropagation] = useState<Record<string, string> | null>(null)
   const [aiProposal, setAiProposal] = useState<RuleProposal | null>(null)
   const [showFullReasoning, setShowFullReasoning] = useState(false)
+  // Set at the moment a confirm succeeds, from the exact interpretation
+  // object that was just sent as approvedInterpretation — not recomputed
+  // later from aiProposal, which wouldn't reflect what a freeText override
+  // via confirmAndApply actually approved.
+  const [applicationScopeStillOpen, setApplicationScopeStillOpen] = useState(false)
 
   useEffect(() => {
     if (isEditFlow) return
@@ -1133,7 +1148,13 @@ function RuleInterpretationCard({
       if (!res.ok && !data.propagation) { setErrorMsg(data.error ?? 'Approval failed.'); setPhase('proposed'); return }
       setPropagation(data.propagation ?? {})
       const anyFailed = Object.values(data.propagation ?? {}).includes('failed')
-      if (anyFailed) { setPhase('partial') } else { setPhase('applied'); onApplied() }
+      if (anyFailed) {
+        setPhase('partial')
+      } else {
+        setApplicationScopeStillOpen(ruleType === 'service_credit' && applicationRuleStillOpen((aiProposal.proposed_interpretation as Record<string, unknown>)?.application_rule as Record<string, unknown> | undefined))
+        setPhase('applied')
+        onApplied()
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error && err.message ? `Verdix could not save this approval: ${err.message}` : 'Verdix could not save this approval. Try again.')
       setPhase('proposed')
@@ -1184,6 +1205,7 @@ function RuleInterpretationCard({
       if (anyFailed) {
         setPhase('partial')
       } else {
+        setApplicationScopeStillOpen(ruleType === 'service_credit' && applicationRuleStillOpen((proposal as Record<string, unknown>)?.application_rule as Record<string, unknown> | undefined))
         setPhase('applied')
         onApplied()
       }
@@ -1199,6 +1221,26 @@ function RuleInterpretationCard({
   const aiRecommendedOptionId = aiProposal?.proposed_interpretation
     ? deriveSelectedOption(ruleType, aiProposal.proposed_interpretation)
     : null
+
+  if (phase === 'applied' && applicationScopeStillOpen) {
+    return (
+      <div className="rounded-xl p-3" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
+        <p className="text-sm font-medium flex items-center gap-1.5" style={{ color: '#7F1D1D' }}>
+          <i className="ti ti-alert-triangle" style={{ fontSize: 15 }} /> Trigger, rate & cap confirmed — application scope still open
+        </p>
+        <p className="text-[11px] mt-1" style={{ color: '#7F1D1D' }}>
+          The contract states this credit&rsquo;s size but not what future charges it may reduce. It will keep counting as a decision outstanding, and won&rsquo;t be applied against billing, until this is resolved.
+        </p>
+        <button
+          onClick={() => setPhase('input')}
+          className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-lg"
+          style={{ background: '#1A3D2B', color: 'white' }}
+        >
+          Resolve application scope
+        </button>
+      </div>
+    )
+  }
 
   if (phase === 'applied') {
     return (
