@@ -67,6 +67,18 @@ type ServiceCredit = {
     interaction_note?: string | null
     requires_confirmation: boolean
     confirmation_reason?: string | null
+    // Independent gate on top of the main interpretation's own
+    // requires_confirmation — a credit can be fully confirmed on
+    // trigger/rate/cap while what it may reduce (and whether it carries
+    // forward) remains a real, separate, unresolved decision the contract
+    // never stated. See buildCreditApplicationRule (confirm-rule/route.ts).
+    application_rule?: {
+      eligible_component_keys: string[] | 'all' | null
+      carry_forward: boolean | 'unclear'
+      one_time: boolean | 'unclear'
+      requires_confirmation: boolean
+      confirmation_reason?: string | null
+    } | null
   } | null
 }
 type Tier       = {
@@ -2447,7 +2459,18 @@ function ReviewPanel({
               or earned/usage credits — same independent-addressing pattern as
               Discounts, keyed by credit_rule_id rather than bundled. */}
           {(() => {
-            const unresolvedCredits = (serviceCredits ?? []).filter(c => !c.interpretation || c.interpretation.requires_confirmation)
+            // Unresolved if EITHER the main interpretation is still open OR —
+            // once that's confirmed — its independent application_rule still
+            // is (see lib/commercial-rule-status.ts's identical check, which
+            // is what actually drives the outstanding COUNT). Checking only
+            // the top-level flag here meant a credit whose trigger/rate/cap
+            // got confirmed but whose application scope the contract never
+            // stated would vanish from this section entirely — still counted
+            // as outstanding everywhere else, but with no card left to
+            // resolve it from.
+            const unresolvedCredits = (serviceCredits ?? []).filter(c =>
+              !c.interpretation || c.interpretation.requires_confirmation || !!c.interpretation.application_rule?.requires_confirmation
+            )
             if (unresolvedCredits.length === 0) return null
             return (
               <div>
