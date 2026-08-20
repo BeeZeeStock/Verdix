@@ -145,3 +145,178 @@ describe('applyExtractionSafetyNets — single-chunk extraction path (scenario: 
     expect(terms.additional_recurring_fees![0].proration?.requires_confirmation).toBe(true)
   })
 })
+
+// Regression fixture — TEST-PAY-002's actual signed PDF, Sections 6–8,
+// transcribed verbatim (not extraction output). Reproduces the real failure:
+// an initial extraction pass can plausibly paraphrase the Annual Rebate's
+// clause down to just its trigger/rate/timing sentences, dropping the
+// application-scope/exclusion sentences that sit between them in the source
+// document — exactly what happened on TEST-PAY-002's first live run.
+// applyExtractionSafetyNets' deterministic preserveExclusionLanguage
+// backstop must recover them from the raw contract text regardless of
+// whether the model noticed.
+const TEST_PAY_002_SECTIONS_6_TO_8 = `6. Annual Volume Rebate
+
+If Customer processes more than:
+
+2,000,000 Transactions during a Contract Year
+
+Customer will be entitled to a rebate equal to:
+
+5% of the transaction-processing fees paid for that Contract Year.
+
+For purposes of this clause, the rebate applies only to transaction-processing fees under Section 3.
+
+The rebate does not apply to:
+• platform fees;
+• chargeback fees;
+• other fees or charges.
+
+Any rebate earned will be calculated after the end of the applicable Contract Year and credited to Customer within:
+
+45 days after Contract Year-end.
+
+A "Contract Year" means each consecutive 12-month period beginning on the Effective Date or an anniversary of the Effective Date.
+
+For clarity, the first Contract Year runs from:
+
+17 August 2026 through 16 August 2027.
+
+7. Growth Credit
+
+Customer will earn a one-time:
+
+SEK 110,000 Growth Credit
+
+if Customer processes more than:
+
+300,000 Transactions in each of three consecutive calendar months.
+
+The Growth Credit becomes earned only after the third qualifying consecutive calendar month has been completed.
+
+The Growth Credit:
+• may be applied only against future transaction-processing fees;
+• may not be applied against platform fees;
+• may not be applied against chargeback fees;
+• will not be paid in cash.
+
+If the amount of transaction-processing fees in the first billing period following the credit becoming available is less than the remaining Growth Credit, the unused portion will carry forward and may be applied against future transaction-processing fees until fully used.
+
+8. Service Availability Credit
+
+If FluxPay fails to meet the applicable service-availability commitment, Customer will be entitled to:
+
+SEK 5,500 for each complete hour of excess service unavailability
+
+during the applicable calendar month.
+
+Only complete excess-unavailability hours qualify for this credit.
+
+The total service credit for any calendar month is capped at:
+
+SEK 55,000
+
+Service credits will be applied against future amounts payable under this Agreement.
+
+A service credit does not reduce the number of Transactions used to determine the applicable transaction-processing tier.`
+
+describe('applyExtractionSafetyNets — preserveExclusionLanguage backstop (TEST-PAY-002 Section 6 regression)', () => {
+  it('recovers the Annual Rebate exclusion sentences the model dropped, without touching Growth Credit or Service Credit', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      service_credits: [
+        {
+          credit_type: 'rebate',
+          description: 'Annual volume rebate: 5% of transaction-processing fees paid for the Contract Year if more than 2,000,000 Transactions are processed in that year',
+          // Exactly the real, observed failure: the model merged the
+          // trigger/rate/timing sentences and skipped the two
+          // application-scope/exclusion sentences that sit between them.
+          source_clause: 'If Customer processes more than 2,000,000 Transactions during a Contract Year, Customer will be entitled to a rebate equal to 5% of the transaction-processing fees paid for that Contract Year. Any rebate earned will be calculated after the end of the applicable Contract Year and credited to Customer within 45 days after Contract Year-end.',
+          stated_pct: 5, stated_amount: null,
+        },
+        {
+          credit_type: 'conditional_credit',
+          description: 'One-time SEK 110,000 Growth Credit earned if Customer processes more than 300,000 Transactions in each of three consecutive calendar months; applicable against future transaction-processing fees only',
+          // Verbatim, matching the raw text's own bulleted formatting —
+          // this credit's clause was ALREADY completely captured (unlike
+          // the Rebate above); the dedup check must recognize that and
+          // leave it untouched, not duplicate it.
+          source_clause: 'Customer will earn a one-time SEK 110,000 Growth Credit if Customer processes more than 300,000 Transactions in each of three consecutive calendar months. The Growth Credit becomes earned only after the third qualifying consecutive calendar month has been completed. The Growth Credit: • may be applied only against future transaction-processing fees; • may not be applied against platform fees; • may not be applied against chargeback fees; • will not be paid in cash.',
+          stated_amount: 110_000, stated_pct: null,
+        },
+        {
+          credit_type: 'service_credit',
+          description: 'SEK 5,500 per complete hour of excess service unavailability in a calendar month, capped at SEK 55,000 per calendar month; applied against future amounts payable',
+          source_clause: 'If FluxPay fails to meet the applicable service-availability commitment, Customer will be entitled to SEK 5,500 for each complete hour of excess service unavailability during the applicable calendar month. The total service credit for any calendar month is capped at SEK 55,000. Service credits will be applied against future amounts payable under this Agreement.',
+          stated_amount: 5_500, stated_pct: null,
+        },
+      ] as unknown as ContractTerms['service_credits'],
+    }), TEST_PAY_002_SECTIONS_6_TO_8)
+
+    const rebate = terms.service_credits.find(c => c.credit_type === 'rebate')!
+    expect(rebate.source_clause).toContain('the rebate applies only to transaction-processing fees under Section 3')
+    expect(rebate.source_clause).toContain('The rebate does not apply to')
+    expect(rebate.source_clause).toContain('platform fees')
+    expect(rebate.source_clause).toContain('chargeback fees')
+    // Original sentences must still be present too — this appends, never replaces.
+    expect(rebate.source_clause).toContain('5% of the transaction-processing fees paid for that Contract Year')
+
+    // Growth Credit and Service Credit already had complete clauses in this
+    // fixture — must be left untouched, not have their own text duplicated
+    // by a false-positive match against a neighbouring anchor's window.
+    const growth = terms.service_credits.find(c => c.credit_type === 'conditional_credit')!
+    const growthExclusionCount = (growth.source_clause!.match(/may not be applied against platform fees/g) ?? []).length
+    expect(growthExclusionCount).toBe(1)
+
+    const serviceCredit = terms.service_credits.find(c => c.credit_type === 'service_credit')!
+    expect(serviceCredit.source_clause).toContain('applied against future amounts payable under this Agreement')
+    const serviceCreditOccurrences = (serviceCredit.source_clause!.match(/applied against future amounts payable/g) ?? []).length
+    expect(serviceCreditOccurrences).toBe(1)
+  })
+
+  it('is a no-op when contractText is omitted (multi-chunk merge path) — never throws, never mutates', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      service_credits: [
+        { credit_type: 'rebate', description: '2,000,000 Transactions rebate', source_clause: 'Truncated clause.', stated_pct: 5, stated_amount: null } as unknown as ContractTerms['service_credits'][number],
+      ],
+    }))
+    expect(terms.service_credits[0].source_clause).toBe('Truncated clause.')
+  })
+
+  // Real duplication bug observed on a genuine live extraction run (not a
+  // fixture): the model captured Growth Credit's exclusion list completely
+  // on its own, but re-flowed it into prose WITHOUT the raw text's bullet
+  // markers ("The Growth Credit: may be applied only against... may not be
+  // applied against platform fees..." vs the raw "• may be applied only
+  // against...\n• may not be applied against platform fees..."). A literal
+  // substring dedup check saw these as different text and appended a
+  // redundant duplicate. The dedup must recognize this as already-present
+  // regardless of bullet formatting.
+  it('does not duplicate an exclusion list the model already captured completely, just without the raw text\'s bullet markers', () => {
+    const contractText = `7. Growth Credit
+
+Customer will earn a one-time SEK 110,000 Growth Credit if Customer processes more than 300,000 Transactions in each of three consecutive calendar months.
+
+The Growth Credit:
+• may be applied only against future transaction-processing fees;
+• may not be applied against platform fees;
+• may not be applied against chargeback fees;
+• will not be paid in cash.
+
+8. Service Availability Credit`
+
+    const terms = applyExtractionSafetyNets(chunk({
+      service_credits: [{
+        credit_type: 'conditional_credit',
+        description: 'One-time SEK 110,000 Growth Credit',
+        // Model's own prose — semantically complete, no bullet markers,
+        // slightly different wording order than the raw text.
+        source_clause: 'Customer will earn a one-time SEK 110,000 Growth Credit if Customer processes more than 300,000 Transactions in each of three consecutive calendar months. The Growth Credit: may be applied only against future transaction-processing fees; may not be applied against platform fees; may not be applied against chargeback fees; will not be paid in cash.',
+        stated_amount: 110_000, stated_pct: null,
+      } as unknown as ContractTerms['service_credits'][number]],
+    }), contractText)
+
+    const clause = terms.service_credits[0].source_clause!
+    const occurrences = (clause.match(/may not be applied against platform fees/g) ?? []).length
+    expect(occurrences).toBe(1)
+  })
+})

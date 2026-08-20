@@ -1404,15 +1404,38 @@ function RuleInterpretationCard({
               while saying nothing about how long an earned-but-unused
               credit survives — those are different questions, and folding
               survival's silence into the eligibility badge would incorrectly
-              mark an otherwise-explicit eligibility answer as unresolved. */}
-          {aiProposal.survival_state && (
-            <SubStateBadge
-              label="Survival & expiry"
-              state={aiProposal.survival_state}
-              decisionRequiredText="The contract doesn't state how long an earned-but-unused credit remains available, or whether it can be earned more than once — resolve this before it can be applied against an invoice."
-              resolvedText="Whether this credit carries forward and whether it can be earned more than once is covered in the reasoning above."
-            />
-          )}
+              mark an otherwise-explicit eligibility answer as unresolved.
+              carry_forward (unused-balance survival) and one_time
+              (repeatability) are themselves two further independent
+              sub-questions bundled under this one AI-graded survival_state —
+              a contract can resolve repeatability (e.g. an annually-
+              re-evaluated rebate has no "one-time" restriction, unlike a
+              milestone credit) while staying genuinely silent on what
+              happens to an unapplied remainder. The label/reasoning below
+              names whichever ONE of the two is actually still open, rather
+              than always claiming both are unresolved regardless of what
+              the underlying fields actually say. */}
+          {aiProposal.survival_state && (() => {
+            const appRule = (aiProposal.proposed_interpretation as Record<string, unknown> | null)?.application_rule as Record<string, unknown> | undefined
+            const carryForwardOpen = appRule?.carry_forward === 'unclear'
+            const oneTimeOpen = appRule?.one_time === 'unclear'
+            const label = carryForwardOpen && !oneTimeOpen ? 'Unused balance survival'
+              : oneTimeOpen && !carryForwardOpen ? 'Repeatability'
+              : 'Survival & expiry'
+            const decisionRequiredText = carryForwardOpen && !oneTimeOpen
+              ? "The contract doesn't state what happens to any portion of this credit that is credited but not fully applied — resolve this before it can be applied against an invoice."
+              : oneTimeOpen && !carryForwardOpen
+                ? "The contract doesn't state whether this credit can be earned more than once — resolve this before it can be applied against an invoice."
+                : "The contract doesn't state how long an earned-but-unused credit remains available, or whether it can be earned more than once — resolve this before it can be applied against an invoice."
+            return (
+              <SubStateBadge
+                label={label}
+                state={aiProposal.survival_state}
+                decisionRequiredText={decisionRequiredText}
+                resolvedText="Whether this credit carries forward and whether it can be earned more than once is covered in the reasoning above."
+              />
+            )
+          })()}
           {errorMsg && <p className="text-xs" style={{ color: '#DC2626' }}>{errorMsg}</p>}
           <div className="flex gap-2">
             <button

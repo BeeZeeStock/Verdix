@@ -1,5 +1,5 @@
 import { writeFileSync } from 'fs'
-import { ContractTerms, OverageTier } from './types'
+import { ContractTerms, OverageTier, ServiceCredit } from './types'
 import { buildLearningContext } from './learning-context'
 import { getAIClient, AI_PROVIDER } from './ai-client'
 
@@ -62,7 +62,8 @@ Rules:
     - This exact same method vocabulary and ambiguity rule applies to tiered/volume DISCOUNTS (see discounts below) — do not use a different standard for discount tiers than for pricing tiers.
   - CRITICAL — rate_per_unit decimal parsing: rates written as "€0.0500", "€0.035", "€0.02" are NOT zero. They are decimal fractions: 0.0500 = 0.05, 0.035, 0.02. Extract the full numeric value including leading-zero decimals. NEVER set rate_per_unit to 0 when a non-zero rate is stated in the contract.
   - TIER LABEL RULE: tier_label must describe the volume range. NEVER label a paid tier "Base Allowance" or "Included Units" — these phrases imply the tier is free. Use descriptive range labels like "Lines 1–50,000", "Up to 50,000", "50,001–250,000". Only use "Base Allowance" or "Included" language when those units are genuinely charged at zero (free). If the first tier has a non-zero rate, all tiers are paid — label them accordingly.
-- service_credits: ANY clause that reduces a future charge on a condition — availability credits, rebates, milestone/conditional credits, promotional credits, waived fees, capped credits. Do NOT confuse with discounts (a discount reduces the PRICE up front; a service credit is a conditional reduction triggered by an EVENT — a breach, a threshold, a promotion). Each entry: { "credit_type": "service_credit" | "rebate" | "conditional_credit" | "promotional" | "earned" | "usage" | "waiver" | "other", "description": "<short label>", "source_clause": "<verbatim or paraphrased clause, or null>", "stated_pct": <number or null>, "stated_amount": <number or null> }.
+- service_credits: ANY clause that reduces a future charge on a condition — availability credits, rebates, milestone/conditional credits, promotional credits, waived fees, capped credits. Do NOT confuse with discounts (a discount reduces the PRICE up front; a service credit is a conditional reduction triggered by an EVENT — a breach, a threshold, a promotion). Each entry: { "credit_type": "service_credit" | "rebate" | "conditional_credit" | "promotional" | "earned" | "usage" | "waiver" | "other", "description": "<short label>", "source_clause": "<the COMPLETE relevant provision — see SOURCE_CLAUSE COMPLETENESS RULE immediately below>", "stated_pct": <number or null>, "stated_amount": <number or null> }.
+  - SOURCE_CLAUSE COMPLETENESS RULE — this is a common, high-cost failure mode: a service-credit/rebate provision is frequently NOT one sentence. It typically spans several sentences covering the trigger, the rate/amount, the calculation basis, WHAT future charges the resulting credit may be applied against (its eligible application scope), any stated exclusions, settlement/credit timing, and carry-forward/repeatability language — sometimes across an entire paragraph or several short paragraphs under the same heading. source_clause MUST include every one of these sentences VERBATIM wherever the contract states them, in the order they appear — never truncate after just the trigger/rate sentence, even when the remaining sentences follow later in the same clause/section. In particular, ALWAYS include any sentence containing eligibility/exclusion language equivalent to "applies only to", "does not apply to", "excluding", or "excludes" — these determine which invoice components the resulting credit may offset and are never decorative or safely summarizable away; dropping them silently converts an explicit contractual answer into a false "the contract doesn't say" for the human reviewer downstream. "or paraphrased" below means light rewording only when the original phrasing is awkward to read standalone (e.g. resolving a mid-sentence cross-reference) — it does NOT license shortening, summarizing, or omitting any sentence that states a fact about this provision. If in doubt whether a nearby sentence belongs to the same provision, include it rather than cut the clause short.
   - credit_type — three most common types, distinguish carefully, they are NOT interchangeable:
     - "rebate": a PERIOD-BASED, typically RETROACTIVE reduction computed as a percentage or amount of fees already charged over some period once a volume/performance threshold is met (e.g. "if annual transaction volume exceeds 2,000,000, Customer receives a rebate of 5% of transaction-processing fees paid during that period"). Usually calculated only after the period ends.
     - "conditional_credit": a MILESTONE or MULTI-PERIOD-THRESHOLD credit — earned once a condition is satisfied (often across several consecutive periods, e.g. "exceeding 300,000 transactions in each of 3 consecutive calendar months"), which may be one-time or repeatable, and which then applies against FUTURE charges going forward (not a retroactive percentage of past fees the way a rebate is).
@@ -158,7 +159,7 @@ export async function extractContractTerms(
 
   const chunks = splitIntoChunks(contractText, 12000)
   if (chunks.length === 1) {
-    return applyExtractionSafetyNets(await extractFromChunk(chunks[0], learningContext, piiMasked))
+    return applyExtractionSafetyNets(await extractFromChunk(chunks[0], learningContext, piiMasked), chunks[0])
   }
 
   // Map-reduce for long contracts
@@ -315,7 +316,11 @@ export function mergeExtractions(results: ContractTerms[]): ContractTerms {
 // -extracted credit like TEST-PAY-002's Annual Rebate/Growth Credit/Service
 // Availability Credit went completely invisible to review). Applied exactly
 // once, after chunking/merging is fully resolved either way.
-export function applyExtractionSafetyNets(terms: ContractTerms): ContractTerms {
+// contractText is optional (the merge/multi-chunk path at mergeExtractions
+// doesn't have a single contiguous raw text to pass) — when present (the
+// common single-chunk case, i.e. every contract under ~12,000 chars),
+// enables preserveExclusionLanguage's deterministic backstop below.
+export function applyExtractionSafetyNets(terms: ContractTerms, contractText?: string): ContractTerms {
   // Guard: end_date must be after start_date. If the model extracted a wrong year
   // (e.g. "2026-07-31" for a 36-month contract starting 2026-08-01), auto-correct
   // using contract_term_months when available.
@@ -335,8 +340,116 @@ export function applyExtractionSafetyNets(terms: ContractTerms): ContractTerms {
   terms.discounts = assignDiscountRuleIds(terms.discounts)
   terms.service_credits = assignServiceCreditRuleIds(terms.service_credits ?? [])
   flagAmbiguousBaseFeeProration(terms)
+  if (contractText) preserveExclusionLanguage(terms, contractText)
 
   return terms
+}
+
+// Sentences equivalent to "applies only to X", "applied only against X",
+// "does not apply to Y", "may not be applied against Y", "excluding Z",
+// "excludes W" state a service credit's eligible application scope (which
+// future invoice components it may offset) — high-value billing semantics,
+// never safe to lose to summarization. The SOURCE_CLAUSE COMPLETENESS RULE
+// in SYSTEM_PROMPT above asks the model not to drop these; this is a
+// deterministic backstop for when it does anyway, independent of the model
+// noticing. Covers both "to"/"against" phrasing — TEST-PAY-002 itself uses
+// both ("applies only to transaction-processing fees" for the Rebate,
+// "applied only against future transaction-processing fees" for the Growth
+// Credit) — extend this list as new real-world phrasings turn up.
+const EXCLUSION_LANGUAGE_RE = /\bapplies?\s+only\s+to\b|\bapplied\s+only\s+against\b|\bdoes\s+not\s+apply\s+to\b|\bmay\s+not\s+be\s+applied\s+against\b|\bexcluding\b|\bexcludes\b/i
+
+// Pulls candidate anchor numbers out of a credit's own description —
+// multi-digit figures (a trigger threshold, a flat amount) are far less
+// likely to collide elsewhere in a typical commercial contract than a bare
+// one-digit percentage, so longer numbers are tried first.
+function extractAnchorCandidates(description: string): string[] {
+  const matches = description.match(/\d[\d,]{2,}/g) ?? []
+  return [...new Set(matches)].sort((a, b) => b.replace(/,/g, '').length - a.replace(/,/g, '').length)
+}
+
+// Line-based, not sentence-based: an exclusion clause is frequently phrased
+// as an introductory line ending in ":" followed by a bulleted list (e.g.
+// "The rebate does not apply to:\n• platform fees;\n• chargeback fees;").
+// The regex only matches the introductory line, but the actual billing-
+// relevant content (WHICH components) is in the bullets that follow — so a
+// matched line pulls in every immediately-following bullet/numbered line,
+// stopping at the first line that isn't one. Not a general-purpose
+// sentence tokenizer; scoped to exactly this list-after-colon shape.
+function extractExclusionSpans(window: string): string[] {
+  const lines = window.split('\n').map(l => l.trim()).filter(Boolean)
+  const spans: string[] = []
+  for (let i = 0; i < lines.length; i++) {
+    if (!EXCLUSION_LANGUAGE_RE.test(lines[i])) continue
+    const spanLines = [lines[i]]
+    let j = i + 1
+    while (j < lines.length && /^[•\-*]|^\d+[.)]/.test(lines[j])) {
+      spanLines.push(lines[j])
+      j++
+    }
+    spans.push(spanLines.join(' '))
+    i = j - 1
+  }
+  return spans
+}
+
+// Deterministic, heuristic backstop — not a general clause-boundary parser.
+// For each service credit, locates roughly where its own provision begins
+// in the raw contract text (via a distinctive multi-digit number pulled
+// from its description), bounds a scan window to the nearest neighbouring
+// credit's own anchor (so one credit's exclusion sentence is never
+// misattributed to a different credit sitting nearby in the document), and
+// appends any exclusion-language sentence found in that window that isn't
+// already present in source_clause. Silently no-ops (never throws, never
+// invents a match) when an anchor can't be found — a missed anchor leaves
+// source_clause exactly as the model produced it, same as before this
+// function existed, rather than guessing.
+function preserveExclusionLanguage(terms: ContractTerms, contractText: string): void {
+  const credits = terms.service_credits ?? []
+  if (credits.length === 0) return
+
+  const anchored = credits
+    .map(credit => {
+      for (const candidate of extractAnchorCandidates(credit.description ?? '')) {
+        const pos = contractText.indexOf(candidate)
+        if (pos !== -1) return { credit, pos }
+      }
+      return null
+    })
+    .filter((a): a is { credit: ServiceCredit; pos: number } => a !== null)
+    .sort((a, b) => a.pos - b.pos)
+
+  const MAX_WINDOW = 1200
+  const BACK_BUFFER = 200 // the anchor number can sit mid-clause, not just at its start
+  for (let i = 0; i < anchored.length; i++) {
+    const { credit, pos } = anchored[i]
+    const nextPos = i + 1 < anchored.length ? anchored[i + 1].pos : contractText.length
+    const windowStart = Math.max(0, pos - BACK_BUFFER)
+    const windowEnd = Math.min(pos + MAX_WINDOW, nextPos)
+    const window = contractText.slice(windowStart, windowEnd)
+    const currentClause = credit.source_clause ?? ''
+    const normalizedCurrent = normalizeForComparison(currentClause)
+    const missing = extractExclusionSpans(window).filter(s => {
+      const normalizedSpan = normalizeForComparison(s)
+      return !normalizedCurrent.includes(normalizedSpan.slice(0, Math.min(40, normalizedSpan.length)))
+    })
+    if (missing.length > 0) {
+      credit.source_clause = [currentClause, ...missing].filter(Boolean).join(' ').trim()
+    }
+  }
+}
+
+// The model's own source_clause frequently re-flows raw text into prose —
+// dropping bullet markers ("•"), collapsing internal whitespace, changing
+// word order slightly ("applied only against" vs "only applied against") —
+// while still preserving the exact substance. A literal substring check
+// against the RAW (bulleted) window text would then see this as "missing"
+// and duplicate content the model already captured correctly, purely
+// because of formatting, not because information is actually absent.
+// Normalizing away bullet markers and whitespace before comparing (and
+// comparing a longer, more distinctive slice) makes the dedup check robust
+// to this without needing exact verbatim matching.
+function normalizeForComparison(s: string): string {
+  return s.replace(/[•\-*]\s*/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
 }
 
 // base_fee_proration/AdditionalRecurringFee.proration are only ever
