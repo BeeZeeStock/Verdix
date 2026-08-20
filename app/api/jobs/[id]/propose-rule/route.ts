@@ -381,6 +381,14 @@ export async function POST(
     proposed_interpretation: (parsedRaw.proposed_interpretation as Record<string, unknown> | null) ?? null,
     reasoning: typeof parsedRaw.reasoning === 'string' ? parsedRaw.reasoning : '',
     calculation_preview: parsedRaw.calculation_preview as RuleProposal['calculation_preview'],
+    // service_credit only — buildServiceCreditProposalPrompt asks Claude for
+    // this and validateProposalState grades/corrects it, but this was never
+    // actually pulled out of the raw parsed response, so it was silently
+    // always undefined regardless of what the prompt asked for or what
+    // Claude returned. The entire "Application scope" split (item 7 —
+    // Annual Rebate/Growth Credit/Service Credit's unresolved
+    // application/carry-forward policy) never reached the client.
+    application_state: parsedRaw.application_state as RuleProposal['application_state'],
   }
 
   const proposal = validateProposalState(rawProposal, sourceClauseAvailable)
