@@ -521,6 +521,52 @@ describe('buildServiceCreditProposalPrompt — application_state split (Growth C
     })
     expect(prompt).toMatch(/set eligible_component_keys to null and grade application_state "decision_required"/)
   })
+
+  // Real-world regression fixture — TEST-PAY-002's actual signed contract,
+  // Section 6 (Annual Volume Rebate), verified verbatim against the PDF
+  // itself, not extraction output. Extraction had originally captured only
+  // the rebate's trigger/basis sentence into source_clause/description and
+  // dropped this eligibility sentence entirely, which produced a false
+  // "application scope: decision required" for several rounds until the
+  // PDF was read directly. Guards against BOTH directions of regression:
+  // the full clause (with the exclusion list) must be treated as
+  // application-eligibility-bearing, while the shorter clause one test
+  // above (basis only, no exclusion list) must still correctly stay
+  // decision_required — the exclusion list is precisely what distinguishes
+  // "states basis only" from "states basis AND eligibility".
+  it('TEST-PAY-002 Section 6 regression: full clause (with the platform/chargeback/other-fees exclusion list) reaches the prompt intact and is treated as eligibility-bearing, not basis-only', () => {
+    const SECTION_6_CLAUSE = 'For purposes of this clause, the rebate applies only to transaction-processing fees under Section 3. The rebate does not apply to: platform fees; chargeback fees; other fees or charges.'
+    const prompt = buildServiceCreditProposalPrompt({
+      sourceClause: SECTION_6_CLAUSE,
+      description: 'Annual volume rebate: 5% of transaction-processing fees paid for the Contract Year if more than 2,000,000 Transactions are processed in that year',
+      creditType: 'rebate', statedPct: 5, statedAmount: null, currency: 'SEK',
+    })
+    // The exact clause must reach the AI verbatim — guards against a
+    // regression of the sourceClause ?? description bug (which silently
+    // discarded whichever field wasn't chosen) or any future truncation.
+    expect(prompt).toContain(SECTION_6_CLAUSE)
+    // Guidance must distinguish "states basis" from "states basis AND what
+    // it may be applied against" — this is the textual signal the exclusion
+    // list provides that the shorter clause (tested above) lacks.
+    expect(prompt).toMatch(/a clause stating what a credit is computed FROM[\s\S]*does not, by itself, state what it may be applied AGAINST/)
+  })
+
+  it('TEST-PAY-002 Section 6 regression: validateProposalState preserves a correctly-graded clear_from_source eligibility read of the real clause, never downgrading or nulling it', () => {
+    const result = validateProposalState({
+      state: 'clear_from_source',
+      application_state: 'clear_from_source',
+      survival_state: 'decision_required',
+      proposed_interpretation: {
+        trigger_type: 'usage_threshold', credit_value: 5,
+        application_rule: { eligible_component_keys: ['transaction_processing'], carry_forward: 'unclear', one_time: false },
+      },
+      reasoning: 'The clause states the rebate applies only to transaction-processing fees under Section 3 and does not apply to platform fees, chargeback fees, or other fees or charges — application scope is explicit, though the contract does not address whether an unapplied balance carries forward.',
+    }, true)
+    expect(result.application_state).toBe('clear_from_source')
+    expect(result.survival_state).toBe('decision_required')
+    const appRule = (result.proposed_interpretation as Record<string, unknown>).application_rule as Record<string, unknown>
+    expect(appRule.eligible_component_keys).toEqual(['transaction_processing'])
+  })
 })
 
 describe('buildTierCalculationProposalPrompt — scenario: graduated pricing explicit in source', () => {

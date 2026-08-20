@@ -907,7 +907,9 @@ export type ServiceCreditProposalContext = ServiceCreditContext
 export function buildServiceCreditProposalPrompt(context: ServiceCreditProposalContext): string {
   return `A SaaS contract has a service-credit/rebate clause. Before any human reviewer has said anything, determine Verdix's own best interpretation of its calculation basis AND when/how it applies.
 
-Source clause / description: ${context.sourceClause ?? context.description}
+Source clause: ${context.sourceClause ?? '(not captured)'}
+Extraction's own summary/description: ${context.description || '(none)'}
+Both of the above come from the SAME extraction pass and may each contain facts the other omits — extraction sometimes captures an application-scope or carry-forward fact (e.g. "applicable against future transaction-processing fees only", "applied against future amounts payable") in the description that isn't repeated in the shorter source clause, or vice versa. Read BOTH before deciding any state — never grade a field "decision_required" solely because one of the two fields is silent on it if the other one isn't.
 Extraction's own classification: ${context.creditType}
 Stated value: ${context.statedPct != null ? `${context.statedPct}%` : context.statedAmount != null ? `${context.statedAmount} ${context.currency}` : 'not captured as a single value'}
 
