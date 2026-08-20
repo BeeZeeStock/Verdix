@@ -91,6 +91,14 @@ export async function getOrgSubscription(orgId: string): Promise<OrgSubscription
   return fresh as OrgSubscription
 }
 
+// Self-serve verdix_plans sync limits are deactivated for now — the
+// product has moved off self-serve plan enforcement. syncLimit: null means
+// unlimited throughout this file; usage is still recorded (recordSync
+// below), only the limit/banner/overage enforcement is switched off. Kept
+// as a single, easy-to-find switch rather than deleting the underlying
+// plan/limit data model, so it can be reinstated later without a rebuild.
+const SYNC_LIMITS_ENABLED = false
+
 export async function getBillingContext(orgId: string): Promise<BillingContext> {
   const [subscription, warnPct] = await Promise.all([
     getOrgSubscription(orgId),
@@ -107,7 +115,7 @@ export async function getBillingContext(orgId: string): Promise<BillingContext> 
   let syncLimit: number | null = plan.sync_limit
 
   // Trial plan: resolve limit (org override → global setting → default 3)
-  if (subscription.plan_id === 'trial') {
+  if (SYNC_LIMITS_ENABLED && subscription.plan_id === 'trial') {
     if (subscription.trial_sync_limit_override != null) {
       syncLimit = subscription.trial_sync_limit_override
     } else {
@@ -115,6 +123,7 @@ export async function getBillingContext(orgId: string): Promise<BillingContext> 
       syncLimit = globalLimit ?? 3
     }
   }
+  if (!SYNC_LIMITS_ENABLED) syncLimit = null
 
   const warn = warnPct ?? 80
   const syncsUsed = Number(subscription.usage_counters?.['sync'] ?? subscription.syncs_used ?? 0)
@@ -159,13 +168,16 @@ export async function recordSync(orgId: string, jobId: string, eventType: SyncEv
     occurred_at_param: new Date().toISOString(),
   })
 
-  // Resolve limit
+  // Resolve limit — see SYNC_LIMITS_ENABLED above; usage is still recorded
+  // (record_usage RPC call above), only limit enforcement is switched off.
   let syncLimit: number | null = null
-  if (sub.plan_id === 'trial') {
-    syncLimit = sub.trial_sync_limit_override ?? (await getGlobalSetting('trial_sync_limit')) ?? 3
-  } else {
-    const plan = await getPlan(sub.plan_id)
-    syncLimit = plan?.sync_limit ?? null
+  if (SYNC_LIMITS_ENABLED) {
+    if (sub.plan_id === 'trial') {
+      syncLimit = sub.trial_sync_limit_override ?? (await getGlobalSetting('trial_sync_limit')) ?? 3
+    } else {
+      const plan = await getPlan(sub.plan_id)
+      syncLimit = plan?.sync_limit ?? null
+    }
   }
 
   const isOverLimit = syncLimit != null && newCount > syncLimit

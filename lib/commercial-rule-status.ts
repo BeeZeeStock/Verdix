@@ -99,6 +99,23 @@ type CreditLike = {
   interpretation?: (UnresolvedFlag & { interaction_note?: string | null; application_rule?: UnresolvedFlag }) | null
 }
 
+// Exported so page.tsx's "Service credits"/"Discounts" section card
+// visibility calls this SAME function rather than a separately-written
+// (even if currently identical) copy of the expression — the same
+// shared-predicate discipline isMinimumCommitmentModeUnresolved/
+// isMinimumCommitmentProrationUnresolved already use. Two independent
+// implementations of "is this unresolved" is exactly how a card can go
+// missing while the canonical count still blocks on it (or vice versa) —
+// sharing the function makes that drift impossible by construction rather
+// than by both sides happening to agree today.
+export function isServiceCreditUnresolved(credit: CreditLike): boolean {
+  return !credit.interpretation || credit.interpretation.requires_confirmation || !!credit.interpretation.application_rule?.requires_confirmation
+}
+
+export function isDiscountUnresolved(discount: DiscountLike): boolean {
+  return !discount.interpretation || !!discount.interpretation.requires_confirmation
+}
+
 type ProrationLike = { requires_confirmation: boolean } | null | undefined
 
 export type CommercialRuleTerms = {
@@ -241,7 +258,7 @@ export function computeCommercialRuleWorkload(
 
   for (const d of terms?.discounts ?? []) {
     if (!d.discount_rule_id) continue
-    countItem(`discount:${d.discount_rule_id}`, !d.interpretation || d.interpretation.requires_confirmation)
+    countItem(`discount:${d.discount_rule_id}`, isDiscountUnresolved(d))
   }
 
   for (const c of terms?.service_credits ?? []) {
@@ -252,8 +269,7 @@ export function computeCommercialRuleWorkload(
     // application scope (what it may reduce) remains a real, separate,
     // outstanding decision; the readiness count must not drop it just
     // because the main flag flipped.
-    const unresolved = !c.interpretation || c.interpretation.requires_confirmation || !!c.interpretation.application_rule?.requires_confirmation
-    countItem(`service_credit:${c.credit_rule_id}`, unresolved)
+    countItem(`service_credit:${c.credit_rule_id}`, isServiceCreditUnresolved(c))
   }
 
   const meterMappingOk = meterMapping.total === 0 || meterMapping.confirmed >= meterMapping.total

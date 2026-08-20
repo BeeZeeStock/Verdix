@@ -15,7 +15,7 @@ import { computeBaseTcv, contractLifecycleStatus } from '@/lib/contract-tcv-calc
 import { ruleCadenceLabel, cadenceNoun, contractMonthLabel } from '@/lib/cadence-labels'
 import { optionsForRuleType, optionsForEdit, deriveSelectedOption, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
-import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved } from '@/lib/commercial-rule-status'
+import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved } from '@/lib/commercial-rule-status'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
@@ -2508,7 +2508,7 @@ function ReviewPanel({
               discount" ambiguity. A contract can have several (onboarding,
               volume, reseller...) and only the unresolved ones surface here. */}
           {(() => {
-            const unresolvedDiscounts = (discounts ?? []).filter(d => !d.interpretation || d.interpretation.requires_confirmation)
+            const unresolvedDiscounts = (discounts ?? []).filter(isDiscountUnresolved)
             if (unresolvedDiscounts.length === 0) return null
             return (
               <div>
@@ -2558,18 +2558,17 @@ function ReviewPanel({
               or earned/usage credits — same independent-addressing pattern as
               Discounts, keyed by credit_rule_id rather than bundled. */}
           {(() => {
-            // Unresolved if EITHER the main interpretation is still open OR —
-            // once that's confirmed — its independent application_rule still
-            // is (see lib/commercial-rule-status.ts's identical check, which
-            // is what actually drives the outstanding COUNT). Checking only
-            // the top-level flag here meant a credit whose trigger/rate/cap
-            // got confirmed but whose application scope the contract never
-            // stated would vanish from this section entirely — still counted
-            // as outstanding everywhere else, but with no card left to
-            // resolve it from.
-            const unresolvedCredits = (serviceCredits ?? []).filter(c =>
-              !c.interpretation || c.interpretation.requires_confirmation || !!c.interpretation.application_rule?.requires_confirmation
-            )
+            // Shared with lib/commercial-rule-status.ts's own service-credit
+            // loop (isServiceCreditUnresolved) — same function, not a
+            // separately-written copy of the expression, so this section's
+            // card visibility can never drift from what actually drives the
+            // outstanding COUNT. Checking only the top-level flag here used
+            // to mean a credit whose trigger/rate/cap got confirmed but
+            // whose application scope the contract never stated would
+            // vanish from this section entirely — still counted as
+            // outstanding everywhere else, but with no card left to resolve
+            // it from.
+            const unresolvedCredits = (serviceCredits ?? []).filter(isServiceCreditUnresolved)
             if (unresolvedCredits.length === 0) return null
             return (
               <div>

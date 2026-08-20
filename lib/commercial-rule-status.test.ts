@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, type CommercialRuleTerms } from './commercial-rule-status'
+import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, type CommercialRuleTerms } from './commercial-rule-status'
 
 describe('computeCommercialRuleWorkload — "all confirmed" must check every rule type (regression)', () => {
   it('minimum commitment, tier calculation, escalator, and meter mapping all confirmed but a discount is NOT: never all_commercial_rules_confirmed', () => {
@@ -193,5 +193,77 @@ describe('isMinimumCommitmentProrationUnresolved', () => {
   })
   it('is resolved when calendar-anchored and prorate_partial_periods is unclear, but the contract starts on day 1 — no partial window is ever actually touched', () => {
     expect(isMinimumCommitmentProrationUnresolved({ mode: 'floor', prorate_partial_periods: 'unclear', requires_confirmation: true }, true, 'monthly', '2026-08-01', '2028-07-31')).toBe(false)
+  })
+})
+
+// "One blocker = one actionable UI control" invariant. page.tsx's
+// "Service credits"/"Discounts" section card visibility filters call these
+// SAME exported functions (not a separately-written copy of the
+// expression) — so these tests exercise the exact predicate the UI renders
+// from, not a parallel reimplementation that could quietly drift from it.
+// A card is either visible for a credit/discount, or that item does not
+// contribute to computeCommercialRuleWorkload's totalToConfirm — never both
+// "counted but no card" or "card but not counted", by construction.
+describe('isServiceCreditUnresolved — shared by the canonical count and page.tsx\'s card visibility', () => {
+  it('unresolved when there is no interpretation at all yet', () => {
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: null })).toBe(true)
+  })
+  it('unresolved when the top-level interpretation itself still requires confirmation', () => {
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: { requires_confirmation: true } })).toBe(true)
+  })
+  it('unresolved when the top-level interpretation is confirmed but application_rule still requires confirmation (TEST-PAY-002 Rebate/Service Credit shape: eligibility resolved, survival still open)', () => {
+    expect(isServiceCreditUnresolved({
+      credit_rule_id: 'c1',
+      interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: true } },
+    })).toBe(true)
+  })
+  it('resolved only once BOTH the top-level interpretation and application_rule are confirmed (TEST-PAY-002 Growth Credit shape, post PDF-verified carry_forward)', () => {
+    expect(isServiceCreditUnresolved({
+      credit_rule_id: 'c1',
+      interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false } },
+    })).toBe(false)
+  })
+  it('resolved when the top-level interpretation is confirmed and there is no application_rule sub-object at all (non-credit rule types / legacy rows)', () => {
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: { requires_confirmation: false } })).toBe(false)
+  })
+})
+
+describe('isDiscountUnresolved — shared by the canonical count and page.tsx\'s card visibility', () => {
+  it('unresolved when there is no interpretation at all yet', () => {
+    expect(isDiscountUnresolved({ discount_rule_id: 'd1', interpretation: null })).toBe(true)
+  })
+  it('unresolved when the interpretation still requires confirmation', () => {
+    expect(isDiscountUnresolved({ discount_rule_id: 'd1', interpretation: { requires_confirmation: true } })).toBe(true)
+  })
+  it('resolved once the interpretation is confirmed', () => {
+    expect(isDiscountUnresolved({ discount_rule_id: 'd1', interpretation: { requires_confirmation: false } })).toBe(false)
+  })
+})
+
+describe('computeCommercialRuleWorkload.blockers — every blocker key traces to isServiceCreditUnresolved/isDiscountUnresolved returning true for that exact item', () => {
+  it('TEST-PAY-002 shape: Rebate and Service Credit unresolved (survival open), Growth Credit resolved — blockers list contains exactly the two unresolved credit_rule_ids, in order, nothing else', () => {
+    const terms: CommercialRuleTerms = {
+      service_credits: [
+        { credit_rule_id: 'rebate', interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: true } } },
+        { credit_rule_id: 'growth', interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false } } },
+        { credit_rule_id: 'service', interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: true } } },
+      ],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.blockers).toEqual(['service_credit:rebate', 'service_credit:service'])
+    expect(workload.totalToConfirm).toBe(2)
+    // Every blocker key, independently re-derived via isServiceCreditUnresolved
+    // against the same source data, must agree with what's in the list —
+    // the actual invariant check, not just a hardcoded expected array.
+    for (const key of workload.blockers) {
+      const creditId = key.replace('service_credit:', '')
+      const credit = terms.service_credits!.find(c => c.credit_rule_id === creditId)!
+      expect(isServiceCreditUnresolved(credit)).toBe(true)
+    }
+    // And conversely: every credit NOT in blockers must be resolved.
+    const blockedIds = new Set(workload.blockers.map(k => k.replace('service_credit:', '')))
+    for (const credit of terms.service_credits!) {
+      if (!blockedIds.has(credit.credit_rule_id!)) expect(isServiceCreditUnresolved(credit)).toBe(false)
+    }
   })
 })
