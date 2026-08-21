@@ -76,6 +76,7 @@ type ServiceCredit = {
     application_rule?: {
       eligible_component_keys: string[] | 'all' | null
       eligibility_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null
+      excluded_component_keys?: string[]
       carry_forward: boolean | 'unclear'
       one_time: boolean | 'unclear'
       survival_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null
@@ -86,6 +87,10 @@ type ServiceCredit = {
     } | null
   } | null
 }
+// Named aliases for the two nested shapes above — used by the Confirmed
+// billing rules section's credit-card builders, which need to name these
+// types in helper-function signatures rather than inline every time.
+type ServiceCreditInterp = NonNullable<ServiceCredit['interpretation']>
 type Tier       = {
   tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string
   measurement_period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
@@ -2152,6 +2157,13 @@ type RuleInterpretationRecord = {
   rule_type: string; contract_unit_type: string | null; source_clause: string | null; reviewer_input: string | null
   approved_interpretation: Record<string, unknown>; reviewer_email: string; reviewer_name: string | null; created_at: string
   revision_number: number; is_current: boolean
+  // Whole-interpretation provenance (trigger/rate/basis, mode/amount, tier
+  // method, ...) — see confirm-rule/route.ts's decisionProvenance. Distinct
+  // from a service credit's own per-sub-field eligibility_provenance/
+  // survival_provenance, which live directly on approved_interpretation.
+  // application_rule instead. Absent on rows written before the
+  // 20260821000003_commercial_rule_provenance.sql migration ran.
+  decision_provenance?: 'reviewer_policy' | 'contract_derived' | null
 }
 
 const FIELD_LABELS: Record<string, string> = {
@@ -2189,6 +2201,13 @@ const CREDIT_BASIS_LABEL: Record<string, string> = {
   other: 'Credit basis',
 }
 
+// A credit's product-facing name, distinct from CREDIT_BASIS_LABEL above
+// (which labels the BASIS field, not the credit itself) — "Annual Rebate"
+// reads naturally where "Rebate basis" would not. Falls back to the
+// credit's own description/CREDIT_BASIS_LABEL wherever a credit_type isn't
+// one of these three named product concepts.
+const CREDIT_TYPE_LABEL: Record<string, string> = { rebate: 'Annual Rebate', conditional_credit: 'Growth Credit', service_credit: 'Service Credit' }
+
 function formatFieldValue(field: string, value: unknown, currency: string): string {
   if (value == null) return '—'
   if (field === 'amount' && typeof value === 'number') return fmt(value, currency)
@@ -2202,6 +2221,97 @@ function formatFieldValue(field: string, value: unknown, currency: string): stri
   }
   if (typeof value === 'boolean') return value ? 'Yes' : 'No'
   return String(value)
+}
+
+// Shared label for FieldProvenance — never invents a badge for a field with
+// no real provenance record (null/undefined stays unlabeled) since a
+// fabricated "Clear from source"/"Reviewer policy" on a field this codebase
+// never actually graded would misrepresent it. See lib/types.ts's
+// FieldProvenance and isProvenanceResolved (lib/commercial-rule-status.ts) —
+// 'verdix_recommends' is deliberately absent here too: a rule reaching this
+// persistent confirmed-rules section has already cleared that gate, so only
+// the two resolving values are ever shown.
+function provenanceLabel(p?: string | null): string | null {
+  return p === 'contract_derived' ? 'Clear from source' : p === 'reviewer_policy' ? 'Reviewer policy' : null
+}
+
+// Read-only card for the "Confirmed billing rules" section — the persistent,
+// post-confirmation counterpart to RuleInterpretationCard's pre-confirmation
+// review flow. Deliberately does not reuse RuleInterpretationCard itself:
+// that component's 'applied' phase is a one-line "confirmed and applied"
+// banner with no way to redisplay what was actually approved days/weeks
+// earlier (it only ever holds the state from the confirm click that just
+// happened, in-memory). This renders directly from contract_terms — the
+// durable operational value — so it survives reload, is never blank on a
+// freshly-opened job, and can never show a different value than what
+// billing/invoicing itself reads.
+function ConfirmedRuleCard({
+  typeLabel, title, sourceClause, interpretation, params, provenance, auditReviewer, auditDate, onViewSource, onEdit,
+}: {
+  typeLabel: string
+  title: string
+  sourceClause?: string | null
+  interpretation: string
+  params: { label: string; value: string }[]
+  // Usually one entry — a rule bundling two independently-graded questions
+  // (a service credit's eligibility vs. its unused-balance survival) passes
+  // two, each labeled, so the card never claims a single verdict for
+  // sub-fields that were actually resolved through different routes.
+  provenance: { label: string; value?: string | null }[]
+  auditReviewer?: string | null
+  auditDate?: string | null
+  onViewSource?: () => void
+  onEdit: () => void
+}) {
+  const resolvedProvenance = provenance.filter(p => provenanceLabel(p.value) != null)
+  return (
+    <div className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
+      <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">{typeLabel}</p>
+      <p className="text-sm font-semibold text-ink leading-snug mb-2">{title}</p>
+      {sourceClause && (
+        <p className="text-[11px] text-stone italic leading-relaxed mb-2 pl-2" style={{ borderLeft: '2px solid rgba(26,61,43,0.15)' }}>
+          &ldquo;{sourceClause}&rdquo;
+        </p>
+      )}
+      <p className="text-[12px] text-ink leading-relaxed mb-2">{interpretation}</p>
+      {params.length > 0 && (
+        <dl className="space-y-1 mb-2 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
+          {params.map((p, i) => (
+            <div key={i} className="flex justify-between gap-3 text-[11px]">
+              <dt className="text-stone flex-shrink-0">{p.label}</dt>
+              <dd className="font-medium text-ink text-right">{p.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {resolvedProvenance.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+          {resolvedProvenance.map((p, i) => {
+            const label = provenanceLabel(p.value)!
+            return (
+              <span key={i} className="text-[9px] font-semibold px-2 py-0.5 rounded-full" style={{
+                background: label === 'Clear from source' ? 'rgba(11,92,54,0.1)' : 'rgba(180,83,9,0.1)',
+                color: label === 'Clear from source' ? '#0B5C36' : '#92400E',
+              }}>
+                {resolvedProvenance.length > 1 ? `${p.label}: ${label}` : label}
+              </span>
+            )
+          })}
+        </div>
+      )}
+      {(auditReviewer || auditDate) && (
+        <p className="text-[10px] text-stone/60 mb-2">
+          Confirmed{auditReviewer ? ` by ${auditReviewer}` : ''}{auditDate ? ` · ${auditDate}` : ''}
+        </p>
+      )}
+      <div className="flex items-center gap-3 pt-1">
+        {onViewSource && (
+          <button onClick={onViewSource} className="text-[11px] font-medium text-forest hover:underline">View source ↗</button>
+        )}
+        <button onClick={onEdit} className="text-[11px] font-medium text-stone hover:text-ink">Edit interpretation</button>
+      </div>
+    </div>
+  )
 }
 
 function EditCommercialRuleDrawer({
@@ -3896,15 +4006,26 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // so it can't diverge from that panel's own state the way two independent
   // editable mounts of the same component previously could.
   const [meterMappingSummary, setMeterMappingSummary] = useState<{ total: number; confirmed: number }>({ total: 0, confirmed: 0 })
+  // Full per-metric rows + the org's available meters — same read-only fetch
+  // as meterMappingSummary above (no second request), kept for the "Usage
+  // input configuration" cards in the persistent Confirmed billing rules
+  // section, which need to say WHERE each metric's data actually comes from
+  // (a specific meter, manual entry, derived, or the credit ledger), not
+  // just a confirmed/outstanding count.
+  type MeterInputRow = { contract_unit_type: string; meter_key: string; confirmed: boolean; input_classification?: 'meter' | 'meter_or_manual_input' | 'derived' | 'persisted_balance'; manual_value_configured?: boolean }
+  const [meterInputRows, setMeterInputRows] = useState<MeterInputRow[]>([])
+  const [availableMeters, setAvailableMeters] = useState<Array<{ meter_key: string; display_name: string }>>([])
   useEffect(() => {
     fetch(`/api/jobs/${id}/meter-mappings`)
       .then(r => r.json())
-      .then((res: { suggestions?: Array<{ confirmed: boolean; meter_key: string; input_classification?: 'meter' | 'meter_or_manual_input' | 'derived' | 'persisted_balance'; manual_value_configured?: boolean }> }) => {
+      .then((res: { suggestions?: MeterInputRow[]; available_meters?: Array<{ meter_key: string; display_name: string }> }) => {
         const suggestions = res.suggestions ?? []
         setMeterMappingSummary({
           total: suggestions.length,
           confirmed: suggestions.filter(s => isMeterMappingResolved({ classification: s.input_classification ?? 'meter', confirmed: s.confirmed, meter_key: s.meter_key, manual_value_configured: s.manual_value_configured })).length,
         })
+        setMeterInputRows(suggestions)
+        setAvailableMeters(res.available_meters ?? [])
       })
       .catch(() => {})
   }, [id, refreshSignal])
@@ -5807,10 +5928,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               // since eligibility and survival can be confirmed via
               // different routes (an AI-graded clear_from_source vs an
               // explicit reviewer picker choice).
-              const creditTypeLabel: Record<string, string> = { rebate: 'Annual Rebate', conditional_credit: 'Growth Credit', service_credit: 'Service Credit' }
               for (const c of terms?.service_credits ?? []) {
                 if (!c.interpretation) continue
-                const label = creditTypeLabel[c.credit_type ?? ''] ?? c.description ?? 'Service credit'
+                const label = CREDIT_TYPE_LABEL[c.credit_type ?? ''] ?? c.description ?? 'Service credit'
                 const appRule = c.interpretation.application_rule
                 if (appRule && !appRule.requires_confirmation && typeof appRule.carry_forward === 'boolean') {
                   const survivalProv = provenanceLabel(appRule.survival_provenance)
@@ -5883,6 +6003,271 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       <p className="text-[11px]" style={{ color: creditCapability === 'supported' ? '#0B5C36' : '#92400E' }}>
                         {billingPlatform} credit-adjustment capability: {creditCapability === 'supported' ? 'Supported' : 'Unsupported — pending vendor guidance'}
                       </p>
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
+            {/* ── Confirmed billing rules ── Persistent, one-rule-at-a-time
+                 counterpart to the "Rule interpretations confirmed" banner
+                 above. That banner deliberately only renders once EVERY
+                 commercial rule on the contract is resolved, and even then
+                 shows one compact text line per rule — by design, it never
+                 shows the executable interpretation, the source clause, or
+                 per-field provenance. Confirming an individual rule via
+                 Review contract terms used to make its detail vanish
+                 entirely from the main GUI the moment requires_confirmation
+                 flipped to false, with nowhere left to see how the
+                 agreement is actually configured short of re-opening that
+                 rule for editing. This section shows each rule's card as
+                 soon as THAT rule is confirmed — independent of whether
+                 other rules are still outstanding — reading straight from
+                 contract_terms (the durable operational value), so it can
+                 never disagree with what invoicing itself uses and never
+                 goes blank on reload. "Edit interpretation" re-opens the
+                 same EditCommercialRuleDrawer used everywhere else in this
+                 file: confirming a change there writes a NEW audit revision
+                 (commercial_rule_interpretations.is_current), never
+                 overwrites the prior one, and requires stepping back through
+                 propose→review→confirm before the change takes effect. */}
+            {(() => {
+              const findAudit = (ruleType: string, unitKey: string | null) =>
+                ruleInterpretations.find(r => r.rule_type === ruleType && r.contract_unit_type === unitKey && r.is_current)
+
+              const MODE_LABEL: Record<string, string> = {
+                floor: 'Minimum charge floor', additive: 'Additive fee', minimum_spend: 'Spend commitment',
+                prepaid_commitment: 'Prepaid commitment', minimum_quantity: 'Minimum quantity',
+              }
+              const MODE_INTERPRETATION: Record<string, string> = {
+                floor: 'Floor, not additive — the greater of actual usage charges or this minimum is billed each period.',
+                additive: 'Charged on top of the usage charge every period, regardless of actual usage.',
+                minimum_spend: 'Usage draws down against this committed spend; any shortfall is billed as a true-up.',
+                prepaid_commitment: 'This amount is prepaid; usage draws down from the prepaid balance.',
+                minimum_quantity: 'A minimum unit quantity is committed (take-or-pay), independent of usage.',
+              }
+
+              const describeCreditValue = (interp: ServiceCreditInterp, stated_pct: number | null | undefined, stated_amount: number | null | undefined): string | null => {
+                const v = interp.credit_value
+                if (interp.credit_basis === 'pct_of_affected_component' && (v != null || stated_pct != null)) {
+                  return `Worth ${v ?? stated_pct}% of ${interp.basis_component ?? 'the affected component'}.`
+                }
+                if (interp.credit_basis === 'pct_of_period_fee' && (v != null || stated_pct != null)) return `Worth ${v ?? stated_pct}% of the period fee.`
+                if (interp.credit_basis === 'fixed_amount_per_unit' && v != null) return `Worth ${fmt(v, cur)} per unit.`
+                if (interp.credit_basis === 'usage_units' && v != null) return `Worth ${v} units.`
+                if (v != null) return `Worth ${fmt(v, cur)}.`
+                if (stated_amount != null) return `Worth ${fmt(stated_amount, cur)}.`
+                return null
+              }
+              const describeCreditEligibility = (appRule: NonNullable<ServiceCreditInterp['application_rule']>): string => {
+                if (appRule.eligible_component_keys === 'all') return 'Applies against the full remaining amount payable on future invoices.'
+                if (Array.isArray(appRule.eligible_component_keys) && appRule.eligible_component_keys.length > 0) {
+                  return `Applies only against future ${appRule.eligible_component_keys.join(', ').replace(/_/g, ' ')} charges.`
+                }
+                return 'Application scope: decision required.'
+              }
+
+              type Card = {
+                key: string; typeLabel: string; title: string; sourceClause?: string | null; interpretation: string
+                params: { label: string; value: string }[]; provenance: { label: string; value?: string | null }[]
+                auditReviewer?: string | null; auditDate?: string | null; onViewSource?: () => void; onEdit: () => void
+              }
+              const cards: Card[] = []
+
+              // 1. Transaction pricing — tier structure + calculation method,
+              // per metric. Only once the method itself is resolved
+              // (requires_confirmation === false); a metric with a single
+              // flat rate has no method to disambiguate at all.
+              for (const [unitType, tierList] of chargingGroups.entries()) {
+                const tierCalc = tierList.find(({ tier: t }) => t.tier_calculation)?.tier.tier_calculation
+                if (!tierCalc || tierCalc.requires_confirmation) continue
+                const paidTiers = tierList.filter(({ tier: t }) => (t.rate_per_unit ?? 0) > 0)
+                const audit = findAudit('tier_calculation', unitType)
+                cards.push({
+                  key: `tier:${unitType}`,
+                  typeLabel: 'Transaction pricing',
+                  title: `${TIER_METHOD_DISPLAY[tierCalc.method] ?? tierCalc.method} · ${unitType}`,
+                  sourceClause: tierCalc.source_clause,
+                  interpretation: tierCalc.method === 'volume'
+                    ? 'The rate selected by total monthly volume applies to all transactions in that calendar month; tiers are not progressive.'
+                    : tierCalc.method === 'graduated'
+                      ? 'Each unit is billed at the rate for the tier it falls into — rates apply progressively as usage crosses each threshold.'
+                      : tierCalc.method === 'block'
+                        ? 'Usage is billed in fixed blocks at each block’s rate.'
+                        : 'Custom calculation — see source clause.',
+                  params: paidTiers.map(({ tier: t }) => ({
+                    label: t.tier_label ?? (t.from_unit != null ? `${t.from_unit.toLocaleString()}–${t.to_unit != null ? t.to_unit.toLocaleString() : '+'}` : 'Rate'),
+                    value: `${fmtUnit(t.rate_per_unit, cur)} / ${unitType}`,
+                  })),
+                  provenance: [{ label: 'Pricing method', value: audit?.decision_provenance }],
+                  auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
+                  onViewSource: src.overage_tiers ? () => openPDF(src.overage_tiers) : undefined,
+                  onEdit: () => setEditingRule(`tier:${unitType}`),
+                })
+              }
+
+              // 2. Minimum charge floor — per metric, mode/amount/cadence
+              // plus (when calendar-anchored) partial-period treatment.
+              for (const [unitType, tierList] of chargingGroups.entries()) {
+                const mc = tierList.find(({ tier: t }) => t.minimum_commitment)?.tier.minimum_commitment
+                const t0 = tierList[0]?.tier
+                if (!mc || !mc.mode) continue
+                const hasAllowance = tierList.some(({ tier: t }) => (t.rate_per_unit ?? 0) === 0)
+                if (isMinimumCommitmentModeUnresolved(mc, hasAllowance)) continue
+                const audit = findAudit('minimum_commitment', unitType)
+                const params: { label: string; value: string }[] = [{ label: 'Applies to', value: unitType }]
+                if (t0?.reset_anchor === 'calendar') {
+                  params.push({
+                    label: 'Partial-period treatment',
+                    value: mc.prorate_partial_periods === true ? 'Prorated by days' : mc.prorate_partial_periods === false ? 'Full amount charged' : 'Decision required',
+                  })
+                }
+                cards.push({
+                  key: `min:${unitType}`,
+                  typeLabel: MODE_LABEL[mc.mode] ?? mc.mode,
+                  title: `${fmt(mc.amount, cur)}${ruleCadenceLabel(mc.period, t0?.reset_anchor) ? ` / ${ruleCadenceLabel(mc.period, t0?.reset_anchor)}` : ''} — ${unitType}`,
+                  sourceClause: mc.source_clause,
+                  interpretation: MODE_INTERPRETATION[mc.mode] ?? '',
+                  params,
+                  provenance: [{ label: 'Minimum rule', value: audit?.decision_provenance }],
+                  auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
+                  onViewSource: src.overage_tiers ? () => openPDF(src.overage_tiers) : undefined,
+                  onEdit: () => setEditingRule(`min:${unitType}`),
+                })
+              }
+
+              // 3. Platform fee — billing-period anchor/treatment. Reuses the
+              // same deriveSelectedOption/optionsForRuleType lookup the
+              // review card itself uses, so this can never describe a
+              // different treatment than what was actually confirmed.
+              if (terms?.base_fee_proration && !terms.base_fee_proration.requires_confirmation && terms?.base_monthly_fee) {
+                const bfp = terms.base_fee_proration
+                const optionId = deriveSelectedOption('base_fee_proration', bfp as unknown as Record<string, unknown>)
+                const cadenceLabel = cadenceNoun(terms?.billing_frequency)
+                const periodLabel = contractMonthLabel(terms?.contract_start_date)
+                const opt = optionsForRuleType('base_fee_proration', cadenceLabel, periodLabel).find(o => o.id === optionId)
+                const audit = findAudit('base_fee_proration', BASE_FEE_PRORATION_SENTINEL)
+                cards.push({
+                  key: 'basefee',
+                  typeLabel: 'Platform fee',
+                  title: `${fmt(terms.base_monthly_fee, cur)} / ${cadenceLabel}`,
+                  sourceClause: bfp.source_clause,
+                  interpretation: opt?.description ?? (bfp.reset_anchor === 'contract_start' ? 'Billed on the contract-month cycle, anchored to the contract start date.' : 'Billed on calendar-month boundaries.'),
+                  params: [{ label: 'Billing period', value: opt?.label ?? (periodLabel ? `Contract month, ${periodLabel}` : 'Calendar month') }],
+                  provenance: [{ label: 'Billing-period treatment', value: audit?.decision_provenance ?? 'reviewer_policy' }],
+                  auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
+                  onViewSource: src.base_monthly_fee ? () => openPDF(src.base_monthly_fee) : undefined,
+                  onEdit: () => setEditingRule('basefee'),
+                })
+              }
+
+              // 4/5/6. Service credits (Annual Rebate / Growth Credit /
+              // Service Availability Credit, or any other credit_type) —
+              // only once BOTH the trigger/basis interpretation and its
+              // application_rule (eligibility + unused-balance survival) are
+              // fully resolved (isServiceCreditUnresolved false); a credit
+              // still missing its application scope stays in Review contract
+              // terms until that's resolved, rather than showing an
+              // incomplete card here.
+              for (const c of terms?.service_credits ?? []) {
+                if (!c.credit_rule_id || isServiceCreditUnresolved(c)) continue
+                const interp = c.interpretation!
+                const appRule = interp.application_rule!
+                const audit = findAudit('service_credit', `credit:${c.credit_rule_id}`)
+                const params: { label: string; value: string }[] = []
+                if (interp.trigger_description) params.push({ label: 'Trigger', value: interp.trigger_description })
+                const cap = interp.cap_amount != null ? fmt(interp.cap_amount, cur) : interp.cap_pct != null ? `${interp.cap_pct}%` : null
+                if (cap) params.push({ label: `Cap${interp.settlement_period ? ` (${interp.settlement_period})` : ''}`, value: cap })
+                params.push({
+                  label: 'Eligible components',
+                  value: appRule.eligible_component_keys === 'all' ? 'All future amounts payable'
+                    : Array.isArray(appRule.eligible_component_keys) ? appRule.eligible_component_keys.map(k => k.replace(/_/g, ' ')).join(', ') : 'Decision required',
+                })
+                if (appRule.excluded_component_keys?.length) params.push({ label: 'Excluded', value: appRule.excluded_component_keys.map(k => k.replace(/_/g, ' ')).join(', ') })
+                params.push({ label: 'Repeatable', value: appRule.one_time === true ? 'No — one-time' : appRule.one_time === false ? 'Yes' : 'Decision required' })
+                if (typeof appRule.carry_forward === 'boolean') {
+                  params.push({ label: 'Unused balance', value: describeSurvivalResolution({ carry_forward: appRule.carry_forward, expiry_periods: appRule.expiry_periods, expiry_date: appRule.expiry_date }) })
+                }
+                const interpretationParts = [
+                  interp.trigger_description ? `Earned when ${interp.trigger_description.replace(/^when\s+/i, '')}.` : null,
+                  describeCreditValue(interp, c.stated_pct, c.stated_amount),
+                  describeCreditEligibility(appRule),
+                  typeof appRule.carry_forward === 'boolean' ? describeSurvivalResolution({ carry_forward: appRule.carry_forward, expiry_periods: appRule.expiry_periods, expiry_date: appRule.expiry_date }) : null,
+                ].filter(Boolean)
+                cards.push({
+                  key: `credit:${c.credit_rule_id}`,
+                  typeLabel: CREDIT_TYPE_LABEL[c.credit_type ?? ''] ?? CREDIT_BASIS_LABEL[c.credit_type ?? 'other'] ?? 'Service credit',
+                  title: c.description || CREDIT_TYPE_LABEL[c.credit_type ?? ''] || 'Service credit',
+                  sourceClause: c.source_clause,
+                  interpretation: interpretationParts.join(' '),
+                  params,
+                  provenance: [
+                    { label: 'Eligibility', value: appRule.eligibility_provenance },
+                    { label: 'Unused-balance policy', value: appRule.survival_provenance },
+                  ],
+                  auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
+                  onViewSource: src.service_credits ? () => openPDF(src.service_credits) : undefined,
+                  onEdit: () => setEditingRule(`credit:${c.credit_rule_id}`),
+                })
+              }
+
+              if (cards.length === 0) return null
+
+              // 7. Usage input configuration — not full commercial-rule
+              // cards (no interpretation/provenance to confirm), just where
+              // each metric's data is expected to come from. Only metrics
+              // this contract actually meters (chargingGroups) are shown.
+              const usageRows = Array.from(chargingGroups.keys()).map(unitType => {
+                const row = meterInputRows.find(r => r.contract_unit_type === unitType)
+                const classification = row?.input_classification ?? 'meter'
+                const meter = row?.meter_key ? availableMeters.find(m => m.meter_key === row.meter_key) : undefined
+                const resolved = row ? isMeterMappingResolved({ classification, confirmed: row.confirmed, meter_key: row.meter_key, manual_value_configured: row.manual_value_configured }) : false
+                let description: string
+                if (!resolved) description = 'Not yet confirmed'
+                else if (classification === 'derived') description = 'Derived from other confirmed usage data — no separate meter needed'
+                else if (classification === 'persisted_balance') description = 'Tracked via the credit ledger — no meter needed'
+                else if (classification === 'meter_or_manual_input' && row?.manual_value_configured && !row.meter_key) description = 'Manual monthly entry'
+                else description = `Meter: ${meter?.display_name ?? row?.meter_key ?? '—'}`
+                return { unitType, description, resolved }
+              })
+
+              return (
+                <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
+                  <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                    <div>
+                      <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Confirmed billing rules</h2>
+                      <p className="text-[11px] text-stone mt-1">How this agreement is currently configured to bill — updates immediately as each rule is confirmed or edited.</p>
+                    </div>
+                    <span className="text-[11px] text-stone flex-shrink-0">{cards.length} rule{cards.length === 1 ? '' : 's'} confirmed</span>
+                  </div>
+                  <div className="p-6 grid grid-cols-2 gap-4">
+                    {cards.map(c => (
+                      <ConfirmedRuleCard
+                        key={c.key}
+                        typeLabel={c.typeLabel}
+                        title={c.title}
+                        sourceClause={c.sourceClause}
+                        interpretation={c.interpretation}
+                        params={c.params}
+                        provenance={c.provenance}
+                        auditReviewer={c.auditReviewer}
+                        auditDate={c.auditDate}
+                        onViewSource={c.onViewSource}
+                        onEdit={c.onEdit}
+                      />
+                    ))}
+                  </div>
+                  {usageRows.length > 0 && (
+                    <div className="px-6 pb-6 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-stone mb-2">Usage input configuration</p>
+                      <div className="grid gap-x-8 gap-y-1.5 text-[12px]" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+                        {usageRows.map(r => (
+                          <div key={r.unitType} className="flex items-center justify-between gap-2">
+                            <p><span className="text-stone capitalize">{r.unitType}:</span> <span className={`font-medium ${r.resolved ? 'text-ink' : ''}`} style={!r.resolved ? { color: '#B45309' } : undefined}>{r.description}</span></p>
+                            <button onClick={() => setReviewPanelOpen(true)} className="text-[11px] font-medium text-stone hover:text-ink flex-shrink-0">{r.resolved ? 'Change' : 'Confirm'}</button>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -6159,29 +6544,43 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
         const isTier = editingRule.startsWith('tier:')
         const isPartial = editingRule.startsWith('partial:')
         const isDiscount = editingRule.startsWith('disc:')
-        const ruleType: RuleType = isMin ? 'minimum_commitment' : isTier ? 'tier_calculation' : isPartial ? 'partial_period' : isDiscount ? 'discount' : 'escalator'
-        const unitType = isMin ? editingRule.slice(4) : isTier ? editingRule.slice(5) : isPartial ? editingRule.slice(8) : undefined
+        const isCredit = editingRule.startsWith('credit:')
+        const isBaseFee = editingRule === 'basefee'
+        const isRecurFee = editingRule.startsWith('recurfee:')
+        const ruleType: RuleType = isMin ? 'minimum_commitment' : isTier ? 'tier_calculation' : isPartial ? 'partial_period'
+          : isDiscount ? 'discount' : isCredit ? 'service_credit' : isBaseFee ? 'base_fee_proration' : isRecurFee ? 'recurring_fee_proration'
+          : 'escalator'
+        const unitType = isMin ? editingRule.slice(4) : isTier ? editingRule.slice(5) : isPartial ? editingRule.slice(8)
+          : isBaseFee ? BASE_FEE_PRORATION_SENTINEL : isRecurFee ? editingRule.slice(9) : undefined
         const discountId = isDiscount ? editingRule.slice(5) : undefined
-        // Discounts address their audit history via a synthetic
-        // 'discount:{id}' key in contract_unit_type (see confirm-rule) —
-        // reuses the column rather than needing a dedicated one.
-        const auditUnitKey = isDiscount ? `discount:${discountId}` : (unitType ?? null)
+        const creditId = isCredit ? editingRule.slice(7) : undefined
+        // Discounts/service credits address their audit history via a
+        // synthetic 'discount:{id}'/'credit:{id}' key in contract_unit_type
+        // (see confirm-rule) — reuses the column rather than needing a
+        // dedicated one.
+        const auditUnitKey = isDiscount ? `discount:${discountId}` : isCredit ? `credit:${creditId}` : (unitType ?? null)
         const records = ruleInterpretations.filter(r => r.rule_type === ruleType && r.contract_unit_type === auditUnitKey)
         const currentRecord = records.find(r => r.is_current) ?? null
         const historyRecords = records.filter(r => !r.is_current).sort((a, b) => b.revision_number - a.revision_number)
         const minCadence = unitType ? tiers.find(t => t.unit_type === unitType)?.minimum_commitment?.period : null
         const partialCadence = unitType ? tiers.find(t => t.unit_type === unitType)?.measurement_period : null
+        const editingCredit = isCredit ? (terms?.service_credits ?? []).find(c => c.credit_rule_id === creditId) : undefined
         const ruleTitle = isMin
           ? `${unitType} · ${minCadence ? minCadence.charAt(0).toUpperCase() + minCadence.slice(1) : ''} minimum`.replace('  ', ' ')
           : isTier ? `${unitType} · Tier calculation method`
           : isPartial ? `${unitType} · Partial-period treatment`
-          : isDiscount ? 'Discount structure' : 'Price escalation'
+          : isDiscount ? 'Discount structure'
+          : isCredit ? (editingCredit?.description || CREDIT_BASIS_LABEL[editingCredit?.credit_type ?? 'other'] || 'Service credit')
+          : isBaseFee ? 'Platform-fee billing-period treatment'
+          : isRecurFee ? `${unitType} · Billing-period treatment`
+          : 'Price escalation'
         return (
           <EditCommercialRuleDrawer
             jobId={id}
             ruleType={ruleType}
             contractUnitType={unitType}
             discountId={discountId}
+            creditId={creditId}
             cadenceLabel={cadenceNoun(partialCadence)}
             ruleTitle={ruleTitle}
             currency={cur}

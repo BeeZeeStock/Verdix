@@ -29,11 +29,26 @@ export async function GET(
 
   const { id: jobId } = await params
 
-  const { data, error } = await supabaseServer
+  let { data, error } = await supabaseServer
     .from('commercial_rule_interpretations')
-    .select('rule_type, contract_unit_type, revision_number, is_current, source_clause, reviewer_input, approved_interpretation, reviewer_email, reviewer_name, created_at, propagation_status')
+    .select('rule_type, contract_unit_type, revision_number, is_current, source_clause, reviewer_input, approved_interpretation, reviewer_email, reviewer_name, created_at, propagation_status, decision_provenance')
     .eq('job_id', jobId)
     .order('revision_number', { ascending: false })
+
+  // decision_provenance requires a migration (20260821000003_commercial_rule_
+  // provenance.sql) that may not have run yet in every environment — same
+  // degrade-gracefully pattern confirm-rule/route.ts already uses when
+  // writing this column. A read must not 500 just because this enrichment
+  // column isn't there yet.
+  if (error?.message?.includes('decision_provenance')) {
+    const fallback = await supabaseServer
+      .from('commercial_rule_interpretations')
+      .select('rule_type, contract_unit_type, revision_number, is_current, source_clause, reviewer_input, approved_interpretation, reviewer_email, reviewer_name, created_at, propagation_status')
+      .eq('job_id', jobId)
+      .order('revision_number', { ascending: false })
+    data = fallback.data?.map(row => ({ ...row, decision_provenance: null })) ?? null
+    error = fallback.error
+  }
 
   if (error) {
     if (error.message.includes('commercial_rule_interpretations')) return NextResponse.json({ interpretations: [] })
