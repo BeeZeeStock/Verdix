@@ -15,8 +15,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
-import { getCustomerVatConfig, setCustomerVatConfig } from '@/lib/vat-service'
-import type { VatMode, VatTreatment } from '@/lib/vat'
+import { setCustomerVatConfig, resolveEffectiveVatForJob } from '@/lib/vat-service'
+import type { VatMode } from '@/lib/vat'
 
 async function getJobVatContext(jobId: string, orgId: string) {
   const { data } = await supabaseServer
@@ -39,15 +39,19 @@ export async function GET(
   const job = await getJobVatContext(jobId, org.orgId)
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
-  if (job.billing_customer_id) {
-    const treatment = await getCustomerVatConfig(org.orgId, job.billing_customer_id)
-    return NextResponse.json({ configured: !!treatment, treatment, source: 'customer_vat_config' })
-  }
-
-  const pending: VatTreatment | null = job.pending_vat_mode && job.pending_vat_mode !== 'not_configured'
-    ? { mode: job.pending_vat_mode, ratePct: job.pending_vat_rate_pct }
-    : null
-  return NextResponse.json({ configured: !!pending, treatment: pending, source: 'pending_job_vat' })
+  // Single canonical resolution — self-heals a stale pending_vat_* value
+  // into the real customer_vat_config the moment a billing_customer_id
+  // exists but no customer default has actually landed yet (see
+  // lib/vat.ts's resolveEffectiveVat for why this can happen and why it's
+  // safe/idempotent). Every VAT surface (Review Panel, main GUI, Billing
+  // Summary) reads through this same GET, via the same useVatConfig hook,
+  // so they can never show a different effective value than each other.
+  const resolution = await resolveEffectiveVatForJob(org.orgId, job)
+  return NextResponse.json({
+    configured: !!resolution.treatment && resolution.treatment.mode !== 'not_configured',
+    treatment: resolution.treatment,
+    source: resolution.source,
+  })
 }
 
 export async function POST(

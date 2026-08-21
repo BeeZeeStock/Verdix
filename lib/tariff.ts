@@ -410,6 +410,30 @@ export function isPartialWindow(
   return false
 }
 
+// Clamps a cadence window's boundaries to the contract's actual
+// [contractStartDate, contractEndDate] span. A metric's TRUE cadence
+// window (e.g. a calendar month) must stay UNCLAMPED for resolveWindowMinimum's
+// own day-proration math and for isPartialWindow's detection — clamping
+// those in place would trivially collapse "overlap days" to "window days"
+// and always report a window as non-partial. This function is for the two
+// things that must NEVER extend past the contract's real life: what usage
+// is actually queried/measured for a closed window, and what date range is
+// displayed for it — e.g. a contract ending 2028-08-16 inside a calendar-
+// month window running 2028-08-01–2028-08-31 must only measure/display
+// 2028-08-01–2028-08-16, never the fee-earning fee-generating days after
+// termination, regardless of whether the reviewer-confirmed proration
+// treatment charges the full floor for that partial window or a prorated
+// share of it — those are separate questions (see resolveWindowMinimum).
+export function clampWindowToContract(
+  window: { start: Date; end: Date },
+  contractStartDate: Date,
+  contractEndDate: Date | null,
+): { start: Date; end: Date } {
+  const start = window.start < contractStartDate ? contractStartDate : window.start
+  const end = contractEndDate && window.end > contractEndDate ? contractEndDate : window.end
+  return { start, end }
+}
+
 export interface MinimumCommitmentSchedule {
   /** Total minimum-commitment value across the full contract term, given
    *  the confirmed partial-period proration treatment. Null whenever any

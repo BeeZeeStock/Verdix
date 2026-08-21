@@ -3,7 +3,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { billingInterval } from '@/lib/stripe-meter'
 import { remembillAppUrl } from '@/lib/billing-writer'
-import { enumerateContractWindows, resolveWindowMinimum } from '@/lib/tariff'
+import { enumerateContractWindows, resolveWindowMinimum, clampWindowToContract } from '@/lib/tariff'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { ContractTerms } from '@/lib/types'
 
@@ -289,6 +289,18 @@ async function handlePlannedInvoicesPath({
     quantity: number | null
     unit_price: number | null
     error_message: string | null
+    // VAT snapshot — populated only once invoice-scheduler actually sends
+    // this row (see supabase/migrations/20260821000007_vat_config.sql and
+    // app/api/admin/invoice-scheduler/route.ts's planned_invoices update).
+    // 'not_configured'/nulls for a scheduled row not yet sent, or a row
+    // sent before VAT tracking existed — the UI must fall back to a live
+    // computation for those, never treat an absent snapshot as "zero VAT".
+    vat_mode: 'rate' | 'zero_rated' | 'not_configured' | null
+    vat_rate_pct: number | null
+    vat_source: 'customer_default' | 'override' | null
+    net_amount: number | null
+    vat_amount: number | null
+    gross_amount: number | null
   }
 
   const rows = planned as PlannedRow[]
@@ -342,6 +354,14 @@ async function handlePlannedInvoicesPath({
       unitPrice:  row.unit_price != null ? Number(row.unit_price) : null,
       lineItemId: row.line_item_id,
       errorMessage: status === 'failed' ? row.error_message : null,
+      // VAT snapshot, present only for a row invoice-scheduler has actually
+      // sent — see the PlannedRow type's own comment.
+      vatMode:     row.vat_mode && row.vat_mode !== 'not_configured' ? row.vat_mode : null,
+      vatRatePct:  row.vat_rate_pct,
+      vatSource:   row.vat_source,
+      netAmount:   row.net_amount,
+      vatAmount:   row.vat_amount,
+      grossAmount: row.gross_amount,
     }
   }
 
@@ -453,6 +473,14 @@ async function handlePlannedInvoicesPath({
         // never to duplicate or contradict the real invoiced amount.
         if (w.end < today) continue
         const wm = resolveWindowMinimum(w, contractStartDate, contractEndDate ?? horizonEnd, anchor, mc)
+        // Display bounds are clamped to the contract's actual start/end —
+        // w.start/w.end (passed to resolveWindowMinimum above, unclamped)
+        // are the metric's TRUE cadence boundaries and must stay that way
+        // for its day-proration math; the schedule must never show usage
+        // being measured past contract termination (or before it started),
+        // even though the reviewer-confirmed treatment may still apply the
+        // full, unprorated floor amount for that partial window.
+        const { start: displayStart, end: displayEnd } = clampWindowToContract(w, contractStartDate, contractEndDate)
         commercialRuleEvents.push({
           id:        `commercial-${t.unit_type}-${dateOnly(w.start)}`,
           meterKey:  t.unit_type,
@@ -464,8 +492,8 @@ async function handlePlannedInvoicesPath({
           amount:    wm.amount ?? mc.amount,
           currency:  terms.currency ?? 'EUR',
           cadence,
-          windowStart: dateOnly(w.start),
-          windowEnd:   dateOnly(w.end),
+          windowStart: dateOnly(displayStart),
+          windowEnd:   dateOnly(displayEnd),
           partialPeriod: wm.isPartial
             ? { isPartial: true, needsConfirmation: wm.requiresConfirmation, prorated: mc.prorate_partial_periods === true }
             : null,

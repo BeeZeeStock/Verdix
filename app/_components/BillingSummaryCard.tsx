@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { partialPeriodLabel } from '@/lib/cadence-labels'
 import { VatConfigRow } from './VatConfigRow'
+import { useVatConfig } from './useVatConfig'
+import { resolveInvoiceVatDisplay } from '@/lib/vat'
 
 type SubscriptionInfo = {
   id: string
@@ -48,6 +50,17 @@ type InvoiceInfo = {
   quantity?: number | null
   unitPrice?: number | null
   errorMessage?: string | null
+  // VAT snapshot — present only once invoice-scheduler has actually sent
+  // this row (app/api/jobs/[id]/billing-summary/route.ts's PlannedRow
+  // comment has the full rationale). null/undefined for a scheduled row,
+  // meaning no snapshot exists yet — VAT must be computed live from the
+  // CURRENT customer default for those, never treated as "no VAT".
+  vatMode?: 'rate' | 'zero_rated' | null
+  vatRatePct?: number | null
+  vatSource?: 'customer_default' | 'override' | null
+  netAmount?: number | null
+  vatAmount?: number | null
+  grossAmount?: number | null
 }
 
 type YearPayment = {
@@ -174,6 +187,10 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
   const [syncing, setSyncing]         = useState(false)
   const [syncResult, setSyncResult]   = useState<{ checked: number; paid: number } | null>(null)
   const [expanded, setExpanded]       = useState<Set<string>>(new Set())
+  // For the net/VAT/gross breakdown on each invoice row below — same
+  // canonical hook/endpoint every VAT surface in the product uses (see
+  // useVatConfig's own comment), read-only here.
+  const vat = useVatConfig(jobId)
 
   const toggleExpanded = (entryId: string) => {
     setExpanded(prev => {
@@ -344,6 +361,10 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
           status: string | null; hostedUrl?: string | null; pdfUrl?: string | null; kind: 'subscription' | 'one-time' | 'pending-setup' | 'commercial-rule'
           baseAmount: number; overageLineItems: OverageLineItem[]; overageTotal: number; description?: string | null
           quantity?: number | null; unitPrice?: number | null; errorMessage?: string | null
+          // VAT snapshot — see InvoiceInfo's own comment for when this is
+          // present vs. null (only once invoice-scheduler actually sent it).
+          vatMode?: 'rate' | 'zero_rated' | null; vatRatePct?: number | null; vatSource?: 'customer_default' | 'override' | null
+          netAmount?: number | null; vatAmount?: number | null; grossAmount?: number | null
           // commercial-rule only: a confirmed metric-level commitment whose
           // cadence window hasn't closed yet, so no real invoice row exists.
           commercialRule?: { meterKey: string; mode: string; cadence: string; windowEnd: string; partialPeriod: CommercialRuleEvent['partialPeriod']; isDeterministic: boolean }
@@ -401,6 +422,8 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
             overageLineItems: inv.overageLineItems ?? [],
             overageTotal: inv.overageTotal ?? 0,
             errorMessage: inv.errorMessage ?? null,
+            vatMode: inv.vatMode, vatRatePct: inv.vatRatePct, vatSource: inv.vatSource,
+            netAmount: inv.netAmount, vatAmount: inv.vatAmount, grossAmount: inv.grossAmount,
           })
         }
 
@@ -423,6 +446,8 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
               baseAmount: inv.baseAmount ?? inv.amount,
               overageLineItems: inv.overageLineItems ?? [],
               overageTotal: inv.overageTotal ?? 0,
+              vatMode: inv.vatMode, vatRatePct: inv.vatRatePct, vatSource: inv.vatSource,
+              netAmount: inv.netAmount, vatAmount: inv.vatAmount, grossAmount: inv.grossAmount,
             })
           }
         }
@@ -727,14 +752,42 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
                         </tr>
                       )}
                     </tbody>
-                    {e.kind === 'subscription' && (
-                      <tfoot>
-                        <tr style={{ borderTop: '1px solid rgba(26,61,43,0.1)', background: 'rgba(26,61,43,0.02)' }}>
-                          <td className="px-3 py-2 font-semibold text-ink" colSpan={3}>Total invoiced</td>
-                          <td className="px-3 py-2 text-right font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</td>
-                        </tr>
-                      </tfoot>
-                    )}
+                    {e.kind === 'subscription' && (() => {
+                      // Net/VAT/gross — see lib/vat.ts's resolveInvoiceVatDisplay
+                      // for the full "prefer the immutable snapshot over a
+                      // live projection" rationale.
+                      const display = resolveInvoiceVatDisplay(
+                        e.amount,
+                        e.vatMode ? { vatMode: e.vatMode, vatRatePct: e.vatRatePct ?? null, netAmount: e.netAmount ?? null, vatAmount: e.vatAmount ?? null, grossAmount: e.grossAmount ?? null } : null,
+                        vat.treatment,
+                      )
+                      return (
+                        <tfoot>
+                          <tr style={{ borderTop: '1px solid rgba(26,61,43,0.1)', background: 'rgba(26,61,43,0.02)' }}>
+                            <td className="px-3 py-2 font-semibold text-ink" colSpan={3}>Net</td>
+                            <td className="px-3 py-2 text-right font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</td>
+                          </tr>
+                          {display ? (
+                            <>
+                              <tr>
+                                <td className="px-3 py-2 text-stone" colSpan={3}>
+                                  VAT ({display.vatRatePct}%){display.isSnapshot && e.vatSource === 'override' ? ' · invoice override' : ''}
+                                </td>
+                                <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(display.vatAmount, e.currency)}</td>
+                              </tr>
+                              <tr style={{ borderTop: '1px solid rgba(26,61,43,0.1)' }}>
+                                <td className="px-3 py-2 font-semibold text-ink" colSpan={3}>Gross{display.isSnapshot ? '' : ' (projected)'}</td>
+                                <td className="px-3 py-2 text-right font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(display.grossAmount, e.currency)}</td>
+                              </tr>
+                            </>
+                          ) : (
+                            <tr>
+                              <td className="px-3 py-2 text-[10px] italic text-amber-600" colSpan={4}>VAT not yet configured — figure above is net only, gross unknown</td>
+                            </tr>
+                          )}
+                        </tfoot>
+                      )
+                    })()}
                   </table>
                 </div>
               )}

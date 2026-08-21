@@ -17,6 +17,7 @@ import { optionsForRuleType, optionsForEdit, deriveSelectedOption, CREDIT_SURVIV
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations } from '@/lib/commercial-rule-status'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
+import { getCreditRepresentationCapability } from '@/lib/connectors/billing/types'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
@@ -74,8 +75,12 @@ type ServiceCredit = {
     // never stated. See buildCreditApplicationRule (confirm-rule/route.ts).
     application_rule?: {
       eligible_component_keys: string[] | 'all' | null
+      eligibility_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null
       carry_forward: boolean | 'unclear'
       one_time: boolean | 'unclear'
+      survival_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null
+      expiry_periods?: number | null
+      expiry_date?: string | null
       requires_confirmation: boolean
       confirmation_reason?: string | null
     } | null
@@ -1091,6 +1096,18 @@ function SubStateBadge({ label, state, decisionRequiredText, resolvedText }: {
   )
 }
 
+// Module scope (not just inside RuleInterpretationCard) so the confirmed-
+// policy summary section can describe the SAME persisted application_rule
+// the same way the review card itself did while resolving it — one
+// implementation, not two independently-worded copies that could drift.
+function describeSurvivalResolution(r: { carry_forward: boolean; expiry_periods?: number | null; expiry_date?: string | null }): string {
+  if (!r.carry_forward) return 'Unused balance does not carry forward past the period it was earned/credited in.'
+  if (r.expiry_date) return `Unused balance carries forward until ${r.expiry_date}, after which any remainder expires.`
+  if (r.expiry_periods === 1) return 'Unused balance applies to the next billing period only; any remainder then expires.'
+  if (r.expiry_periods && r.expiry_periods > 1) return `Unused balance carries forward for ${r.expiry_periods} billing periods.`
+  return 'Unused balance carries forward until fully used.'
+}
+
 function RuleInterpretationCard({
   jobId, kind, contractUnitType, discountId, creditId, creditType, interactionKey, cadenceLabel, contractPeriodLabel, sourceClause, currency, meterMappingConfirmed, meterSuggestion, showMeterDependencyNotice, onApplied,
   initialSelectedOption, initialFreeText,
@@ -1244,17 +1261,6 @@ function RuleInterpretationCard({
   const confirmSurvivalTranslatedPreview = () => {
     if (!survivalTranslatedPreview) return
     setSurvivalResolution(survivalTranslatedPreview)
-  }
-
-  // Renders the label a reviewer would recognize for whatever
-  // survivalResolution currently holds — used both for the live
-  // "Treatment selected" confirmation line and the "Other" preview.
-  const describeSurvivalResolution = (r: { carry_forward: boolean; expiry_periods: number | null; expiry_date: string | null }): string => {
-    if (!r.carry_forward) return 'Unused balance does not carry forward past the period it was earned/credited in.'
-    if (r.expiry_date) return `Unused balance carries forward until ${r.expiry_date}, after which any remainder expires.`
-    if (r.expiry_periods === 1) return 'Unused balance applies to the next billing period only; any remainder then expires.'
-    if (r.expiry_periods && r.expiry_periods > 1) return `Unused balance carries forward for ${r.expiry_periods} billing periods.`
-    return 'Unused balance carries forward until fully used.'
   }
 
   // Maps an already-concrete application_rule (as returned by a
@@ -5748,6 +5754,14 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 floor: 'minimum floor', additive: 'additive fee', minimum_spend: 'spend commitment',
                 prepaid_commitment: 'prepaid commitment', minimum_quantity: 'minimum quantity',
               }
+              // provenance renders only where a REAL FieldProvenance value is
+              // persisted (today: only CreditApplicationRule's eligibility_
+              // provenance/survival_provenance) — never fabricated for rule
+              // types that don't track it (minimum commitment, tier
+              // calculation, discount, escalator), since inventing a
+              // "Clear from source"/"Reviewer policy" label for a field with
+              // no actual provenance record would misrepresent it.
+              const provenanceLabel = (p?: string | null) => p === 'contract_derived' ? 'Clear from source' : p === 'reviewer_policy' ? 'Reviewer policy' : null
               const confirmedRuleLines: { label: string; value: string }[] = []
               for (const [unitType, tierList] of chargingGroups.entries()) {
                 const mc = tierList.find(({ tier: t }) => t.minimum_commitment)?.tier.minimum_commitment
@@ -5758,7 +5772,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 })
                 if (mc.prorate_partial_periods !== undefined && tierList[0]?.tier.reset_anchor === 'calendar') {
                   confirmedRuleLines.push({
-                    label: 'Partial-period treatment',
+                    label: `Partial-period treatment (${unitType})`,
                     value: mc.prorate_partial_periods === true ? 'Prorated by days' : mc.prorate_partial_periods === false ? 'Full amount charged' : 'Not applicable',
                   })
                 }
@@ -5766,6 +5780,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 if (tierCalc) {
                   confirmedRuleLines.push({ label: 'Tier calculation', value: TIER_METHOD_DISPLAY[tierCalc.method] ?? tierCalc.method })
                 }
+              }
+              // Platform-fee billing-period anchor/treatment — reuses the
+              // same deriveSelectedOption/optionsForRuleType lookup the
+              // review card itself uses, so the summary can never describe
+              // a different treatment than what was actually confirmed.
+              if (terms?.base_fee_proration && !terms.base_fee_proration.requires_confirmation) {
+                const bfp = terms.base_fee_proration
+                const optionId = deriveSelectedOption('base_fee_proration', bfp as unknown as Record<string, unknown>)
+                const cadenceLabel = cadenceNoun(terms?.billing_frequency)
+                const periodLabel = contractMonthLabel(terms?.contract_start_date)
+                const opt = optionsForRuleType('base_fee_proration', cadenceLabel, periodLabel).find(o => o.id === optionId)
+                confirmedRuleLines.push({ label: 'Platform-fee billing-period treatment', value: opt?.label ?? (bfp.reset_anchor === 'contract_start' ? 'Contract-month anchored' : 'Calendar-anchored') })
               }
               confirmedRuleLines.push({
                 label: 'Escalation',
@@ -5775,9 +5801,26 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 if (!d.interpretation) continue
                 confirmedRuleLines.push({ label: 'Discount', value: d.description || d.applies_to || d.interpretation.discount_type })
               }
+              // Service credits — the confirmed EXECUTION policy (what it may
+              // reduce, and what happens to an unused balance), not just the
+              // basis/description, with real provenance shown per sub-field
+              // since eligibility and survival can be confirmed via
+              // different routes (an AI-graded clear_from_source vs an
+              // explicit reviewer picker choice).
+              const creditTypeLabel: Record<string, string> = { rebate: 'Annual Rebate', conditional_credit: 'Growth Credit', service_credit: 'Service Credit' }
               for (const c of terms?.service_credits ?? []) {
                 if (!c.interpretation) continue
-                confirmedRuleLines.push({ label: 'Service credit', value: c.description || c.interpretation.credit_basis })
+                const label = creditTypeLabel[c.credit_type ?? ''] ?? c.description ?? 'Service credit'
+                const appRule = c.interpretation.application_rule
+                if (appRule && !appRule.requires_confirmation && typeof appRule.carry_forward === 'boolean') {
+                  const survivalProv = provenanceLabel(appRule.survival_provenance)
+                  confirmedRuleLines.push({
+                    label: `${label} unused-balance policy`,
+                    value: `${describeSurvivalResolution({ carry_forward: appRule.carry_forward, expiry_periods: appRule.expiry_periods, expiry_date: appRule.expiry_date })}${survivalProv ? ` (${survivalProv})` : ''}`,
+                  })
+                } else {
+                  confirmedRuleLines.push({ label, value: c.description || c.interpretation.credit_basis })
+                }
               }
               if (tiers.length > 0) {
                 confirmedRuleLines.push({ label: 'Usage meter', value: 'Confirmed' })
@@ -5794,7 +5837,23 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               // silently into one blanket "confirmed" claim — a reviewer
               // seeing this banner while VAT is still unset previously had
               // no way to tell the two apart.
-              const billingReady = vatConfigured === true
+              // Credit-representation capability — the connector's ACTUAL,
+              // verified ability to put a contractual credit (Rebate/Growth/
+              // Service Credit) onto a real invoice, not just whether the
+              // rule interpretations are confirmed. lib/credit-ledger-service.ts
+              // already fails a credit-bearing invoice closed at push time
+              // when this is 'unsupported_pending_vendor_guidance' — this
+              // banner previously had no way to reflect that ahead of time,
+              // so a reviewer could see "ready to push" while a real invoice
+              // for this exact contract would later fail closed. Normal
+              // (non-credit) invoices are genuinely unaffected — only
+              // credit-bearing ones are at risk, so this is its own status
+              // line, not a global downgrade of "ready to push" for every
+              // invoice this contract will ever generate.
+              const hasServiceCredits = (terms?.service_credits ?? []).length > 0
+              const creditCapability = getCreditRepresentationCapability(billingPlatform)
+              const creditCapabilityBlocked = hasServiceCredits && creditCapability === 'unsupported_pending_vendor_guidance'
+              const billingReady = vatConfigured === true && !creditCapabilityBlocked
               return (
                 <div className="bg-white rounded-2xl border px-7 py-5" style={{ borderColor: 'rgba(11,92,54,0.2)', background: '#F8FDF9' }}>
                   <p className="text-sm font-semibold flex items-center gap-1.5 mb-1" style={{ color: '#0B5C36' }}>
@@ -5811,9 +5870,21 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   <div className="mt-3 pt-3 flex items-center gap-1.5" style={{ borderTop: '1px solid rgba(11,92,54,0.12)' }}>
                     <i className={`ti ${billingReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: billingReady ? '#0B5C36' : '#D97706' }} />
                     <p className="text-[11px] font-medium" style={{ color: billingReady ? '#0B5C36' : '#92400E' }}>
-                      {billingReady ? 'Billing readiness: ready to push' : 'Billing readiness: VAT treatment still required before push'}
+                      {vatConfigured !== true
+                        ? 'Billing readiness: VAT treatment still required before push'
+                        : billingReady
+                          ? 'Billing readiness: ready to push'
+                          : `Billing readiness: normal invoices ready — invoices carrying a credit will fail closed (${billingPlatform} cannot yet represent a contractual credit adjustment)`}
                     </p>
                   </div>
+                  {hasServiceCredits && (
+                    <div className="mt-2 flex items-center gap-1.5">
+                      <i className={`ti ${creditCapability === 'supported' ? 'ti-circle-check-filled' : 'ti-shield-exclamation'}`} style={{ fontSize: 13, color: creditCapability === 'supported' ? '#0B5C36' : '#D97706' }} />
+                      <p className="text-[11px]" style={{ color: creditCapability === 'supported' ? '#0B5C36' : '#92400E' }}>
+                        {billingPlatform} credit-adjustment capability: {creditCapability === 'supported' ? 'Supported' : 'Unsupported — pending vendor guidance'}
+                      </p>
+                    </div>
+                  )}
                 </div>
               )
             })()}
@@ -5838,7 +5909,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 <div className="min-w-0 flex items-end gap-8">
                   <div>
                     <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/50">
-                      Fixed fees
+                      Fixed fees <span className="normal-case tracking-normal text-stone/40">(net, excl. VAT)</span>
                     </p>
                     {/* Never shown as a final authoritative total while the
                         dates it depends on are unresolved — computeBaseTcv
@@ -5887,14 +5958,35 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       <p className="text-[10px] text-stone/40 mt-2">Add contract dates above to calculate</p>
                     )}
                   </div>
-                  {committedContractValue > tcv && (
-                    <div>
-                      <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/40">Committed contract value</p>
-                      <p className="text-[24px] font-semibold leading-none text-stone/60" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
-                        {fmt(committedContractValue, cur)}
-                      </p>
-                    </div>
-                  )}
+                  {/* Renamed from "Committed contract value" — that phrase read
+                      as a promised/guaranteed total, but this figure is the
+                      gross MINIMUM the confirmed floor/proration policy would
+                      charge across every window (Fixed fees + every metric's
+                      minimum-commitment floor, using whatever full-amount/
+                      prorated treatment a reviewer confirmed for each partial
+                      window), computed BEFORE any credit, rebate, or discount
+                      reduces it. Real invoiced amounts can differ once actual
+                      usage/credits are known. The breakdown line makes the
+                      two components explicit rather than a single opaque
+                      number — minimumCommitmentsTotal is the same delta
+                      lib/contract-value.ts's computeContractValueModel
+                      computes server-side (committedContractValue = fixedFees
+                      + minimumCommitments), derived here from the two
+                      already-fetched totals rather than a new server field. */}
+                  {committedContractValue > tcv && (() => {
+                    const minimumCommitmentsTotal = committedContractValue - tcv
+                    return (
+                      <div>
+                        <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/40">Gross minimum charges before credits/rebates <span className="normal-case tracking-normal text-stone/40">(excl. VAT)</span></p>
+                        <p className="text-[24px] font-semibold leading-none text-stone/60" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
+                          {fmt(committedContractValue, cur)}
+                        </p>
+                        <p className="text-[10px] text-stone/40 mt-1">
+                          {fmt(tcv, cur)} fixed fees + {fmt(minimumCommitmentsTotal, cur)} minimum commitments
+                        </p>
+                      </div>
+                    )
+                  })()}
                   {additionsTotal > 0 && (
                     <div>
                       <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/40">Additions</p>
@@ -5906,11 +5998,22 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   {billedToDate > 0 && (
                     <div>
                       <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/50">
-                        {isCompleted ? 'Realised TCV' : 'Billed to date'}
+                        {isCompleted ? 'Realised TCV' : 'Billed to date'} <span className="normal-case tracking-normal text-stone/40">(net, excl. VAT)</span>
                       </p>
                       <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
                         {fmt(billedToDate, cur)}
                       </p>
+                      {/* planned_invoices.base_amount (what billedToDate
+                          sums) is the NET figure sent to the billing
+                          connector — see lib/billing-writer.ts. Gross per
+                          invoice is shown on each issued/scheduled invoice
+                          row below (Billing Summary), computed off the same
+                          lib/vat.ts:computeVat every real invoice push uses;
+                          not re-summed into a second aggregate gross total
+                          here to avoid it silently drifting from the
+                          per-invoice figures if VAT treatment changes
+                          mid-term. */}
+                      <p className="text-[10px] text-stone/40 mt-1">Gross total shown per invoice below</p>
                     </div>
                   )}
                 </div>

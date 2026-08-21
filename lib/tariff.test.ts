@@ -8,6 +8,8 @@ import {
   isPartialWindow,
   computeMinimumCommitmentSchedule,
   resolveWindowMinimum,
+  clampWindowToContract,
+  enumerateContractWindows,
 } from './tariff'
 import type { OverageTier, MinimumCommitment, TierCalculationMethod } from './types'
 
@@ -355,5 +357,65 @@ describe('isPartialWindow', () => {
     const window = { start: new Date(2026, 4, 15), end: new Date(2026, 7, 14) }
     const contractStart = new Date(2026, 4, 15)
     expect(isPartialWindow(window, contractStart, null)).toBe(false)
+  })
+})
+
+// Regression: TEST-PAY-002's real contract (2026-08-17 to 2028-08-16,
+// monthly calendar-anchored transaction minimum) — the real-billing usage
+// pull and the schedule/timeline both used the metric's TRUE, unclamped
+// calendar-month end (2028-08-31) as the actual measurement/display bound
+// for the final window, both querying/counting transactions after contract
+// termination toward the calculated fee AND showing a wrong "31 Aug 2028"
+// boundary on the timeline, instead of the real final measurement window
+// of 1–16 Aug 2028. clampWindowToContract is the shared fix both call
+// sites (lib/usage-pull.ts, app/api/jobs/[id]/billing-summary/route.ts)
+// now use — this pins the exact boundary math down independent of either
+// caller.
+describe('clampWindowToContract — real usage-measurement/display bounds, never resolveWindowMinimum\'s own proration math', () => {
+  const contractStart = new Date(2026, 7, 17)  // 2026-08-17
+  const contractEnd   = new Date(2028, 7, 16)  // 2028-08-16
+
+  it('clamps the final calendar-month window\'s end to the contract end date, not the full calendar month', () => {
+    const finalWindow = { start: new Date(2028, 7, 1), end: new Date(2028, 7, 31) } // Aug 2028, full calendar month
+    const { start, end } = clampWindowToContract(finalWindow, contractStart, contractEnd)
+    expect(start).toEqual(new Date(2028, 7, 1))   // unaffected — this window's start is already within the contract
+    expect(end).toEqual(contractEnd)              // clamped to 2028-08-16, not 2028-08-31
+  })
+
+  it('clamps the first calendar-month window\'s start to the contract start date, not the full calendar month', () => {
+    const firstWindow = { start: new Date(2026, 7, 1), end: new Date(2026, 7, 31) } // Aug 2026, full calendar month
+    const { start, end } = clampWindowToContract(firstWindow, contractStart, contractEnd)
+    expect(start).toEqual(contractStart) // clamped to 2026-08-17, not 2026-08-01
+    expect(end).toEqual(new Date(2026, 7, 31)) // unaffected — this window's end is well within the contract
+  })
+
+  it('leaves a fully-interior window (neither edge touches the contract boundary) completely unchanged', () => {
+    const midWindow = { start: new Date(2027, 5, 1), end: new Date(2027, 5, 30) } // June 2027
+    expect(clampWindowToContract(midWindow, contractStart, contractEnd)).toEqual(midWindow)
+  })
+
+  it('does not clamp the end when contractEndDate is null (open-ended contract)', () => {
+    const window = { start: new Date(2028, 7, 1), end: new Date(2028, 7, 31) }
+    const { end } = clampWindowToContract(window, contractStart, null)
+    expect(end).toEqual(new Date(2028, 7, 31))
+  })
+
+  it('end-to-end: enumerateContractWindows\' real final window, once clamped, is exactly 1–16 Aug 2028 — the exact boundary this regression is about', () => {
+    const windows = enumerateContractWindows(contractStart, contractEnd, 'monthly', 'calendar')
+    const finalWindow = windows[windows.length - 1]
+    expect(finalWindow.start).toEqual(new Date(2028, 7, 1))
+    expect(finalWindow.end).toEqual(new Date(2028, 7, 31)) // TRUE cadence end — unclamped, as resolveWindowMinimum needs it
+    const clamped = clampWindowToContract(finalWindow, contractStart, contractEnd)
+    expect(clamped.start).toEqual(new Date(2028, 7, 1))
+    expect(clamped.end).toEqual(new Date(2028, 7, 16)) // the real, displayed/measured boundary
+  })
+
+  it('resolveWindowMinimum still receives the TRUE unclamped window and correctly applies the reviewer-confirmed full-amount policy to the partial final window, independent of the display/measurement clamp', () => {
+    const windows = enumerateContractWindows(contractStart, contractEnd, 'monthly', 'calendar')
+    const finalWindow = windows[windows.length - 1]
+    const mc = { amount: 66000, prorate_partial_periods: false as const }
+    const wm = resolveWindowMinimum(finalWindow, contractStart, contractEnd, 'calendar', mc)
+    expect(wm.isPartial).toBe(true)
+    expect(wm.amount).toBe(66000) // full floor still applies — proration policy is independent of the measurement clamp
   })
 })

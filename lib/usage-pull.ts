@@ -4,7 +4,7 @@
 // summary / billing-test simulator (preview only) alike, so they can never
 // silently diverge from each other.
 import { supabaseServer } from '@/lib/supabase'
-import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining, isPartialWindow, resolveWindowMinimum, type CadenceAnchorMode } from '@/lib/tariff'
+import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining, isPartialWindow, resolveWindowMinimum, clampWindowToContract, type CadenceAnchorMode } from '@/lib/tariff'
 import { createRemembillUsageConnector } from '@/lib/connectors/usage/remembill'
 import type { ContractTerms, MinimumCommitment, TierCalculationMethod } from '@/lib/types'
 
@@ -155,9 +155,25 @@ export async function computeOverageForPeriod(params: {
       // invoice cadence) yields exactly one window spanning the whole scan
       // range, so this is a superset of the old single-period behavior, not
       // a divergent path for it.
-      const windows: Array<{ start: Date; end: Date; displayEnd: Date; isOpen?: boolean; isPartial?: boolean }> =
+      // start/end stay the TRUE, unclamped cadence boundaries — resolveWindowMinimum
+      // (below) needs them unclamped to correctly compute its own day-proration
+      // overlap math, and isPartialWindow's detection depends on comparing
+      // them against the contract's real start/end. measureStart/measureEnd
+      // are the SEPARATE bounds usage may actually be pulled/counted over:
+      // [max(window.start, contract_start), min(window.end, contract_end)].
+      // Without this second pair, a calendar-anchored metric's final closed
+      // window (e.g. Aug 2028 for a contract ending 2028-08-16) queried the
+      // connector for the FULL calendar month (1–31 Aug), both counting
+      // post-termination usage toward the calculated fee and displaying a
+      // wrong "31 Aug" boundary on the timeline. Only applies to closed
+      // windows — the isOpen live-preview window below clips to "today" for
+      // its own, separate reason and keeps its own true, uncapped displayEnd.
+      const windows: Array<{ start: Date; end: Date; measureStart: Date; measureEnd: Date; displayEnd: Date; isOpen?: boolean; isPartial?: boolean }> =
         enumerateCadenceWindows(anchorDate, cfg.billing_cycle, scanStart, scanEnd, cadenceAnchor)
-          .map(w => ({ ...w, displayEnd: w.end, isPartial: isPartialWindow(w, anchorDate, contractEndDate) }))
+          .map(w => {
+            const { start: measureStart, end: measureEnd } = clampWindowToContract(w, anchorDate, contractEndDate)
+            return { ...w, measureStart, measureEnd, displayEnd: measureEnd, isPartial: isPartialWindow(w, anchorDate, contractEndDate) }
+          })
 
       // Live preview: also surface the currently-open window (not yet
       // closed) so usage-so-far is visible before it actually closes. Marked
@@ -174,9 +190,13 @@ export async function computeOverageForPeriod(params: {
         const openWindow = findCadenceWindowContaining(anchorDate, cfg.billing_cycle, asOf, cadenceAnchor)
         const alreadyCovered = windows.some(w => w.start.getTime() === openWindow.start.getTime())
         if (!alreadyCovered && openWindow.start <= asOf) {
+          const openEnd = asOf < openWindow.end ? asOf : openWindow.end
+          const openMeasureStart = clampWindowToContract(openWindow, anchorDate, contractEndDate).start
           windows.push({
             start: openWindow.start,
-            end: asOf < openWindow.end ? asOf : openWindow.end,
+            end: openEnd,
+            measureStart: openMeasureStart,
+            measureEnd: openEnd,
             displayEnd: openWindow.end,
             isOpen: true,
             isPartial: isPartialWindow(openWindow, anchorDate, contractEndDate),
@@ -185,8 +205,11 @@ export async function computeOverageForPeriod(params: {
       }
 
       for (const window of windows) {
-        const windowStartUnix = Math.floor(window.start.getTime() / 1000)
-        const windowEndUnix   = Math.floor(window.end.getTime()   / 1000) + 86_399 // 23:59:59 on the end date
+        // Actual usage query uses measureStart/measureEnd (clamped to the
+        // contract's real start/end), never the true unclamped cadence
+        // start/end — see the comment on the windows construction above.
+        const windowStartUnix = Math.floor(window.measureStart.getTime() / 1000)
+        const windowEndUnix   = Math.floor(window.measureEnd.getTime()   / 1000) + 86_399 // 23:59:59 on the end date
 
         // Test mode swaps the input source to the admin's last-simulated
         // reading instead of the real endpoint — that's the whole point of
@@ -204,8 +227,8 @@ export async function computeOverageForPeriod(params: {
           try {
             const readings = await createRemembillUsageConnector(orgId).pullUsage({
               customerId,
-              periodStart: window.start,
-              periodEnd:   window.end,
+              periodStart: window.measureStart,
+              periodEnd:   window.measureEnd,
             })
             const metricKey = def.response_metric_key ?? cfg.meter_key.toUpperCase()
             totalUnits = readings.find(r => r.metric === metricKey)?.quantity ?? 0
@@ -328,9 +351,9 @@ export async function computeOverageForPeriod(params: {
           const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0')
           return `${y}-${m}-${day}`
         }
-        const matchesScanRange = dateOnly(window.start) === dateOnly(scanStart) && dateOnly(window.displayEnd) === dateOnly(scanEnd)
+        const matchesScanRange = dateOnly(window.measureStart) === dateOnly(scanStart) && dateOnly(window.displayEnd) === dateOnly(scanEnd)
         const windowSuffix = !matchesScanRange
-          ? ` (${fmtRange(window.start, window.displayEnd)})`
+          ? ` (${fmtRange(window.measureStart, window.displayEnd)})`
           : ''
         const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits, applyMinimum, overageResult?.method ?? 'graduated') + windowSuffix
         items.push({
@@ -338,7 +361,7 @@ export async function computeOverageForPeriod(params: {
           billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,
           amount: Math.round(overageEur * 100) / 100, currency: currency.toUpperCase(),
           description: overageDesc, metric_source: 'meter_pull',
-          windowStart: dateOnly(window.start),
+          windowStart: dateOnly(window.measureStart),
           windowEnd:   dateOnly(window.displayEnd),
           windowOpen:  window.isOpen ?? false,
           windowPartial: window.isPartial ?? false,

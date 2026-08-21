@@ -125,30 +125,41 @@ export async function POST(
     const platformToUse = billingPlatformOverride ?? existingPlatform ?? undefined
     const result = await configureBilling(terms, lineItems, platformToUse, id, org.orgId, existingCustomerId ?? undefined)
 
-    await supabaseServer.from('jobs').update({
-      execute_status: 'COMPLETED',
-      billing_platform: result.platform,
-      billing_subscription_id: result.subscriptionId,
-      billing_customer_id: result.customerId,
-    }).eq('id', id)
-
     // Promote the job's pending VAT treatment (set pre-approval, since no
     // billing_customer_id existed to key customer_vat_config on yet) into
     // the real customer_vat_config row now that configureBilling has
     // created one — every future invoice for this customer inherits it as
     // its standing default from here on. A re-push that already has a
     // customer (existingCustomerId was set) already has its VAT configured
-    // via customer_vat_config directly and skips this.
+    // via customer_vat_config directly and skips this. Deliberately BEFORE
+    // the execute_status: 'COMPLETED' write below (and fails the whole
+    // approval, via the catch block, if the promotion write errors) — a
+    // job must never be marked COMPLETED with its confirmed VAT rate still
+    // stuck in pending_vat_*, silently invisible to every real consumer
+    // (invoice creation, Review Panel, Billing Summary). This used to run
+    // AFTER the COMPLETED write with its error only logged, which is
+    // exactly how a job could end up approved with an orphaned pending
+    // value — GET /vat-config self-heals any pre-existing case of that
+    // (lib/vat-service.ts's resolveEffectiveVatForJob), but new approvals
+    // should never create a fresh one.
     if (!existingCustomerId) {
       const { data: vatRow } = await supabaseServer.from('jobs').select('pending_vat_mode, pending_vat_rate_pct').eq('id', id).single()
       if (vatRow?.pending_vat_mode && vatRow.pending_vat_mode !== 'not_configured') {
-        await setCustomerVatConfig(
+        const { error: vatError } = await setCustomerVatConfig(
           org.orgId, result.customerId,
           { mode: vatRow.pending_vat_mode, ratePct: vatRow.pending_vat_mode === 'rate' ? vatRow.pending_vat_rate_pct : null },
           org.userEmail,
-        ).then(({ error: vatError }) => { if (vatError) console.error('[approve] VAT promotion failed', vatError) })
+        )
+        if (vatError) throw new Error(`VAT promotion failed: ${vatError}`)
       }
     }
+
+    await supabaseServer.from('jobs').update({
+      execute_status: 'COMPLETED',
+      billing_platform: result.platform,
+      billing_subscription_id: result.subscriptionId,
+      billing_customer_id: result.customerId,
+    }).eq('id', id)
 
     // Only count a sync event on the first successful configuration.
     // Re-pushing an already-configured contract to fix a mismatch does not

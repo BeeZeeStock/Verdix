@@ -55,6 +55,58 @@ export function computeVat(netAmount: number, treatment: VatTreatment): VatResul
   }
 }
 
+export type VatSource = 'customer_vat_config' | 'pending_job_vat' | 'promoted_from_pending' | 'not_configured'
+
+export interface VatResolution {
+  treatment: VatTreatment | null
+  source: VatSource
+  // True when a staged pending_vat_* value should be written into the
+  // canonical customer_vat_config now — the caller (lib/vat-service.ts's
+  // resolveEffectiveVatForJob) is the one that actually performs that
+  // write; this function only decides whether one is needed, so the
+  // decision itself stays pure/testable without a live DB.
+  needsPromotion: boolean
+}
+
+// Pure decision logic for "what VAT treatment is actually in effect for
+// this job right now, and does a stale staged value need promoting into
+// the canonical store" — factored out of the DB-touching GET /vat-config
+// route specifically so it's unit-testable without Supabase. Regression:
+// a job whose VAT was staged (pending_vat_mode/pending_vat_rate_pct) BEFORE
+// its billing_customer_id existed could end up in a state where the
+// customer was later created (e.g. at approval) but the one-shot promotion
+// in approve/route.ts either predated that code or failed silently — the
+// job was left with a confirmed-looking staged value that customer_vat_config,
+// invoice creation, and every other real consumer of VAT never actually saw.
+// This makes that self-healing: any read that finds billing_customer_id set,
+// no real customer_vat_config yet, but a genuine staged value, promotes it
+// on the spot rather than reporting a false "not configured" the reviewer
+// already resolved once. Never overwrites an EXISTING customer_vat_config —
+// only fills a genuine gap.
+export function resolveEffectiveVat(
+  billingCustomerId: string | null,
+  existingCustomerVat: VatTreatment | null,
+  pending: { mode: VatMode | null; ratePct: number | null },
+): VatResolution {
+  const pendingTreatment: VatTreatment | null =
+    pending.mode && pending.mode !== 'not_configured' ? { mode: pending.mode, ratePct: pending.ratePct } : null
+
+  if (!billingCustomerId) {
+    // No customer yet — pending_vat_* is the only place VAT can live, and
+    // is genuinely just a draft until a customer exists to key the
+    // canonical store on. Never "promoted" from here — there's nothing to
+    // promote it INTO yet.
+    return { treatment: pendingTreatment, source: pendingTreatment ? 'pending_job_vat' : 'not_configured', needsPromotion: false }
+  }
+  if (existingCustomerVat && existingCustomerVat.mode !== 'not_configured') {
+    return { treatment: existingCustomerVat, source: 'customer_vat_config', needsPromotion: false }
+  }
+  if (pendingTreatment) {
+    return { treatment: pendingTreatment, source: 'promoted_from_pending', needsPromotion: true }
+  }
+  return { treatment: null, source: 'not_configured', needsPromotion: false }
+}
+
 // Whether a platform-returned total for an issued invoice matches Verdix's
 // own expected gross, within a small rounding tolerance (one minor unit,
 // e.g. one öre/cent) — a real mismatch (the platform applied a different
@@ -64,4 +116,40 @@ export function reconcileGrossAmount(expectedGross: number, actualGross: number 
   if (actualGross == null) return 'not_checked'
   const diffCents = Math.round(expectedGross * 100) - Math.round(actualGross * 100)
   return Math.abs(diffCents) <= 1 ? 'matched' : 'mismatch'
+}
+
+export interface InvoiceVatDisplay extends VatCalculation {
+  // true = an immutable historical snapshot (this invoice was actually
+  // sent, and planned_invoices.vat_* was written at that moment — see
+  // supabase/migrations/20260821000007_vat_config.sql); false = a live
+  // projection off the CURRENT customer default for an invoice not sent
+  // yet, which legitimately changes if the rate changes before it sends.
+  isSnapshot: boolean
+}
+
+// Resolves what to display for ONE invoice row's net/VAT/gross — prefers an
+// already-snapshotted value over a live computation, which is what keeps an
+// already-issued invoice's displayed VAT immutable even after a LATER VAT
+// rate change for the same customer. Pure so the "prefer snapshot" rule is
+// independently testable from both the fetch (billing-summary route) and
+// the render (BillingSummaryCard).
+export function resolveInvoiceVatDisplay(
+  netAmount: number,
+  snapshot: { vatMode: VatMode | null; vatRatePct: number | null; netAmount: number | null; vatAmount: number | null; grossAmount: number | null } | null,
+  currentCustomerTreatment: VatTreatment | null,
+): InvoiceVatDisplay | null {
+  if (snapshot?.vatMode && snapshot.vatMode !== 'not_configured') {
+    return {
+      netAmount: snapshot.netAmount ?? netAmount,
+      vatRatePct: snapshot.vatRatePct ?? 0,
+      vatAmount: snapshot.vatAmount ?? 0,
+      grossAmount: snapshot.grossAmount ?? netAmount,
+      isSnapshot: true,
+    }
+  }
+  if (currentCustomerTreatment && currentCustomerTreatment.mode !== 'not_configured') {
+    const result = computeVat(netAmount, currentCustomerTreatment)
+    if (result.ok) return { ...result.calculation, isSnapshot: false }
+  }
+  return null
 }

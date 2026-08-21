@@ -1,5 +1,5 @@
 import { supabaseServer } from './supabase'
-import type { VatTreatment } from './vat'
+import { resolveEffectiveVat, type VatTreatment, type VatMode, type VatResolution } from './vat'
 
 type VatConfigRow = { vat_mode: 'rate' | 'zero_rated' | 'not_configured'; vat_rate_pct: number | null }
 
@@ -16,6 +16,33 @@ export async function getCustomerVatConfig(orgId: string, billingCustomerId: str
     .eq('billing_customer_id', billingCustomerId)
     .maybeSingle()
   return toTreatment(data as VatConfigRow | null)
+}
+
+// I/O wrapper around lib/vat.ts's resolveEffectiveVat (the pure decision) —
+// fetches the real customer_vat_config, decides the effective treatment,
+// and performs the self-healing promotion write when the decision calls
+// for one. Every consumer of job-level VAT status (GET /api/jobs/[id]/vat-config
+// — and therefore Review Panel, main GUI, and Billing Summary, which all
+// share the one useVatConfig hook that calls it) goes through this single
+// function so they can never disagree about the effective value.
+export async function resolveEffectiveVatForJob(
+  orgId: string,
+  job: { billing_customer_id: string | null; pending_vat_mode: VatMode | null; pending_vat_rate_pct: number | null },
+): Promise<VatResolution> {
+  const existing = job.billing_customer_id ? await getCustomerVatConfig(orgId, job.billing_customer_id) : null
+  const resolution = resolveEffectiveVat(job.billing_customer_id, existing, { mode: job.pending_vat_mode, ratePct: job.pending_vat_rate_pct })
+  if (resolution.needsPromotion && job.billing_customer_id && resolution.treatment) {
+    const { error } = await setCustomerVatConfig(orgId, job.billing_customer_id, resolution.treatment, null)
+    if (error) {
+      // Promotion failed (e.g. transient DB error) — still report the
+      // staged value so the reviewer isn't shown a false "not configured",
+      // but don't claim it as canonical since the write didn't actually
+      // land; the next read will retry the promotion.
+      console.error('[vat-service] self-heal promotion failed', error)
+      return { ...resolution, source: 'pending_job_vat' }
+    }
+  }
+  return resolution
 }
 
 export async function setCustomerVatConfig(
