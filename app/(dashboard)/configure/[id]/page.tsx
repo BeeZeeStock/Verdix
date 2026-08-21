@@ -1034,13 +1034,28 @@ type RulePhase = 'proposing' | 'proposed' | 'input' | 'loading' | 'missing' | 'p
 // generic "application scope: decision required" that hides which specific
 // question is actually still open. Mirrors confirm-rule/route.ts's
 // buildCreditApplicationRule requiresConfirmation predicate, split the same way.
-function eligibilityStillOpen(appRule: Record<string, unknown> | null | undefined): boolean {
-  if (!appRule) return false
-  return appRule.eligible_component_keys == null
+// Gated on STATE (provenance), not on whether a value is present — a
+// 'verdix_recommends' grade can carry a fully concrete eligible_component_keys/
+// carry_forward value (that's the whole point of a recommendation) without
+// being resolved. AI confidence is not provenance: only 'clear_from_source'
+// (which confirm-rule persists as contract_derived) counts as resolved
+// here; 'verdix_recommends' and 'decision_required' both still show as
+// open, just with different actions available (confirm the recommendation,
+// vs. must Override). Mirrors confirm-rule/route.ts's isProvenanceResolved.
+function isSubStateOpen(state: 'clear_from_source' | 'verdix_recommends' | 'decision_required' | undefined): boolean {
+  return state !== 'clear_from_source'
 }
-function survivalStillOpen(appRule: Record<string, unknown> | null | undefined): boolean {
-  if (!appRule) return false
-  return appRule.one_time === 'unclear' || appRule.carry_forward === 'unclear'
+// Maps a graded ProposalState to the FieldProvenance confirm-rule persists
+// when a reviewer accepts it via the general "Confirm & apply" action
+// (i.e. without a dedicated, explicit "Confirm recommendation" click) —
+// 'verdix_recommends' stays 'verdix_recommends' here deliberately; only a
+// SEPARATE, specific reviewer action (see confirmRecommendation below)
+// upgrades a recommendation to 'reviewer_policy'. 'decision_required'
+// sends no provenance at all — there is no value to claim provenance over.
+function stateToProvenance(state: 'clear_from_source' | 'verdix_recommends' | 'decision_required' | undefined): 'contract_derived' | 'verdix_recommends' | undefined {
+  if (state === 'clear_from_source') return 'contract_derived'
+  if (state === 'verdix_recommends') return 'verdix_recommends'
+  return undefined
 }
 
 // Shared presentation for a single independently-graded sub-question on a
@@ -1171,16 +1186,30 @@ function RuleInterpretationCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const confirmProposal = async () => {
+  // forceProvenance lets a dedicated "Confirm recommendation" click (see the
+  // 'applied'-phase render below) explicitly upgrade ONE specific
+  // verdix_recommends sub-field to reviewer_policy, without touching the
+  // other — a reviewer endorsing the eligibility recommendation doesn't
+  // thereby also endorse a separate, still-open survival recommendation.
+  // Omitted on the normal "Confirm & apply" path, where each sub-field's
+  // provenance is exactly whatever the AI itself graded (stateToProvenance)
+  // — accepting the proposal's main facts must never silently launder a
+  // recommendation into an executable fact.
+  const confirmProposal = async (forceProvenance?: { eligibility?: true; survival?: true }) => {
     if (!aiProposal?.proposed_interpretation) return
     setPhase('confirming')
     try {
+      const applicationRuleProvenance = ruleType === 'service_credit' ? {
+        eligibility: forceProvenance?.eligibility ? 'reviewer_policy' as const : stateToProvenance(aiProposal.application_state),
+        survival: forceProvenance?.survival ? 'reviewer_policy' as const : stateToProvenance(aiProposal.survival_state),
+      } : undefined
       const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ruleType, contractUnitType, discountId, creditId, interactionKey, sourceClause, reviewerInput: aiProposal.reasoning,
           aiProposedInterpretation: aiProposal.proposed_interpretation, approvedInterpretation: aiProposal.proposed_interpretation,
+          applicationRuleProvenance,
         }),
       })
       // A non-JSON response (e.g. an unhandled server exception returning
@@ -1195,9 +1224,8 @@ function RuleInterpretationCard({
       if (anyFailed) {
         setPhase('partial')
       } else {
-        const confirmedAppRule = (aiProposal.proposed_interpretation as Record<string, unknown>)?.application_rule as Record<string, unknown> | undefined
-        setEligibilityOpenAfterConfirm(ruleType === 'service_credit' && eligibilityStillOpen(confirmedAppRule))
-        setSurvivalOpenAfterConfirm(ruleType === 'service_credit' && survivalStillOpen(confirmedAppRule))
+        setEligibilityOpenAfterConfirm(ruleType === 'service_credit' && !forceProvenance?.eligibility && isSubStateOpen(aiProposal.application_state))
+        setSurvivalOpenAfterConfirm(ruleType === 'service_credit' && !forceProvenance?.survival && isSubStateOpen(aiProposal.survival_state))
         setPhase('applied')
         onApplied()
       }
@@ -1251,9 +1279,15 @@ function RuleInterpretationCard({
       if (anyFailed) {
         setPhase('partial')
       } else {
-        const confirmedAppRule = (proposal as Record<string, unknown>)?.application_rule as Record<string, unknown> | undefined
-        setEligibilityOpenAfterConfirm(ruleType === 'service_credit' && eligibilityStillOpen(confirmedAppRule))
-        setSurvivalOpenAfterConfirm(ruleType === 'service_credit' && survivalStillOpen(confirmedAppRule))
+        // The free-text Override flow's schema (buildServiceCreditPrompt)
+        // doesn't ask for application_rule at all — it translates the
+        // reviewer's own words into trigger/rate/cap facts only, never
+        // eligibility/survival. No applicationRuleProvenance is sent above,
+        // so confirm-rule's existing-value fallback leaves whatever
+        // provenance was already persisted untouched — this path can't
+        // resolve or regress it either way, so nothing to flag as open here.
+        setEligibilityOpenAfterConfirm(false)
+        setSurvivalOpenAfterConfirm(false)
         setPhase('applied')
         onApplied()
       }
@@ -1271,28 +1305,65 @@ function RuleInterpretationCard({
     : null
 
   if (phase === 'applied' && (eligibilityOpenAfterConfirm || survivalOpenAfterConfirm)) {
-    const openParts = [
-      eligibilityOpenAfterConfirm ? 'application scope' : null,
-      survivalOpenAfterConfirm ? 'survival & expiry' : null,
-    ].filter(Boolean).join(' and ')
+    // Two independent open items, each rendered with the action that
+    // actually matches its OWN state — a 'verdix_recommends' sub-field
+    // gets a dedicated "Confirm recommendation" action (which upgrades
+    // just that field to reviewer_policy without touching the other, still-
+    // open one) alongside "Choose another"; a genuinely silent
+    // 'decision_required' sub-field only ever gets "Resolve" (Override) —
+    // there is no recommendation to confirm. Never a blanket "Resolve X and
+    // Y" button that could be clicked without the reviewer registering
+    // which specific claim they're endorsing.
+    const openItems = [
+      eligibilityOpenAfterConfirm ? {
+        key: 'eligibility', label: 'Application scope', state: aiProposal?.application_state,
+        recommendsReason: 'Verdix recommends this based on the reasoning above — the contract doesn’t explicitly state what future charges this credit may reduce.',
+        decisionRequiredReason: "The contract states this credit's size but not what future charges it may reduce.",
+        onConfirmRecommendation: () => confirmProposal({ eligibility: true }),
+      } : null,
+      survivalOpenAfterConfirm ? {
+        key: 'survival', label: 'Survival & expiry', state: aiProposal?.survival_state,
+        recommendsReason: 'Verdix recommends this based on the reasoning above — the contract doesn’t explicitly state what happens to an unused balance, or whether this credit can be earned more than once.',
+        decisionRequiredReason: "The contract doesn't state how long an earned-but-unused credit remains available, or whether it can be earned more than once.",
+        onConfirmRecommendation: () => confirmProposal({ survival: true }),
+      } : null,
+    ].filter((x): x is NonNullable<typeof x> => x !== null)
+
     return (
-      <div className="rounded-xl p-3" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
-        <p className="text-sm font-medium flex items-center gap-1.5" style={{ color: '#7F1D1D' }}>
-          <i className="ti ti-alert-triangle" style={{ fontSize: 15 }} /> Trigger, rate & cap confirmed — {openParts} still open
-        </p>
-        <p className="text-[11px] mt-1" style={{ color: '#7F1D1D' }}>
-          {eligibilityOpenAfterConfirm && !survivalOpenAfterConfirm && "The contract states this credit's size but not what future charges it may reduce."}
-          {survivalOpenAfterConfirm && !eligibilityOpenAfterConfirm && "The contract doesn't state how long an earned-but-unused credit remains available, or whether it can be earned more than once."}
-          {eligibilityOpenAfterConfirm && survivalOpenAfterConfirm && "The contract doesn't state what future charges this credit may reduce, nor how long an earned-but-unused credit remains available."}
-          {' '}It will keep counting as a decision outstanding, and won&rsquo;t be applied against billing, until this is resolved.
-        </p>
-        <button
-          onClick={() => setPhase('input')}
-          className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-lg"
-          style={{ background: '#1A3D2B', color: 'white' }}
-        >
-          Resolve {openParts}
-        </button>
+      <div className="space-y-2">
+        {openItems.map(item => {
+          const isRecommendation = item.state === 'verdix_recommends'
+          return (
+            <div key={item.key} className="rounded-xl p-3" style={{ background: isRecommendation ? '#FFFDF5' : '#FEF2F2', border: `1px solid ${isRecommendation ? 'rgba(217,167,90,0.35)' : '#FECACA'}` }}>
+              <p className="text-sm font-medium flex items-center gap-1.5" style={{ color: isRecommendation ? '#92400E' : '#7F1D1D' }}>
+                <i className={isRecommendation ? 'ti ti-bulb' : 'ti ti-alert-triangle'} style={{ fontSize: 15 }} />
+                {item.label} {isRecommendation ? '· Verdix recommendation' : 'still open'}
+              </p>
+              <p className="text-[11px] mt-1" style={{ color: isRecommendation ? '#78350F' : '#7F1D1D' }}>
+                {isRecommendation ? item.recommendsReason : item.decisionRequiredReason}
+                {' '}It will keep counting as a decision outstanding, and won&rsquo;t be applied against billing, until this is resolved.
+              </p>
+              <div className="flex gap-2 mt-2">
+                {isRecommendation && (
+                  <button
+                    onClick={item.onConfirmRecommendation}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-lg"
+                    style={{ background: '#1A3D2B', color: 'white' }}
+                  >
+                    Confirm recommendation
+                  </button>
+                )}
+                <button
+                  onClick={() => setPhase('input')}
+                  className="text-xs font-semibold px-3 py-1.5 rounded-lg"
+                  style={isRecommendation ? { color: '#92400E', border: '1px solid rgba(217,167,90,0.5)' } : { background: '#1A3D2B', color: 'white' }}
+                >
+                  {isRecommendation ? 'Choose another' : 'Resolve'}
+                </button>
+              </div>
+            </div>
+          )
+        })}
       </div>
     )
   }
@@ -1439,7 +1510,7 @@ function RuleInterpretationCard({
           {errorMsg && <p className="text-xs" style={{ color: '#DC2626' }}>{errorMsg}</p>}
           <div className="flex gap-2">
             <button
-              onClick={confirmProposal}
+              onClick={() => confirmProposal()}
               disabled={phase === 'confirming'}
               className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
               style={{ background: '#1A3D2B', color: 'white' }}

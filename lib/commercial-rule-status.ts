@@ -9,6 +9,20 @@
 // with each other the way two hand-rolled booleans could.
 import { isEscalatorUnresolved, type EscalatorLike } from './escalator-status'
 import { findCadenceWindowContaining, isPartialWindow } from './tariff'
+import type { FieldProvenance } from './types'
+
+// The single place "is this field actually resolved" is decided, for any
+// field carrying a FieldProvenance. AI confidence is not provenance: a
+// model can return a concrete value ('verdix_recommends' included) without
+// that value being grounded in the contract or confirmed by a reviewer —
+// only 'contract_derived' (the source states/unambiguously implies it) or
+// 'reviewer_policy' (a human explicitly confirmed or chose it) clear a
+// billing blocker. Deliberately does NOT look at whether a value is
+// present/concrete — see CreditApplicationRule's requires_confirmation
+// comment in lib/types.ts for why value-presence was the actual bug.
+export function isProvenanceResolved(provenance: FieldProvenance | null | undefined): boolean {
+  return provenance === 'contract_derived' || provenance === 'reviewer_policy'
+}
 
 type UnresolvedFlag = { requires_confirmation: boolean } | null | undefined
 

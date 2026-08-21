@@ -24,7 +24,8 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
 import type { RuleType } from '@/lib/rule-interpretation'
-import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation, CreditEarnRule, CreditApplicationRule, PeriodProrationRule, AdditionalRecurringFee } from '@/lib/types'
+import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation, CreditEarnRule, PeriodProrationRule, AdditionalRecurringFee, FieldProvenance } from '@/lib/types'
+import { buildCreditApplicationRule } from '@/lib/credit-application-rule'
 
 // Several sequential writes (audit row, contract_terms, sometimes
 // contract_meter_mappings) — same defensive reasoning as propose-rule/
@@ -45,6 +46,13 @@ type Body = {
   creditId?: string
   // Composite key from lib/rule-interactions.ts, for ruleType 'rule_interaction'.
   interactionKey?: string
+  // service_credit only — provenance for application_rule's two graded
+  // sub-questions (eligibility, survival), sourced from the client's own
+  // aiProposal.application_state/survival_state (accepting the AI's
+  // proposal as given) or explicitly set to 'reviewer_policy' when the
+  // reviewer used free-text Override or clicked "Confirm recommendation"
+  // on a specific verdix_recommends sub-field. See buildCreditApplicationRule.
+  applicationRuleProvenance?: { eligibility?: FieldProvenance; survival?: FieldProvenance }
 }
 
 function buildTierCalculation(approved: Record<string, unknown>): TierCalculationMethod {
@@ -77,37 +85,11 @@ function buildCreditEarnRule(approved: Record<string, unknown>, existing: Credit
   }
 }
 
-// application_rule: what this credit may reduce, and its one-time/carry-
-// forward semantics. Unlike every other field in this file,
-// requires_confirmation here is DERIVED, not hardcoded false on confirm —
-// a reviewer confirming "this is a rebate worth 5% of X" does not, by
-// itself, resolve "and it may reduce which future charges" if the contract
-// genuinely doesn't say. Those are separate questions; this stays a live
-// gate on the credit-ledger's application step even after the interpretation
-// itself is confirmed.
-function buildCreditApplicationRule(approved: Record<string, unknown>, existing: CreditApplicationRule | null | undefined): CreditApplicationRule | null {
-  const source = approved.application_rule as Record<string, unknown> | undefined
-  if (!source && !existing) return null
-  const eligible_component_keys = (source?.eligible_component_keys as string[] | 'all' | null | undefined) ?? existing?.eligible_component_keys ?? null
-  const one_time = (source?.one_time as boolean | 'unclear' | undefined) ?? existing?.one_time ?? 'unclear'
-  const carry_forward = (source?.carry_forward as boolean | 'unclear' | undefined) ?? existing?.carry_forward ?? 'unclear'
-  const requiresConfirmation = eligible_component_keys === null || one_time === 'unclear' || carry_forward === 'unclear'
-  return {
-    computed_from_component_keys: (source?.computed_from_component_keys as string[] | null | undefined) ?? existing?.computed_from_component_keys ?? null,
-    eligible_component_keys,
-    excluded_component_keys: (source?.excluded_component_keys as string[] | undefined) ?? existing?.excluded_component_keys ?? [],
-    one_time,
-    carry_forward,
-    expiry_periods: (source?.expiry_periods as number | null | undefined) ?? existing?.expiry_periods ?? null,
-    availability: 'next_period',
-    requires_confirmation: requiresConfirmation,
-    confirmation_reason: requiresConfirmation
-      ? ((source?.confirmation_reason as string | null | undefined) ?? existing?.confirmation_reason ?? 'Application scope not fully resolved by the contract')
-      : null,
-  }
-}
-
-function buildServiceCreditInterpretation(approved: Record<string, unknown>, existing: ServiceCreditInterpretation | null | undefined): ServiceCreditInterpretation {
+function buildServiceCreditInterpretation(
+  approved: Record<string, unknown>,
+  existing: ServiceCreditInterpretation | null | undefined,
+  applicationRuleProvenance?: { eligibility?: FieldProvenance; survival?: FieldProvenance },
+): ServiceCreditInterpretation {
   return {
     trigger_type: (approved.trigger_type as ServiceCreditInterpretation['trigger_type']) ?? existing?.trigger_type ?? 'other',
     trigger_description: (approved.trigger_description as string | null) ?? existing?.trigger_description ?? null,
@@ -124,7 +106,7 @@ function buildServiceCreditInterpretation(approved: Record<string, unknown>, exi
     requires_confirmation: false,
     confirmation_reason: null,
     earn_rule: buildCreditEarnRule(approved, existing?.earn_rule),
-    application_rule: buildCreditApplicationRule(approved, existing?.application_rule),
+    application_rule: buildCreditApplicationRule(approved, existing?.application_rule, applicationRuleProvenance),
   }
 }
 
@@ -182,7 +164,7 @@ export async function POST(
   if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   const body = await req.json() as Body
-  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey } = body
+  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey, applicationRuleProvenance } = body
 
   if (!ruleType || !approvedInterpretation) {
     return NextResponse.json({ error: 'ruleType and approvedInterpretation are required' }, { status: 400 })
@@ -484,7 +466,7 @@ export async function POST(
     // position, with the same legacy-row positional fallback + backfill.
     type Credit = { credit_rule_id?: string; interpretation?: ServiceCreditInterpretation | null; [k: string]: unknown }
     const credits = (termsRow.service_credits ?? []) as Credit[]
-    const interpretation = buildServiceCreditInterpretation(approvedInterpretation, credits.find(c => c.credit_rule_id === creditId)?.interpretation)
+    const interpretation = buildServiceCreditInterpretation(approvedInterpretation, credits.find(c => c.credit_rule_id === creditId)?.interpretation, applicationRuleProvenance)
     const targetIndex = credits.findIndex(c => c.credit_rule_id === creditId)
     const fallbackIndex = targetIndex === -1 && Number.isInteger(Number(creditId)) ? Number(creditId) : -1
     let newCredits: Credit[]

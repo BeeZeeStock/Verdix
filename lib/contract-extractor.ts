@@ -3,6 +3,13 @@ import { ContractTerms, OverageTier, ServiceCredit } from './types'
 import { buildLearningContext } from './learning-context'
 import { getAIClient, AI_PROVIDER } from './ai-client'
 
+// Stays on the standard (Sonnet) client — a live A/B against TEST-PAY-002
+// (2026-08-20/21) found extraction quality/source-completeness EQUIVALENT
+// between Sonnet and the reasoning tier (getReasoningAIClient, Opus +
+// adaptive thinking), at ~5-6x the latency/cost, with no accuracy gain
+// measured for this pipeline. Revisit only if a new benchmark demonstrates
+// a material advantage — the reasoning client stays fully implemented and
+// available in lib/ai-client.ts for that comparison.
 const client = getAIClient()
 const DEBUG_EXTRACTION = process.env.DEBUG_EXTRACTION === 'true'
 
@@ -183,7 +190,12 @@ async function extractFromChunk(text: string, learningContext: string, piiMasked
 
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
+    // Reasoning-tier call (adaptive thinking) — max_tokens caps thinking +
+    // text combined, not just the final JSON. 4096 was sized for a
+    // non-thinking call and was confirmed live to truncate mid-thinking
+    // before any text output on a real full-contract extraction, leaving
+    // an empty content array. 16384 leaves real headroom for both.
+    max_tokens: 16384,
     system: SYSTEM_PROMPT + '\n\n' + FEW_SHOT_EXAMPLE + learningContext,
     messages: [{ role: 'user', content: userContent }],
   })
@@ -266,7 +278,8 @@ ${contractText.slice(0, 10000)}
   try {
     const response = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 512,
+      // Reasoning-tier call — see extractFromChunk's identical comment.
+      max_tokens: 2048,
       messages: [{ role: 'user', content: prompt }],
     })
     const content = response.content[0]

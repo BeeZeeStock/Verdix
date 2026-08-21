@@ -10,6 +10,11 @@ import {
 import { resolveStorageUrl } from '@/lib/storage'
 import { extractDocumentText } from '@/lib/ai-client'
 
+// extractPartnerAgreement/aiReconcile now route through the reasoning tier
+// (Opus + adaptive thinking) — see lib/ai-client.ts's
+// AI_REASONING_CLIENT_TIMEOUT_MS (280s per attempt, no retries).
+export const maxDuration = 290
+
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }

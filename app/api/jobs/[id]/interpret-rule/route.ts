@@ -37,8 +37,9 @@ import {
 } from '@/lib/rule-interpretation'
 
 // See propose-rule/route.ts's identical export for why this matters — this
-// route makes the same kind of live Claude call.
-export const maxDuration = 60
+// route makes the same kind of live Claude call. Bumped to 290 for the same
+// reasoning-tier (Opus + adaptive thinking) reason.
+export const maxDuration = 290
 
 type TierRow = {
   tier_label: string
@@ -145,6 +146,8 @@ export async function POST(
   if (!terms) return NextResponse.json({ error: 'Contract terms not found' }, { status: 404 })
 
   const currency = terms.currency ?? 'EUR'
+  // Sonnet, not the reasoning tier — see lib/contract-extractor.ts's
+  // identical A/B-result comment.
   const client = getAIClient()
 
   let prompt: string
@@ -306,7 +309,10 @@ export async function POST(
   try {
     const response = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 1024,
+      // Reasoning-tier call — see propose-rule/route.ts's identical comment
+      // (confirmed live: high-effort thinking alone can consume ~6,000
+      // tokens on a single-credit reasoning task).
+      max_tokens: 20000,
       messages: [{ role: 'user', content: prompt }],
     })
     const content = response.content[0]

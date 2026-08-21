@@ -9,6 +9,12 @@ import { extractDocumentText } from '@/lib/ai-client'
 import { preserveStableRuleIds } from '@/lib/rule-id-stability'
 import type { Discount, ServiceCredit } from '@/lib/types'
 
+// extractContractTerms now routes through the reasoning tier (Opus +
+// adaptive thinking) — see lib/ai-client.ts's AI_REASONING_CLIENT_TIMEOUT_MS
+// (280s per attempt, no retries). Explicit rather than relying on the
+// platform default staying above that.
+export const maxDuration = 290
+
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }

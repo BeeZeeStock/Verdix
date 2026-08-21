@@ -45,6 +45,13 @@ export interface PartnerInvoiceLine {
   reference: string | null
 }
 
+// All three calls stay on the standard (Sonnet) client for now — partner
+// reconciliation was never part of the TEST-PAY-002 A/B (2026-08-20/21),
+// which found no accuracy gain from the reasoning tier at ~5-6x cost/
+// latency for the commercial-extraction pipeline it did test. No
+// model-routing change ships without evidence of a material benefit for
+// the specific pipeline it's applied to — getReasoningAIClient() stays
+// fully implemented in lib/ai-client.ts for whenever this gets benchmarked.
 const client = getAIClient()
 
 export async function extractPartnerAgreement(agreementText: string): Promise<PartnerAgreementTerms> {

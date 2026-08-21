@@ -30,7 +30,12 @@ import { supabaseServer } from '@/lib/supabase'
 // missing/stuck" rather than a timeout, exactly the symptom reported for
 // AI-dependent review cards in production but never reproducible locally
 // (a direct script call to the same AI client has no such limit).
-export const maxDuration = 60
+// Bumped from 60 to 290 for the reasoning-tier (Opus + adaptive thinking)
+// routing — confirmed live that a 60s budget isn't enough for a full
+// commercial-clause interpretation call under high-effort thinking; see
+// lib/ai-client.ts's AI_REASONING_CLIENT_TIMEOUT_MS (280s per attempt, no
+// retries), which this must stay above.
+export const maxDuration = 290
 import { requireOrg } from '@/lib/org'
 import { getAIClient } from '@/lib/ai-client'
 import {
@@ -173,6 +178,8 @@ export async function POST(
     : `${ruleType}:${contractUnitType}`
 
   const currency = terms.currency ?? 'EUR'
+  // Sonnet, not the reasoning tier — see lib/contract-extractor.ts's
+  // identical A/B-result comment.
   const client = getAIClient()
   let prompt: string
   let sourceClauseAvailable = !!sourceClause
@@ -348,7 +355,12 @@ export async function POST(
   try {
     const response = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 1024,
+      // Reasoning-tier call (adaptive thinking) — max_tokens caps thinking +
+      // text combined. Confirmed live that high-effort adaptive thinking on
+      // a single credit's application-scope reasoning alone consumed
+      // ~5,993 tokens, leaving zero room for the actual JSON output at a
+      // 6,000 budget. 20,000 leaves real headroom for both.
+      max_tokens: 20000,
       messages: [{ role: 'user', content: prompt }],
     })
     const content = response.content[0]

@@ -230,6 +230,17 @@ export interface CreditEarnRule {
   confirmation_reason?: string | null
 }
 
+/** Three-way provenance, never conflated: a value can exist (a model can
+ *  always produce SOME boolean/array) without being resolved. Only
+ *  'contract_derived' (the source text states or unambiguously implies it)
+ *  or 'reviewer_policy' (a human explicitly confirmed or chose it) make a
+ *  field executable. 'verdix_recommends' means exactly what it says — a
+ *  model's confidence, however strongly reasoned, is not the same thing as
+ *  the agreement or a reviewer having decided it. See
+ *  isProvenanceResolved() in lib/commercial-rule-status.ts, the single
+ *  place this distinction is enforced. */
+export type FieldProvenance = 'contract_derived' | 'verdix_recommends' | 'reviewer_policy'
+
 export interface CreditApplicationRule {
   /** For %-based credit_basis: which components the percentage is computed
    *  FROM (e.g. the Rebate's 5% of transaction-processing fees). Null when
@@ -243,6 +254,12 @@ export interface CreditApplicationRule {
    *  cannot be applied until a reviewer resolves it. Never assumed/defaulted
    *  by the engine — always exactly what was extracted/confirmed. */
   eligible_component_keys: string[] | 'all' | null
+  /** Provenance for eligible_component_keys specifically — see
+   *  FieldProvenance. A concrete value here does NOT by itself mean this
+   *  field is resolved; only 'contract_derived'/'reviewer_policy' does.
+   *  Null/undefined when there's genuinely nothing to grade yet (no
+   *  proposal has run) — distinct from a graded-but-unresolved state. */
+  eligibility_provenance?: FieldProvenance | null
   excluded_component_keys: string[]
   one_time: boolean | 'unclear'
   /** boolean when the contract states a position (Growth Credit: true,
@@ -252,6 +269,10 @@ export interface CreditApplicationRule {
    *  Never defaulted to true just because a credit isn't same-period-
    *  applicable — those are different questions. */
   carry_forward: boolean | 'unclear'
+  /** Provenance for one_time + carry_forward together (they're graded as
+   *  one "survival" question upstream) — see eligibility_provenance's
+   *  identical discipline, and FieldProvenance. */
+  survival_provenance?: FieldProvenance | null
   /** Only set when the contract states a specific bounded survival window
    *  (e.g. "expires after 2 quarters if unused") — the real middle ground
    *  between carry_forward: true (forever) and 'unclear' (blocked). */
@@ -259,11 +280,14 @@ export interface CreditApplicationRule {
   /** Only value implemented — every current credit type needs "available
    *  starting the period after it's earned", never the same period. */
   availability: 'next_period'
-  /** Derived, not independently settable: true whenever
-   *  eligible_component_keys is null, or one_time/carry_forward is
-   *  'unclear'. A credit can still be *earned* and tracked while this is
-   *  true — it just can't be *applied* until a reviewer resolves the
-   *  remaining ambiguity via confirm-rule. */
+  /** Derived from provenance, NOT from whether a value is present — see
+   *  isProvenanceResolved(). A concrete eligible_component_keys/carry_forward
+   *  value with 'verdix_recommends' provenance still leaves this true; only
+   *  'contract_derived' or 'reviewer_policy' provenance on BOTH
+   *  eligibility_provenance and survival_provenance clears it. A credit can
+   *  still be *earned* and tracked while this is true — it just can't be
+   *  *applied* until a reviewer resolves the remaining ambiguity via
+   *  confirm-rule. */
   requires_confirmation: boolean
   confirmation_reason?: string | null
 }
