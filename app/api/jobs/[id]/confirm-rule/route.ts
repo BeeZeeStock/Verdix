@@ -53,6 +53,11 @@ type Body = {
   // reviewer used free-text Override or clicked "Confirm recommendation"
   // on a specific verdix_recommends sub-field. See buildCreditApplicationRule.
   applicationRuleProvenance?: { eligibility?: FieldProvenance; survival?: FieldProvenance }
+  // service_credit only (Step 1.5) — same discipline as applicationRuleProvenance,
+  // sourced from aiProposal.cash_redeemable_state or explicitly
+  // 'reviewer_policy' on Override/"Confirm recommendation". See
+  // buildServiceCreditInterpretation below.
+  cashRedeemableProvenance?: FieldProvenance
 }
 
 function buildTierCalculation(approved: Record<string, unknown>): TierCalculationMethod {
@@ -69,6 +74,10 @@ function buildTierCalculation(approved: Record<string, unknown>): TierCalculatio
 // interpretation's own requires_confirmation still resets to false (the
 // reviewer just confirmed THIS interpretation), but earn_rule has no
 // separate ambiguity gate of its own the way application_rule does below.
+// quantity_treatment (Step 1.5) passes through the same way — 'exact' when
+// omitted is the deterministic engine's own default (lib/credit-ledger.ts),
+// not asserted here, so a legacy record with neither this field nor an
+// opinion on it behaves exactly as it did before this field existed.
 function buildCreditEarnRule(approved: Record<string, unknown>, existing: CreditEarnRule | null | undefined): CreditEarnRule | null {
   const source = approved.earn_rule as Record<string, unknown> | undefined
   if (!source && !existing) return null
@@ -80,16 +89,42 @@ function buildCreditEarnRule(approved: Record<string, unknown>, existing: Credit
     consecutive_windows_required: typeof source?.consecutive_windows_required === 'number' ? source.consecutive_windows_required : existing?.consecutive_windows_required ?? 1,
     window_anchor: (source?.window_anchor as CreditEarnRule['window_anchor']) ?? existing?.window_anchor ?? 'contract_start',
     finalization_deadline_days: typeof source?.finalization_deadline_days === 'number' ? source.finalization_deadline_days : existing?.finalization_deadline_days ?? null,
+    quantity_treatment: (source?.quantity_treatment as CreditEarnRule['quantity_treatment']) ?? existing?.quantity_treatment,
     requires_confirmation: false,
     confirmation_reason: null,
   }
+}
+
+// cash_redeemable (Step 1.5): a three-way value (true / false / 'unclear'),
+// never defaulted to false on silence — the exact gap the regression corpus
+// surfaced (explicit "not paid in cash" and genuine contract silence
+// previously collapsed to the identical false with no way to tell them
+// apart). 'unclear' is the correct, honest result of "nothing usable was
+// submitted and nothing was already on file" — never silently coerced to
+// false. Provenance follows the same never-invent-server-side discipline as
+// buildCreditApplicationRule's eligibility_provenance: exactly what THIS
+// submission claims, falling back to whatever was already persisted so an
+// unrelated later confirm can't downgrade an earlier resolved grading.
+function resolveCashRedeemable(
+  approved: Record<string, unknown>,
+  existing: ServiceCreditInterpretation | null | undefined,
+  cashRedeemableProvenance: FieldProvenance | undefined,
+): { cash_redeemable: ServiceCreditInterpretation['cash_redeemable']; cash_redeemable_provenance: FieldProvenance | null } {
+  const cash_redeemable: ServiceCreditInterpretation['cash_redeemable'] =
+    typeof approved.cash_redeemable === 'boolean' ? approved.cash_redeemable
+      : approved.cash_redeemable === 'unclear' ? 'unclear'
+      : existing?.cash_redeemable ?? 'unclear'
+  const cash_redeemable_provenance = cashRedeemableProvenance ?? existing?.cash_redeemable_provenance ?? null
+  return { cash_redeemable, cash_redeemable_provenance }
 }
 
 function buildServiceCreditInterpretation(
   approved: Record<string, unknown>,
   existing: ServiceCreditInterpretation | null | undefined,
   applicationRuleProvenance?: { eligibility?: FieldProvenance; survival?: FieldProvenance },
+  cashRedeemableProvenance?: FieldProvenance,
 ): ServiceCreditInterpretation {
+  const { cash_redeemable, cash_redeemable_provenance } = resolveCashRedeemable(approved, existing, cashRedeemableProvenance)
   return {
     trigger_type: (approved.trigger_type as ServiceCreditInterpretation['trigger_type']) ?? existing?.trigger_type ?? 'other',
     trigger_description: (approved.trigger_description as string | null) ?? existing?.trigger_description ?? null,
@@ -100,7 +135,8 @@ function buildServiceCreditInterpretation(
     cap_amount: (approved.cap_amount as number | null) ?? existing?.cap_amount ?? null,
     cap_pct: (approved.cap_pct as number | null) ?? existing?.cap_pct ?? null,
     settlement_period: (approved.settlement_period as ServiceCreditInterpretation['settlement_period']) ?? existing?.settlement_period ?? null,
-    cash_redeemable: typeof approved.cash_redeemable === 'boolean' ? approved.cash_redeemable : existing?.cash_redeemable ?? false,
+    cash_redeemable,
+    cash_redeemable_provenance,
     interaction_note: existing?.interaction_note ?? null,
     source_clause: (approved.source_clause as string | undefined) ?? existing?.source_clause ?? null,
     requires_confirmation: false,
@@ -164,7 +200,7 @@ export async function POST(
   if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   const body = await req.json() as Body
-  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey, applicationRuleProvenance } = body
+  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey, applicationRuleProvenance, cashRedeemableProvenance } = body
 
   if (!ruleType || !approvedInterpretation) {
     return NextResponse.json({ error: 'ruleType and approvedInterpretation are required' }, { status: 400 })
@@ -466,7 +502,7 @@ export async function POST(
     // position, with the same legacy-row positional fallback + backfill.
     type Credit = { credit_rule_id?: string; interpretation?: ServiceCreditInterpretation | null; [k: string]: unknown }
     const credits = (termsRow.service_credits ?? []) as Credit[]
-    const interpretation = buildServiceCreditInterpretation(approvedInterpretation, credits.find(c => c.credit_rule_id === creditId)?.interpretation, applicationRuleProvenance)
+    const interpretation = buildServiceCreditInterpretation(approvedInterpretation, credits.find(c => c.credit_rule_id === creditId)?.interpretation, applicationRuleProvenance, cashRedeemableProvenance)
     const targetIndex = credits.findIndex(c => c.credit_rule_id === creditId)
     const fallbackIndex = targetIndex === -1 && Number.isInteger(Number(creditId)) ? Number(creditId) : -1
     let newCredits: Credit[]

@@ -3,14 +3,15 @@
 // carry-forward answer; "future amounts payable" establishes scope/timing
 // but never indefinite survival; explicit carry-forward language resolves
 // to a concrete, contract_derived survival policy; caps bind the
-// calculated credit in its stated window; cash redeemability defaults to
-// false and only flips on explicit language. Exercises the real
-// lib/credit-application-rule.ts + lib/credit-ledger.ts + lib/commercial-
-// rule-status.ts engine — no AI calls.
+// calculated credit in its stated window; cash redeemability is a
+// three-way, provenanced fact (explicit true/false vs. genuinely unstated)
+// — never a silent default. Exercises the real lib/credit-application-
+// rule.ts + lib/credit-ledger.ts + lib/commercial-rule-status.ts engine —
+// no AI calls.
 import { describe, it, expect } from 'vitest'
 import { buildCreditApplicationRule } from '@/lib/credit-application-rule'
 import { filterEligibleComponents, computeRequestedCreditApplication, evaluateCreditEarn } from '@/lib/credit-ledger'
-import { isServiceCreditUnresolved } from '@/lib/commercial-rule-status'
+import { isServiceCreditUnresolved, isProvenanceResolved, requiredServiceCreditFields } from '@/lib/commercial-rule-status'
 import type { CreditEarnRule, ServiceCreditInterpretation } from '@/lib/types'
 
 // A period's invoice components, in minor units (öre) — platform fee +
@@ -167,32 +168,104 @@ describe('caps bind the calculated credit within its stated measurement window',
   })
 })
 
-describe('explicit no-cash language resolves cash_redeemable: false — contract silence is deliberately NOT asserted to mean the same thing', () => {
-  it('explicit "will not be paid in cash" resolves cash_redeemable: false', () => {
-    const interp: Pick<ServiceCreditInterpretation, 'cash_redeemable'> = { cash_redeemable: false }
-    expect(interp.cash_redeemable).toBe(false)
+// Step 1.5, corrected: cash_redeemable is a three-way, provenanced fact
+// (ServiceCreditInterpretation.cash_redeemable: boolean | 'unclear', with a
+// companion cash_redeemable_provenance — same FieldProvenance discipline as
+// CreditApplicationRule's eligibility_provenance/survival_provenance), but
+// it is deliberately NOT a universal readiness blocker. Semantic
+// completeness (does Verdix know the contract's answer?) is a separate
+// question from execution readiness (does the execution path Verdix is
+// actually running need that answer?) — requiredServiceCreditFields draws
+// that line. Today's only real execution path, invoice_credit, never needs
+// to know whether cash payout would be allowed; a hypothetical
+// cash_settlement path would.
+describe('cash redeemability — three-way provenanced fact, never a silent default, but not a universal readiness blocker', () => {
+  const resolvedApplicationRule = { computed_from_component_keys: null, eligible_component_keys: 'all' as const, excluded_component_keys: [], one_time: false, carry_forward: true, availability: 'next_period' as const, requires_confirmation: false, confirmation_reason: null }
+
+  it('cash "unclear" (contract silent) does not block ordinary invoice-credit execution — the default context', () => {
+    const interp: Pick<ServiceCreditInterpretation, 'cash_redeemable' | 'cash_redeemable_provenance' | 'requires_confirmation' | 'application_rule'> = {
+      cash_redeemable: 'unclear', cash_redeemable_provenance: null, requires_confirmation: false,
+      application_rule: resolvedApplicationRule,
+    }
+    expect(interp.cash_redeemable).toBe('unclear')
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: interp })).toBe(false)
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: interp }, 'invoice_credit')).toBe(false)
   })
-  it('explicit "customer may request a cash refund" resolves cash_redeemable: true', () => {
-    const interp: Pick<ServiceCreditInterpretation, 'cash_redeemable'> = { cash_redeemable: true }
-    expect(interp.cash_redeemable).toBe(true)
+  it('explicit "will not be paid in cash" resolves false, contract_derived, and does not block invoice-credit execution', () => {
+    const interp: Pick<ServiceCreditInterpretation, 'cash_redeemable' | 'cash_redeemable_provenance' | 'requires_confirmation' | 'application_rule'> = {
+      cash_redeemable: false, cash_redeemable_provenance: 'contract_derived', requires_confirmation: false,
+      application_rule: resolvedApplicationRule,
+    }
+    expect(interp.cash_redeemable_provenance).toBe('contract_derived')
+    expect(isProvenanceResolved(interp.cash_redeemable_provenance)).toBe(true)
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: interp })).toBe(false)
   })
-  // GAP 3 (see README): this corpus deliberately does NOT assert that a
-  // genuinely SILENT contract also resolves to cash_redeemable: false.
-  // Verified by reading the real code: ServiceCreditInterpretation.
-  // cash_redeemable (lib/types.ts) is a plain boolean with no companion
-  // provenance field (unlike eligible_component_keys/carry_forward, which
-  // have eligibility_provenance/survival_provenance) — confirm-rule/
-  // route.ts's buildServiceCreditInterpretation
-  // (`typeof approved.cash_redeemable === 'boolean' ? approved.cash_redeemable
-  // : existing?.cash_redeemable ?? false`) and the extraction prompt
-  // (lib/rule-interpretation.ts's buildServiceCreditPrompt: "cash_redeemable
-  // defaults to false unless ... explicitly says") both collapse "explicitly
-  // stated false" and "never addressed at all" into the identical value,
-  // with no way to tell them apart downstream. Freezing that collapse as a
-  // passing test would misrepresent an unverified engine default as an
-  // approved contractual-silence rule — exactly the class of bug this
-  // project's provenance model exists to prevent for every OTHER field.
-  // Not patched in this test-only baseline commit.
+  it('explicit "may be paid in cash" resolves true, contract_derived, and does not block invoice-credit execution — a supported execution needs no further decision', () => {
+    const interp: Pick<ServiceCreditInterpretation, 'cash_redeemable' | 'cash_redeemable_provenance' | 'requires_confirmation' | 'application_rule'> = {
+      cash_redeemable: true, cash_redeemable_provenance: 'contract_derived', requires_confirmation: false,
+      application_rule: resolvedApplicationRule,
+    }
+    expect(interp.cash_redeemable_provenance).toBe('contract_derived')
+    expect(isProvenanceResolved(interp.cash_redeemable_provenance)).toBe(true)
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: interp })).toBe(false)
+  })
+  it('cash choice required for execution but unresolved — blocks, once the execution context that actually needs it is asked', () => {
+    // requiredServiceCreditFields('cash_settlement') includes cash_redeemable —
+    // this is the shape a future cash-payout execution path would check
+    // against, standing in for "the reviewer requested cash settlement" /
+    // "org policy specifies cash settlement" until such a path is real.
+    expect(requiredServiceCreditFields('cash_settlement')).toContain('cash_redeemable')
+    const interp: Pick<ServiceCreditInterpretation, 'cash_redeemable' | 'cash_redeemable_provenance' | 'requires_confirmation' | 'application_rule'> = {
+      cash_redeemable: 'unclear', cash_redeemable_provenance: null, requires_confirmation: false,
+      application_rule: resolvedApplicationRule,
+    }
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: interp }, 'cash_settlement')).toBe(true)
+  })
+  it('a Verdix recommendation for cash_redeemable (verdix_recommends) does not block invoice-credit execution, but still does not resolve a cash_settlement execution either — a proposed value is never treated as a confirmed one', () => {
+    const interp: Pick<ServiceCreditInterpretation, 'cash_redeemable' | 'cash_redeemable_provenance' | 'requires_confirmation' | 'application_rule'> = {
+      cash_redeemable: false, cash_redeemable_provenance: 'verdix_recommends', requires_confirmation: false,
+      application_rule: resolvedApplicationRule,
+    }
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: interp })).toBe(false)
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: interp }, 'cash_settlement')).toBe(true)
+  })
+  it('reviewer confirmation of a silent contract persists as reviewer_policy — resolves both the default context (already non-blocking) and a cash_settlement context', () => {
+    const interp: Pick<ServiceCreditInterpretation, 'cash_redeemable' | 'cash_redeemable_provenance' | 'requires_confirmation' | 'application_rule'> = {
+      cash_redeemable: false, cash_redeemable_provenance: 'reviewer_policy', requires_confirmation: false,
+      application_rule: resolvedApplicationRule,
+    }
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: interp })).toBe(false)
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: interp }, 'cash_settlement')).toBe(false)
+  })
+  // "Cash required but downstream platform cannot execute it" is a distinct
+  // failure mode from "the contract's answer is unresolved" — it's an
+  // execution-CAPABILITY gap (Verdix knows the contract's answer, or the
+  // question is even moot, but no code path exists to actually pay cash
+  // out), analogous to the existing Remembill-representation capability
+  // check pattern elsewhere in this codebase. Nothing in this codebase
+  // builds a real cash-settlement execution path today — this test pins
+  // that structural fact down (a "current execution capability limitation",
+  // same category as CreditApplicationRule.availability's single
+  // 'next_period' literal) rather than letting a future contributor
+  // fabricate a fake contract interpretation (e.g. quietly forcing
+  // cash_redeemable: false) to route around the missing capability.
+  it('current execution capability limitation — even a fully-resolved, explicit cash_redeemable: true has no execution path that can actually pay cash out; this must surface as a capability gap, never a fabricated contract answer', () => {
+    const interp: Pick<ServiceCreditInterpretation, 'cash_redeemable' | 'cash_redeemable_provenance' | 'requires_confirmation' | 'application_rule'> = {
+      cash_redeemable: true, cash_redeemable_provenance: 'contract_derived', requires_confirmation: false,
+      application_rule: resolvedApplicationRule,
+    }
+    // The contract's answer is fully resolved either way...
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: interp }, 'cash_settlement')).toBe(false)
+    // ...but no 'cash_settlement' execution context is a real, callable path
+    // anywhere in this codebase (CreditApplicationRule.availability is
+    // structurally fixed to 'next_period' — see credits.test.ts's "current
+    // execution capability" block). A resolved contract fact is not the
+    // same claim as "Verdix can act on it" — that gap is what a future
+    // execution-capability check (in the spirit of
+    // getCreditRepresentationCapability) would need to report, not this
+    // provenance predicate.
+    expect(resolvedApplicationRule.availability).toBe('next_period')
+  })
 })
 
 describe('counterexample — percentage credit vs. fixed amount per unit are different bases, never interchangeable', () => {

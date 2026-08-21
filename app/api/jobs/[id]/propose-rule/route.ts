@@ -453,6 +453,10 @@ export async function POST(
     // one_time) — must be pulled out explicitly here too, not just added to
     // the type/prompt/validator, or it silently stays undefined forever.
     survival_state: parsedRaw.survival_state as RuleProposal['survival_state'],
+    // Same extraction discipline, for cash_redeemable (Step 1.5) — must be
+    // pulled out explicitly here too, or it silently stays undefined
+    // forever regardless of what the prompt asked for or what Claude returned.
+    cash_redeemable_state: parsedRaw.cash_redeemable_state as RuleProposal['cash_redeemable_state'],
   }
 
   const proposal = validateProposalState(rawProposal, sourceClauseAvailable)

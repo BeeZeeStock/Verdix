@@ -527,6 +527,19 @@ describe('buildServiceCreditProposalPrompt — application_state split (Growth C
     expect(prompt).toMatch(/do not let application_state's or survival_state's uncertainty pull "state" down/i)
   })
 
+  it('Step 1.5: exposes the full comparator vocabulary (not gt/gte only), quantity_treatment, three-way cash_redeemable, and cash_redeemable_state as a fourth independent grade', () => {
+    const prompt = buildServiceCreditProposalPrompt({
+      sourceClause: 'A service credit of SEK 5,500 per complete hour of excess unavailability applies when platform availability falls below 99.5% in a calendar month.',
+      description: 'Service Availability Credit', creditType: 'sla', statedPct: null, statedAmount: null, currency: 'SEK',
+    })
+    expect(prompt).toContain('"trigger_comparator": "gt"|"gte"|"lt"|"lte"|"eq"')
+    expect(prompt).toContain('"quantity_treatment": "exact"|"complete_units"')
+    expect(prompt).toContain('"cash_redeemable": true|false|"unclear"')
+    expect(prompt).toContain('"cash_redeemable_state": "clear_from_source" | "verdix_recommends" | "decision_required"')
+    expect(prompt).toMatch(/do NOT invert it into a complementary/i)
+    expect(prompt).toMatch(/Do not grade "clear_from_source" false merely because the clause is silent/i)
+  })
+
   it('instructs decision_required specifically for application_state when eligible_component_keys is unstated, without forcing the same for state', () => {
     const prompt = buildServiceCreditProposalPrompt({
       sourceClause: 'Customer receives a rebate of 5% of transaction-processing fees paid in the prior Contract Year, credited within 45 days.',
@@ -862,6 +875,63 @@ describe('validateProposalState — safety net, only ever downgrades', () => {
       expect(result.survival_state).toBeUndefined()
     })
   })
+
+  describe('cash_redeemable_state (Step 1.5 — fourth independent grade, cash_redeemable only)', () => {
+    it('explicit "may request a cash refund" — cash_redeemable_state clear_from_source, independent of state/application_state/survival_state', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source',
+        application_state: 'clear_from_source',
+        survival_state: 'decision_required',
+        cash_redeemable_state: 'clear_from_source',
+        proposed_interpretation: { trigger_type: 'sla_breach', cash_redeemable: true, application_rule: { eligible_component_keys: 'all' } },
+        reasoning: 'The clause states the customer may request a cash refund of this credit.',
+      }), true)
+      expect(result.cash_redeemable_state).toBe('clear_from_source')
+      expect(result.survival_state).toBe('decision_required') // stays independently open, not dragged up
+    })
+
+    it('genuinely silent on cash redemption — cash_redeemable_state decision_required even while trigger/value/cap (state) are fully explicit', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source',
+        cash_redeemable_state: 'decision_required',
+        proposed_interpretation: { trigger_type: 'sla_breach', cash_redeemable: 'unclear' },
+        reasoning: 'The clause states a 10% monthly service credit against the platform fee, capped at 25%.',
+      }), true)
+      expect(result.state).toBe('clear_from_source')       // trigger/value/cap clarity is not dragged down...
+      expect(result.cash_redeemable_state).toBe('decision_required') // ...by cash redemption staying genuinely open
+    })
+
+    it('corrects the contradiction: cash_redeemable_state claims a confident state but cash_redeemable itself is "unclear" — forces decision_required rather than trusting an empty confidence claim', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source',
+        cash_redeemable_state: 'verdix_recommends',
+        proposed_interpretation: { trigger_type: 'sla_breach', cash_redeemable: 'unclear' },
+      }), true)
+      expect(result.cash_redeemable_state).toBe('decision_required')
+    })
+
+    it('downgrades cash_redeemable_state clear_from_source to verdix_recommends when no source clause is available, independent of state', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source', cash_redeemable_state: 'clear_from_source',
+        proposed_interpretation: { trigger_type: 'sla_breach', cash_redeemable: false },
+      }), false)
+      expect(result.cash_redeemable_state).toBe('verdix_recommends')
+    })
+
+    it('an explicit false value is treated exactly as concrete as an explicit true — cash_redeemable_state does not force decision_required just because the value is false', () => {
+      const result = validateProposalState(proposal({
+        state: 'clear_from_source', cash_redeemable_state: 'clear_from_source',
+        proposed_interpretation: { trigger_type: 'sla_breach', cash_redeemable: false },
+        reasoning: 'The clause states this credit will not be paid in cash.',
+      }), true)
+      expect(result.cash_redeemable_state).toBe('clear_from_source')
+    })
+
+    it('is undefined for rule types that never asked for it', () => {
+      const result = validateProposalState(proposal({ state: 'clear_from_source' }), true)
+      expect(result.cash_redeemable_state).toBeUndefined()
+    })
+  })
 })
 
 describe('SERVICE_CREDIT_OPTIONS — fixed_amount_per_unit vs flat_amount distinction', () => {
@@ -901,6 +971,16 @@ describe('buildServiceCreditPrompt — application_rule (regression: a credit co
     )
     expect(prompt).toContain('"application_rule": {"eligible_component_keys"')
     expect(prompt).toContain('"carry_forward": true|false|"unclear"')
+  })
+
+  it('Step 1.5: cash_redeemable is three-way ("unclear" included) and never defaults to false on silence', () => {
+    const prompt = buildServiceCreditPrompt(
+      { sourceClause: 'x', description: 'y', creditType: 'service_credit', statedPct: null, statedAmount: 100, currency: 'SEK' },
+      'the credit is SEK 100 per incident',
+    )
+    expect(prompt).toContain('"cash_redeemable": true | false | "unclear"')
+    expect(prompt).toMatch(/never default to false on silence/i)
+    expect(prompt).toMatch(/Explicit false and genuine silence are different facts and must never be conflated/i)
   })
 
   it('instructs the model that application_rule is a SEPARATE question the override instruction may say nothing about, and silence must stay null/unclear — never inferred from basis, trigger, or convention', () => {

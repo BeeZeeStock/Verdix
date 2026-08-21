@@ -563,7 +563,7 @@ Translate the reviewer's instruction into a structured JSON object with EXACTLY 
   "cap_amount": <number or null>,
   "cap_pct": <number or null>,
   "settlement_period": "monthly" | "quarterly" | "semi-annual" | "annual" | "per_incident" | null,
-  "cash_redeemable": true | false,
+  "cash_redeemable": true | false | "unclear",
   "application_rule": {"eligible_component_keys": [<string>]|"all"|null, "excluded_component_keys": [<string>], "one_time": true|false|"unclear", "carry_forward": true|false|"unclear"},
   "calculation_summary": "<one-sentence plain-English description of the resulting calculation>"
 }
@@ -571,7 +571,7 @@ Translate the reviewer's instruction into a structured JSON object with EXACTLY 
 Rules:
 - basis_component is the central ambiguity — if the reviewer's instruction doesn't specify what the percentage is computed from, omit basis_component and credit_basis rather than guessing (e.g. do not assume it's computed on the standard/undiscounted fee if the reviewer didn't say so).
 - fixed_amount_per_unit vs flat_amount: use fixed_amount_per_unit when the credit is a stated rate MULTIPLIED by however many qualifying units occurred (e.g. "SEK 5,500 per complete hour of excess unavailability"); use flat_amount only for a single lump-sum figure with no per-unit multiplier. Do not label a per-unit rate "flat" just because the per-unit figure itself is a fixed number.
-- cash_redeemable defaults to false unless the reviewer's instruction or the source clause explicitly says the customer may request a cash refund rather than a credit against future invoices.
+- cash_redeemable is true only when the reviewer's instruction or the source clause explicitly says the customer may request a cash refund; false only when either explicitly says the credit is NOT payable in cash. If NEITHER addresses cash redemption at all, use "unclear" — never default to false on silence. Explicit false and genuine silence are different facts and must never be conflated.
 - Never invent a percentage, amount, or cap the reviewer didn't state or that wasn't already in the extracted data above.
 - application_rule is a SEPARATE question from everything above — what this credit may reduce (eligible_component_keys), and what happens to an earned-but-unused balance (carry_forward/one_time). This reviewer instruction is primarily about the credit's trigger/value/basis; it may say NOTHING about application scope or survival at all, and that is the expected common case, not an error. Grade each application_rule field from whichever of the source clause or the reviewer's instruction actually addresses it (either can supply it) — but if NEITHER does, leave eligible_component_keys null and carry_forward/one_time "unclear". Never infer these from the credit's basis, its trigger, or general commercial convention. This mirrors the exact same "silence is not evidence" discipline used when Verdix proposes a reading before any reviewer input exists — an override does not get to be less careful about this than a first-pass proposal.
 - Respond with ONLY the JSON object, no other text.`
@@ -856,6 +856,16 @@ export type RuleProposal = {
   // unused (survival_state) — three genuinely separate questions, none of
   // which should drag the others down. Undefined for every other rule type.
   survival_state?: ProposalState
+  // service_credit only (Step 1.5) — grades cash_redeemable specifically:
+  // whether the credit may be paid/refunded in cash rather than applied
+  // against future invoices. A FOURTH independent grade, same reasoning as
+  // application_state/survival_state's own split — most clauses never
+  // mention cash redemption at all even when trigger/value/cap are fully
+  // explicit, so folding it into `state` would incorrectly drag an
+  // otherwise-clear credit down to "Verdix recommendation" purely because
+  // this one, usually-unaddressed, boilerplate-adjacent question is open.
+  // Undefined for every other rule type.
+  cash_redeemable_state?: ProposalState
 }
 
 // extraStateFields lets a specific rule type ask for additional,
@@ -994,17 +1004,21 @@ Extraction's own classification: ${context.creditType}
 Stated value: ${context.statedPct != null ? `${context.statedPct}%` : context.statedAmount != null ? `${context.statedAmount} ${context.currency}` : 'not captured as a single value'}
 
 ${proposalSchemaBlock(
-  '{"trigger_type": "sla_breach"|"usage_threshold"|"promotional"|"earned_milestone"|"other", "trigger_description": "<plain-English condition>", "credit_basis": "pct_of_period_fee"|"pct_of_affected_component"|"fixed_amount_per_unit"|"flat_amount"|"usage_units", "basis_component": "<what the value is computed from>", "credit_value": <number>, "cap_amount": <number or null>, "cap_pct": <number or null>, "settlement_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"per_incident"|null, "cash_redeemable": true|false, "earn_rule": {"trigger_metric_key": "<metric name, e.g. transactions>", "trigger_quantity": <number>, "trigger_comparator": "gt"|"gte", "trigger_window": "calendar_month"|"billing_period"|"contract_year"|"per_incident", "consecutive_windows_required": <number, 1 if the clause does not require a streak>, "window_anchor": "contract_start"|"calendar", "finalization_deadline_days": <number or null>}, "application_rule": {"computed_from_component_keys": [<string>]|null, "eligible_component_keys": [<string>]|"all"|null, "excluded_component_keys": [<string>], "one_time": true|false|"unclear", "carry_forward": true|false|"unclear"}, "calculation_summary": "<one sentence>"}',
+  '{"trigger_type": "sla_breach"|"usage_threshold"|"promotional"|"earned_milestone"|"other", "trigger_description": "<plain-English condition>", "credit_basis": "pct_of_period_fee"|"pct_of_affected_component"|"fixed_amount_per_unit"|"flat_amount"|"usage_units", "basis_component": "<what the value is computed from>", "credit_value": <number>, "cap_amount": <number or null>, "cap_pct": <number or null>, "settlement_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"per_incident"|null, "cash_redeemable": true|false|"unclear", "earn_rule": {"trigger_metric_key": "<metric name, e.g. transactions>", "trigger_quantity": <number>, "trigger_comparator": "gt"|"gte"|"lt"|"lte"|"eq", "trigger_window": "calendar_month"|"billing_period"|"contract_year"|"per_incident", "consecutive_windows_required": <number, 1 if the clause does not require a streak>, "window_anchor": "contract_start"|"calendar", "finalization_deadline_days": <number or null>, "quantity_treatment": "exact"|"complete_units"}, "application_rule": {"computed_from_component_keys": [<string>]|null, "eligible_component_keys": [<string>]|"all"|null, "excluded_component_keys": [<string>], "one_time": true|false|"unclear", "carry_forward": true|false|"unclear"}, "calculation_summary": "<one sentence>"}',
   [
     { name: 'application_state', label: 'application_rule.eligible_component_keys ONLY — WHAT future charges this credit may reduce (never carry-forward/expiry, which survival_state covers below, and never the trigger, rate, cap, or settlement timing, which "state" already covers)' },
     { name: 'survival_state', label: 'application_rule.carry_forward and application_rule.one_time ONLY — whether an earned-but-unused credit persists or expires, and whether it can be earned more than once (never eligibility/scope, which application_state covers, and never trigger/rate/cap/settlement timing)' },
+    { name: 'cash_redeemable_state', label: 'cash_redeemable ONLY — whether the credit may be paid/refunded in cash rather than applied against future invoices (never trigger, value, cap, settlement timing, application scope, or survival, which are graded separately)' },
   ],
 )}
 
 Specific guidance, by field:
-- trigger condition, credit value, cap, and settlement timing are usually stated explicitly — resolve these as "clear_from_source" when the wording is direct. These drive "state", never "application_state" or "survival_state".
+- trigger condition, credit value, cap, and settlement timing are usually stated explicitly — resolve these as "clear_from_source" when the wording is direct. These drive "state", never "application_state", "survival_state", or "cash_redeemable_state".
 - basis_component (WHAT the percentage/amount is computed from — e.g. "the affected month's subscription fee") is often genuinely ambiguous, especially when another rule (like an introductory discount) could change what "the fee" means for a given period — if the clause doesn't specify and no other context resolves it, use "decision_required" for basis_component specifically rather than assuming the standard/undiscounted fee.
 - credit_basis "fixed_amount_per_unit" vs "flat_amount": use fixed_amount_per_unit whenever the clause states a rate multiplied by however many qualifying units occurred (e.g. "SEK 5,500 for each complete hour of excess unavailability"); this is "clear_from_source" the moment the per-unit rate and qualifying unit are both stated, exactly like any other explicit figure — it is NOT an unresolved basis question just because the rate is per-unit rather than a single sum. Reserve flat_amount for an actual single lump-sum credit with no per-unit multiplier.
+- earn_rule.trigger_comparator must come from the source's own comparison direction, never inferred from the metric's name or rewritten into a different but "equivalent" comparison. A clause reading "availability falls below 99.5%" is trigger_comparator "lt" against a metric named for availability itself (e.g. "platform_availability") — do NOT invert it into a complementary "unavailability >= 0.5%" framing; represent the metric and comparator exactly as the source states them.
+- earn_rule.quantity_treatment: use "complete_units" only when the clause states the qualifying measurement in whole/complete terms (e.g. "per complete hour", "per full day", "each whole incident") — this is a generic whole-unit-only treatment, not specific to hours, and applies to whatever unit the clause names. Use "exact" (or omit the field entirely) when the clause states no such whole-unit qualifier, or when the measured quantity is inherently a count with no fractional reading in the first place (e.g. a transaction count).
+- cash_redeemable_state grades ONLY whether the credit may be paid/refunded in cash: "clear_from_source" when the clause explicitly allows or explicitly prohibits cash payment; "decision_required" (cash_redeemable "unclear") when the clause never addresses cash redemption at all — which is the common case, since most service-credit clauses never mention it. Do not grade "clear_from_source" false merely because the clause is silent — silence is "decision_required", never a basis for a confident false. Only use "verdix_recommends" when there is a genuine textual basis worth flagging (e.g. the clause's own framing as "a credit against future invoices" without ever using the word "cash" at all is NOT itself grounds for a recommendation of false — that phrasing describes the credit's normal operation, not a statement about cash redemption).
 - earn_rule.consecutive_windows_required: only set above 1 when the clause explicitly requires a streak across multiple windows (e.g. "in each of 3 consecutive calendar months") — a single-period threshold is 1, never inferred as a streak just because it recurs.
 - application_rule.eligible_component_keys is the single most commonly UNSTATED field — a clause can state a credit's SIZE (e.g. "5% of transaction-processing fees paid") without ever stating what future charges that resulting credit may reduce. Do not assume it may offset "all amounts payable" or "the same component it was computed from" unless the contract actually says so. But this is a real, gradeable "clear_from_source" case whenever the clause DOES say so explicitly — e.g. "applied against future amounts payable" is explicit textual grounding for eligible_component_keys "all"; "applicable only against future transaction-processing fees" is explicit grounding for eligible_component_keys ["transaction_processing"]. Only set eligible_component_keys to null and grade application_state "decision_required" when the clause is genuinely silent on what the credit may be applied against — do not confuse silence on eligibility with silence on calculation basis; a clause stating what a credit is computed FROM (e.g. "5% of transaction-processing fees paid") does not, by itself, state what it may be applied AGAINST — those are different questions, and stating only the former leaves eligible_component_keys null.
   A SEPARATE, standalone sentence stating what a credit "applies only to" / "applies to" / "does not apply to" / "excludes" a named set of fee components is a DIFFERENT signal from the basis sentence, even when it names the SAME components the basis was computed from — a clause that has ALREADY unambiguously stated its basis in one sentence (e.g. "a rebate equal to 5% of the transaction-processing fees paid") gains no new information by a second sentence that MERELY repeats the basis a second time, so the more natural reading of that second, independent sentence — especially one phrased as an affirmative "applies to"/negative "does not apply to" scope rule, and especially when an EXCLUSION list follows ("does not apply to: platform fees; chargeback fees; other fees or charges") — is that it is answering the SEPARATE application-eligibility question, not restating basis for emphasis. Treat such a sentence as resolving eligible_component_keys to the named components (clear_from_source), not as leaving it null, UNLESS the contract's own wording or a directly conflicting later clause makes the basis-only reading the more natural one. This determination does not require the literal words "applied"/"against" — ordinary contract drafting uses "applies to"/"does not apply to" interchangeably with "is applied against"/"may not be applied against".
@@ -1050,7 +1064,7 @@ function looksLikeMalformedReasoning(text: string): boolean {
 
 export function validateProposalState(proposal: RuleProposal, sourceClauseAvailable: boolean): RuleProposal {
   let { reasoning } = proposal
-  let { state, proposed_interpretation, application_state, survival_state } = proposal
+  let { state, proposed_interpretation, application_state, survival_state, cash_redeemable_state } = proposal
 
   // Never render malformed/trivial reasoning text — downgrade to
   // decision_required with an honest placeholder rather than show a
@@ -1168,5 +1182,26 @@ export function validateProposalState(proposal: RuleProposal, sourceClauseAvaila
     }
   }
 
-  return { state, proposed_interpretation, reasoning, application_state, survival_state }
+  // cash_redeemable_state (service_credit only, Step 1.5) — same
+  // independent safety-check pattern as application_state/survival_state
+  // above, scoped to the plain cash_redeemable field instead of a nested
+  // sub-object.
+  if (cash_redeemable_state && proposed_interpretation && typeof proposed_interpretation === 'object') {
+    const interp = proposed_interpretation as Record<string, unknown>
+
+    if (cash_redeemable_state === 'clear_from_source') {
+      const reasoningLooksSourced = reasoning.trim().length >= 20
+      if (!sourceClauseAvailable || !reasoningLooksSourced) cash_redeemable_state = 'verdix_recommends'
+    }
+
+    // Contradiction: claims a confident cash_redeemable_state but left
+    // cash_redeemable itself unset/"unclear" — force decision_required
+    // rather than trust a grading with nothing concrete behind it.
+    const cashValue = interp.cash_redeemable
+    if (cash_redeemable_state !== 'decision_required' && cashValue !== true && cashValue !== false) {
+      cash_redeemable_state = 'decision_required'
+    }
+  }
+
+  return { state, proposed_interpretation, reasoning, application_state, survival_state, cash_redeemable_state }
 }

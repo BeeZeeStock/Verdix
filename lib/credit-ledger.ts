@@ -70,6 +70,38 @@ export interface CreditEarnEvaluation {
   consecutiveWindowsMetAfterThis: number
 }
 
+// Deterministic evaluation of CreditEarnRule.trigger_comparator against the
+// (already quantity-treated) measured value — comparators are never
+// inferred from the metric name or clause wording; they come from the
+// normalized rule as confirmed. Exhaustive over the full comparator
+// vocabulary (Step 1.5 — was gt/gte only), so a native "below threshold"
+// rule (availability < 99.5) evaluates directly rather than requiring a
+// caller to invert the metric into its logical complement.
+function compareThreshold(measured: number, threshold: number, comparator: CreditEarnRule['trigger_comparator']): boolean {
+  switch (comparator) {
+    case 'gt':  return measured >  threshold
+    case 'gte': return measured >= threshold
+    case 'lt':  return measured <  threshold
+    case 'lte': return measured <= threshold
+    case 'eq':  return measured === threshold
+  }
+}
+
+// Applies CreditEarnRule.quantity_treatment (Step 1.5) to a raw measured
+// quantity — 'exact' (or the field simply absent, which is every rule that
+// predates this field) returns the value verbatim, preserving prior
+// behavior byte-for-byte. 'complete_units' floors a POSITIVE quantity down
+// to the nearest whole unit ("SEK 5,500 per complete hour": 2.99 measured
+// hours qualifies as 2). Zero and negative values are never floored —
+// flooring a negative number moves it further from zero, which is never
+// the intent of "complete units", and the final Math.max(0, ...) guard in
+// evaluateCreditEarn already prevents a negative/zero quantity from ever
+// producing a positive credit regardless of treatment.
+function applyQuantityTreatment(measured: number, treatment: CreditEarnRule['quantity_treatment']): number {
+  if (treatment === 'complete_units' && measured > 0) return Math.floor(measured)
+  return measured
+}
+
 // Single evaluator for all three TEST-PAY-002 credit shapes — a threshold
 // (optionally requiring N consecutive windows), an earned amount computed as
 // a flat value, a percentage of some basis, or a per-unit rate. One function,
@@ -85,17 +117,21 @@ export function evaluateCreditEarn(params: {
   creditValueFlatMinor: number | null
   /** Basis points, 500 = 5% — avoids float percentage math. */
   creditValuePctBp: number | null
-  /** e.g. Service Credit's per-hour rate — multiplied by measuredTriggerQuantity. */
+  /** e.g. Service Credit's per-hour rate — multiplied by the (quantity-treated) qualifying quantity. */
   creditValuePerUnitMinor: number | null
   capAmountMinor: number | null
   priorConsecutiveWindowsMet: number
   isOneTime: boolean
   alreadyEarnedOnce: boolean
 }): CreditEarnEvaluation {
+  // Quantity treatment is applied ONCE, inside this deterministic engine —
+  // never left to individual callers to remember (Step 1.5) — and the
+  // resulting qualifyingQuantity is what BOTH the threshold comparison and
+  // the per-unit amount calculation use, so a "complete hour" clause is
+  // floored consistently for both "did this qualify" and "how much".
+  const qualifyingQuantity = applyQuantityTreatment(params.measuredTriggerQuantity, params.earnRule.quantity_treatment)
   const threshold = params.earnRule.trigger_quantity ?? 0
-  const thresholdMet = params.earnRule.trigger_comparator === 'gt'
-    ? params.measuredTriggerQuantity > threshold
-    : params.measuredTriggerQuantity >= threshold
+  const thresholdMet = compareThreshold(qualifyingQuantity, threshold, params.earnRule.trigger_comparator)
 
   if (!thresholdMet) {
     return { earned: false, earnedAmountMinor: 0, reason: 'Threshold not met this window', consecutiveWindowsMetAfterThis: 0 }
@@ -119,7 +155,7 @@ export function evaluateCreditEarn(params: {
   if (params.creditValuePctBp != null) {
     amount = Math.round(params.computedFromAmountMinor * params.creditValuePctBp / 10000)
   } else if (params.creditValuePerUnitMinor != null) {
-    amount = Math.round(params.creditValuePerUnitMinor * params.measuredTriggerQuantity)
+    amount = Math.round(params.creditValuePerUnitMinor * qualifyingQuantity)
   } else {
     amount = params.creditValueFlatMinor ?? 0
   }

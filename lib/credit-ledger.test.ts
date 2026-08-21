@@ -226,6 +226,119 @@ describe('evaluateCreditEarn (scenario: TEST-PAY-002)', () => {
   })
 })
 
+// ── Step 1.5: full comparator vocabulary (gt/gte/lt/lte/eq) ──────────────
+describe('evaluateCreditEarn — comparator vocabulary (Step 1.5)', () => {
+  it('lt: "availability < 99.5" — natively represented, no logical-complement inversion required', () => {
+    const rule = earnRule({ trigger_metric_key: 'platform_availability', trigger_quantity: 99.5, trigger_comparator: 'lt', consecutive_windows_required: 1 })
+    const below = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 99.4, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    const at = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 99.5, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    const above = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 99.6, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(below.earned).toBe(true)
+    expect(at.earned).toBe(false)    // exact boundary: lt excludes equality
+    expect(above.earned).toBe(false)
+  })
+  it('lte: exact boundary value qualifies (unlike lt)', () => {
+    const rule = earnRule({ trigger_quantity: 99.5, trigger_comparator: 'lte' })
+    const at = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 99.5, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    const above = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 99.6, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(at.earned).toBe(true)
+    expect(above.earned).toBe(false)
+  })
+  it('gt: exact boundary value does NOT qualify (existing behavior, unchanged)', () => {
+    const rule = earnRule({ trigger_quantity: 300_000, trigger_comparator: 'gt' })
+    const at = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 300_000, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    const above = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 300_001, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(at.earned).toBe(false)
+    expect(above.earned).toBe(true)
+  })
+  it('gte: exact boundary value DOES qualify (existing behavior, unchanged)', () => {
+    const rule = earnRule({ trigger_quantity: 300_000, trigger_comparator: 'gte' })
+    const at = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 300_000, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(at.earned).toBe(true)
+  })
+  it('eq: only the exact stated value qualifies, both neighbors do not', () => {
+    const rule = earnRule({ trigger_quantity: 100, trigger_comparator: 'eq' })
+    const below = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 99, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    const at = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 100, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    const above = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 101, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(below.earned).toBe(false)
+    expect(at.earned).toBe(true)
+    expect(above.earned).toBe(false)
+  })
+  it('comparator is never inferred from the metric name — a metric literally named "platform_availability" evaluated with "gt" behaves exactly like any other gt rule, proving the comparator alone drives evaluation', () => {
+    const rule = earnRule({ trigger_metric_key: 'platform_availability', trigger_quantity: 99.5, trigger_comparator: 'gt' })
+    const result = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 99.6, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(result.earned).toBe(true) // 99.6 > 99.5, same as any other gt metric — no special-casing by name
+  })
+})
+
+// ── Step 1.5: quantity_treatment (exact vs. complete_units) ──────────────
+describe('evaluateCreditEarn — quantity_treatment (Step 1.5)', () => {
+  it('exact (explicit): a fractional measured quantity is used verbatim, for both threshold comparison and per-unit amount', () => {
+    const rule = earnRule({ trigger_metric_key: 'excess_downtime_hours', trigger_quantity: 2, trigger_comparator: 'gt', quantity_treatment: 'exact' })
+    const result = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 2.3, computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null, creditValuePerUnitMinor: 550_000, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(result.earned).toBe(true)
+    expect(result.earnedAmountMinor).toBe(Math.round(550_000 * 2.3))
+  })
+  it('omitted quantity_treatment (every rule that predates this field) behaves exactly like "exact" — preserves prior behavior byte-for-byte', () => {
+    const rule = earnRule({ trigger_metric_key: 'excess_downtime_hours', trigger_quantity: 2, trigger_comparator: 'gt' }) // no quantity_treatment at all
+    const result = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 2.3, computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null, creditValuePerUnitMinor: 550_000, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(result.earnedAmountMinor).toBe(Math.round(550_000 * 2.3))
+  })
+  it('complete_units: 2.0 measured hours qualifies as 2 complete units', () => {
+    const rule = earnRule({ trigger_metric_key: 'excess_downtime_hours', trigger_quantity: 0, trigger_comparator: 'gt', quantity_treatment: 'complete_units' })
+    const result = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 2.0, computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null, creditValuePerUnitMinor: 550_000, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(result.earnedAmountMinor).toBe(2 * 550_000)
+  })
+  it('complete_units: 2.3 measured hours floors to 2 complete units, not 2.3 and not 3', () => {
+    const rule = earnRule({ trigger_metric_key: 'excess_downtime_hours', trigger_quantity: 0, trigger_comparator: 'gt', quantity_treatment: 'complete_units' })
+    const result = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 2.3, computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null, creditValuePerUnitMinor: 550_000, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(result.earnedAmountMinor).toBe(2 * 550_000)
+  })
+  it('complete_units: 2.99 measured hours still floors to 2, never rounds up to 3', () => {
+    const rule = earnRule({ trigger_metric_key: 'excess_downtime_hours', trigger_quantity: 0, trigger_comparator: 'gt', quantity_treatment: 'complete_units' })
+    const result = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 2.99, computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null, creditValuePerUnitMinor: 550_000, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(result.earnedAmountMinor).toBe(2 * 550_000)
+  })
+  it('complete_units: 3.0 measured hours (exactly whole already) qualifies as 3, not 2', () => {
+    const rule = earnRule({ trigger_metric_key: 'excess_downtime_hours', trigger_quantity: 0, trigger_comparator: 'gt', quantity_treatment: 'complete_units' })
+    const result = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 3.0, computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null, creditValuePerUnitMinor: 550_000, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(result.earnedAmountMinor).toBe(3 * 550_000)
+  })
+  it('complete_units: flooring applies to the THRESHOLD comparison too, not just the amount — 0.99 measured units against a trigger_quantity of 1 with "gte" does not qualify (floors to 0, not >= 1)', () => {
+    const rule = earnRule({ trigger_quantity: 1, trigger_comparator: 'gte', quantity_treatment: 'complete_units' })
+    const result = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 0.99, computedFromAmountMinor: 0, creditValueFlatMinor: 100, creditValuePctBp: null, creditValuePerUnitMinor: null, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(result.earned).toBe(false)
+  })
+  it('caps are applied AFTER the qualifying (quantity-treated) amount is determined — a floored quantity that still exceeds the cap is clamped correctly', () => {
+    const rule = earnRule({ trigger_quantity: 0, trigger_comparator: 'gt', quantity_treatment: 'complete_units' })
+    const result = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 20.9 /* floors to 20 */, computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null, creditValuePerUnitMinor: 550_000, capAmountMinor: 5_500_000 /* SEK 55,000 cap */, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    // 20 complete hours * 5,500 = 110,000 — well above the 55,000 cap
+    expect(result.earnedAmountMinor).toBe(5_500_000)
+  })
+  it('generic across units — "complete_units" is not hardcoded to hours; the same treatment floors a fractional day/incident count identically', () => {
+    const rule = earnRule({ trigger_metric_key: 'excess_days', trigger_quantity: 0, trigger_comparator: 'gt', quantity_treatment: 'complete_units' })
+    const result = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 4.7, computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null, creditValuePerUnitMinor: 1_000_00, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(result.earnedAmountMinor).toBe(4 * 1_000_00)
+  })
+  it('zero measured quantity remains zero under complete_units (not floored to -1 or otherwise altered)', () => {
+    const rule = earnRule({ trigger_quantity: 0, trigger_comparator: 'gte', quantity_treatment: 'complete_units' })
+    const result = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: 0, computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null, creditValuePerUnitMinor: 550_000, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    expect(result.earned).toBe(true) // 0 >= 0
+    expect(result.earnedAmountMinor).toBe(0)
+  })
+  it('negative measured quantity under complete_units is NOT floored further negative (Math.floor(-2.3) would be -3) — passed through unchanged, and the existing Math.max(0, ...) guard prevents it from ever producing a positive credit', () => {
+    const rule = earnRule({ trigger_quantity: -10, trigger_comparator: 'gt', quantity_treatment: 'complete_units' })
+    const result = evaluateCreditEarn({ earnRule: rule, measuredTriggerQuantity: -2.3, computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null, creditValuePerUnitMinor: 550_000, capAmountMinor: null, priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false })
+    // -2.3 > -10 is true (threshold met using the UNFLOORED -2.3), but a
+    // negative quantity multiplied by a positive per-unit rate produces a
+    // negative raw amount, which the existing Math.max(0, ...) guard clamps
+    // to exactly 0 — never an accidental positive credit from a negative
+    // measured quantity, regardless of quantity_treatment.
+    expect(result.earnedAmountMinor).toBe(0)
+  })
+})
+
 describe('filterEligibleComponents — unresolved scope never matches anything', () => {
   it('eligible_component_keys: null matches nothing, even against a nonempty pool', () => {
     const pool: PoolComponent[] = [{ key: 'transaction_processing', amountMinor: 1000 }]

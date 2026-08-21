@@ -110,7 +110,51 @@ type CreditLike = {
   // set, and the two-state (state/application_state) proposal split in
   // lib/rule-interpretation.ts for where a reviewer can confirm one without
   // the other.
-  interpretation?: (UnresolvedFlag & { interaction_note?: string | null; application_rule?: UnresolvedFlag }) | null
+  interpretation?: (UnresolvedFlag & {
+    interaction_note?: string | null
+    application_rule?: UnresolvedFlag
+    // Step 1.5: cash_redeemable's own provenance, gated the same way
+    // application_rule's eligibility/survival are — see
+    // isServiceCreditUnresolved below and lib/types.ts's
+    // ServiceCreditInterpretation.cash_redeemable_provenance.
+    cash_redeemable_provenance?: FieldProvenance | null
+  }) | null
+}
+
+// Step 1.5.1 — the beginning of a generic "which fields does THIS execution
+// path actually need" concept, deliberately small (not a Rulebook). A field
+// can be semantically incomplete (unresolved provenance) without that
+// incompleteness ever mattering to the execution Verdix is actually
+// performing — cash_redeemable is the first real example: Verdix's only
+// execution path today applies a service credit against a future invoice,
+// which never depends on whether the customer could ALSO have requested
+// cash instead. Silence on that separate question is real, honest metadata
+// (cash_redeemable stays 'unclear', never manufactured into a reviewer
+// decision) — it just isn't a blocker for the path being executed. Add a
+// value to this union (and a branch below) the day a real execution path
+// actually needs it — e.g. a future 'cash_settlement' context, or a
+// reviewer/org-policy request to pay out in cash instead of crediting the
+// next invoice — rather than hardcoding "cash never blocks" as a permanent
+// special case.
+export type ServiceCreditExecutionContext = 'invoice_credit' | 'cash_settlement'
+
+// Which of a service credit's independently-graded sub-questions are
+// load-bearing for a GIVEN execution context. eligibility/survival are
+// required for every context this codebase can currently execute — you
+// cannot apply a credit against a future invoice without knowing what it
+// may offset and whether it survives past this application. cash_redeemable
+// is only required once the execution context is actually about cash
+// settlement — which nothing in this codebase performs today (no code path
+// disburses cash; the credit ledger only ever applies against future
+// invoices). Once a real cash_settlement execution path exists, whether
+// Verdix can actually CARRY OUT a known cash entitlement is a separate,
+// not-yet-built capability question (analogous to
+// getCreditRepresentationCapability for credit representation) — distinct
+// from whether the CONTRACT's own answer is known, which is all this
+// function and isServiceCreditUnresolved are about.
+export function requiredServiceCreditFields(context: ServiceCreditExecutionContext): Array<'eligibility' | 'survival' | 'cash_redeemable'> {
+  if (context === 'cash_settlement') return ['eligibility', 'survival', 'cash_redeemable']
+  return ['eligibility', 'survival']
 }
 
 // Exported so page.tsx's "Service credits"/"Discounts" section card
@@ -122,7 +166,12 @@ type CreditLike = {
 // missing while the canonical count still blocks on it (or vice versa) —
 // sharing the function makes that drift impossible by construction rather
 // than by both sides happening to agree today.
-export function isServiceCreditUnresolved(credit: CreditLike): boolean {
+//
+// context defaults to 'invoice_credit' — the only execution path this
+// product actually performs today — so every existing caller that doesn't
+// pass one keeps behaving correctly without having to know this concept
+// exists yet.
+export function isServiceCreditUnresolved(credit: CreditLike, context: ServiceCreditExecutionContext = 'invoice_credit'): boolean {
   if (!credit.interpretation || credit.interpretation.requires_confirmation) return true
   // A null/missing application_rule means eligibility/survival were never
   // even asked about — e.g. confirmed via the free-text Override path
@@ -132,8 +181,25 @@ export function isServiceCreditUnresolved(credit: CreditLike): boolean {
   // live: an Annual Rebate confirmed via Override, whose own AI proposal
   // had separately found survival genuinely unstated, vanished from the
   // review panel entirely once application_rule came back null). Never
-  // treat "never asked" as equivalent to "nothing to ask."
-  return !credit.interpretation.application_rule || !!credit.interpretation.application_rule.requires_confirmation
+  // treat "never asked" as equivalent to "nothing to ask." eligibility and
+  // survival are required for every execution context this product can
+  // currently produce, so this check is unconditional, not gated by
+  // requiredServiceCreditFields.
+  if (!credit.interpretation.application_rule || !!credit.interpretation.application_rule.requires_confirmation) return true
+  // cash_redeemable_provenance (Step 1.5, refined Step 1.5.1) — only a
+  // readiness blocker when THIS execution context actually needs it. For
+  // the default/only real context today (invoice_credit), cash_redeemable
+  // is never in requiredServiceCreditFields's list, so an unresolved/
+  // 'unclear' cash treatment never blocks — it remains visible, honest
+  // metadata (never collapsed into false) without reopening an otherwise
+  // fully-resolved, already-billing credit. Historical records with no
+  // cash_redeemable_provenance at all are therefore safe under the default
+  // context — this is what makes the Step 1.5 fix backwards-compatible
+  // without lying about their provenance.
+  if (requiredServiceCreditFields(context).includes('cash_redeemable') && !isProvenanceResolved(credit.interpretation.cash_redeemable_provenance)) {
+    return true
+  }
+  return false
 }
 
 export function isDiscountUnresolved(discount: DiscountLike): boolean {

@@ -5,10 +5,24 @@ semantics Verdix already handles correctly, so a future Rulebook
 schema/resolver can be checked against this same corpus rather than
 silently drifting from today's approved behavior.
 
-**No production behavior changed to produce this corpus.** Every test here
-calls real, already-shipped, already-exported pure functions from `lib/`
-(no route handlers, no database, no AI calls). Nothing in `lib/` or `app/`
-was modified to make these tests pass.
+**Step 1 (baseline):** every test called real, already-shipped, already-
+exported pure functions from `lib/` — no route handlers, no database, no AI
+calls, and no production code was modified to make the tests pass. Three
+real engine gaps were found and reported rather than silently patched (see
+`git log` for the Step 1 commit).
+
+**Step 1.5 (this pass):** closed all three gaps as deliberate, reviewed
+production-model changes — `lib/types.ts`, `lib/credit-ledger.ts`,
+`lib/commercial-rule-status.ts`, `confirm-rule/route.ts`,
+`lib/rule-interpretation.ts` (prompts + `validateProposalState`), and the
+review UI in `configure/[id]/page.tsx` were all updated; see that commit's
+message for the full change list, call-site audit, and backwards-
+compatibility strategy. This corpus was updated in lockstep so the
+previously-documented workarounds became native, passing tests — see
+"Gaps closed in Step 1.5" below. Same-period application execution
+(`CreditApplicationRule.availability`) was deliberately NOT touched — still
+a documented capability limitation, addressed only when the Rulebook
+vocabulary is designed.
 
 ## Why field names don't match the Step 1 prompt's examples
 
@@ -50,14 +64,16 @@ tests/commercial-semantics/
   minimum-floor/       floor vs. additive; no row-duplication multiply
   credits/             basis vs. scope, timing/survival independence,
                         future-amounts-payable, explicit carry-forward,
-                        caps, explicit no-cash language, + the full generic
-                        Service Credit example fixture
-                        (service-credit-example.test.ts)
+                        caps, three-way provenanced cash redeemability,
+                        + the full generic Service Credit example fixture
+                        (service-credit-example.test.ts) — now natively
+                        represented, no comparator workaround
   discounts/            light — discount readiness + tier_method mapping
   partial-periods/      billing-period anchor ambiguity, calendar vs.
                         contract_start proration
   recurrence/           one-time vs. recurring, consecutive-window streaks,
-                        complete-unit ("per complete hour") semantics
+                        complete-unit ("per complete hour") semantics —
+                        natively enforced via quantity_treatment
   provenance/           the canonical 4-state readiness matrix
 ```
 
@@ -78,37 +94,60 @@ codebase's existing test convention (`lib/*.test.ts`), so the corpus stays
 a normal, fast, deterministic vitest suite rather than a second bespoke
 runner.
 
-## Known gaps surfaced while writing this corpus
+## Gaps closed in Step 1.5
 
-Reported per Step 1's instruction to surface rather than silently patch —
-none of the three were patched; no calculation, extraction prompt,
-readiness logic, or UI code was changed to write this corpus.
+All three gaps Step 1 surfaced are now closed as native engine behavior —
+each corpus case that used to document a workaround now exercises the real
+fix directly:
 
-1. **`CreditEarnRule.trigger_comparator`** (`lib/types.ts`) supports only
-   `'gt' | 'gte'`. An availability/SLA-style "below threshold" trigger has
-   no native `<` comparator — `credits/service-credit-example.test.ts`
-   models it as a logical complement (unavailability ≥ the complementary
-   threshold), which requires a caller to compute that complement. No such
-   caller exists in production yet for this credit shape.
-2. **Complete-unit ("per complete hour") rounding** has no dedicated
-   utility. `evaluateCreditEarn` takes `measuredTriggerQuantity` verbatim
-   and does not floor it — `recurrence/recurrence.test.ts` documents the
-   expected calling convention (caller floors before invoking) but this is
-   not yet enforced or exercised by any real production call site.
-3. **`ServiceCreditInterpretation.cash_redeemable`** (`lib/types.ts`) is a
-   plain boolean with no companion provenance field — unlike
-   `eligible_component_keys`/`carry_forward`, which carry
-   `eligibility_provenance`/`survival_provenance`. Verified by reading the
-   real code: `confirm-rule/route.ts`'s `buildServiceCreditInterpretation`
-   (`typeof approved.cash_redeemable === 'boolean' ? approved.cash_redeemable
-   : existing?.cash_redeemable ?? false`) and the extraction prompt
-   (`lib/rule-interpretation.ts`'s `buildServiceCreditPrompt`: "cash_redeemable
-   defaults to false unless ... explicitly says") both collapse "explicitly
-   stated false" and "the contract never addressed this at all" into the
-   identical value, with no way to distinguish them downstream. This corpus
-   asserts only the explicit case (`credits/credits.test.ts`, "explicit
-   no-cash language resolves cash_redeemable: false") and deliberately does
-   **not** freeze "silence → false" as approved baseline semantics.
+1. **Comparator vocabulary** — `CreditEarnRule.trigger_comparator` now
+   supports `'gt' | 'gte' | 'lt' | 'lte' | 'eq'` (was `'gt' | 'gte'` only),
+   evaluated deterministically inside `evaluateCreditEarn`.
+   `credits/service-credit-example.test.ts`'s availability trigger is now
+   `trigger_metric_key: 'platform_availability', trigger_comparator: 'lt',
+   trigger_quantity: 99.5` — natively representing "availability < 99.5%",
+   no logical-complement inversion. `lib/credit-ledger.test.ts` has the
+   full lt/lte/gt/gte/eq exact-boundary matrix.
+2. **Complete-unit rounding** — `CreditEarnRule.quantity_treatment`
+   (`'exact' | 'complete_units'`, optional, defaults to `'exact'`) is now
+   applied INSIDE `evaluateCreditEarn` itself, for both the threshold
+   comparison and the per-unit amount — never left to the caller.
+   `recurrence/recurrence.test.ts`'s complete-hour case no longer pre-floors
+   with `Math.floor()`; the engine does it. Generic across units (hours,
+   days, ...) — never hardcoded to "hours".
+3. **Cash-redeemability provenance, and the readiness/semantics split it
+   required** — `ServiceCreditInterpretation.cash_redeemable` is now
+   `boolean | 'unclear'` with a companion `cash_redeemable_provenance?:
+   FieldProvenance`, reusing the exact same provenance discipline as
+   `CreditApplicationRule.eligibility_provenance`/`survival_provenance` —
+   no bespoke cash-only mechanism. Explicit false → `contract_derived`;
+   explicit true → `contract_derived`; silence → `'unclear'` with no
+   provenance — never a silent default, and never backfilled as
+   `contract_derived` for historical records.
+
+   Critically, **this fact is semantic metadata, not a universal readiness
+   blocker.** `lib/commercial-rule-status.ts`'s `isServiceCreditUnresolved`
+   takes an `ServiceCreditExecutionContext` (`'invoice_credit' |
+   'cash_settlement'`, defaulting to `'invoice_credit'` — today's only real
+   execution path) and asks, via `requiredServiceCreditFields(context)`,
+   whether cash treatment is actually load-bearing for *that* execution —
+   not merely whether Verdix happens to know the answer. Applying a credit
+   against a future invoice never needs to know whether cash payout would
+   be allowed, so an unresolved/missing `cash_redeemable_provenance` does
+   NOT block the default context, does not reopen already-configured
+   billing rules, and is shown in the review/confirmed-rule UI as
+   informational metadata ("Not specified in contract" / "Cash settlement:
+   Not specified in contract") rather than a red "Decision required" card.
+   A hypothetical `'cash_settlement'` execution context — which does not
+   exist as a real code path today — DOES require it, and unresolved cash
+   treatment blocks there; see `credits/credits.test.ts`'s "cash
+   redeemability" block for the full matrix (unclear/explicit-false/
+   explicit-true/verdix_recommends all non-blocking for `invoice_credit`;
+   unresolved blocks under `cash_settlement`; a fully-resolved
+   `cash_redeemable: true` still can't actually execute cash payout today —
+   a capability gap, not a semantics gap, tested separately from provenance
+   resolution). `lib/commercial-rule-status.test.ts` has the matching
+   `isServiceCreditUnresolved`/`requiredServiceCreditFields` matrix.
 
 ## Current execution capability limitations
 

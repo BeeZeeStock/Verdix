@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isServiceCreditFullySourceResolved, type CommercialRuleTerms } from './commercial-rule-status'
+import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, requiredServiceCreditFields, isDiscountUnresolved, countSourceConfirmations, isServiceCreditFullySourceResolved, type CommercialRuleTerms } from './commercial-rule-status'
 
 describe('computeCommercialRuleWorkload — "all confirmed" must check every rule type (regression)', () => {
   it('minimum commitment, tier calculation, escalator, and meter mapping all confirmed but a discount is NOT: never all_commercial_rules_confirmed', () => {
@@ -26,8 +26,10 @@ describe('computeCommercialRuleWorkload — "all confirmed" must check every rul
       discounts: [{ discount_rule_id: 'disc1', interpretation: { requires_confirmation: false } }],
       // application_rule must be a populated, resolved object here — null/
       // absent now correctly means "never asked", not "resolved" (see the
-      // isServiceCreditUnresolved regression tests below).
-      service_credits: [{ credit_rule_id: 'cred1', interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false } } }],
+      // isServiceCreditUnresolved regression tests below). cash_redeemable_
+      // provenance must likewise be a resolved FieldProvenance (Step 1.5) —
+      // missing/null now correctly means "never graded", not "resolved".
+      service_credits: [{ credit_rule_id: 'cred1', interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false }, cash_redeemable_provenance: 'contract_derived' } }],
     }
     const workload = computeCommercialRuleWorkload(terms, { total: 1, confirmed: 1 })
     expect(workload.status).toBe('all_commercial_rules_confirmed')
@@ -220,11 +222,62 @@ describe('isServiceCreditUnresolved — shared by the canonical count and page.t
       interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: true } },
     })).toBe(true)
   })
-  it('resolved only once BOTH the top-level interpretation and application_rule are confirmed (TEST-PAY-002 Growth Credit shape, post PDF-verified carry_forward)', () => {
+  it('resolved once the top-level interpretation and application_rule are confirmed — cash_redeemable_provenance is NOT required for the default (invoice_credit) execution context', () => {
+    expect(isServiceCreditUnresolved({
+      credit_rule_id: 'c1',
+      interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false }, cash_redeemable_provenance: 'contract_derived' },
+    })).toBe(false)
+  })
+  // Step 1.5, corrected: cash_redeemable is real, provenanced metadata (see
+  // requiredServiceCreditFields tests below), but it is NOT a universal
+  // readiness blocker — the only execution path that exists today
+  // (invoice_credit) never needs to know whether cash payout would be
+  // allowed. A missing/unresolved cash_redeemable_provenance must not
+  // reopen an otherwise fully-configured, already-approved billing rule.
+  it('resolved (default context) even when cash_redeemable_provenance is missing entirely — legacy records are not reopened just because this field predates them', () => {
     expect(isServiceCreditUnresolved({
       credit_rule_id: 'c1',
       interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false } },
     })).toBe(false)
+  })
+  it('resolved (default context) even when cash_redeemable_provenance is explicitly verdix_recommends — an unresolved recommendation here is informational, not blocking', () => {
+    expect(isServiceCreditUnresolved({
+      credit_rule_id: 'c1',
+      interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false }, cash_redeemable_provenance: 'verdix_recommends' },
+    })).toBe(false)
+  })
+  it('resolved (default context) when cash_redeemable_provenance is reviewer_policy — an explicitly-confirmed value never blocks either, same as any other case', () => {
+    expect(isServiceCreditUnresolved({
+      credit_rule_id: 'c1',
+      interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false }, cash_redeemable_provenance: 'reviewer_policy' },
+    })).toBe(false)
+  })
+  // The explicit 'cash_settlement' execution context is where cash treatment
+  // actually becomes load-bearing — no real caller passes this context
+  // today (no cash-settlement execution path exists yet), but the predicate
+  // must already honor it correctly so a future execution flow can opt in
+  // without another isServiceCreditUnresolved redesign.
+  it('unresolved under the "cash_settlement" context when cash_redeemable_provenance is missing, even though eligibility/survival are both confirmed', () => {
+    expect(isServiceCreditUnresolved({
+      credit_rule_id: 'c1',
+      interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false } },
+    }, 'cash_settlement')).toBe(true)
+  })
+  it('unresolved under "cash_settlement" when cash_redeemable_provenance is verdix_recommends — a recommendation never resolves it there either', () => {
+    expect(isServiceCreditUnresolved({
+      credit_rule_id: 'c1',
+      interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false }, cash_redeemable_provenance: 'verdix_recommends' },
+    }, 'cash_settlement')).toBe(true)
+  })
+  it('resolved under "cash_settlement" once cash_redeemable_provenance is contract_derived or reviewer_policy', () => {
+    expect(isServiceCreditUnresolved({
+      credit_rule_id: 'c1',
+      interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false }, cash_redeemable_provenance: 'contract_derived' },
+    }, 'cash_settlement')).toBe(false)
+    expect(isServiceCreditUnresolved({
+      credit_rule_id: 'c1',
+      interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false }, cash_redeemable_provenance: 'reviewer_policy' },
+    }, 'cash_settlement')).toBe(false)
   })
   // Regression (found live, 2026-08-21): a credit confirmed via the
   // free-text Override path (whose schema didn't ask about eligibility/
@@ -241,6 +294,15 @@ describe('isServiceCreditUnresolved — shared by the canonical count and page.t
   })
   it('unresolved when application_rule is entirely absent from the interpretation object', () => {
     expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: { requires_confirmation: false } })).toBe(true)
+  })
+})
+
+describe('requiredServiceCreditFields — execution-context-aware requiredness (Step 1.5, corrected)', () => {
+  it('the default/current invoice_credit path never requires cash_redeemable', () => {
+    expect(requiredServiceCreditFields('invoice_credit')).toEqual(['eligibility', 'survival'])
+  })
+  it('a hypothetical cash_settlement path requires cash_redeemable in addition to eligibility/survival', () => {
+    expect(requiredServiceCreditFields('cash_settlement')).toEqual(['eligibility', 'survival', 'cash_redeemable'])
   })
 })
 
@@ -261,7 +323,7 @@ describe('computeCommercialRuleWorkload.blockers — every blocker key traces to
     const terms: CommercialRuleTerms = {
       service_credits: [
         { credit_rule_id: 'rebate', interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: true } } },
-        { credit_rule_id: 'growth', interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false } } },
+        { credit_rule_id: 'growth', interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false }, cash_redeemable_provenance: 'contract_derived' } },
         { credit_rule_id: 'service', interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: true } } },
       ],
     }

@@ -213,7 +213,15 @@ export interface Discount {
 export interface CreditEarnRule {
   trigger_metric_key: string | null
   trigger_quantity: number | null
-  trigger_comparator: 'gt' | 'gte'
+  /** Full comparison vocabulary — added 'lt'/'lte'/'eq' (Step 1.5) so a
+   *  "below threshold" clause (e.g. "availability < 99.5%") can be
+   *  represented natively, exactly as the source states it, rather than
+   *  requiring the caller to transform the metric into its logical
+   *  complement (e.g. "unavailability >= 0.5%") to fit a gt/gte-only
+   *  vocabulary. Comparators are never inferred from the metric name —
+   *  they come from the normalized rule (evaluateCreditEarn, lib/credit-
+   *  ledger.ts, just evaluates whichever one is on the record). */
+  trigger_comparator: 'gt' | 'gte' | 'lt' | 'lte' | 'eq'
   trigger_window: 'calendar_month' | 'billing_period' | 'contract_year' | 'per_incident'
   /** >1 for "each of N consecutive windows" triggers (Growth Credit: 3); 1 for a single-window trigger. */
   consecutive_windows_required: number
@@ -226,6 +234,18 @@ export interface CreditEarnRule {
    *  renaming it — only day-count deadlines are implemented now, since
    *  that's all any current contract needs. */
   finalization_deadline_days: number | null
+  /** How a fractional measured quantity is treated before it's compared
+   *  against trigger_quantity and used to compute a per-unit credit value
+   *  (Step 1.5) — generic across whatever the contract's qualifying unit
+   *  actually is (hours, days, incidents, ...), never hardcoded to "hours".
+   *  'exact' (the default when omitted, preserving every pre-existing
+   *  rule's behavior byte-for-byte) uses the measured quantity as
+   *  provided. 'complete_units' floors a positive measured quantity down
+   *  to the nearest whole unit — "SEK 5,500 per COMPLETE hour" means 2.99
+   *  measured hours counts as 2, never 2.99 or 3. Optional so legacy
+   *  records with no opinion on this default safely rather than being
+   *  silently floored. */
+  quantity_treatment?: 'exact' | 'complete_units'
   requires_confirmation: boolean
   confirmation_reason?: string | null
 }
@@ -316,8 +336,25 @@ export interface ServiceCreditInterpretation {
   /** Alternative cap expressed as a % of the basis, null = uncapped. */
   cap_pct: number | null
   settlement_period: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | 'per_incident' | null
-  /** false = credit applies against future invoices only (the common case); true = customer may request cash. */
-  cash_redeemable: boolean
+  /** false = explicitly not cash-redeemable (credit against future invoices
+   *  only); true = explicitly may be paid/refunded in cash; 'unclear' = the
+   *  source is genuinely silent (Step 1.5 fix — previously this was a plain
+   *  boolean that silently defaulted to false on ANY silence, collapsing
+   *  "explicitly not redeemable" and "never addressed" into the identical
+   *  value with no way to tell them apart downstream; see
+   *  cash_redeemable_provenance and lib/commercial-rule-status.ts's
+   *  isServiceCreditUnresolved, which now gates readiness on it). A
+   *  concrete true/false here does NOT by itself mean this field is
+   *  resolved — only cash_redeemable_provenance does. */
+  cash_redeemable: boolean | 'unclear'
+  /** Provenance for cash_redeemable specifically — same FieldProvenance
+   *  discipline as CreditApplicationRule's eligibility_provenance/
+   *  survival_provenance (lib/credit-application-rule.ts), reused rather
+   *  than a bespoke cash-only mechanism. Absent/null means never graded —
+   *  including every record persisted before this field existed, which is
+   *  deliberately treated as unresolved (consistent with how a missing
+   *  application_rule is already treated) rather than assumed safe. */
+  cash_redeemable_provenance?: FieldProvenance | null
   /** Resolution note written by the rule-interaction reviewer when this
    *  credit's basis was found to overlap another rule (e.g. an active
    *  discount) — lets the calculation engine and any standalone display of

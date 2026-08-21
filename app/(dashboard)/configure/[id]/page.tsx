@@ -67,7 +67,8 @@ type ServiceCredit = {
     cap_amount: number | null
     cap_pct: number | null
     settlement_period: string | null
-    cash_redeemable: boolean
+    cash_redeemable: boolean | 'unclear'
+    cash_redeemable_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null
     interaction_note?: string | null
     requires_confirmation: boolean
     confirmation_reason?: string | null
@@ -85,6 +86,11 @@ type ServiceCredit = {
       survival_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null
       expiry_periods?: number | null
       expiry_date?: string | null
+      // Currently always 'next_period' at the data layer (lib/types.ts —
+      // there is no same-period execution path at all yet); read here only
+      // to display the Confirmed billing rules card's own "Application
+      // timing" line independently of cash settlement.
+      availability?: 'next_period'
       requires_confirmation: boolean
       confirmation_reason?: string | null
     } | null
@@ -1076,28 +1082,43 @@ function stateToProvenance(state: 'clear_from_source' | 'verdix_recommends' | 'd
 // visual language (green/amber/red) already used for the main trigger/rate/
 // cap proposal card above, just parameterized so the two sub-badges don't
 // duplicate this styling block twice.
-function SubStateBadge({ label, state, decisionRequiredText, resolvedText }: {
+function SubStateBadge({ label, state, decisionRequiredText, resolvedText, nonBlocking }: {
   label: string
   state: 'clear_from_source' | 'verdix_recommends' | 'decision_required'
   decisionRequiredText: string
   resolvedText: string
+  // True for a sub-question that is informational, not a billing blocker,
+  // when unresolved — currently only cash_redeemable for the invoice-
+  // credit execution path (lib/commercial-rule-status.ts's
+  // requiredServiceCreditFields never requires it there). A
+  // 'decision_required' grading renders as neutral gray "Not specified"
+  // instead of the alarming red "Decision required" used for a genuine
+  // blocker like eligibility/survival, so the reviewer isn't cued to treat
+  // ordinary contract silence here as something requiring action. If a
+  // future execution context makes this field required, pass
+  // nonBlocking={false} (or omit it) and the normal blocking treatment
+  // applies unchanged.
+  nonBlocking?: boolean
 }) {
+  const isInformationalGap = state === 'decision_required' && nonBlocking
   return (
     <div className="rounded-xl p-3" style={{
-      background: state === 'clear_from_source' ? '#F0FDF4' : state === 'decision_required' ? '#FEF2F2' : '#FFFDF5',
-      border: `1px solid ${state === 'clear_from_source' ? 'rgba(11,92,54,0.2)' : state === 'decision_required' ? '#FECACA' : 'rgba(217,167,90,0.35)'}`,
+      background: state === 'clear_from_source' ? '#F0FDF4' : isInformationalGap ? '#F5F5F4' : state === 'decision_required' ? '#FEF2F2' : '#FFFDF5',
+      border: `1px solid ${state === 'clear_from_source' ? 'rgba(11,92,54,0.2)' : isInformationalGap ? 'rgba(120,113,108,0.25)' : state === 'decision_required' ? '#FECACA' : 'rgba(217,167,90,0.35)'}`,
     }}>
       <span
         className="inline-block text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full mb-1.5"
         style={state === 'clear_from_source'
           ? { background: 'rgba(11,92,54,0.12)', color: '#0B5C36' }
-          : state === 'decision_required'
-            ? { background: 'rgba(153,27,27,0.1)', color: '#991B1B' }
-            : { background: 'rgba(180,83,9,0.12)', color: '#92400E' }}
+          : isInformationalGap
+            ? { background: 'rgba(120,113,108,0.14)', color: '#57534E' }
+            : state === 'decision_required'
+              ? { background: 'rgba(153,27,27,0.1)', color: '#991B1B' }
+              : { background: 'rgba(180,83,9,0.12)', color: '#92400E' }}
       >
-        {label} · {state === 'clear_from_source' ? 'Clear from source' : state === 'decision_required' ? 'Decision required' : 'Verdix recommendation'}
+        {label} · {state === 'clear_from_source' ? 'Clear from source' : state === 'decision_required' ? (isInformationalGap ? 'Not specified' : 'Decision required') : 'Verdix recommendation'}
       </span>
-      <p className="text-[11px] leading-relaxed" style={{ color: state === 'decision_required' ? '#7F1D1D' : '#4A5D50' }}>
+      <p className="text-[11px] leading-relaxed" style={{ color: isInformationalGap ? '#57534E' : state === 'decision_required' ? '#7F1D1D' : '#4A5D50' }}>
         {state === 'decision_required' ? decisionRequiredText : resolvedText}
       </p>
     </div>
@@ -1184,6 +1205,12 @@ function RuleInterpretationCard({
   // see eligibilityStillOpen/survivalStillOpen above.
   const [eligibilityOpenAfterConfirm, setEligibilityOpenAfterConfirm] = useState(false)
   const [survivalOpenAfterConfirm, setSurvivalOpenAfterConfirm] = useState(false)
+  // No cashOpenAfterConfirm — cash_redeemable is never a readiness blocker
+  // for the invoice-credit execution path (see lib/commercial-rule-status
+  // .ts's requiredServiceCreditFields), so there's nothing to nag the
+  // reviewer to "still resolve" after confirming. The SubStateBadge during
+  // review still shows an unresolved cash grading, just not styled as a
+  // blocker (see the cash_redeemable_state badge below).
   // Inline survival-treatment picker (service_credit, survival_state ===
   // 'decision_required'/'verdix_recommends' only, today) — see
   // CREDIT_SURVIVAL_OPTIONS. The reviewer must pick/confirm one of these
@@ -1371,13 +1398,22 @@ function RuleInterpretationCard({
         eligibility: forceProvenance?.eligibility ? 'reviewer_policy' as const : stateToProvenance(aiProposal.application_state),
         survival: (forceProvenance?.survival || survivalResolution) ? 'reviewer_policy' as const : stateToProvenance(aiProposal.survival_state),
       } : undefined
+      // Same discipline as applicationRuleProvenance above, for
+      // cash_redeemable (Step 1.5) — a plain top-level field, not nested
+      // under application_rule, so it travels as its own request field.
+      // No forceProvenance escalation path (unlike eligibility/survival) —
+      // cash_redeemable never blocks readiness (see lib/commercial-rule-
+      // status.ts's requiredServiceCreditFields), so there is no "still
+      // open, confirm this recommendation" affordance that would need one;
+      // a Verdix recommendation here is recorded exactly as graded.
+      const cashRedeemableProvenance = ruleType === 'service_credit' ? stateToProvenance(aiProposal.cash_redeemable_state) : undefined
       const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ruleType, contractUnitType, discountId, creditId, interactionKey, sourceClause, reviewerInput: aiProposal.reasoning,
           aiProposedInterpretation: aiProposal.proposed_interpretation, approvedInterpretation: interpretation,
-          applicationRuleProvenance,
+          applicationRuleProvenance, cashRedeemableProvenance,
         }),
       })
       // A non-JSON response (e.g. an unhandled server exception returning
@@ -1472,13 +1508,21 @@ function RuleInterpretationCard({
             survival: (survivalResolution || survivalAddressed) ? 'reviewer_policy' as const : undefined,
           }
         : undefined
+      // Same discipline as eligibilityAddressed/survivalAddressed above, for
+      // cash_redeemable (Step 1.5): buildServiceCreditPrompt now asks about
+      // it directly on the proposal (not nested in application_rule) — a
+      // concrete true/false the override actually returned earns
+      // reviewer_policy; "unclear"/absent leaves it unset, letting confirm-
+      // rule's own fallback preserve whatever was already on file.
+      const cashAddressed = (proposal as Record<string, unknown>)?.cash_redeemable === true || (proposal as Record<string, unknown>)?.cash_redeemable === false
+      const cashRedeemableProvenance = ruleType === 'service_credit' && cashAddressed ? 'reviewer_policy' as const : undefined
       const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ruleType, contractUnitType, discountId, creditId, interactionKey, sourceClause, reviewerInput: freeText,
           aiProposedInterpretation: proposal, approvedInterpretation: interpretation,
-          applicationRuleProvenance,
+          applicationRuleProvenance, cashRedeemableProvenance,
         }),
       })
       const data = await res.json().catch(() => ({ error: `Unexpected response from server (${res.status})` }))
@@ -1566,6 +1610,11 @@ function RuleInterpretationCard({
           : 'The agreement does not specify whether an unused Service Credit carries forward, expires, or for how long it remains available.',
         onConfirmRecommendation: () => confirmProposal({ survival: true }),
       } : null,
+      // Deliberately no cash entry here — cash_redeemable never blocks the
+      // invoice-credit execution path (see lib/commercial-rule-status.ts's
+      // requiredServiceCreditFields), so there is nothing for this "still
+      // open, resolve it" nagging widget to say about it. Its badge during
+      // review (below) still shows the grading, just not as a blocker.
     ].filter((x): x is NonNullable<typeof x> => x !== null)
 
     return (
@@ -1801,6 +1850,27 @@ function RuleInterpretationCard({
               />
             )
           })()}
+          {/* Cash redeemability — a FOURTH independently-graded badge (Step
+              1.5), same reasoning as the split above: most service-credit
+              clauses never mention cash redemption at all even when
+              trigger/value/cap/application scope are fully explicit, so
+              folding this into any of the other three would incorrectly
+              drag an otherwise-clear credit down to "Decision required"
+              purely because this one, usually-unaddressed question is open.
+              nonBlocking: contract silence here is informational, not a
+              billing blocker — see lib/commercial-rule-status.ts's
+              requiredServiceCreditFields (cash is only required for a
+              'cash_settlement' execution context, which doesn't exist yet;
+              today's only real path, invoice_credit, never needs it). */}
+          {aiProposal.cash_redeemable_state && (
+            <SubStateBadge
+              label="Cash redeemability"
+              state={aiProposal.cash_redeemable_state}
+              nonBlocking
+              decisionRequiredText="The contract doesn't state whether this credit may be paid out in cash rather than applied against future invoices. This isn't needed to apply the credit against future invoices — it would only matter if a cash payout were requested."
+              resolvedText="Whether this credit may be paid out in cash is covered in the reasoning above."
+            />
+          )}
           {/* Inline decision-required/recommendation picker — neither state
               should gate its choices behind Override. Override means "the
               extracted interpretation is wrong"; this is "answer the
@@ -3262,7 +3332,7 @@ function ReviewPanel({
             // vanish from this section entirely — still counted as
             // outstanding everywhere else, but with no card left to resolve
             // it from.
-            const unresolvedCredits = (serviceCredits ?? []).filter(isServiceCreditUnresolved)
+            const unresolvedCredits = (serviceCredits ?? []).filter(c => isServiceCreditUnresolved(c))
             if (unresolvedCredits.length === 0) return null
             return (
               <div>
@@ -6087,6 +6157,38 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 if (typeof appRule.carry_forward === 'boolean') {
                   params.push({ label: 'Unused balance', value: describeSurvivalResolution({ carry_forward: appRule.carry_forward, expiry_periods: appRule.expiry_periods, expiry_date: appRule.expiry_date }) })
                 }
+                // Application timing — derived ONLY from application_rule's
+                // own fields (availability, carry_forward), never from cash
+                // settlement. availability is currently a fixed 'next_period'
+                // literal (see lib/types.ts — there's no same-period execution
+                // path at all yet); whether the credit can still be pending
+                // against invoices AFTER the immediate next one is a carry-
+                // forward question, not a cash one — carry_forward: true means
+                // an unused remainder keeps applying to further future
+                // invoices, not just the next.
+                params.push({
+                  label: 'Application timing',
+                  value: appRule.availability === 'next_period'
+                    ? (appRule.carry_forward === true ? 'Future invoices' : appRule.carry_forward === false ? 'Next invoice' : 'Not specified')
+                    : 'Not specified',
+                })
+                // Cash settlement (Step 1.5, corrected) — a standalone fact
+                // about the credit itself, never blended with invoice
+                // application timing/scope (that's Application timing, above,
+                // and Eligible components/Unused balance elsewhere on this
+                // card — each sourced from its own field). A resolved boolean
+                // shows its real answer; 'unclear' (contract silent) no
+                // longer keeps the credit off this card at all — cash isn't
+                // required to apply the credit against future invoices (see
+                // lib/commercial-rule-status.ts's requiredServiceCreditFields)
+                // — so it's shown here too, but as plain informational
+                // metadata, not a flagged/blocking value.
+                params.push({
+                  label: 'Cash settlement allowed',
+                  value: interp.cash_redeemable === true ? 'Yes'
+                    : interp.cash_redeemable === false ? 'No'
+                      : 'Not specified',
+                })
                 const interpretationParts = [
                   interp.trigger_description ? `Earned when ${interp.trigger_description.replace(/^when\s+/i, '')}.` : null,
                   describeCreditValue(interp, c.stated_pct, c.stated_amount),
@@ -6104,6 +6206,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   provenance: [
                     { label: 'Eligibility', value: appRule.eligibility_provenance },
                     { label: 'Unused-balance policy', value: appRule.survival_provenance },
+                    { label: 'Cash redeemability', value: interp.cash_redeemable_provenance },
                   ],
                   auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
                   onViewSource: src.service_credits ? () => openPDF(src.service_credits) : undefined,

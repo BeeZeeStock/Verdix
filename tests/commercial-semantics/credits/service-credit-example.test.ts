@@ -14,16 +14,9 @@
 // that shape would itself be introducing a Rulebook schema, which this step
 // explicitly defers. See tests/commercial-semantics/README.md.
 //
-// KNOWN GAP, surfaced by this fixture and reported rather than silently
-// worked around: CreditEarnRule.trigger_comparator (lib/types.ts) supports
-// only 'gt' | 'gte' today. An availability/SLA-style "below threshold"
-// trigger has no native '<' comparator to express directly. This fixture
-// models it as its logical complement — unavailability (100% − availability)
-// >= the complementary threshold — which is mathematically equivalent but
-// requires the CALLER (wherever the real metric is measured and passed in
-// as measuredTriggerQuantity) to compute that complement; no such caller
-// exists in production yet for this credit shape. This is a real, current
-// limitation relative to the fixture's stated intent, not a bug I've fixed.
+// Step 1.5 update: the two engine gaps this fixture originally had to work
+// around (no native '<' comparator; cash_redeemable with no provenance) are
+// now closed — this is a fully NATIVE representation, not a workaround.
 import { describe, it, expect } from 'vitest'
 import { buildCreditApplicationRule } from '@/lib/credit-application-rule'
 import { evaluateCreditEarn } from '@/lib/credit-ledger'
@@ -31,12 +24,11 @@ import { isServiceCreditUnresolved } from '@/lib/commercial-rule-status'
 import type { CreditEarnRule, ServiceCreditInterpretation, ServiceCredit } from '@/lib/types'
 
 const EARN_RULE: CreditEarnRule = {
-  // GAP (see file header): models "availability < 99.5%" as its complement,
-  // "unavailability >= 0.5%" — 100 - 99.5 = 0.5. Not the same as a native
-  // '<' comparator on the availability metric itself.
-  trigger_metric_key: 'platform_unavailability_pct',
-  trigger_quantity: 0.5,
-  trigger_comparator: 'gte',
+  // Native representation (Step 1.5) — "availability < 99.5%" against the
+  // metric it actually names, no logical-complement inversion needed.
+  trigger_metric_key: 'platform_availability',
+  trigger_quantity: 99.5,
+  trigger_comparator: 'lt',
   trigger_window: 'calendar_month',
   consecutive_windows_required: 1, // no streak requirement stated
   window_anchor: 'calendar',
@@ -54,7 +46,11 @@ const INTERPRETATION: ServiceCreditInterpretation = {
   cap_amount: null,
   cap_pct: 25, // 25% of the same basis (platform fee) — cap.method = percentage_of_component, folded into cap_pct since the basis IS platform_fee already
   settlement_period: 'monthly',
+  // "not payable in cash" is an EXPLICIT scenario fact (see file header) —
+  // Step 1.5's fix means this is now a resolved, provenanced fact, not a
+  // silently-defaulted boolean.
   cash_redeemable: false,
+  cash_redeemable_provenance: 'contract_derived',
   interaction_note: null,
   source_clause: null, // deliberately not asserted — this fixture freezes semantics, not prose
   requires_confirmation: false,
@@ -90,7 +86,10 @@ describe('generic Service Credit example — normalized rule (Layer A)', () => {
   it('rule_type: service_credit', () => {
     expect(CREDIT.credit_type).toBe('service_credit')
   })
-  it('trigger: calendar-month window, no consecutive-window requirement', () => {
+  it('trigger: availability < 99.5, calendar-month window, no consecutive-window requirement — represented natively, not as a complement metric', () => {
+    expect(EARN_RULE.trigger_metric_key).toBe('platform_availability')
+    expect(EARN_RULE.trigger_comparator).toBe('lt')
+    expect(EARN_RULE.trigger_quantity).toBe(99.5)
     expect(EARN_RULE.trigger_window).toBe('calendar_month')
     expect(EARN_RULE.consecutive_windows_required).toBe(1)
   })
@@ -103,9 +102,10 @@ describe('generic Service Credit example — normalized rule (Layer A)', () => {
     expect(INTERPRETATION.cap_pct).toBe(25)
     expect(INTERPRETATION.settlement_period).toBe('monthly')
   })
-  it('application: next invoice, not cash-redeemable', () => {
+  it('application: next invoice, explicitly not cash-redeemable (contract_derived, not a silent default)', () => {
     expect(INTERPRETATION.application_rule?.availability).toBe('next_period')
     expect(INTERPRETATION.cash_redeemable).toBe(false)
+    expect(INTERPRETATION.cash_redeemable_provenance).toBe('contract_derived')
   })
   it('recurrence: not one-time', () => {
     expect(INTERPRETATION.application_rule?.one_time).toBe(false)
@@ -116,10 +116,10 @@ describe('generic Service Credit example — normalized rule (Layer A)', () => {
 })
 
 describe('generic Service Credit example — readiness/provenance (Layer B)', () => {
-  it('the whole credit is unresolved (blocking) because survival was never addressed, even though trigger/basis/cap/timing/cash-redeemability are all fully known', () => {
-    expect(isServiceCreditUnresolved({ credit_rule_id: CREDIT.credit_rule_id, interpretation: INTERPRETATION as unknown as { requires_confirmation: boolean; application_rule?: { requires_confirmation: boolean } | null } })).toBe(true)
+  it('the whole credit is unresolved (blocking) because ONLY survival was never addressed — trigger/basis/cap/timing/cash-redeemability are all fully resolved', () => {
+    expect(isServiceCreditUnresolved({ credit_rule_id: CREDIT.credit_rule_id, interpretation: INTERPRETATION as unknown as { requires_confirmation: boolean; application_rule?: { requires_confirmation: boolean } | null; cash_redeemable_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null } })).toBe(true)
   })
-  it('confirming survival via buildCreditApplicationRule with reviewer_policy provenance resolves it, without touching eligibility (already contract_derived) or any other field', () => {
+  it('confirming survival via buildCreditApplicationRule with reviewer_policy provenance resolves the credit entirely — cash (already contract_derived) and eligibility (already contract_derived) are untouched', () => {
     const resolved = buildCreditApplicationRule(
       { application_rule: { eligible_component_keys: 'all', one_time: false, carry_forward: true } },
       INTERPRETATION.application_rule,
@@ -128,14 +128,16 @@ describe('generic Service Credit example — readiness/provenance (Layer B)', ()
     expect(resolved?.requires_confirmation).toBe(false)
     expect(resolved?.eligibility_provenance).toBe('contract_derived') // carried over, not re-derived
     expect(resolved?.survival_provenance).toBe('reviewer_policy')
+    const fullyResolvedInterpretation = { ...INTERPRETATION, application_rule: resolved }
+    expect(isServiceCreditUnresolved({ credit_rule_id: CREDIT.credit_rule_id, interpretation: fullyResolvedInterpretation as unknown as { requires_confirmation: boolean; application_rule?: { requires_confirmation: boolean } | null; cash_redeemable_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null } })).toBe(false)
   })
 })
 
 describe('generic Service Credit example — calculation (Layer C, fully resolved rule)', () => {
-  it('a qualifying month (0.6% unavailable, above the 0.5% complement threshold) earns 10% of the SEK 38,500 platform fee, uncapped', () => {
+  it('a qualifying month (99.4% availability, below the 99.5% threshold) earns 10% of the SEK 38,500 platform fee, uncapped', () => {
     const result = evaluateCreditEarn({
       earnRule: EARN_RULE,
-      measuredTriggerQuantity: 0.6, // 0.6% unavailable this month ⟺ 99.4% available
+      measuredTriggerQuantity: 99.4, // availability this month — natively compared, no inversion
       computedFromAmountMinor: 3_850_000, // SEK 38,500.00 platform fee, in öre
       creditValueFlatMinor: null,
       creditValuePctBp: 1000, // 10%
@@ -148,17 +150,25 @@ describe('generic Service Credit example — calculation (Layer C, fully resolve
     expect(result.earned).toBe(true)
     expect(result.earnedAmountMinor).toBe(385_000) // 10% of 3,850,000 — well under the 962,500 cap
   })
-  it('a non-qualifying month (0.2% unavailable — below the complement threshold) earns nothing', () => {
+  it('a non-qualifying month (99.8% availability — above the threshold) earns nothing', () => {
     const result = evaluateCreditEarn({
-      earnRule: EARN_RULE, measuredTriggerQuantity: 0.2, computedFromAmountMinor: 3_850_000,
+      earnRule: EARN_RULE, measuredTriggerQuantity: 99.8, computedFromAmountMinor: 3_850_000,
       creditValueFlatMinor: null, creditValuePctBp: 1000, creditValuePerUnitMinor: null, capAmountMinor: 962_500,
       priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false,
     })
     expect(result.earned).toBe(false)
   })
-  it('a catastrophic outage month (10% unavailable) still earns only the 25%-of-platform-fee cap, not 10% of the fee uncapped', () => {
+  it('exactly at the threshold (99.5% availability) does NOT qualify — lt excludes the boundary itself', () => {
     const result = evaluateCreditEarn({
-      earnRule: EARN_RULE, measuredTriggerQuantity: 10, computedFromAmountMinor: 3_850_000,
+      earnRule: EARN_RULE, measuredTriggerQuantity: 99.5, computedFromAmountMinor: 3_850_000,
+      creditValueFlatMinor: null, creditValuePctBp: 1000, creditValuePerUnitMinor: null, capAmountMinor: 962_500,
+      priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false,
+    })
+    expect(result.earned).toBe(false)
+  })
+  it('a catastrophic outage month (90% availability) still earns only the 25%-of-platform-fee cap, not 10% of the fee uncapped', () => {
+    const result = evaluateCreditEarn({
+      earnRule: EARN_RULE, measuredTriggerQuantity: 90, computedFromAmountMinor: 3_850_000,
       creditValueFlatMinor: null, creditValuePctBp: 1000, creditValuePerUnitMinor: null, capAmountMinor: 962_500,
       priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false,
     })
@@ -172,12 +182,12 @@ describe('generic Service Credit example — calculation (Layer C, fully resolve
   })
   it('earns again the following qualifying month — this is NOT a one-time credit (isOneTime: false), so alreadyEarnedOnce never blocks it', () => {
     const monthOne = evaluateCreditEarn({
-      earnRule: EARN_RULE, measuredTriggerQuantity: 0.6, computedFromAmountMinor: 3_850_000,
+      earnRule: EARN_RULE, measuredTriggerQuantity: 99.4, computedFromAmountMinor: 3_850_000,
       creditValueFlatMinor: null, creditValuePctBp: 1000, creditValuePerUnitMinor: null, capAmountMinor: 962_500,
       priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false,
     })
     const monthTwo = evaluateCreditEarn({
-      earnRule: EARN_RULE, measuredTriggerQuantity: 0.7, computedFromAmountMinor: 3_850_000,
+      earnRule: EARN_RULE, measuredTriggerQuantity: 99.3, computedFromAmountMinor: 3_850_000,
       creditValueFlatMinor: null, creditValuePctBp: 1000, creditValuePerUnitMinor: null, capAmountMinor: 962_500,
       priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: monthOne.earned, // real orchestration would thread this
     })

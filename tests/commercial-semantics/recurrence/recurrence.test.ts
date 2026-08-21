@@ -2,10 +2,11 @@
 // trigger ("during each calendar month" / "during a Contract Year")
 // preserves periodic evaluation unless the source explicitly makes the
 // benefit one-time — recurring evaluation must never silently collapse
-// into an unstated one-time rule. Also documents complete-unit semantics
-// ("per complete hour" uses only whole units, not fractional) and a real
-// current gap around it. Exercises lib/credit-ledger.ts's evaluateCreditEarn
-// — no AI calls.
+// into an unstated one-time rule. Also freezes complete-unit semantics
+// ("per complete hour" uses only whole units, not fractional), natively
+// enforced inside evaluateCreditEarn via CreditEarnRule.quantity_treatment
+// as of Step 1.5. Exercises lib/credit-ledger.ts's evaluateCreditEarn — no
+// AI calls.
 import { describe, it, expect } from 'vitest'
 import { evaluateCreditEarn } from '@/lib/credit-ledger'
 import type { CreditEarnRule } from '@/lib/types'
@@ -96,35 +97,38 @@ describe('counterexample — a consecutive-window streak (e.g. Growth Credit\'s 
 })
 
 describe('complete-unit semantics — "per complete hour" uses only whole units, never fractional', () => {
-  it('4.9 hours of measured downtime, floored to complete hours, earns for 4 hours, not 4.9', () => {
-    const completeHours = Math.floor(4.9)
+  // Step 1.5 update: quantity_treatment: 'complete_units' is now a native
+  // field on CreditEarnRule, applied INSIDE evaluateCreditEarn itself — the
+  // engine performs the flooring, not the caller. This is no longer a
+  // documented gap; see minimum-floor/all-units-style native coverage.
+  it('4.9 hours of measured downtime earns for 4 complete hours, not 4.9 — the engine itself floors, no caller-side Math.floor needed', () => {
     const result = evaluateCreditEarn({
-      earnRule: { trigger_metric_key: 'excess_downtime_hours', trigger_quantity: 0, trigger_comparator: 'gt', trigger_window: 'calendar_month', consecutive_windows_required: 1, window_anchor: 'calendar', finalization_deadline_days: null, requires_confirmation: false },
-      measuredTriggerQuantity: completeHours,
+      earnRule: { trigger_metric_key: 'excess_downtime_hours', trigger_quantity: 0, trigger_comparator: 'gt', trigger_window: 'calendar_month', consecutive_windows_required: 1, window_anchor: 'calendar', finalization_deadline_days: null, quantity_treatment: 'complete_units', requires_confirmation: false },
+      measuredTriggerQuantity: 4.9, // raw measured value, not pre-floored by the caller
       computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null,
       creditValuePerUnitMinor: 550_000, capAmountMinor: null,
       priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false,
     })
     expect(result.earnedAmountMinor).toBe(4 * 550_000) // not 4.9 * 550,000
   })
-  // KNOWN GAP, reported rather than silently patched: evaluateCreditEarn
-  // takes measuredTriggerQuantity as a plain number and performs no
-  // rounding itself — "only complete units" is a convention the CALLER
-  // must apply (Math.floor, as above) before invoking it. No dedicated
-  // complete-unit utility exists in lib/credit-ledger.ts or lib/tariff.ts
-  // today, and no production usage-pull call site measures excess-downtime
-  // hours yet for this credit shape to verify the convention is actually
-  // followed end to end. This test documents the expected calling
-  // convention; it does not prove the guarantee is enforced everywhere it
-  // will eventually need to be.
-  it('the function itself does NOT floor a fractional quantity passed in directly — proves the rounding responsibility sits with the caller, not this function', () => {
+  it('generic — the identical treatment floors a fractional DAY count the same way; "complete_units" is not hardcoded to hours', () => {
     const result = evaluateCreditEarn({
-      earnRule: { trigger_metric_key: 'excess_downtime_hours', trigger_quantity: 0, trigger_comparator: 'gt', trigger_window: 'calendar_month', consecutive_windows_required: 1, window_anchor: 'calendar', finalization_deadline_days: null, requires_confirmation: false },
-      measuredTriggerQuantity: 4.9, // NOT pre-floored
+      earnRule: { trigger_metric_key: 'excess_downtime_days', trigger_quantity: 0, trigger_comparator: 'gt', trigger_window: 'calendar_month', consecutive_windows_required: 1, window_anchor: 'calendar', finalization_deadline_days: null, quantity_treatment: 'complete_units', requires_confirmation: false },
+      measuredTriggerQuantity: 2.99,
+      computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null,
+      creditValuePerUnitMinor: 100_000, capAmountMinor: null,
+      priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false,
+    })
+    expect(result.earnedAmountMinor).toBe(2 * 100_000)
+  })
+  it('counterexample — the SAME 4.9-hour measurement under quantity_treatment "exact" (or omitted) uses the raw value verbatim, never floored — proves treatment, not the metric itself, decides this', () => {
+    const withExact = evaluateCreditEarn({
+      earnRule: { trigger_metric_key: 'excess_downtime_hours', trigger_quantity: 0, trigger_comparator: 'gt', trigger_window: 'calendar_month', consecutive_windows_required: 1, window_anchor: 'calendar', finalization_deadline_days: null, quantity_treatment: 'exact', requires_confirmation: false },
+      measuredTriggerQuantity: 4.9,
       computedFromAmountMinor: 0, creditValueFlatMinor: null, creditValuePctBp: null,
       creditValuePerUnitMinor: 550_000, capAmountMinor: null,
       priorConsecutiveWindowsMet: 0, isOneTime: false, alreadyEarnedOnce: false,
     })
-    expect(result.earnedAmountMinor).toBe(Math.round(550_000 * 4.9)) // computes off 4.9 verbatim — the gap, made explicit
+    expect(withExact.earnedAmountMinor).toBe(Math.round(550_000 * 4.9)) // verbatim, not floored
   })
 })
