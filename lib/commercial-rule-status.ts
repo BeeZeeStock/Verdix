@@ -123,7 +123,17 @@ type CreditLike = {
 // sharing the function makes that drift impossible by construction rather
 // than by both sides happening to agree today.
 export function isServiceCreditUnresolved(credit: CreditLike): boolean {
-  return !credit.interpretation || credit.interpretation.requires_confirmation || !!credit.interpretation.application_rule?.requires_confirmation
+  if (!credit.interpretation || credit.interpretation.requires_confirmation) return true
+  // A null/missing application_rule means eligibility/survival were never
+  // even asked about — e.g. confirmed via the free-text Override path
+  // before it asked these questions (buildServiceCreditPrompt) — distinct
+  // from a populated object that's actually resolved. Treating null the
+  // same as "resolved" silently hid a real, still-open decision (found
+  // live: an Annual Rebate confirmed via Override, whose own AI proposal
+  // had separately found survival genuinely unstated, vanished from the
+  // review panel entirely once application_rule came back null). Never
+  // treat "never asked" as equivalent to "nothing to ask."
+  return !credit.interpretation.application_rule || !!credit.interpretation.application_rule.requires_confirmation
 }
 
 export function isDiscountUnresolved(discount: DiscountLike): boolean {

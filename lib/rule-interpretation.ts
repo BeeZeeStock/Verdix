@@ -564,6 +564,7 @@ Translate the reviewer's instruction into a structured JSON object with EXACTLY 
   "cap_pct": <number or null>,
   "settlement_period": "monthly" | "quarterly" | "semi-annual" | "annual" | "per_incident" | null,
   "cash_redeemable": true | false,
+  "application_rule": {"eligible_component_keys": [<string>]|"all"|null, "excluded_component_keys": [<string>], "one_time": true|false|"unclear", "carry_forward": true|false|"unclear"},
   "calculation_summary": "<one-sentence plain-English description of the resulting calculation>"
 }
 
@@ -572,6 +573,7 @@ Rules:
 - fixed_amount_per_unit vs flat_amount: use fixed_amount_per_unit when the credit is a stated rate MULTIPLIED by however many qualifying units occurred (e.g. "SEK 5,500 per complete hour of excess unavailability"); use flat_amount only for a single lump-sum figure with no per-unit multiplier. Do not label a per-unit rate "flat" just because the per-unit figure itself is a fixed number.
 - cash_redeemable defaults to false unless the reviewer's instruction or the source clause explicitly says the customer may request a cash refund rather than a credit against future invoices.
 - Never invent a percentage, amount, or cap the reviewer didn't state or that wasn't already in the extracted data above.
+- application_rule is a SEPARATE question from everything above — what this credit may reduce (eligible_component_keys), and what happens to an earned-but-unused balance (carry_forward/one_time). This reviewer instruction is primarily about the credit's trigger/value/basis; it may say NOTHING about application scope or survival at all, and that is the expected common case, not an error. Grade each application_rule field from whichever of the source clause or the reviewer's instruction actually addresses it (either can supply it) — but if NEITHER does, leave eligible_component_keys null and carry_forward/one_time "unclear". Never infer these from the credit's basis, its trigger, or general commercial convention. This mirrors the exact same "silence is not evidence" discipline used when Verdix proposes a reading before any reviewer input exists — an override does not get to be less careful about this than a first-pass proposal.
 - Respond with ONLY the JSON object, no other text.`
 }
 

@@ -893,6 +893,36 @@ describe('SERVICE_CREDIT_OPTIONS — fixed_amount_per_unit vs flat_amount distin
   })
 })
 
+describe('buildServiceCreditPrompt — application_rule (regression: a credit confirmed via Override used to persist application_rule: null, which isServiceCreditUnresolved silently treated as "resolved")', () => {
+  it('schema asks for application_rule alongside trigger/rate/basis', () => {
+    const prompt = buildServiceCreditPrompt(
+      { sourceClause: 'x', description: 'y', creditType: 'service_credit', statedPct: null, statedAmount: 100, currency: 'SEK' },
+      'the credit is SEK 100 per incident',
+    )
+    expect(prompt).toContain('"application_rule": {"eligible_component_keys"')
+    expect(prompt).toContain('"carry_forward": true|false|"unclear"')
+  })
+
+  it('instructs the model that application_rule is a SEPARATE question the override instruction may say nothing about, and silence must stay null/unclear — never inferred from basis, trigger, or convention', () => {
+    const prompt = buildServiceCreditPrompt(
+      { sourceClause: 'x', description: 'y', creditType: 'service_credit', statedPct: null, statedAmount: 100, currency: 'SEK' },
+      'the credit is SEK 100 per incident',
+    )
+    expect(prompt).toMatch(/application_rule is a SEPARATE question/)
+    expect(prompt).toMatch(/if NEITHER does, leave eligible_component_keys null and carry_forward\/one_time "unclear"/)
+    expect(prompt).toMatch(/Never infer these from the credit's basis, its trigger, or general commercial convention/)
+  })
+
+  it('allows application_rule to be graded from the source clause even when the reviewer instruction itself only addresses basis', () => {
+    const prompt = buildServiceCreditPrompt(
+      { sourceClause: 'Credits apply only to transaction-processing fees and carry forward until fully used.', description: 'y', creditType: 'service_credit', statedPct: null, statedAmount: 100, currency: 'SEK' },
+      'the credit is SEK 100 per incident',
+    )
+    expect(prompt).toMatch(/Grade each application_rule field from whichever of the source clause or the reviewer's instruction actually addresses it/)
+    expect(prompt).toContain('Credits apply only to transaction-processing fees and carry forward until fully used.')
+  })
+})
+
 describe('CREDIT_SURVIVAL_OPTIONS + buildCreditSurvivalPrompt — inline unused-balance survival picker', () => {
   it('offers exactly the five reviewer-facing survival treatments, in the expected order, each an actually executable policy', () => {
     expect(CREDIT_SURVIVAL_OPTIONS.map(o => o.id)).toEqual([

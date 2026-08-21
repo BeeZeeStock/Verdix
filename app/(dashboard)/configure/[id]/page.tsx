@@ -1423,20 +1423,40 @@ function RuleInterpretationCard({
       // generate()/this function rather than confirmProposal()) must not be
       // silently dropped just because the interpretation now comes from
       // interpret-rule instead of propose-rule — same merge as
-      // confirmProposal(), applied here too.
+      // confirmProposal(), applied here too. Takes priority over whatever
+      // buildServiceCreditPrompt itself returned for survival, since the
+      // reviewer's explicit picker selection is more specific than a
+      // free-text translation.
+      const overrideAppRule = (proposal as Record<string, unknown>)?.application_rule as Record<string, unknown> | undefined
       const interpretation = survivalResolution
         ? {
             ...(proposal as Record<string, unknown>),
             application_rule: {
-              ...((proposal as Record<string, unknown>).application_rule as Record<string, unknown> | undefined),
+              ...overrideAppRule,
               carry_forward: survivalResolution.carry_forward,
               expiry_periods: survivalResolution.expiry_periods,
               expiry_date: survivalResolution.expiry_date,
             },
           }
         : proposal
-      const applicationRuleProvenance = ruleType === 'service_credit' && survivalResolution
-        ? { survival: 'reviewer_policy' as const }
+      // buildServiceCreditPrompt now asks about application_rule too (a
+      // reviewer's override instruction, or the source clause itself, may
+      // address eligibility/survival even though this path is primarily
+      // about trigger/rate/basis) — any concrete value it returns reflects
+      // either the reviewer's own words or the clause, so it earns
+      // reviewer_policy provenance the same way confirming a recommendation
+      // does. Left unset (not "downgraded", just absent) when the override
+      // stayed silent — confirm-rule's fallback then correctly leaves the
+      // field however it already was (still unresolved if never set).
+      const eligibilityAddressed = overrideAppRule?.eligible_component_keys != null
+      const survivalAddressed = !!overrideAppRule
+        && (overrideAppRule.carry_forward === true || overrideAppRule.carry_forward === false)
+        && (overrideAppRule.one_time === true || overrideAppRule.one_time === false)
+      const applicationRuleProvenance = ruleType === 'service_credit' && (survivalResolution || eligibilityAddressed || survivalAddressed)
+        ? {
+            eligibility: eligibilityAddressed ? 'reviewer_policy' as const : undefined,
+            survival: (survivalResolution || survivalAddressed) ? 'reviewer_policy' as const : undefined,
+          }
         : undefined
       const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
         method: 'POST',
@@ -1454,13 +1474,15 @@ function RuleInterpretationCard({
       if (anyFailed) {
         setPhase('partial')
       } else {
-        // The free-text Override flow's schema (buildServiceCreditPrompt)
-        // doesn't ask for application_rule at all — it translates the
-        // reviewer's own words into trigger/rate/cap facts only, never
-        // eligibility. Eligibility is therefore untouched by this path
-        // (confirm-rule's existing-value fallback leaves whatever
-        // provenance was already persisted). Survival IS covered when
-        // survivalResolution is set, per the merge above.
+        // Not computing a targeted "still open" follow-up card here (unlike
+        // confirmProposal(), which has aiProposal.application_state/
+        // survival_state to know precisely what's still open) — if the
+        // override left eligibility/survival genuinely unaddressed,
+        // isServiceCreditUnresolved (now correctly treating a null/absent
+        // application_rule as unresolved) means this credit reappears as
+        // its own fresh card in the outer "Service credits" list on the
+        // next refresh regardless; this only skips the same-instance
+        // inline "X still open" shortcut, not the underlying correctness.
         setEligibilityOpenAfterConfirm(false)
         setSurvivalOpenAfterConfirm(false)
         setPhase('applied')

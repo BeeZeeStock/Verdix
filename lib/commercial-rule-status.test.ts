@@ -24,7 +24,10 @@ describe('computeCommercialRuleWorkload — "all confirmed" must check every rul
       ],
       escalators: [{ interpretation: { requires_confirmation: false, treatment: 'applies' } }],
       discounts: [{ discount_rule_id: 'disc1', interpretation: { requires_confirmation: false } }],
-      service_credits: [{ credit_rule_id: 'cred1', interpretation: { requires_confirmation: false } }],
+      // application_rule must be a populated, resolved object here — null/
+      // absent now correctly means "never asked", not "resolved" (see the
+      // isServiceCreditUnresolved regression tests below).
+      service_credits: [{ credit_rule_id: 'cred1', interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false } } }],
     }
     const workload = computeCommercialRuleWorkload(terms, { total: 1, confirmed: 1 })
     expect(workload.status).toBe('all_commercial_rules_confirmed')
@@ -223,8 +226,21 @@ describe('isServiceCreditUnresolved — shared by the canonical count and page.t
       interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false } },
     })).toBe(false)
   })
-  it('resolved when the top-level interpretation is confirmed and there is no application_rule sub-object at all (non-credit rule types / legacy rows)', () => {
-    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: { requires_confirmation: false } })).toBe(false)
+  // Regression (found live, 2026-08-21): a credit confirmed via the
+  // free-text Override path (whose schema didn't ask about eligibility/
+  // survival at all) ends up with application_rule: null/undefined — not a
+  // populated, resolved object, but the QUESTION never having been asked.
+  // Treating that the same as "resolved" let a real, still-open Annual
+  // Rebate survival decision (independently confirmed via a live AI
+  // proposal to be genuinely unstated) vanish from the review panel
+  // entirely. "Never asked" must stay unresolved, same as "asked but
+  // still open" — the two are indistinguishable to a downstream billing
+  // engine, so they must be indistinguishable here too.
+  it('unresolved when the top-level interpretation is confirmed but application_rule is null — "never asked" is not "resolved"', () => {
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: { requires_confirmation: false, application_rule: null } })).toBe(true)
+  })
+  it('unresolved when application_rule is entirely absent from the interpretation object', () => {
+    expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: { requires_confirmation: false } })).toBe(true)
   })
 })
 
