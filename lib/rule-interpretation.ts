@@ -866,6 +866,40 @@ export type RuleProposal = {
   // this one, usually-unaddressed, boilerplate-adjacent question is open.
   // Undefined for every other rule type.
   cash_redeemable_state?: ProposalState
+  // service_credit only (Step 5C) — present when survival_state came back
+  // 'decision_required' (the contract itself is genuinely silent on
+  // carry_forward) AND an active, applicable private Organization
+  // Rulebook policy exists for survival.carry_forward for this org. Set
+  // by propose-rule/route.ts via a READ-ONLY check (lib/rulebook/
+  // organization-rulebook-production.ts's resolveProductionOrganizationField
+  // — the same production resolver confirm-rule uses, never a duplicated
+  // check).
+  //
+  // Carries the actual policy metadata (not just a boolean) so the review
+  // panel can show the reviewer what Verdix intends to apply — "Organization
+  // policy · Carry forward until fully used" — rather than merely "some
+  // policy exists". Purely advisory/informational: this object never
+  // itself causes a write, and is never trusted as authority at
+  // confirmation time. It has exactly two jobs: (1) tell the review panel
+  // "do not force a manual survival-treatment picker here" (see
+  // configure/[id]/page.tsx's survivalNeedsInlinePicker), and (2) travel
+  // back to confirm-rule as `survivalOrganizationPolicySeen` — evidence of
+  // what the reviewer was shown, used ONLY to detect staleness (the policy
+  // changed/disappeared/became conflicting between propose and confirm),
+  // never to select which rule confirm-rule applies. confirm-rule always
+  // independently re-derives org, loads rules, matches, and resolves
+  // precedence itself — see lib/rulebook/organization-rulebook-
+  // production.ts's isOrganizationPolicyStale for the comparison, and
+  // confirm-rule/route.ts's staleOrganizationPolicy handling.
+  //
+  // The reviewer's eventual "Confirm & apply" click still submits
+  // carry_forward exactly as the AI proposed it (i.e. still 'unclear' —
+  // this field never rewrites proposed_interpretation), so confirm-rule's
+  // own, already-hardened organization-resolution branch is what actually
+  // mints organization_rulebook. Undefined for every other rule type, and
+  // undefined whenever survival_state isn't 'decision_required' or no
+  // policy applies.
+  survival_organization_policy?: { rule_id: string; version: number; value: boolean }
 }
 
 // extraStateFields lets a specific rule type ask for additional,

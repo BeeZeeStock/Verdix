@@ -250,16 +250,32 @@ export interface CreditEarnRule {
   confirmation_reason?: string | null
 }
 
-/** Three-way provenance, never conflated: a value can exist (a model can
+/** Four-way provenance, never conflated: a value can exist (a model can
  *  always produce SOME boolean/array) without being resolved. Only
- *  'contract_derived' (the source text states or unambiguously implies it)
- *  or 'reviewer_policy' (a human explicitly confirmed or chose it) make a
- *  field executable. 'verdix_recommends' means exactly what it says — a
- *  model's confidence, however strongly reasoned, is not the same thing as
- *  the agreement or a reviewer having decided it. See
- *  isProvenanceResolved() in lib/commercial-rule-status.ts, the single
- *  place this distinction is enforced. */
-export type FieldProvenance = 'contract_derived' | 'verdix_recommends' | 'reviewer_policy'
+ *  'contract_derived' (the source text states or unambiguously implies it),
+ *  'reviewer_policy' (a human explicitly confirmed or chose it for THIS
+ *  agreement), or — Step 5C — 'organization_rulebook' (an active,
+ *  applicable private Organization Rulebook policy filled a field the
+ *  contract and reviewer left genuinely silent on) make a field executable.
+ *  'verdix_recommends' means exactly what it says — a model's confidence,
+ *  however strongly reasoned, is not the same thing as the agreement or a
+ *  reviewer having decided it. See isProvenanceResolved() in
+ *  lib/commercial-rule-status.ts, the single place this distinction is
+ *  enforced.
+ *
+ *  authority vs. interpretation METHOD are deliberately kept separate here
+ *  too (see lib/rulebook/resolution.ts's ResolutionAuthority/ResolutionMethod
+ *  split) — 'organization_rulebook' records WHY a value counts (an
+ *  organization's own confirmed default applied), never HOW a contract
+ *  clause was read; it is never assigned to a value the contract or a
+ *  reviewer already spoke to. Never assigned to a value that came from
+ *  Verdix's OWN global Rulebook defaults — that authority tier
+ *  ('verdix_rulebook') has no production provenance value at all yet; only
+ *  Organization Rulebook resolution is activated in production as of
+ *  Step 5C, and only for the fields in
+ *  lib/rulebook/organization-rulebook-production.ts's
+ *  PRODUCTION_ORGANIZATION_RULEBOOK_ALLOWLIST. */
+export type FieldProvenance = 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | 'organization_rulebook'
 
 export interface CreditApplicationRule {
   /** For %-based credit_basis: which components the percentage is computed
@@ -293,6 +309,16 @@ export interface CreditApplicationRule {
    *  one "survival" question upstream) — see eligibility_provenance's
    *  identical discipline, and FieldProvenance. */
   survival_provenance?: FieldProvenance | null
+  /** Audit metadata (Step 5C) — populated ONLY when survival_provenance is
+   *  'organization_rulebook', so a resolved carry_forward value can always
+   *  be traced back to exactly which organization policy produced it, and
+   *  which VERSION of that policy (a superseded/edited rule keeps its old
+   *  id/version on every credit it already resolved — see lib/rulebook/
+   *  organization-rules.ts's versioning model). Never set for any other
+   *  survival_provenance value. Read-only audit trail — never consulted by
+   *  the calculation engine, never mutates the organization rule itself. */
+  survival_organization_rule_id?: string | null
+  survival_organization_rule_version?: number | null
   /** Only set when the contract states a specific bounded survival window
    *  (e.g. "expires after 2 quarters if unused") — the real middle ground
    *  between carry_forward: true (forever) and 'unclear' (blocked). Mutually

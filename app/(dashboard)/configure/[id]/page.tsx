@@ -83,7 +83,14 @@ type ServiceCredit = {
       excluded_component_keys?: string[]
       carry_forward: boolean | 'unclear'
       one_time: boolean | 'unclear'
-      survival_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null
+      // Step 5C — 'organization_rulebook' means an active, applicable
+      // private Organization Rulebook policy filled this field, not the
+      // contract or a reviewer directly. See lib/types.ts's FieldProvenance.
+      survival_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | 'organization_rulebook' | null
+      // Step 5C audit trail — only ever populated when survival_provenance
+      // is 'organization_rulebook'. Informational only; never drives logic.
+      survival_organization_rule_id?: string | null
+      survival_organization_rule_version?: number | null
       expiry_periods?: number | null
       expiry_date?: string | null
       // Currently always 'next_period' at the data layer (lib/types.ts —
@@ -1082,7 +1089,7 @@ function stateToProvenance(state: 'clear_from_source' | 'verdix_recommends' | 'd
 // visual language (green/amber/red) already used for the main trigger/rate/
 // cap proposal card above, just parameterized so the two sub-badges don't
 // duplicate this styling block twice.
-function SubStateBadge({ label, state, decisionRequiredText, resolvedText, nonBlocking }: {
+function SubStateBadge({ label, state, decisionRequiredText, resolvedText, nonBlocking, organizationPolicyAvailable }: {
   label: string
   state: 'clear_from_source' | 'verdix_recommends' | 'decision_required'
   decisionRequiredText: string
@@ -1099,26 +1106,37 @@ function SubStateBadge({ label, state, decisionRequiredText, resolvedText, nonBl
   // nonBlocking={false} (or omit it) and the normal blocking treatment
   // applies unchanged.
   nonBlocking?: boolean
+  // Step 5C — true when state is 'decision_required' (the CONTRACT is
+  // genuinely silent) but an active, applicable Organization Rulebook
+  // policy already covers this field (see propose-rule/route.ts's
+  // survival_organization_policy). Renders the same blue "Organization
+  // policy" treatment ConfirmedRuleCard uses post-confirmation, rather
+  // than the alarming red "Decision required" — nothing here is actually
+  // blocking the reviewer, an organization default already resolved it.
+  organizationPolicyAvailable?: boolean
 }) {
   const isInformationalGap = state === 'decision_required' && nonBlocking
+  const isOrgPolicyCovered = state === 'decision_required' && organizationPolicyAvailable
   return (
     <div className="rounded-xl p-3" style={{
-      background: state === 'clear_from_source' ? '#F0FDF4' : isInformationalGap ? '#F5F5F4' : state === 'decision_required' ? '#FEF2F2' : '#FFFDF5',
-      border: `1px solid ${state === 'clear_from_source' ? 'rgba(11,92,54,0.2)' : isInformationalGap ? 'rgba(120,113,108,0.25)' : state === 'decision_required' ? '#FECACA' : 'rgba(217,167,90,0.35)'}`,
+      background: state === 'clear_from_source' ? '#F0FDF4' : isOrgPolicyCovered ? '#EFF6FF' : isInformationalGap ? '#F5F5F4' : state === 'decision_required' ? '#FEF2F2' : '#FFFDF5',
+      border: `1px solid ${state === 'clear_from_source' ? 'rgba(11,92,54,0.2)' : isOrgPolicyCovered ? 'rgba(30,64,175,0.25)' : isInformationalGap ? 'rgba(120,113,108,0.25)' : state === 'decision_required' ? '#FECACA' : 'rgba(217,167,90,0.35)'}`,
     }}>
       <span
         className="inline-block text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full mb-1.5"
         style={state === 'clear_from_source'
           ? { background: 'rgba(11,92,54,0.12)', color: '#0B5C36' }
-          : isInformationalGap
-            ? { background: 'rgba(120,113,108,0.14)', color: '#57534E' }
-            : state === 'decision_required'
-              ? { background: 'rgba(153,27,27,0.1)', color: '#991B1B' }
-              : { background: 'rgba(180,83,9,0.12)', color: '#92400E' }}
+          : isOrgPolicyCovered
+            ? { background: 'rgba(30,64,175,0.12)', color: '#1E40AF' }
+            : isInformationalGap
+              ? { background: 'rgba(120,113,108,0.14)', color: '#57534E' }
+              : state === 'decision_required'
+                ? { background: 'rgba(153,27,27,0.1)', color: '#991B1B' }
+                : { background: 'rgba(180,83,9,0.12)', color: '#92400E' }}
       >
-        {label} · {state === 'clear_from_source' ? 'Clear from source' : state === 'decision_required' ? (isInformationalGap ? 'Not specified' : 'Decision required') : 'Verdix recommendation'}
+        {label} · {state === 'clear_from_source' ? 'Clear from source' : state === 'decision_required' ? (isOrgPolicyCovered ? 'Organization policy' : isInformationalGap ? 'Not specified' : 'Decision required') : 'Verdix recommendation'}
       </span>
-      <p className="text-[11px] leading-relaxed" style={{ color: isInformationalGap ? '#57534E' : state === 'decision_required' ? '#7F1D1D' : '#4A5D50' }}>
+      <p className="text-[11px] leading-relaxed" style={{ color: isOrgPolicyCovered ? '#1E3A5F' : isInformationalGap ? '#57534E' : state === 'decision_required' ? '#7F1D1D' : '#4A5D50' }}>
         {state === 'decision_required' ? decisionRequiredText : resolvedText}
       </p>
     </div>
@@ -1414,6 +1432,12 @@ function RuleInterpretationCard({
           ruleType, contractUnitType, discountId, creditId, interactionKey, sourceClause, reviewerInput: aiProposal.reasoning,
           aiProposedInterpretation: aiProposal.proposed_interpretation, approvedInterpretation: interpretation,
           applicationRuleProvenance, cashRedeemableProvenance,
+          // Step 5C — evidence of what organization policy (if any) the
+          // reviewer was shown, purely for confirm-rule's own staleness
+          // comparison against its independently re-resolved authoritative
+          // state — never trusted as a selection. See RuleProposal.
+          // survival_organization_policy's comment for the full rationale.
+          survivalOrganizationPolicySeen: ruleType === 'service_credit' ? aiProposal.survival_organization_policy : undefined,
         }),
       })
       // A non-JSON response (e.g. an unhandled server exception returning
@@ -1423,6 +1447,19 @@ function RuleInterpretationCard({
       // is now surfaced instead of swallowed.
       const data = await res.json().catch(() => ({ error: `Unexpected response from server (${res.status})` }))
       if (!res.ok && !data.propagation) { setErrorMsg(data.error ?? 'Approval failed.'); setPhase('proposed'); return }
+      // Step 5C, pre-commit review (item 3) — the organization policy the
+      // reviewer was shown no longer matches what confirm-rule's own,
+      // authoritative re-resolution found (disabled, now conflicting, or
+      // edited to a different value/version). Everything else on this
+      // credit DID save — only the survival sub-field was deliberately
+      // left unresolved rather than silently applying a policy the
+      // reviewer never actually saw. Surface it plainly and require a
+      // fresh look, rather than reporting a clean "applied".
+      if (data.staleOrganizationPolicy) {
+        setErrorMsg("Your organization's carry-forward policy changed while this was open. This credit was saved, but the unused-balance treatment still needs a fresh look — reopen this card to see the current policy.")
+        setPhase('proposed')
+        return
+      }
       setPropagation(data.propagation ?? {})
       const anyFailed = Object.values(data.propagation ?? {}).includes('failed')
       if (anyFailed) {
@@ -1572,9 +1609,20 @@ function RuleInterpretationCard({
   const appRule = (aiProposal?.proposed_interpretation as Record<string, unknown> | null)?.application_rule as Record<string, unknown> | undefined
   const survivalCarryForwardOpen = appRule?.carry_forward === 'unclear'
   const survivalOneTimeOpen = appRule?.one_time === 'unclear'
-  const survivalNeedsInlinePicker =
+  // Step 5C — an active, applicable Organization Rulebook policy already
+  // covers this genuinely-silent field (see propose-rule/route.ts's
+  // withOrganizationPolicyAvailability). Never force the reviewer to make
+  // a manual carry-forward decision an organization has already made once
+  // for itself — "Confirm & apply" below submits carry_forward exactly as
+  // the AI proposed it (still 'unclear'), and confirm-rule's own
+  // organization-resolution branch (lib/credit-application-rule.ts) mints
+  // organization_rulebook provenance from that, with the real matching
+  // rule's id/version — this flag only ever suppresses a redundant prompt,
+  // it never itself decides or submits a value.
+  const survivalNeedsInlinePicker = !aiProposal?.survival_organization_policy && (
     (aiProposal?.survival_state === 'decision_required' && survivalCarryForwardOpen && !survivalOneTimeOpen) ||
     (aiProposal?.survival_state === 'verdix_recommends' && appRule?.carry_forward === true)
+  )
   const survivalIsRecommendation = aiProposal?.survival_state === 'verdix_recommends'
   const survivalRecommendedOptionId = survivalIsRecommendation ? deriveSurvivalOptionId(appRule) : null
   const survivalSelectionPending = survivalNeedsInlinePicker && !survivalResolution
@@ -1833,11 +1881,20 @@ function RuleInterpretationCard({
             const label = survivalCarryForwardOpen && !survivalOneTimeOpen ? `Unused ${creditType === 'rebate' ? 'rebate' : 'balance'} survival`
               : survivalOneTimeOpen && !survivalCarryForwardOpen ? 'Repeatability'
               : 'Survival & expiry'
-            const decisionRequiredText = survivalCarryForwardOpen && !survivalOneTimeOpen
-              ? "The contract doesn't state what happens to any portion of this credit that is credited but not fully applied."
-              : survivalOneTimeOpen && !survivalCarryForwardOpen
-                ? "The contract doesn't state whether this credit can be earned more than once — resolve this before it can be applied against an invoice."
-                : "The contract doesn't state how long an earned-but-unused credit remains available, or whether it can be earned more than once — resolve this before it can be applied against an invoice."
+            // Shows the ACTUAL policy value (via describeSurvivalResolution
+            // — the same phrasing used everywhere else a resolved
+            // carry_forward is described), not merely "some policy exists"
+            // — so the reviewer sees exactly what Verdix intends to apply
+            // and why they're not being asked a question. This is the
+            // proposal's own advisory metadata; the value confirm-rule
+            // actually applies is independently re-resolved server-side.
+            const decisionRequiredText = aiProposal.survival_organization_policy
+              ? `The contract doesn't state this, but your organization's own policy already covers it — ${describeSurvivalResolution({ carry_forward: aiProposal.survival_organization_policy.value }).charAt(0).toLowerCase()}${describeSurvivalResolution({ carry_forward: aiProposal.survival_organization_policy.value }).slice(1)} Confirming this credit applies that policy automatically, with no separate decision needed here.`
+              : survivalCarryForwardOpen && !survivalOneTimeOpen
+                ? "The contract doesn't state what happens to any portion of this credit that is credited but not fully applied."
+                : survivalOneTimeOpen && !survivalCarryForwardOpen
+                  ? "The contract doesn't state whether this credit can be earned more than once — resolve this before it can be applied against an invoice."
+                  : "The contract doesn't state how long an earned-but-unused credit remains available, or whether it can be earned more than once — resolve this before it can be applied against an invoice."
             const resolvedText = survivalNeedsInlinePicker
               ? 'Verdix recommends a treatment below — confirm it or choose a different one.'
               : "Whether this credit carries forward and whether it can be earned more than once is covered in the reasoning above."
@@ -1847,6 +1904,7 @@ function RuleInterpretationCard({
                 state={aiProposal.survival_state}
                 decisionRequiredText={survivalNeedsInlinePicker ? `${decisionRequiredText} Pick how it should be treated below.` : decisionRequiredText}
                 resolvedText={resolvedText}
+                organizationPolicyAvailable={!!aiProposal.survival_organization_policy}
               />
             )
           })()}
@@ -2307,9 +2365,14 @@ function formatFieldValue(field: string, value: unknown, currency: string): stri
 // FieldProvenance and isProvenanceResolved (lib/commercial-rule-status.ts) —
 // 'verdix_recommends' is deliberately absent here too: a rule reaching this
 // persistent confirmed-rules section has already cleared that gate, so only
-// the two resolving values are ever shown.
+// the three resolving values are ever shown. 'organization_rulebook' (Step
+// 5C) reads "Organization policy", not "Verdix recommendation" — it was an
+// org's own confirmed default applying, never AI interpretation.
 function provenanceLabel(p?: string | null): string | null {
-  return p === 'contract_derived' ? 'Clear from source' : p === 'reviewer_policy' ? 'Reviewer policy' : null
+  return p === 'contract_derived' ? 'Clear from source'
+    : p === 'reviewer_policy' ? 'Reviewer policy'
+    : p === 'organization_rulebook' ? 'Organization policy'
+    : null
 }
 
 // Small icon per parameter row, matched heuristically off the label text
@@ -2398,11 +2461,15 @@ function ConfirmedRuleCard({
         <div className="flex flex-wrap items-center gap-2 mb-1">
           {resolvedProvenance.map((p, i) => {
             const label = provenanceLabel(p.value)!
+            // Three distinct treatments: green (contract-grounded), amber
+            // (reviewer decision), blue (Step 5C — an organization's own
+            // confirmed policy, never AI interpretation, never the contract
+            // itself — see provenanceLabel's own comment above).
+            const colors = label === 'Clear from source' ? { bg: 'rgba(11,92,54,0.1)', fg: '#0B5C36' }
+              : label === 'Organization policy' ? { bg: 'rgba(30,64,175,0.1)', fg: '#1E40AF' }
+              : { bg: 'rgba(180,83,9,0.1)', fg: '#92400E' }
             return (
-              <span key={i} className="text-[11px] font-semibold px-3 py-1 rounded-full" style={{
-                background: label === 'Clear from source' ? 'rgba(11,92,54,0.1)' : 'rgba(180,83,9,0.1)',
-                color: label === 'Clear from source' ? '#0B5C36' : '#92400E',
-              }}>
+              <span key={i} className="text-[11px] font-semibold px-3 py-1 rounded-full" style={{ background: colors.bg, color: colors.fg }}>
                 {resolvedProvenance.length > 1 ? `${p.label}: ${label}` : label}
               </span>
             )
@@ -5815,7 +5882,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               // calculation, discount, escalator), since inventing a
               // "Clear from source"/"Reviewer policy" label for a field with
               // no actual provenance record would misrepresent it.
-              const provenanceLabel = (p?: string | null) => p === 'contract_derived' ? 'Clear from source' : p === 'reviewer_policy' ? 'Reviewer policy' : null
+              // 'organization_rulebook' (Step 5C) reads "Organization
+              // policy" — an org's own confirmed default, not AI
+              // interpretation, not the contract itself.
+              const provenanceLabel = (p?: string | null) => p === 'contract_derived' ? 'Clear from source' : p === 'reviewer_policy' ? 'Reviewer policy' : p === 'organization_rulebook' ? 'Organization policy' : null
               const confirmedRuleLines: { label: string; value: string }[] = []
               for (const [unitType, tierList] of chargingGroups.entries()) {
                 const mc = tierList.find(({ tier: t }) => t.minimum_commitment)?.tier.minimum_commitment
@@ -6156,6 +6226,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 params.push({ label: 'Repeatable', value: appRule.one_time === true ? 'No — one-time' : appRule.one_time === false ? 'Yes' : 'Decision required' })
                 if (typeof appRule.carry_forward === 'boolean') {
                   params.push({ label: 'Unused balance', value: describeSurvivalResolution({ carry_forward: appRule.carry_forward, expiry_periods: appRule.expiry_periods, expiry_date: appRule.expiry_date }) })
+                  // Step 5C — plain informational text, not a clickable
+                  // "View policy" link: there's no organization-rulebook
+                  // management UI yet to link to. Only ever present when
+                  // this field was actually resolved by an org policy.
+                  if (appRule.survival_provenance === 'organization_rulebook' && appRule.survival_organization_rule_id) {
+                    params.push({
+                      label: 'Organization policy',
+                      value: `Rule ${appRule.survival_organization_rule_id.slice(0, 8)}${appRule.survival_organization_rule_version ? ` · v${appRule.survival_organization_rule_version}` : ''}`,
+                    })
+                  }
                 }
                 // Application timing — derived ONLY from application_rule's
                 // own fields (availability, carry_forward), never from cash

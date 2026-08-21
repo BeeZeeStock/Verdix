@@ -15,13 +15,22 @@ import type { FieldProvenance } from './types'
 // field carrying a FieldProvenance. AI confidence is not provenance: a
 // model can return a concrete value ('verdix_recommends' included) without
 // that value being grounded in the contract or confirmed by a reviewer —
-// only 'contract_derived' (the source states/unambiguously implies it) or
-// 'reviewer_policy' (a human explicitly confirmed or chose it) clear a
-// billing blocker. Deliberately does NOT look at whether a value is
-// present/concrete — see CreditApplicationRule's requires_confirmation
-// comment in lib/types.ts for why value-presence was the actual bug.
+// only 'contract_derived' (the source states/unambiguously implies it),
+// 'reviewer_policy' (a human explicitly confirmed or chose it), or —
+// Step 5C — 'organization_rulebook' (an active, applicable Organization
+// Rulebook policy filled a field the contract and reviewer left genuinely
+// silent on — see lib/rulebook/organization-rulebook-production.ts) clear
+// a billing blocker. 'organization_rulebook' is only ever WRITTEN by
+// lib/credit-application-rule.ts's buildCreditApplicationRule, and only
+// after that same field already failed to resolve via contract_derived/
+// reviewer_policy — so accepting it here as resolved does not create a
+// second, competing readiness path; it is exactly as authoritative as the
+// other two once it is actually present, by construction. Deliberately
+// does NOT look at whether a value is present/concrete — see
+// CreditApplicationRule's requires_confirmation comment in lib/types.ts
+// for why value-presence was the actual bug.
 export function isProvenanceResolved(provenance: FieldProvenance | null | undefined): boolean {
-  return provenance === 'contract_derived' || provenance === 'reviewer_policy'
+  return provenance === 'contract_derived' || provenance === 'reviewer_policy' || provenance === 'organization_rulebook'
 }
 
 type UnresolvedFlag = { requires_confirmation: boolean } | null | undefined

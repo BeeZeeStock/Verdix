@@ -57,6 +57,8 @@ import {
   type ServiceCreditContext,
   type RuleInteractionContext,
 } from '@/lib/rule-interpretation'
+import { listMatchableOrganizationRules } from '@/lib/rulebook/organization-rules-service'
+import { resolveProductionOrganizationField } from '@/lib/rulebook/organization-rulebook-production'
 
 type TierRow = {
   tier_label: string
@@ -81,6 +83,48 @@ type TierRow = {
 // used as a last-resort fallback when extraction genuinely captured nothing.
 function sourceClauseFor(extracted: string | null | undefined, clientSupplied: string | null | undefined): string | null {
   return extracted || clientSupplied || null
+}
+
+// Step 5C — surfaces organization-policy availability to the review panel
+// BEFORE the reviewer has to make a manual survival decision, so an
+// approved private policy actually eliminates the repetitive click rather
+// than only being reachable after one. READ-ONLY: reuses
+// resolveProductionOrganizationField (the exact same production resolver
+// confirm-rule/route.ts calls) against organization rules already loaded
+// for this org — no duplicated matching/precedence logic, and no write to
+// contract_terms here. Only ever runs for a proposal the AI itself already
+// graded 'decision_required' for survival (genuine contract silence,
+// already validated by validateProposalState) — never overrides an
+// explicit or recommended AI value. Returns the SAME proposal object
+// (referentially) when nothing applies, so callers can pass it straight
+// through without a defensive null-check.
+async function withOrganizationPolicyAvailability(
+  proposal: RuleProposal, orgId: string, creditType: string,
+): Promise<RuleProposal> {
+  if (proposal.survival_state !== 'decision_required') return proposal
+  const orgRules = await listMatchableOrganizationRules(orgId)
+  const resolution = resolveProductionOrganizationField('survival.carry_forward', {
+    organizationId: orgId,
+    commercialContext: {
+      current: { 'survival.carry_forward': { value: 'unclear', provenance: null } },
+      // application.timing mirrors confirm-rule's own call site — every
+      // current credit's availability is 'next_period' (the only value
+      // CreditApplicationRule.availability implements today).
+      match: { rule_type: creditType, application: { timing: 'next_invoice' } },
+    },
+    organizationRules: orgRules,
+    asOf: new Date(),
+  })
+  if (resolution.status !== 'resolved') return proposal
+  // Carries the actual rule id/version/value — see RuleProposal.
+  // survival_organization_policy's own comment for why this is real
+  // metadata, not a boolean: the review panel shows the reviewer WHAT
+  // policy is being applied, and confirm-rule uses it as staleness
+  // evidence (never as authority — it re-resolves independently).
+  return {
+    ...proposal,
+    survival_organization_policy: { rule_id: resolution.ruleId!, version: resolution.ruleVersion!, value: resolution.value as boolean },
+  }
 }
 
 export async function POST(
@@ -190,6 +234,10 @@ export async function POST(
   // on it, exactly the same information the successful-path reasoning
   // would have started from.
   let resolvedSourceClause: string | null = sourceClause ?? null
+  // service_credit only — captured here (not re-derived near the return
+  // points) so withOrganizationPolicyAvailability sees the exact same
+  // credit_type the AI prompt itself was built from.
+  let serviceCreditType: string | null = null
 
   if (ruleType === 'minimum_commitment') {
     if (!contractUnitType) return NextResponse.json({ error: 'contractUnitType is required for minimum_commitment' }, { status: 400 })
@@ -310,6 +358,7 @@ export async function POST(
     const credit = credits.find(c => c.credit_rule_id === creditId)
       ?? (Number.isInteger(Number(creditId)) ? credits[Number(creditId)] : undefined)
     if (!credit) return NextResponse.json({ error: `Service credit '${creditId}' not found on this job` }, { status: 404 })
+    serviceCreditType = credit.credit_type ?? 'other'
     sourceClauseAvailable = sourceClauseAvailable || !!credit.description || !!credit.source_clause
     resolvedSourceClause = sourceClauseFor(credit.source_clause, sourceClause)
     const context: ServiceCreditContext = {
@@ -363,7 +412,15 @@ export async function POST(
   // through to a fresh call rather than ever serving a stale answer.
   const cached = existingCache[cacheKey]
   if (cached && cached.promptFingerprint === prompt) {
-    return NextResponse.json({ ok: true, proposal: cached.proposal, cached: true })
+    // Re-checked on every cache hit, not baked into the cached object
+    // itself — organization rules can be added/activated at any time,
+    // independent of whether the underlying AI prompt/answer changed, and
+    // this check is a cheap deterministic DB read, not an AI call, so
+    // there is no cost reason to let it go stale for the life of the cache.
+    const cachedProposal = ruleType === 'service_credit' && serviceCreditType
+      ? await withOrganizationPolicyAvailability(cached.proposal, org.orgId, serviceCreditType)
+      : cached.proposal
+    return NextResponse.json({ ok: true, proposal: cachedProposal, cached: true })
   }
 
   let rawText: string
@@ -463,6 +520,11 @@ export async function POST(
 
   // Best-effort — a failed cache write just means the next open recomputes
   // rather than reusing, never a correctness issue worth failing the request over.
+  // Caches the UNAUGMENTED proposal deliberately — organization-policy
+  // availability is re-checked fresh on every request (see the cache-hit
+  // branch above), so a rule added/activated after this proposal was first
+  // cached still takes effect on the very next open, without needing the
+  // AI cache itself to be invalidated.
   if (!cacheReadError) {
     await supabaseServer
       .from('contract_terms')
@@ -471,5 +533,9 @@ export async function POST(
       .then(({ error }) => { if (error) console.warn(`[propose-rule] cache write failed for job ${jobId}:`, error.message) })
   }
 
-  return NextResponse.json({ ok: true, proposal })
+  const returnedProposal = ruleType === 'service_credit' && serviceCreditType
+    ? await withOrganizationPolicyAvailability(proposal, org.orgId, serviceCreditType)
+    : proposal
+
+  return NextResponse.json({ ok: true, proposal: returnedProposal })
 }

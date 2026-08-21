@@ -25,7 +25,9 @@ import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
 import type { RuleType } from '@/lib/rule-interpretation'
 import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation, CreditEarnRule, PeriodProrationRule, AdditionalRecurringFee, FieldProvenance } from '@/lib/types'
-import { buildCreditApplicationRule } from '@/lib/credit-application-rule'
+import { buildCreditApplicationRule, sanitizeAssertedProvenance } from '@/lib/credit-application-rule'
+import { listMatchableOrganizationRules } from '@/lib/rulebook/organization-rules-service'
+import { resolveProductionOrganizationField, isOrganizationPolicyStale, type ProductionOrganizationResolution, type SeenOrganizationPolicy } from '@/lib/rulebook/organization-rulebook-production'
 
 // Several sequential writes (audit row, contract_terms, sometimes
 // contract_meter_mappings) — same defensive reasoning as propose-rule/
@@ -58,6 +60,17 @@ type Body = {
   // 'reviewer_policy' on Override/"Confirm recommendation". See
   // buildServiceCreditInterpretation below.
   cashRedeemableProvenance?: FieldProvenance
+  // service_credit only (Step 5C, pre-commit review) — evidence of the
+  // organization policy (rule id/version/value) the client's review panel
+  // showed the reviewer, sourced from RuleProposal.survival_organization_
+  // policy (propose-rule/route.ts). PURELY comparison evidence — NEVER
+  // trusted as a selection. This route always independently re-derives
+  // org, loads matchable rules, matches, and resolves precedence itself
+  // (see the service_credit branch below); this field is only used to
+  // detect whether that fresh, authoritative result still matches what
+  // the reviewer was actually shown, closing the TOCTOU window between
+  // propose-rule's advisory check and this route's real resolution.
+  survivalOrganizationPolicySeen?: { rule_id: string; version: number; value: boolean }
 }
 
 function buildTierCalculation(approved: Record<string, unknown>): TierCalculationMethod {
@@ -114,7 +127,11 @@ function resolveCashRedeemable(
     typeof approved.cash_redeemable === 'boolean' ? approved.cash_redeemable
       : approved.cash_redeemable === 'unclear' ? 'unclear'
       : existing?.cash_redeemable ?? 'unclear'
-  const cash_redeemable_provenance = cashRedeemableProvenance ?? existing?.cash_redeemable_provenance ?? null
+  // Step 5C — cash_redeemable has no organization-resolution path at all
+  // (not in PRODUCTION_ORGANIZATION_RULEBOOK_ALLOWLIST), so a client
+  // claiming 'organization_rulebook' here would be entirely unfounded —
+  // same sanitizeAssertedProvenance guard buildCreditApplicationRule uses.
+  const cash_redeemable_provenance = sanitizeAssertedProvenance(cashRedeemableProvenance) ?? existing?.cash_redeemable_provenance ?? null
   return { cash_redeemable, cash_redeemable_provenance }
 }
 
@@ -123,6 +140,10 @@ function buildServiceCreditInterpretation(
   existing: ServiceCreditInterpretation | null | undefined,
   applicationRuleProvenance?: { eligibility?: FieldProvenance; survival?: FieldProvenance },
   cashRedeemableProvenance?: FieldProvenance,
+  // Step 5C — pre-computed by the POST handler (which owns the org-scoped
+  // DB lookup) and threaded straight through to buildCreditApplicationRule,
+  // the actual enforcement point. See that function's own comment.
+  organizationResolution?: ProductionOrganizationResolution,
 ): ServiceCreditInterpretation {
   const { cash_redeemable, cash_redeemable_provenance } = resolveCashRedeemable(approved, existing, cashRedeemableProvenance)
   return {
@@ -142,7 +163,7 @@ function buildServiceCreditInterpretation(
     requires_confirmation: false,
     confirmation_reason: null,
     earn_rule: buildCreditEarnRule(approved, existing?.earn_rule),
-    application_rule: buildCreditApplicationRule(approved, existing?.application_rule, applicationRuleProvenance),
+    application_rule: buildCreditApplicationRule(approved, existing?.application_rule, applicationRuleProvenance, organizationResolution),
   }
 }
 
@@ -200,7 +221,7 @@ export async function POST(
   if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   const body = await req.json() as Body
-  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey, applicationRuleProvenance, cashRedeemableProvenance } = body
+  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey, applicationRuleProvenance, cashRedeemableProvenance, survivalOrganizationPolicySeen } = body
 
   if (!ruleType || !approvedInterpretation) {
     return NextResponse.json({ error: 'ruleType and approvedInterpretation are required' }, { status: 400 })
@@ -231,6 +252,16 @@ export async function POST(
   const reviewerName = session?.user?.name ?? null
 
   const propagation: PropagationStatus = {}
+  // Step 5C, pre-commit review (item 3) — set true only when the
+  // service_credit branch below finds that the organization policy it
+  // just independently re-resolved no longer matches the policy
+  // survivalOrganizationPolicySeen says the reviewer was shown. Surfaced
+  // on the final response so the client can prompt a refresh rather than
+  // silently proceeding as if nothing changed — this never affects
+  // whether the write below is safe (it already fails closed on its own;
+  // see isOrganizationPolicyStale's own comment), only whether the
+  // reviewer is told their view was stale.
+  let staleOrganizationPolicy = false
   // A rule interaction never touches Billing Configuration/Schedule directly
   // — it only resolves which basis the referencing service credit's own
   // (separately-confirmed) interpretation should use.
@@ -500,9 +531,71 @@ export async function POST(
   } else if (ruleType === 'service_credit') {
     // Same addressing pattern as discount: stable credit_rule_id, not array
     // position, with the same legacy-row positional fallback + backfill.
-    type Credit = { credit_rule_id?: string; interpretation?: ServiceCreditInterpretation | null; [k: string]: unknown }
+    type Credit = { credit_rule_id?: string; credit_type?: string; interpretation?: ServiceCreditInterpretation | null; [k: string]: unknown }
     const credits = (termsRow.service_credits ?? []) as Credit[]
-    const interpretation = buildServiceCreditInterpretation(approvedInterpretation, credits.find(c => c.credit_rule_id === creditId)?.interpretation, applicationRuleProvenance, cashRedeemableProvenance)
+    const currentCredit = credits.find(c => c.credit_rule_id === creditId)
+    const existingAppRule = currentCredit?.interpretation?.application_rule
+
+    // Step 5C — Organization Rulebook production resolution, allowlisted
+    // to survival.carry_forward only (lib/rulebook/organization-rulebook-
+    // production.ts). Only even attempted when this field is genuinely
+    // still silent (no concrete carry_forward yet, or no application_rule
+    // at all) — an already contract_derived/reviewer_policy-resolved
+    // value never reaches this branch, and buildCreditApplicationRule
+    // independently re-checks this before ever applying the result, so
+    // this early-out is a cheap optimization (skip the DB lookup
+    // entirely when there's nothing to fill), not the enforcement point.
+    let organizationResolution: ProductionOrganizationResolution | undefined
+    if (!existingAppRule || existingAppRule.carry_forward === 'unclear') {
+      const organizationRules = await listMatchableOrganizationRules(org.orgId)
+      const freshResolution = resolveProductionOrganizationField('survival.carry_forward', {
+        organizationId: org.orgId,
+        commercialContext: {
+          current: {
+            'survival.carry_forward': {
+              value: existingAppRule?.carry_forward ?? null,
+              provenance: existingAppRule?.survival_provenance ?? null,
+            },
+          },
+          // Every current credit's availability is 'next_period' (the only
+          // value CreditApplicationRule.availability implements today —
+          // lib/types.ts) — 'next_invoice' is the real, accurate semantic
+          // fact this reflects, not a guess.
+          match: { rule_type: currentCredit?.credit_type ?? 'other', application: { timing: 'next_invoice' } },
+        },
+        organizationRules,
+        asOf: new Date(),
+      })
+
+      // Step 5C, pre-commit review (item 3) — TOCTOU/staleness guard. The
+      // organization-policy check propose-rule ran was advisory only; THIS
+      // resolution, computed just now against live org.orgId-scoped
+      // matchable rules, is the sole authoritative one (item 4 — the
+      // client's survivalOrganizationPolicySeen is never used to SELECT a
+      // rule, only to compare against). When the reviewer saw a specific
+      // policy and the fresh, authoritative result no longer matches it
+      // exactly (disabled/superseded — freshResolution.status flips to
+      // 'not_applicable'; became conflicting — flips to 'conflict'; or a
+      // still-'resolved' but DIFFERENT rule/version/value — e.g. an admin
+      // edited the policy between propose and confirm), never silently
+      // substitute the new policy for the one the reviewer was told about.
+      // Leave organizationResolution unset so buildCreditApplicationRule's
+      // own genuine-silence gate leaves carry_forward exactly as unresolved
+      // as it already was — the field simply stays open for the reviewer's
+      // next attempt (after a refresh), rather than executing on a policy
+      // they never actually saw.
+      if (survivalOrganizationPolicySeen && isOrganizationPolicyStale(freshResolution, {
+        ruleId: survivalOrganizationPolicySeen.rule_id,
+        ruleVersion: survivalOrganizationPolicySeen.version,
+        value: survivalOrganizationPolicySeen.value,
+      } satisfies SeenOrganizationPolicy)) {
+        staleOrganizationPolicy = true
+      } else {
+        organizationResolution = freshResolution
+      }
+    }
+
+    const interpretation = buildServiceCreditInterpretation(approvedInterpretation, currentCredit?.interpretation, applicationRuleProvenance, cashRedeemableProvenance, organizationResolution)
     const targetIndex = credits.findIndex(c => c.credit_rule_id === creditId)
     const fallbackIndex = targetIndex === -1 && Number.isInteger(Number(creditId)) ? Number(creditId) : -1
     let newCredits: Credit[]
@@ -584,5 +677,5 @@ export async function POST(
     : statusUpdateQuery.is('contract_unit_type', null))
 
   const anyFailed = Object.values(propagation).includes('failed')
-  return NextResponse.json({ ok: !anyFailed, propagation }, { status: anyFailed ? 207 : 200 })
+  return NextResponse.json({ ok: !anyFailed, propagation, staleOrganizationPolicy }, { status: anyFailed ? 207 : 200 })
 }
