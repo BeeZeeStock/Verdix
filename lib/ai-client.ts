@@ -140,14 +140,16 @@ export function getFastAIClient(): { messages: { create(p: CreateParams): Promis
   return newAnthropicClient() as unknown as ReturnType<typeof bedrockClient>
 }
 
-// Critical-reasoning tier — Opus 4.6 with adaptive thinking, EU Bedrock only.
-// For calls whose output changes contractual billing logic: full commercial-
-// term extraction, multi-sentence clause interpretation, rebate/credit/
-// service-credit rule generation, source-vs-reviewer-policy classification,
-// tier/minimum/proration semantics, amendment/precedence interpretation,
-// final commercial-rule validation. NOT yet wired into any call site — see
-// the routing audit/proposal before any existing getAIClient() call is
-// switched to this one.
+// Critical-reasoning tier — Opus with adaptive thinking, EU Bedrock only.
+// Fully implemented (separate timeout/token budgets, thinking-block
+// parsing, telemetry) but DELIBERATELY UNUSED by every production call
+// site as of 2026-08-21 — a live two-round A/B against TEST-PAY-002 found
+// no measurable factual-accuracy gain over Sonnet at ~4.25x the latency,
+// and Opus's one behavioral difference (offering verdix_recommends guesses
+// where Sonnet correctly stayed decision_required) is not a benefit for
+// this product's risk profile. See CLAUDE.md's "AI model routing" section
+// for the full record — do not wire this into a call site without a new
+// benchmark showing a material gain for that specific pipeline.
 // No non-Bedrock (direct Anthropic) reasoning-tier model is configured —
 // falls back to the same default client getAIClient() uses when Bedrock is
 // off (e.g. local dev without AWS credentials), same degrade-gracefully
