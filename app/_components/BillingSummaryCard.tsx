@@ -5,6 +5,7 @@ import { partialPeriodLabel } from '@/lib/cadence-labels'
 import { VatConfigRow } from './VatConfigRow'
 import { useVatConfig } from './useVatConfig'
 import { resolveInvoiceVatDisplay } from '@/lib/vat'
+import { FinancialAmount } from './FinancialAmount'
 
 type SubscriptionInfo = {
   id: string
@@ -761,11 +762,21 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
                         e.vatMode ? { vatMode: e.vatMode, vatRatePct: e.vatRatePct ?? null, netAmount: e.netAmount ?? null, vatAmount: e.vatAmount ?? null, grossAmount: e.grossAmount ?? null } : null,
                         vat.treatment,
                       )
+                      // Net/VAT/gross colors follow the same financial-
+                      // number semantics as the Billing Summary KPI cards
+                      // (app/_components/FinancialAmount.tsx) — forest for
+                      // net, muted olive-gold for VAT (informational, never
+                      // a warning color), darkest forest/charcoal for gross,
+                      // which also carries the strongest visual weight
+                      // (bold + darkest tone) since it's the final payable
+                      // amount.
                       return (
                         <tfoot>
                           <tr style={{ borderTop: '1px solid rgba(26,61,43,0.1)', background: 'rgba(26,61,43,0.02)' }}>
-                            <td className="px-3 py-2 font-semibold text-ink" colSpan={3}>Net</td>
-                            <td className="px-3 py-2 text-right font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.amount, e.currency)}</td>
+                            <td className="px-3 py-2 font-semibold text-stone" colSpan={3}>Net</td>
+                            <td className="px-3 py-2 text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                              <FinancialAmount amount={e.amount} currency={e.currency} basis="net" size="sm" />
+                            </td>
                           </tr>
                           {display ? (
                             <>
@@ -773,11 +784,15 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
                                 <td className="px-3 py-2 text-stone" colSpan={3}>
                                   VAT ({display.vatRatePct}%){display.isSnapshot && e.vatSource === 'override' ? ' · invoice override' : ''}
                                 </td>
-                                <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(display.vatAmount, e.currency)}</td>
+                                <td className="px-3 py-2 text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                                  <FinancialAmount amount={display.vatAmount} currency={e.currency} basis="vat" size="sm" />
+                                </td>
                               </tr>
                               <tr style={{ borderTop: '1px solid rgba(26,61,43,0.1)' }}>
-                                <td className="px-3 py-2 font-semibold text-ink" colSpan={3}>Gross{display.isSnapshot ? '' : ' (projected)'}</td>
-                                <td className="px-3 py-2 text-right font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(display.grossAmount, e.currency)}</td>
+                                <td className="px-3 py-2 font-bold text-stone" colSpan={3}>Gross{display.isSnapshot ? '' : ' (projected)'}</td>
+                                <td className="px-3 py-2 text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                                  <FinancialAmount amount={display.grossAmount} currency={e.currency} basis="gross" size="md" />
+                                </td>
                               </tr>
                             </>
                           ) : (

@@ -20,6 +20,35 @@
   --color-line-soft: #F0EEE9;
   --color-amber: #D9A05B;
 
+  /* ── Financial number semantics ──────────────────────────────────────
+     One small set of tokens governing every monetary figure's color, so
+     net/VAT/gross/credit read consistently everywhere instead of each
+     surface inventing its own palette (see lib/currency-format.ts and
+     app/_components/FinancialAmount.tsx). financial-net/financial-gross
+     reuse the existing forest/forest-dark tokens above — the deepest
+     brand green is reserved for the final payable figure (gross), a
+     shade lighter for net. financial-credit reuses sage. financial-vat
+     is the one genuinely new value: a muted olive-gold, deliberately
+     distinct from both --color-amber (lighter, used for reviewer-policy
+     chips) and --color-warn (a true warning orange VAT must never read
+     as — VAT is informational, not a blocker). */
+  --color-financial-net: #1A3D2B;
+  --color-financial-vat: #7A6320;
+  --color-financial-gross: #12291C;
+  --color-financial-credit: #4A7C59;
+
+  /* ── Provenance/status semantics — the same values already used on the
+     Confirmed billing rules cards (configure/[id]/page.tsx's
+     ConfirmedRuleCard/provenanceLabel), promoted to shared tokens so a
+     new surface reuses them instead of re-hardcoding the same hex. */
+  --color-state-confirmed: #0B5C36;
+  --color-state-confirmed-bg: #F0FDF4;
+  --color-state-reviewer: #92400E;
+  --color-state-reviewer-bg: #FFFBEB;
+  --color-state-pending: #B45309;
+  --color-state-blocked: #DC2626;
+  --color-state-blocked-bg: #FEF2F2;
+
   --font-display: 'Fraunces', Georgia, serif;
   --font-sans: 'Inter', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', Menlo, monospace;

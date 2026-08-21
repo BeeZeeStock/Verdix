@@ -18,6 +18,9 @@ import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations } from '@/lib/commercial-rule-status'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
 import { getCreditRepresentationCapability } from '@/lib/connectors/billing/types'
+import { FinancialAmount, FinancialMetaTag } from '@/app/_components/FinancialAmount'
+import { FinancialKPICard } from '@/app/_components/FinancialKPICard'
+import { StatusInline } from '@/app/_components/StatusChip'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
@@ -6197,122 +6200,150 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
-            {/* ── Fixed fees + Approve footer ── */}
-            <div className="bg-white rounded-2xl border border-forest/10 px-7 py-5 flex items-center justify-between gap-8">
-                {/* Left: label + number */}
-                <div className="min-w-0 flex items-end gap-8">
-                  <div>
-                    <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/50">
-                      Fixed fees <span className="normal-case tracking-normal text-stone/40">(net, excl. VAT)</span>
-                    </p>
-                    {/* Never shown as a final authoritative total while the
-                        dates it depends on are unresolved — computeBaseTcv
-                        multiplies each line item's rate by a period count
-                        derived from contract_start_date/contract_end_date/
-                        contract_term_months, so a total computed before
-                        those were known (or surviving in state from before
-                        they were cleared) must not be presented as if it
-                        were final. This is what previously let "24 ×
-                        38,500 = 924,000" show at the same time as "dates
-                        are missing" below. */}
-                    {(() => {
-                      const datesResolved = !!terms?.contract_start_date && (!!terms?.contract_end_date || !!terms?.contract_term_months)
-                      return (
-                        <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
-                          {tcv > 0 && datesResolved
-                            ? fmt(tcv, cur)
-                            : billingModel === 'consumption'
-                              ? <span className="text-[22px] text-stone/60">Usage-based</span>
-                              : <span className="text-stone/30">—</span>}
-                        </p>
-                      )
-                    })()}
-                    {tcv === 0 && billingModel === 'consumption' && terms?.contract_start_date && terms?.contract_end_date && (
-                      <p className="text-[10px] text-stone/40 mt-2">Fixed fees depend on usage volume</p>
-                    )}
-                    {tcv > 0 && (!terms?.contract_start_date || (!terms?.contract_end_date && !terms?.contract_term_months)) && (
-                      <p className="text-[10px] text-amber-600 mt-2">Contract dates unresolved — fixed-fee total withheld until confirmed above</p>
-                    )}
-                    {/* Distinct from the dates check above: the CONTRACTUAL
-                        value (rate × period count) is real and known even
-                        while partial-period treatment is unresolved — it
-                        just doesn't establish that the GENERATED billing
-                        schedule (which periods, and at what amount, actually
-                        get invoiced) is final. Shown as a caveat alongside
-                        the figure, not a withholding of it, unlike dates. */}
-                    {tcv > 0 && !!terms?.contract_start_date && (!!terms?.contract_end_date || !!terms?.contract_term_months) &&
-                      (!!terms?.base_fee_proration?.requires_confirmation || (terms?.additional_recurring_fees ?? []).some(f => f.proration?.requires_confirmation)) && (
-                      <p className="text-[10px] text-amber-600 mt-2">Partial-period billing treatment not yet confirmed — the generated invoice schedule is not final</p>
-                    )}
-                    {tcv === 0 && billingModel !== 'consumption' && terms?.contract_start_date && terms?.contract_end_date &&
-                      parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date) && (
-                      <p className="text-[10px] text-amber-600 mt-2">End date is before start date — correct it above</p>
-                    )}
-                    {tcv === 0 && billingModel !== 'consumption' && (!terms?.contract_start_date || !terms?.contract_end_date) && (
-                      <p className="text-[10px] text-stone/40 mt-2">Add contract dates above to calculate</p>
-                    )}
-                  </div>
-                  {/* Renamed from "Committed contract value" — that phrase read
-                      as a promised/guaranteed total, but this figure is the
-                      gross MINIMUM the confirmed floor/proration policy would
-                      charge across every window (Fixed fees + every metric's
-                      minimum-commitment floor, using whatever full-amount/
-                      prorated treatment a reviewer confirmed for each partial
-                      window), computed BEFORE any credit, rebate, or discount
-                      reduces it. Real invoiced amounts can differ once actual
-                      usage/credits are known. The breakdown line makes the
-                      two components explicit rather than a single opaque
-                      number — minimumCommitmentsTotal is the same delta
-                      lib/contract-value.ts's computeContractValueModel
-                      computes server-side (committedContractValue = fixedFees
-                      + minimumCommitments), derived here from the two
-                      already-fetched totals rather than a new server field. */}
-                  {committedContractValue > tcv && (() => {
-                    const minimumCommitmentsTotal = committedContractValue - tcv
+            {/* ── Billing summary KPI cards + Approve footer ──
+                 Three visually consistent cards (same height/padding/icon
+                 size/label size/number size/border radius — enforced by
+                 FinancialKPICard, not repeated per card) replacing the old
+                 single-row layout where the middle figure ("Committed
+                 contract value") rendered smaller and pale-grey next to
+                 two full-contrast siblings. Renamed "Gross minimum charges
+                 ... (excl. VAT)" to "Minimum charges before credits/
+                 rebates" — "Gross" is reserved for VAT-inclusive totals
+                 elsewhere in this product (see BillingSummaryCard's
+                 invoice Net/VAT/Gross rows); labeling an excl.-VAT figure
+                 "Gross" contradicted that everywhere else it appears. */}
+            <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
+              <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* Card A — Fixed fees */}
+                <FinancialKPICard icon="ti-wallet" label="Fixed fees" metaChip={<FinancialMetaTag>Net · excl. VAT</FinancialMetaTag>}>
+                  {/* Never shown as a final authoritative total while the
+                      dates it depends on are unresolved — computeBaseTcv
+                      multiplies each line item's rate by a period count
+                      derived from contract_start_date/contract_end_date/
+                      contract_term_months, so a total computed before
+                      those were known (or surviving in state from before
+                      they were cleared) must not be presented as if it
+                      were final. This is what previously let "24 ×
+                      38,500 = 924,000" show at the same time as "dates
+                      are missing" below. */}
+                  {(() => {
+                    const datesResolved = !!terms?.contract_start_date && (!!terms?.contract_end_date || !!terms?.contract_term_months)
+                    const datesUnresolved = !datesResolved && (!terms?.contract_start_date || (!terms?.contract_end_date && !terms?.contract_term_months))
+                    // Distinct from the dates check above: the CONTRACTUAL
+                    // value (rate × period count) is real and known even
+                    // while partial-period treatment is unresolved — it
+                    // just doesn't establish that the GENERATED billing
+                    // schedule (which periods, and at what amount, actually
+                    // get invoiced) is final. Shown as a caveat alongside
+                    // the figure, not a withholding of it, unlike dates.
+                    const partialPeriodUnconfirmed = !!terms?.base_fee_proration?.requires_confirmation
+                      || (terms?.additional_recurring_fees ?? []).some(f => f.proration?.requires_confirmation)
+                    const endBeforeStart = billingModel !== 'consumption' && !!terms?.contract_start_date && !!terms?.contract_end_date
+                      && parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date)
                     return (
-                      <div>
-                        <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/40">Gross minimum charges before credits/rebates <span className="normal-case tracking-normal text-stone/40">(excl. VAT)</span></p>
-                        <p className="text-[24px] font-semibold leading-none text-stone/60" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
-                          {fmt(committedContractValue, cur)}
-                        </p>
-                        <p className="text-[10px] text-stone/40 mt-1">
-                          {fmt(tcv, cur)} fixed fees + {fmt(minimumCommitmentsTotal, cur)} minimum commitments
-                        </p>
-                      </div>
+                      <>
+                        {tcv > 0 && datesResolved ? (
+                          <FinancialAmount amount={tcv} currency={cur} basis="net" size="xl" />
+                        ) : billingModel === 'consumption' ? (
+                          <p className="text-[20px] font-medium text-stone/60">Usage-based</p>
+                        ) : (
+                          <p className="text-[32px] font-semibold text-stone/30" style={{ fontVariantNumeric: 'tabular-nums' }}>—</p>
+                        )}
+                        {tcv === 0 && billingModel === 'consumption' && terms?.contract_start_date && terms?.contract_end_date && (
+                          <p className="text-[10px] text-stone/40 mt-2">Fixed fees depend on usage volume</p>
+                        )}
+                        {tcv > 0 && datesUnresolved && (
+                          <p className="text-[10px] text-amber-600 mt-2">Contract dates unresolved — fixed-fee total withheld until confirmed above</p>
+                        )}
+                        {tcv > 0 && datesResolved && partialPeriodUnconfirmed && (
+                          <p className="text-[10px] text-amber-600 mt-2">Partial-period billing treatment not yet confirmed — the generated invoice schedule is not final</p>
+                        )}
+                        {tcv === 0 && billingModel !== 'consumption' && endBeforeStart && (
+                          <p className="text-[10px] text-amber-600 mt-2">End date is before start date — correct it above</p>
+                        )}
+                        {tcv === 0 && billingModel !== 'consumption' && (!terms?.contract_start_date || !terms?.contract_end_date) && (
+                          <p className="text-[10px] text-stone/40 mt-2">Add contract dates above to calculate</p>
+                        )}
+                        {/* Confirmation is expressed here, not by recoloring
+                            the number above — same discipline as the
+                            Confirmed billing rules cards: the figure stays
+                            in the financial palette regardless of status. */}
+                        {tcv > 0 && datesResolved && !partialPeriodUnconfirmed && (
+                          <div className="mt-2"><StatusInline kind="confirmed" label="Confirmed fees" /></div>
+                        )}
+                      </>
                     )
                   })()}
-                  {additionsTotal > 0 && (
-                    <div>
-                      <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/40">Additions</p>
-                      <p className="text-[24px] font-semibold leading-none text-stone/60" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
-                        +{fmt(additionsTotal, cur)}
-                      </p>
-                    </div>
-                  )}
-                  {billedToDate > 0 && (
-                    <div>
-                      <p className="text-[9px] font-bold uppercase tracking-[0.18em] mb-2 text-stone/50">
-                        {isCompleted ? 'Realised TCV' : 'Billed to date'} <span className="normal-case tracking-normal text-stone/40">(net, excl. VAT)</span>
-                      </p>
-                      <p className="text-[36px] font-semibold leading-none text-ink" style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }}>
-                        {fmt(billedToDate, cur)}
-                      </p>
-                      {/* planned_invoices.base_amount (what billedToDate
-                          sums) is the NET figure sent to the billing
-                          connector — see lib/billing-writer.ts. Gross per
-                          invoice is shown on each issued/scheduled invoice
-                          row below (Billing Summary), computed off the same
-                          lib/vat.ts:computeVat every real invoice push uses;
-                          not re-summed into a second aggregate gross total
-                          here to avoid it silently drifting from the
-                          per-invoice figures if VAT treatment changes
-                          mid-term. */}
-                      <p className="text-[10px] text-stone/40 mt-1">Gross total shown per invoice below</p>
-                    </div>
-                  )}
-                </div>
+                </FinancialKPICard>
 
-                {/* Right: approve action (only shown before billing is configured) */}
+                {/* Card B — Minimum charges before credits/rebates. Renamed
+                    from "Committed contract value" — that phrase read as a
+                    promised/guaranteed total, but this figure is the
+                    contractual MINIMUM the confirmed floor/proration policy
+                    would charge across every window (Fixed fees + every
+                    metric's minimum-commitment floor), computed BEFORE any
+                    credit, rebate, or discount reduces it. Real invoiced
+                    amounts can differ once actual usage/credits are known.
+                    minimumCommitmentsTotal is the same delta
+                    lib/contract-value.ts's computeContractValueModel
+                    computes server-side (committedContractValue = fixedFees
+                    + minimumCommitments), derived here from the two
+                    already-fetched totals rather than a new server field. */}
+                {committedContractValue > tcv && (() => {
+                  const minimumCommitmentsTotal = committedContractValue - tcv
+                  return (
+                    <FinancialKPICard
+                      icon="ti-shield" label="Minimum charges before credits/rebates"
+                      metaChip={<FinancialMetaTag>Net · excl. VAT</FinancialMetaTag>} sage
+                    >
+                      <FinancialAmount amount={committedContractValue} currency={cur} basis="net" size="xl" />
+                      <div className="mt-3 space-y-1 text-[11px] text-stone">
+                        <p>
+                          <span className="font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(tcv, cur)}</span> fixed fees
+                        </p>
+                        <p>
+                          <span className="font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>+ {fmt(minimumCommitmentsTotal, cur)}</span> minimum commitments
+                        </p>
+                      </div>
+                    </FinancialKPICard>
+                  )
+                })()}
+
+                {/* Additions — not one of the three named KPI cards, kept
+                    in the same visual family (same shell) rather than a
+                    differently-styled leftover when it does appear. */}
+                {additionsTotal > 0 && (
+                  <FinancialKPICard icon="ti-plus" label="Additions">
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-[32px] font-semibold" style={{ color: 'var(--color-financial-net)' }}>+</span>
+                      <FinancialAmount amount={additionsTotal} currency={cur} basis="net" size="xl" />
+                    </div>
+                  </FinancialKPICard>
+                )}
+
+                {/* Card C — Billed to date */}
+                {billedToDate > 0 && (
+                  <FinancialKPICard
+                    icon="ti-file-invoice" label={isCompleted ? 'Realised TCV' : 'Billed to date'}
+                    metaChip={<FinancialMetaTag>Net · excl. VAT</FinancialMetaTag>}
+                  >
+                    <FinancialAmount amount={billedToDate} currency={cur} basis="net" size="xl" />
+                    {/* planned_invoices.base_amount (what billedToDate
+                        sums) is the NET figure sent to the billing
+                        connector — see lib/billing-writer.ts. Gross per
+                        invoice is shown on each issued/scheduled invoice
+                        row below (Billing Summary), computed off the same
+                        lib/vat.ts:computeVat every real invoice push uses;
+                        not re-summed into a second aggregate gross total
+                        here to avoid it silently drifting from the
+                        per-invoice figures if VAT treatment changes
+                        mid-term — no new calculation performed here. */}
+                    <p className="text-[10px] text-stone/40 mt-2">Gross totals shown per invoice below</p>
+                  </FinancialKPICard>
+                )}
+              </div>
+
+                {/* Approve action (only shown before billing is configured) */}
                 {!isConfigured && (() => {
                   // Only block when computeBillingSchedule would return [] —
                   // missing term length is the sole hard blocker.
@@ -6341,6 +6372,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       ? connectedBillingPlatforms[0].charAt(0).toUpperCase() + connectedBillingPlatforms[0].slice(1)
                       : 'billing platform'
                   return (
+                  <div className="px-6 py-4 flex justify-end" style={{ borderTop: '1px solid rgba(26,61,43,0.07)', background: 'rgba(26,61,43,0.02)' }}>
                   <div className="flex flex-col items-end gap-2 flex-shrink-0">
                     {/* Platform selector — only shown when multiple billing platforms connected */}
                     {connectedBillingPlatforms.length > 1 && (
@@ -6389,6 +6421,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       </button>
                     )}
                     {approveError && <p className="text-[10px] text-red-500 max-w-xs">{approveError}</p>}
+                  </div>
                   </div>
                   )
                 })()}

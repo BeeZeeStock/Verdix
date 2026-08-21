@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { computeUserOverage, computeMetricOverage, resolveMinimumCommitment, computeMinimumCommitmentSchedule, monthCursor, type CadenceAnchorMode } from '@/lib/tariff'
 import { isEscalatorUnresolved } from '@/lib/escalator-status'
 import type { OverageTier } from '@/lib/types'
+import { FinancialAmount } from './FinancialAmount'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -2070,10 +2071,13 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
               </div>
             )}
             {creditTotal < 0 && (
-              <div className="border-l-2 border-amber-300 pl-4">
+              // Contractual credits/rebates are not errors or warnings —
+              // financial.credit (sage/emerald), never the amber/warning
+              // family this previously borrowed.
+              <div className="border-l-2 pl-4" style={{ borderColor: 'rgba(74,124,89,0.35)' }}>
                 <p className="text-[10px] text-stone mb-1">Credits applied</p>
-                <p className="text-lg font-semibold" style={{ color: '#B45309', fontVariantNumeric: 'tabular-nums' }}>{fmt(creditTotal, cur)}</p>
-                <p className="text-[10px] text-stone/70">{creditLabels}</p>
+                <FinancialAmount amount={Math.abs(creditTotal)} currency={cur} basis="credit" size="lg" negative />
+                <p className="text-[10px] text-stone/70 mt-1">{creditLabels}</p>
               </div>
             )}
           </div>
