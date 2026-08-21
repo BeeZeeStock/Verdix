@@ -4837,193 +4837,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 <BillingModelBadge model={billingModel} />
               </div>
 
-              {/* Confirmed rules — generated from the approved, normalized model
-                  (a reviewer's rule-interpretation flow). Reviewer/timestamp/
-                  source come from the commercial_rule_interpretations audit
-                  trail; the rule content itself comes from contract_terms
-                  (the current operational value) so this can never show a
-                  stale interpretation if the audit lookup fails. "Edit
-                  interpretation" re-opens the same in-panel flow used to
-                  confirm it in the first place — approving a new proposal
-                  creates a new revision, never overwrites the old one. */}
-              {(() => {
-                const confirmedMinimums = new Map<string, Tier>()
-                for (const t of tiers) {
-                  if (!t.unit_type || !t.minimum_commitment || confirmedMinimums.has(t.unit_type)) continue
-                  // Mode/allowance mechanics only — NOT the flat DB
-                  // requires_confirmation flag, which also folds in the
-                  // partial-period question (rendered as its own inline
-                  // "Needs confirmation" line below, lines ~3900-3908). An
-                  // explicit floor with no allowance shows here as
-                  // Confirmed even while only its partial-period treatment
-                  // remains open, instead of hiding the whole clear-cut
-                  // mode/amount/period behind an unrelated open question.
-                  const hasAllowance = tiers.some(ft => ft.unit_type === t.unit_type && (ft.rate_per_unit ?? 0) === 0)
-                  if (isMinimumCommitmentModeUnresolved(t.minimum_commitment, hasAllowance)) continue
-                  confirmedMinimums.set(t.unit_type, t)
-                }
-                // Only a genuinely valid treatment ('applies' or 'not_applied') counts
-                // as confirmed here — an interpretation predating the treatment field
-                // (or otherwise missing it) is not safe to render as "Confirmed" even
-                // if requires_confirmation happens to be false; it needs to be
-                // re-resolved via "Edit interpretation" instead of displayed as-is.
-                const confirmedEscalators = (terms?.escalators ?? []).filter(e =>
-                  e.interpretation && !e.interpretation.requires_confirmation
-                  && (e.interpretation.treatment === 'applies' || e.interpretation.treatment === 'not_applied')
-                )
-                if (confirmedMinimums.size === 0 && confirmedEscalators.length === 0) return null
-                const modeLabel: Record<string, string> = {
-                  floor: 'Minimum charge floor', additive: 'Additive fee', minimum_spend: 'Spend commitment',
-                  prepaid_commitment: 'Prepaid commitment', minimum_quantity: 'Minimum quantity',
-                }
-                const findAudit = (ruleType: string, unitType: string | null) =>
-                  ruleInterpretations.find(r => r.rule_type === ruleType && r.contract_unit_type === unitType)
-                return (
-                  <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                    <p className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-3">Confirmed rules</p>
-                    <div className="grid grid-cols-2 gap-4">
-                      {Array.from(confirmedMinimums.entries()).map(([unitType, t]) => {
-                        const mc = t.minimum_commitment!
-                        const editKey = `min:${unitType}`
-                        const audit = findAudit('minimum_commitment', unitType)
-                        return (
-                          <div key={unitType} className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
-                            <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">{modeLabel[mc.mode] ?? mc.mode}</p>
-                            <p className="text-lg font-semibold text-ink mb-1">
-                              {fmt(mc.amount, cur)}{ruleCadenceLabel(mc.period, t.reset_anchor) ? ` / ${ruleCadenceLabel(mc.period, t.reset_anchor)}` : ''}
-                            </p>
-                            <p className="text-[11px] text-stone">Applies to: <span className="font-medium text-ink">{unitType}</span></p>
-                            {mc.mode === 'additive' ? (
-                              // An additive fee isn't itself "before/after the allowance" —
-                              // it's charged regardless of usage; the allowance only affects
-                              // whether the usage portion of the bill is zero or not. Stating
-                              // it as an allowance-interaction reads as if the fee's timing
-                              // depended on the allowance, which it doesn't.
-                              <p className="text-[11px] text-stone">
-                                Treatment: <span className="font-medium text-ink">
-                                  {fmt(mc.amount, cur)} added to the {t.measurement_period ?? ''} {unitType} usage charge, independent of the included allowance
-                                </span>
-                              </p>
-                            ) : (() => {
-                              // Plain business language, not the raw enum — "after allowance"
-                              // exposes an internal field name rather than saying what it
-                              // means for billing. Reuses the metric's own $0-rate tier
-                              // (not a separate calculation) for the included-unit count.
-                              // Gated on the allowance tier actually EXISTING, not just on
-                              // included_allowance_interaction being truthy — extraction can
-                              // leave that enum at "unclear" purely as a leftover from a
-                              // conflated ambiguity flag even when this metric has no
-                              // allowance at all, which must never render as a live question.
-                              const freeTier = tiers.find(ft => ft.unit_type === unitType && (ft.rate_per_unit ?? 0) === 0)
-                              if (!freeTier || !mc.included_allowance_interaction) return null
-                              const includedCount = freeTier.to_unit
-                              const interaction = mc.included_allowance_interaction
-                              const text = interaction === 'unclear'
-                                ? "Needs confirmation — the contract doesn't state whether the minimum applies before or after the included allowance."
-                                : interaction === 'before_allowance'
-                                  ? `The minimum applies to all usage, including the ${includedCount != null ? `first ${includedCount.toLocaleString()} ` : ''}included units.`
-                                  : includedCount != null
-                                    ? `First ${includedCount.toLocaleString()} ${unitType} included before minimum evaluation.`
-                                    : 'The included allowance is applied before the minimum is evaluated.'
-                              return (
-                                <p className="text-[11px] text-stone">Allowance treatment: <span className="font-medium text-ink">{text}</span></p>
-                              )
-                            })()}
-                            {/* Two separately-labeled statuses, never one blanket "Confirmed"
-                                — "Core minimum rule: Confirmed" describes ONLY mode/amount/
-                                period/allowance (what isMinimumCommitmentModeUnresolved
-                                actually checks). Partial-period policy is a genuinely separate
-                                question with its own status line immediately below, so
-                                "Confirmed" here can never be misread as "this rule is fully
-                                billing-ready" while a partial-period decision is still open. */}
-                            <p className="text-[10px] text-stone/60 mt-2">
-                              Core minimum rule: <span className="font-medium" style={{ color: '#0B5C36' }}>{audit ? 'Confirmed' : 'Clear from source'}</span>
-                              {audit && <> by {audit.reviewer_name ?? audit.reviewer_email} · {fmtDate(audit.created_at)}</>}
-                            </p>
-                            {/* Partial-quarter (etc.) treatment is only a live question under
-                                calendar anchoring — contract_start anchoring never produces a
-                                partial window at all, so this line only appears when it can
-                                actually matter (mirrors computePartialPeriodMetrics exactly). */}
-                            {t.reset_anchor === 'calendar' && (
-                              mc.prorate_partial_periods === 'unclear' ? (
-                                <div className="mt-1 flex items-center justify-between gap-2">
-                                  <p className="text-[11px] text-amber-700">
-                                    <i className="ti ti-alert-triangle mr-1" style={{ fontSize: 10 }} />
-                                    Partial-period policy: Decision required
-                                  </p>
-                                  <button onClick={() => setEditingRule(`partial:${unitType}`)} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg flex-shrink-0" style={{ background: '#1A3D2B', color: 'white' }}>Resolve</button>
-                                </div>
-                              ) : (
-                                <p className="text-[11px] text-stone mt-1">
-                                  Partial-period policy: <span className="font-medium text-ink">{mc.prorate_partial_periods === true ? 'Prorated' : 'Full amount charged'}</span>
-                                </p>
-                              )
-                            )}
-                            <div className="flex items-center gap-3 mt-2">
-                              {src.overage_tiers && (
-                                <button onClick={() => openPDF(src.overage_tiers)} className="text-[11px] font-medium text-forest hover:underline">View source ↗</button>
-                              )}
-                              <button onClick={() => setEditingRule(editKey)} className="text-[11px] font-medium text-stone hover:text-ink">Edit interpretation</button>
-                            </div>
-                          </div>
-                        )
-                      })}
-                      {confirmedEscalators.map((e, i) => {
-                        const editKey = `esc:${i}`
-                        const audit = findAudit('escalator', null)
-                        // treatment is an explicit reviewer decision, not inferred
-                        // from empty fields — 'not_applied' means "confirmed: this
-                        // clause does not run," never shown alongside contradictory
-                        // "unresolved"/"pending" language the way the old heuristic
-                        // (guessing from empty index/cap) sometimes did.
-                        const notApplied = e.interpretation!.treatment === 'not_applied'
-                        // What the extraction found is preserved and shown even
-                        // when the reviewer excluded it — Verdix keeps what the
-                        // agreement contained distinct from what actually runs.
-                        const sourceTerm = e.escalator_type
-                          ? `${e.escalator_type.replace(/_/g, ' ').replace(/\bcpi\b/i, 'CPI')}-linked escalation detected`
-                          : e.description || null
-                        return (
-                          <div key={i} className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
-                            <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">Price escalation</p>
-                            {notApplied ? (
-                              <>
-                                {sourceTerm && (
-                                  <p className="text-[11px] text-stone">Source term: <span className="font-medium text-ink">{sourceTerm}</span></p>
-                                )}
-                                <p className="text-lg font-semibold text-ink mb-1 mt-1">Operational treatment: Not applied</p>
-                                <p className="text-[11px] text-stone">Reviewer decision: exclude the escalation clause.</p>
-                              </>
-                            ) : (
-                              <>
-                                <p className="text-lg font-semibold text-ink mb-1">
-                                  {e.interpretation!.index}{e.interpretation!.cap_pct != null ? `, capped ${e.interpretation!.cap_pct}%` : e.interpretation!.index !== 'other' ? ', uncapped' : ''}
-                                </p>
-                                <p className="text-[11px] text-stone">{e.interpretation!.calculation_method}</p>
-                                <p className="text-[11px] text-stone">Frequency: <span className="font-medium text-ink">{e.interpretation!.frequency}</span></p>
-                                {e.interpretation!.effective_date && (
-                                  <p className="text-[11px] text-stone">Effective: <span className="font-medium text-ink">{fmtDate(e.interpretation!.effective_date)}</span></p>
-                                )}
-                              </>
-                            )}
-                            <p className="text-[10px] text-stone/60 mt-2">
-                              Status: <span className="font-medium" style={{ color: '#0B5C36' }}>Confirmed</span>
-                              {audit && <> by {audit.reviewer_name ?? audit.reviewer_email} · {fmtDate(audit.created_at)}</>}
-                            </p>
-                            <div className="flex items-center gap-3 mt-2">
-                              {src.escalators && (
-                                <button onClick={() => openPDF(src.escalators)} className="text-[11px] font-medium text-forest hover:underline">View source ↗</button>
-                              )}
-                              <button onClick={() => setEditingRule(editKey)} className="text-[11px] font-medium text-stone hover:text-ink">Edit interpretation</button>
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )
-              })()}
-
               {/* Discounts */}
               {(terms?.discounts?.length ?? 0) > 0 && (
                 <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
@@ -5217,7 +5030,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         ? `Effective ${fmtDate(e.effective_date)}${e.cap_pct ? ` · capped at ${e.cap_pct}%` : ''}`
                         : e.description ?? undefined
                       // The reviewer's confirmed decision governs what actually
-                      // runs (see the Confirmed rules card above) — when that
+                      // runs (see the Confirmed billing rules section) — when that
                       // decision was "not applied", this raw extracted row must
                       // never look like an active billing parameter, since
                       // nothing here re-checks the confirmed state on its own.
@@ -6139,6 +5952,38 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
                   onViewSource: src.overage_tiers ? () => openPDF(src.overage_tiers) : undefined,
                   onEdit: () => setEditingRule(`min:${unitType}`),
+                })
+              }
+
+              // Price escalation — only once a genuinely valid treatment
+              // ('applies' or 'not_applied') is on record; an interpretation
+              // predating the treatment field (or otherwise missing it) is
+              // not safe to render as confirmed, it needs re-resolving via
+              // Edit interpretation instead of being displayed as-is.
+              for (const [i, e] of (terms?.escalators ?? []).entries()) {
+                const interp = e.interpretation
+                if (!interp || interp.requires_confirmation || (interp.treatment !== 'applies' && interp.treatment !== 'not_applied')) continue
+                const notApplied = interp.treatment === 'not_applied'
+                const audit = findAudit('escalator', null)
+                const sourceTerm = e.escalator_type
+                  ? `${e.escalator_type.replace(/_/g, ' ').replace(/\bcpi\b/i, 'CPI')}-linked escalation detected`
+                  : e.description || null
+                cards.push({
+                  key: `esc:${i}`,
+                  typeLabel: 'Price escalation',
+                  title: notApplied ? 'Not applied' : `${interp.index}${interp.cap_pct != null ? `, capped ${interp.cap_pct}%` : interp.index !== 'other' ? ', uncapped' : ''}`,
+                  sourceClause: sourceTerm,
+                  interpretation: notApplied
+                    ? 'Reviewer decision: exclude the escalation clause — what the extraction found is preserved above even though it does not run.'
+                    : (interp.calculation_method ?? ''),
+                  params: notApplied ? [] : [
+                    { label: 'Frequency', value: interp.frequency ?? '—' },
+                    ...(interp.effective_date ? [{ label: 'Effective', value: fmtDate(interp.effective_date) }] : []),
+                  ],
+                  provenance: [{ label: 'Escalation treatment', value: audit?.decision_provenance }],
+                  auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
+                  onViewSource: src.escalators ? () => openPDF(src.escalators) : undefined,
+                  onEdit: () => setEditingRule(`esc:${i}`),
                 })
               }
 
