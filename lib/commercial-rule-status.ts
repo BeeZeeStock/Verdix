@@ -312,3 +312,65 @@ export function computeCommercialRuleWorkload(
     blockers,
   }
 }
+
+// Deterministic, extraction-time signal for whether a service credit's
+// application scope AND survival/repeatability are ALREADY textually
+// resolved in its own persisted source_clause/description — computed from
+// already-extracted data alone, never from an AI proposal or review-panel
+// interaction. This is what makes the classification stable from the very
+// first page load: it does not matter whether, or in what order, a
+// reviewer has opened any card, because nothing about opening a card
+// changes source_clause/description. Deliberately conservative — modeled
+// on the same "require explicit textual grounding" discipline as
+// EXCLUSION_LANGUAGE_RE (lib/contract-extractor.ts) and
+// buildServiceCreditProposalPrompt's own carry_forward/one_time guidance —
+// a false negative (still shown as a "decision" when it could have been a
+// confirmation) is the safe failure mode; a false positive is not, so ALL
+// of eligibility, carry-forward, and repeatability must have an explicit
+// textual marker before this returns true. Verified against TEST-PAY-002's
+// real three credits: Growth Credit's clause contains "one-time" (in its
+// description), "may be applied only against" (eligibility), and "will
+// carry forward" (survival) — all three markers, so it classifies as
+// resolved. The Annual Rebate and Service Credit clauses both state
+// eligibility explicitly but contain no carry-forward language at all —
+// genuinely silent on that question — so neither classifies as resolved,
+// matching their real decision_required survival_state.
+const ONE_TIME_MARKER_RE = /\bone[\s-]time\b/i
+// A trigger window the contract itself defines as recurring (e.g. "each
+// consecutive 12-month period... or an anniversary") is textual grounding
+// that the SAME earning event is not a single, one-off occurrence — see
+// buildServiceCreditProposalPrompt's identical guidance for why this is
+// evidence, not silence.
+const RECURRING_DEFINED_TERM_RE = /\beach\s+consecutive\b|\bany\s+calendar\b|\bthe\s+applicable\s+calendar\b/i
+const CARRY_FORWARD_MARKER_RE = /\bcarr(?:y|ies)\s+forward\b/i
+const ELIGIBILITY_MARKER_RE = /\bapplies?\s+only\s+to\b|\bapplied\s+only\s+against\b|\bmay\s+be\s+applied\s+(?:only\s+)?against\b|\bapplied\s+against\b|\bdoes\s+not\s+apply\s+to\b/i
+
+export function isServiceCreditFullySourceResolved(credit: { source_clause?: string | null; description?: string | null }): boolean {
+  const text = `${credit.description ?? ''} ${credit.source_clause ?? ''}`
+  const hasEligibilityMarker = ELIGIBILITY_MARKER_RE.test(text)
+  const hasSurvivalMarker = CARRY_FORWARD_MARKER_RE.test(text) && (ONE_TIME_MARKER_RE.test(text) || RECURRING_DEFINED_TERM_RE.test(text))
+  return hasEligibilityMarker && hasSurvivalMarker
+}
+
+// Presentational split of an already-computed blocker count — never changes
+// totalToConfirm/blockers itself, only distinguishes "genuinely needs a
+// reviewer decision among options" from "already fully source-resolved,
+// just needs a single Confirm & apply click" (e.g. Growth Credit). Scoped
+// to service_credit keys today, the exact case this distinction exists
+// for; other item types (base_fee_proration, partial_period, ...) don't
+// yet have an equivalent deterministic textual-resolution signal, so they
+// stay classified as decisions rather than risk a wrong guess.
+export function countSourceConfirmations(
+  blockers: string[],
+  serviceCredits: Array<{ credit_rule_id?: string; source_clause?: string | null; description?: string | null }> | null | undefined,
+): number {
+  if (!serviceCredits) return 0
+  let count = 0
+  for (const key of blockers) {
+    if (!key.startsWith('service_credit:')) continue
+    const id = key.slice('service_credit:'.length)
+    const credit = serviceCredits.find(c => c.credit_rule_id === id)
+    if (credit && isServiceCreditFullySourceResolved(credit)) count++
+  }
+  return count
+}

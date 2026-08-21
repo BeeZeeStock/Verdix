@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, type CommercialRuleTerms } from './commercial-rule-status'
+import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isServiceCreditFullySourceResolved, type CommercialRuleTerms } from './commercial-rule-status'
 
 describe('computeCommercialRuleWorkload — "all confirmed" must check every rule type (regression)', () => {
   it('minimum commitment, tier calculation, escalator, and meter mapping all confirmed but a discount is NOT: never all_commercial_rules_confirmed', () => {
@@ -305,5 +305,93 @@ describe('computeCommercialRuleWorkload.blockers — every blocker key traces to
       'service_credit:716f7088',
     ])
     expect(workload.totalToConfirm).toBe(5)
+  })
+})
+
+describe('isServiceCreditFullySourceResolved — deterministic, extraction-time only, no AI/cache/interaction involved', () => {
+  // Real TEST-PAY-002 clauses, verbatim.
+  const growthCredit = {
+    description: 'One-time SEK 110,000 Growth Credit earned when more than 300,000 Transactions are processed in each of three consecutive calendar months; applicable only against future transaction-processing fees',
+    source_clause: 'Customer will earn a one-time SEK 110,000 Growth Credit if Customer processes more than 300,000 Transactions in each of three consecutive calendar months. The Growth Credit becomes earned only after the third qualifying consecutive calendar month has been completed. The Growth Credit: may be applied only against future transaction-processing fees; may not be applied against platform fees; may not be applied against chargeback fees; will not be paid in cash. If the amount of transaction-processing fees in the first billing period following the credit becoming available is less than the remaining Growth Credit, the unused portion will carry forward and may be applied against future transaction-processing fees until fully used.',
+  }
+  const annualRebate = {
+    description: 'Annual volume rebate of 5% of transaction-processing fees if more than 2,000,000 Transactions processed in a Contract Year',
+    source_clause: 'If Customer processes more than 2,000,000 Transactions during a Contract Year, Customer will be entitled to a rebate equal to 5% of the transaction-processing fees paid for that Contract Year. For purposes of this clause, the rebate applies only to transaction-processing fees under Section 3. The rebate does not apply to: platform fees; chargeback fees; other fees or charges. Any rebate earned will be calculated after the end of the applicable Contract Year and credited to Customer within 45 days after Contract Year-end.',
+  }
+  const serviceCredit = {
+    description: 'Service availability credit of SEK 5,500 per complete hour of excess unavailability, capped at SEK 55,000 per calendar month',
+    source_clause: 'If FluxPay fails to meet the applicable service-availability commitment, Customer will be entitled to SEK 5,500 for each complete hour of excess service unavailability during the applicable calendar month. The total service credit for any calendar month is capped at SEK 55,000. Service credits will be applied against future amounts payable under this Agreement.',
+  }
+
+  it('Growth Credit: eligibility ("applied only against"), one-time, and carry-forward are all textually explicit — fully resolved', () => {
+    expect(isServiceCreditFullySourceResolved(growthCredit)).toBe(true)
+  })
+
+  it('Annual Rebate: eligibility is explicit, but the clause never mentions carry-forward at all — NOT fully resolved, stays a decision', () => {
+    expect(isServiceCreditFullySourceResolved(annualRebate)).toBe(false)
+  })
+
+  it('Service Credit: eligibility is explicit, but no carry-forward language — NOT fully resolved, stays a decision', () => {
+    expect(isServiceCreditFullySourceResolved(serviceCredit)).toBe(false)
+  })
+
+  it('a credit with carry-forward language but no eligibility/repeatability marker is NOT fully resolved — all markers required, not just one', () => {
+    expect(isServiceCreditFullySourceResolved({
+      description: 'Loyalty credit', source_clause: 'Any unused credit will carry forward to the next billing period.',
+    })).toBe(false)
+  })
+
+  it('a credit with no source_clause or description at all is NOT fully resolved', () => {
+    expect(isServiceCreditFullySourceResolved({})).toBe(false)
+  })
+})
+
+describe('countSourceConfirmations — presentational split, never changes the underlying blocker count, derived from persisted extraction data only', () => {
+  const blockers = ['partial_period:transaction', 'base_fee_proration', 'service_credit:rebate', 'service_credit:growth', 'service_credit:service']
+  const growthCredit = {
+    credit_rule_id: 'growth',
+    description: 'One-time SEK 110,000 Growth Credit',
+    source_clause: 'Customer will earn a one-time SEK 110,000 Growth Credit. The Growth Credit may be applied only against future transaction-processing fees. The unused portion will carry forward and may be applied against future transaction-processing fees until fully used.',
+  }
+  const rebate = {
+    credit_rule_id: 'rebate',
+    description: 'Annual volume rebate',
+    source_clause: 'The rebate applies only to transaction-processing fees under Section 3. Any rebate earned will be credited within 45 days after Contract Year-end.',
+  }
+  const serviceCredits = [growthCredit, rebate]
+
+  it('counts only the service_credit blockers whose OWN persisted source_clause/description clear the deterministic bar', () => {
+    expect(countSourceConfirmations(blockers, serviceCredits)).toBe(1)
+  })
+
+  it('never counts non-service_credit blocker keys', () => {
+    expect(countSourceConfirmations(['base_fee_proration', 'partial_period:transaction'], serviceCredits)).toBe(0)
+  })
+
+  it('does not count a blocker whose credit_rule_id cannot be found in the supplied list', () => {
+    expect(countSourceConfirmations(['service_credit:unknown'], serviceCredits)).toBe(0)
+  })
+
+  it('handles a missing/null serviceCredits list without throwing', () => {
+    expect(countSourceConfirmations(blockers, null)).toBe(0)
+    expect(countSourceConfirmations(blockers, undefined)).toBe(0)
+  })
+
+  // Regression for the exact instability this function existed to fix: the
+  // classification must depend ONLY on the credits' own persisted
+  // source_clause/description — never on whether a reviewer has opened a
+  // card, triggered a propose-rule call, or otherwise populated an AI
+  // proposal cache. The function signature itself no longer accepts any
+  // interaction/cache-shaped argument, so this is structurally guaranteed,
+  // not just true by coincidence — this test pins that guarantee down by
+  // calling with the identical `serviceCredits` input multiple times (as if
+  // called once before any card was opened, and again after a reviewer had
+  // opened every card and populated a full proposal cache) and asserting
+  // the result never changes.
+  it('is stable across repeated calls with the same persisted data — opening a card / populating a proposal cache cannot change the result, because no such input exists', () => {
+    const beforeAnyCardOpened = countSourceConfirmations(blockers, serviceCredits)
+    const afterEveryCardOpened = countSourceConfirmations(blockers, serviceCredits) // same persisted input — nothing about "opening a card" is representable here
+    expect(afterEveryCardOpened).toBe(beforeAnyCardOpened)
+    expect(beforeAnyCardOpened).toBe(1)
   })
 })

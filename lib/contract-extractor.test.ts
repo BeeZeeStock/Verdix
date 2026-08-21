@@ -122,6 +122,52 @@ describe('applyExtractionSafetyNets — single-chunk extraction path (scenario: 
     expect(terms.base_fee_proration?.prorate_partial_periods).toBe('unclear')
   })
 
+  // Regression: flagAmbiguousBaseFeeProration is a purely structural check
+  // (day-of-month) with no clause-level reasoning of its own, so it used to
+  // hardcode source_clause: null unconditionally — even though the real §2
+  // text was available via field_sources.base_monthly_fee (a section
+  // heading the model already extracts) plus the raw contract text. That
+  // null then flowed into propose-rule's prompt as "(not captured)", which
+  // the model echoed back verbatim in its reasoning — a real, user-visible
+  // contradiction next to the page's own "Contract §2 — View source clause"
+  // link, which proves the clause WAS located. Verified against
+  // TEST-PAY-002's actual signed PDF text.
+  it('populates source_clause with the real §2 text when contractText and a matching field_sources heading are both available', () => {
+    const contractText = [
+      '1. Services',
+      '',
+      'FluxPay will provide access to its platform.',
+      '',
+      '2. Platform Fee',
+      '',
+      'Customer will pay a fixed platform fee of:',
+      '',
+      'SEK 38,500 per month',
+      '',
+      'The platform fee is billed monthly in advance.',
+      '',
+      '3. Transaction Processing Fees',
+      '',
+      'For each calendar month, the applicable rate will be determined by volume.',
+    ].join('\n')
+    const terms = applyExtractionSafetyNets(chunk({
+      contract_start_date: '2026-08-17', base_monthly_fee: 38_500, base_fee_proration: null,
+      field_sources: { base_monthly_fee: '2. Platform Fee' },
+    } as Partial<ContractTerms>), contractText)
+    expect(terms.base_fee_proration?.source_clause).toContain('SEK 38,500 per month')
+    expect(terms.base_fee_proration?.source_clause).toContain('billed monthly in advance')
+    // Must not bleed into the next section.
+    expect(terms.base_fee_proration?.source_clause).not.toContain('Transaction Processing')
+  })
+
+  it('leaves source_clause null (not a fabricated guess) when contractText is unavailable or the heading cannot be located', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      contract_start_date: '2026-08-17', base_monthly_fee: 38_500, base_fee_proration: null,
+      field_sources: { base_monthly_fee: '2. Platform Fee' },
+    } as Partial<ContractTerms>), 'Some contract text with no matching heading at all.')
+    expect(terms.base_fee_proration?.source_clause).toBeNull()
+  })
+
   it('does not flag base fee proration when the contract start already falls on a calendar boundary', () => {
     const terms = applyExtractionSafetyNets(chunk({
       contract_start_date: '2026-08-01', base_monthly_fee: 38_500, base_fee_proration: null,

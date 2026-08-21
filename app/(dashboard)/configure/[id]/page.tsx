@@ -15,7 +15,7 @@ import { computeBaseTcv, contractLifecycleStatus } from '@/lib/contract-tcv-calc
 import { ruleCadenceLabel, cadenceNoun, contractMonthLabel } from '@/lib/cadence-labels'
 import { optionsForRuleType, optionsForEdit, deriveSelectedOption, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
-import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved } from '@/lib/commercial-rule-status'
+import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations } from '@/lib/commercial-rule-status'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
@@ -2242,6 +2242,18 @@ function ReviewPanel({
   const vatOutstandingInPanel = !commercialWorkload.vat.configured
   const needsReviewInPanel = items.filter(i => i.confidence_score < 0.95 && !(i.id in corrections)).length
   const totalBlockers = commercialDecisionsOutstanding + usageMappingsOutstanding + (vatOutstandingInPanel ? 1 : 0) + needsReviewInPanel
+  // Same presentational split as the main page's readinessBreakdown — see
+  // countSourceConfirmations. Derived from serviceCredits' own persisted
+  // source_clause/description, never from AI-proposal/interaction state.
+  const sourceConfirmationsInPanel = countSourceConfirmations(commercialWorkload.blockers, serviceCredits)
+  const genuineDecisionsInPanel = commercialDecisionsOutstanding - sourceConfirmationsInPanel
+  const readinessBreakdownInPanel = [
+    genuineDecisionsInPanel > 0 && `${genuineDecisionsInPanel} commercial decision${genuineDecisionsInPanel > 1 ? 's' : ''}`,
+    sourceConfirmationsInPanel > 0 && `${sourceConfirmationsInPanel} source confirmation${sourceConfirmationsInPanel > 1 ? 's' : ''}`,
+    usageMappingsOutstanding > 0 && `${usageMappingsOutstanding} usage mapping${usageMappingsOutstanding > 1 ? 's' : ''}`,
+    vatOutstandingInPanel && '1 VAT',
+    needsReviewInPanel > 0 && `${needsReviewInPanel} extracted field${needsReviewInPanel > 1 ? 's' : ''}`,
+  ].filter((x): x is string => typeof x === 'string')
 
   const resolvedCount = items.filter(i => resolved[i.id] || i.id in corrections).length
   // Same canonical readiness as totalBlockers above — not the old
@@ -2563,7 +2575,7 @@ function ReviewPanel({
             <p className="text-xs text-stone mt-0.5">
               {totalBlockers === 0
                 ? <span className="font-medium" style={{ color: '#0B5C36' }}>All confirmed · Ready to approve</span>
-                : `${totalBlockers} decision${totalBlockers > 1 ? 's' : ''} outstanding`}
+                : `${totalBlockers} item${totalBlockers > 1 ? 's' : ''} to review — ${readinessBreakdownInPanel.join(' · ')}`}
             </p>
           </div>
           <button
@@ -2948,7 +2960,7 @@ function ReviewPanel({
                     card above (or may have none at all if it doesn't map to
                     a structured rule type). It is a point-in-time snapshot,
                     not a live list of outstanding decisions — the review
-                    cards above and the "decisions outstanding" count are the
+                    cards above and the "items to review" count are the
                     live signal for what's actually still open. */}
                 <p className="text-[10px] text-stone/70 italic mt-2">
                   Reflects the original extraction — a decision mentioned here may already be resolved by a review card above; it is not itself a live outstanding-decision indicator.
@@ -3917,8 +3929,19 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // computed boolean, so this page and the drawer can never disagree about
   // whether VAT is outstanding.
   const vatOutstanding = !commercialRuleWorkload.vat.configured
+  // Presentational split ONLY — sourceConfirmationsOutstanding is a subset
+  // of commercialDecisionsOutstanding (never added to totalOutstanding
+  // separately), distinguishing "already fully source-resolved, just needs
+  // a Confirm & apply click" (e.g. Growth Credit) from an item that
+  // genuinely needs a reviewer to choose among options. Derived from
+  // terms.service_credits' own persisted source_clause/description (see
+  // countSourceConfirmations) — stable from initial page load, independent
+  // of which cards a reviewer has opened.
+  const sourceConfirmationsOutstanding = countSourceConfirmations(commercialRuleWorkload.blockers, terms?.service_credits)
+  const genuineDecisionsOutstanding = commercialDecisionsOutstanding - sourceConfirmationsOutstanding
   const readinessBreakdown = [
-    commercialDecisionsOutstanding > 0 && `${commercialDecisionsOutstanding} commercial decision${commercialDecisionsOutstanding > 1 ? 's' : ''} outstanding`,
+    genuineDecisionsOutstanding > 0 && `${genuineDecisionsOutstanding} commercial decision${genuineDecisionsOutstanding > 1 ? 's' : ''} outstanding`,
+    sourceConfirmationsOutstanding > 0 && `${sourceConfirmationsOutstanding} source confirmation${sourceConfirmationsOutstanding > 1 ? 's' : ''} outstanding`,
     usageMappingsOutstanding > 0 && `${usageMappingsOutstanding} usage mapping${usageMappingsOutstanding > 1 ? 's' : ''} outstanding`,
     vatOutstanding && 'VAT not configured',
     needsReview > 0 && `${needsReview} extracted field${needsReview > 1 ? 's' : ''} below confidence threshold`,

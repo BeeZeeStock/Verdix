@@ -183,6 +183,13 @@ export async function POST(
   const client = getAIClient()
   let prompt: string
   let sourceClauseAvailable = !!sourceClause
+  // Captured alongside sourceClauseAvailable in every branch below — the
+  // grounded fallback reasoning (used if the AI call fails or returns
+  // something unparsable) quotes this instead of a bare apology, so a
+  // reviewer facing a failed AI call still sees the real clause and can act
+  // on it, exactly the same information the successful-path reasoning
+  // would have started from.
+  let resolvedSourceClause: string | null = sourceClause ?? null
 
   if (ruleType === 'minimum_commitment') {
     if (!contractUnitType) return NextResponse.json({ error: 'contractUnitType is required for minimum_commitment' }, { status: 400 })
@@ -192,9 +199,10 @@ export async function POST(
     const existingMinimum = tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0)
     const extractedClause = tiers.find(t => t.minimum_commitment?.source_clause)?.minimum_commitment?.source_clause
     sourceClauseAvailable = sourceClauseAvailable || !!extractedClause
+    resolvedSourceClause = sourceClauseFor(extractedClause, sourceClause)
     const context: MinimumCommitmentContext = {
       contractUnitType,
-      sourceClause: sourceClauseFor(extractedClause, sourceClause),
+      sourceClause: resolvedSourceClause,
       currency,
       includedUnits: includedTier?.to_unit ?? 0,
       tiers: paidTiers.map(t => ({ tier_label: t.tier_label, from_unit: t.from_unit, to_unit: t.to_unit, rate_per_unit: t.rate_per_unit })),
@@ -210,9 +218,10 @@ export async function POST(
     // not a separate one — reuse its extracted source_clause.
     const extractedClause = tiers.find(t => t.minimum_commitment?.source_clause)?.minimum_commitment?.source_clause
     sourceClauseAvailable = sourceClauseAvailable || !!extractedClause
+    resolvedSourceClause = sourceClauseFor(extractedClause, sourceClause)
     const context: PartialPeriodContext = {
       contractUnitType,
-      sourceClause: sourceClauseFor(extractedClause, sourceClause),
+      sourceClause: resolvedSourceClause,
       currency,
       contractStartDate: terms.contract_start_date,
       contractEndDate: terms.contract_end_date,
@@ -242,9 +251,10 @@ export async function POST(
       extractedClause = fee.proration?.source_clause ?? fee.description
     }
     sourceClauseAvailable = sourceClauseAvailable || !!extractedClause
+    resolvedSourceClause = sourceClauseFor(extractedClause, sourceClause)
     const context: PartialPeriodContext = {
       contractUnitType: subjectLabel,
-      sourceClause: sourceClauseFor(extractedClause, sourceClause),
+      sourceClause: resolvedSourceClause,
       currency,
       contractStartDate: terms.contract_start_date,
       contractEndDate: terms.contract_end_date,
@@ -256,8 +266,9 @@ export async function POST(
   } else if (ruleType === 'escalator') {
     const escalator = (terms.escalators ?? [])[0]
     sourceClauseAvailable = sourceClauseAvailable || !!escalator?.description
+    resolvedSourceClause = sourceClauseFor(escalator?.description, sourceClause)
     const context: EscalatorContext = {
-      sourceClause: sourceClauseFor(escalator?.description, sourceClause),
+      sourceClause: resolvedSourceClause,
       description: escalator?.description ?? '',
       capPct: escalator?.cap_pct ?? null,
       effectiveDate: escalator?.effective_date ?? null,
@@ -270,8 +281,9 @@ export async function POST(
       ?? (Number.isInteger(Number(discountId)) ? discounts[Number(discountId)] : undefined)
     if (!discount) return NextResponse.json({ error: `Discount '${discountId}' not found on this job` }, { status: 404 })
     sourceClauseAvailable = sourceClauseAvailable || !!discount.description
+    resolvedSourceClause = sourceClauseFor(discount.description, sourceClause)
     const context: DiscountContext = {
-      sourceClause: sourceClauseFor(discount.description, sourceClause),
+      sourceClause: resolvedSourceClause,
       description: discount.description ?? '',
       currency,
       existingPct: discount.discount_pct ?? null,
@@ -285,9 +297,10 @@ export async function POST(
     const tiers = (terms.overage_tiers ?? []).filter(t => t.unit_type === contractUnitType && (t.rate_per_unit ?? 0) > 0)
     const extractedClause = tiers.find(t => t.tier_calculation?.source_clause)?.tier_calculation?.source_clause
     sourceClauseAvailable = sourceClauseAvailable || !!extractedClause
+    resolvedSourceClause = sourceClauseFor(extractedClause, sourceClause)
     const context: TierCalculationContext = {
       contractUnitType,
-      sourceClause: sourceClauseFor(extractedClause, sourceClause),
+      sourceClause: resolvedSourceClause,
       currency,
       tiers: tiers.map(t => ({ tier_label: t.tier_label, from_unit: t.from_unit, to_unit: t.to_unit, rate_per_unit: t.rate_per_unit })),
     }
@@ -298,8 +311,9 @@ export async function POST(
       ?? (Number.isInteger(Number(creditId)) ? credits[Number(creditId)] : undefined)
     if (!credit) return NextResponse.json({ error: `Service credit '${creditId}' not found on this job` }, { status: 404 })
     sourceClauseAvailable = sourceClauseAvailable || !!credit.description || !!credit.source_clause
+    resolvedSourceClause = sourceClauseFor(credit.source_clause, sourceClause)
     const context: ServiceCreditContext = {
-      sourceClause: sourceClauseFor(credit.source_clause, sourceClause),
+      sourceClause: resolvedSourceClause,
       description: credit.description ?? '',
       creditType: credit.credit_type ?? 'other',
       statedPct: credit.stated_pct ?? null,
@@ -329,6 +343,7 @@ export async function POST(
     } else {
       return NextResponse.json({ error: `Malformed interactionKey: ${interactionKey}` }, { status: 400 })
     }
+    resolvedSourceClause = sourceClause ?? otherDescription ?? null
     const context: RuleInteractionContext = {
       creditDescription: credit.description ?? '',
       creditBasisComponent: null,
@@ -352,40 +367,72 @@ export async function POST(
   }
 
   let rawText: string
+  let stopReason: string | undefined
   try {
     const response = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      // Reasoning-tier call (adaptive thinking) — max_tokens caps thinking +
-      // text combined. Confirmed live that high-effort adaptive thinking on
-      // a single credit's application-scope reasoning alone consumed
-      // ~5,993 tokens, leaving zero room for the actual JSON output at a
-      // 6,000 budget. 20,000 leaves real headroom for both.
+      // max_tokens caps the JSON response. 20,000 leaves generous headroom
+      // over a normal structured-proposal response (typically well under
+      // 2,000 tokens) — kept elevated from an earlier reasoning-tier
+      // experiment on this route (see CLAUDE.md's "AI model routing"
+      // section); this call itself is plain Sonnet, no thinking.
       max_tokens: 20000,
       messages: [{ role: 'user', content: prompt }],
     })
     const content = response.content[0]
     if (content.type !== 'text') throw new Error('Unexpected response type from Claude')
     rawText = content.text
+    stopReason = (response as unknown as { stop_reason?: string }).stop_reason
   } catch (err) {
     console.error(`[propose-rule] AI call failed for job ${jobId}:`, err)
     return NextResponse.json({ error: 'Verdix could not reach the AI interpretation service. Try again.' }, { status: 502 })
   }
 
+  // Grounded fallback for when the model's response can't be parsed at all
+  // (missing/malformed JSON) — never a bare apology. Reuses the exact
+  // clause this call was built from, so a reviewer facing a failed AI call
+  // still sees the real contract text and the same "silence is silence,
+  // not evidence" framing every prompt above already applies, rather than
+  // an opaque dead end. state stays decision_required / proposed_
+  // interpretation stays null deliberately — a failed call must never
+  // fabricate a confident structured answer.
+  const groundedParseFailureProposal = (): RuleProposal => ({
+    state: 'decision_required',
+    proposed_interpretation: null,
+    reasoning: resolvedSourceClause
+      ? `Verdix could not generate a structured AI proposal for this clause just now. The source clause is: "${resolvedSourceClause}" — review it directly and record a reviewer decision below.`
+      : 'Verdix could not generate a structured AI proposal for this clause just now, and no source clause was captured to review directly — treat this as an open reviewer decision.',
+  })
+
+  // Diagnostic logging for a parse failure — deliberately structural only.
+  // rawText is derived from the customer's own contract text (it's an echo
+  // of/reasoning about the source clause), so it must never be written to
+  // application logs, including in development — only shape/metadata that
+  // can't leak commercial terms, customer names, or clause text.
+  const logParseFailure = (failureType: string, extra: Record<string, unknown> = {}) => {
+    console.error('[propose-rule] parse failure', {
+      jobId, ruleType, failureType, stopReason,
+      responseLength: rawText.length,
+      model: 'claude-sonnet-4-6',
+      ...extra,
+    })
+  }
+
   const jsonMatch = rawText.match(/\{[\s\S]*\}/)
   if (!jsonMatch) {
-    return NextResponse.json({
-      ok: true,
-      proposal: { state: 'decision_required', proposed_interpretation: null, reasoning: 'Verdix could not produce a structured proposal for this clause.' } as RuleProposal,
-    })
+    logParseFailure('no_json_object_found')
+    return NextResponse.json({ ok: true, proposal: groundedParseFailureProposal() })
   }
   let parsedRaw: Record<string, unknown>
   try {
     parsedRaw = JSON.parse(jsonMatch[0]) as Record<string, unknown>
-  } catch {
-    return NextResponse.json({
-      ok: true,
-      proposal: { state: 'decision_required', proposed_interpretation: null, reasoning: 'Verdix could not produce a structured proposal for this clause.' } as RuleProposal,
+  } catch (err) {
+    logParseFailure('json_parse_error', {
+      parserError: err instanceof Error ? err.message : String(err),
+      matchedTextLength: jsonMatch[0].length,
+      matchStartIndex: jsonMatch.index,
     })
+    return NextResponse.json({ ok: true, proposal: groundedParseFailureProposal() })
   }
 
   const rawProposal: RuleProposal = {

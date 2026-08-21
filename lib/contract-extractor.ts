@@ -352,7 +352,7 @@ export function applyExtractionSafetyNets(terms: ContractTerms, contractText?: s
   terms.overage_tiers = flagAmbiguousTierCalculation(terms.overage_tiers)
   terms.discounts = assignDiscountRuleIds(terms.discounts)
   terms.service_credits = assignServiceCreditRuleIds(terms.service_credits ?? [])
-  flagAmbiguousBaseFeeProration(terms)
+  flagAmbiguousBaseFeeProration(terms, contractText)
   if (contractText) preserveExclusionLanguage(terms, contractText)
 
   return terms
@@ -483,7 +483,30 @@ function normalizeForComparison(s: string): string {
 // once a reviewer resolves it, matching how confirm-rule's
 // buildPeriodProrationRule already defaults) rather than inventing a
 // separate "unknown anchor" state through the billing engine.
-function flagAmbiguousBaseFeeProration(terms: ContractTerms): void {
+// Given a section heading exactly as it appears in field_sources (e.g.
+// "2. Platform Fee" — the model already extracts this per-field), pulls the
+// verbatim contract text between that heading and the next numbered
+// heading. flagAmbiguousBaseFeeProration below is a purely structural check
+// (day-of-month) with no clause-level reasoning of its own — this is how it
+// gets a REAL source_clause instead of null, without inventing one.
+// Degrades to null (never throws) if the heading can't be found verbatim —
+// e.g. a contract whose extraction didn't populate field_sources, or where
+// section numbering doesn't match this heuristic — same as the pre-existing
+// behavior for those cases.
+function extractSectionClause(contractText: string, heading: string): string | null {
+  const lines = contractText.split('\n')
+  const headingIdx = lines.findIndex(l => l.trim() === heading.trim())
+  if (headingIdx === -1) return null
+  const body: string[] = []
+  for (let i = headingIdx + 1; i < lines.length; i++) {
+    const line = lines[i].trim()
+    if (/^\d+\.\s+\S/.test(line)) break // next numbered heading
+    if (line) body.push(line)
+  }
+  return body.length > 0 ? body.join(' ') : null
+}
+
+function flagAmbiguousBaseFeeProration(terms: ContractTerms, contractText?: string): void {
   if (!terms.contract_start_date) return
   const startDay = new Date(terms.contract_start_date + 'T00:00:00').getDate()
   if (startDay === 1) return // already calendar-aligned — no partial-period question exists either way
@@ -491,9 +514,11 @@ function flagAmbiguousBaseFeeProration(terms: ContractTerms): void {
   const reason = 'The contract does not state whether this fee resets on the contract’s own start-date anniversary or on calendar boundaries, and the agreement begins mid-period.'
 
   if ((terms.base_monthly_fee || terms.base_annual_fee) && !terms.base_fee_proration) {
+    const heading = terms.field_sources?.base_monthly_fee ?? terms.field_sources?.base_annual_fee
+    const sourceClause = (contractText && heading) ? extractSectionClause(contractText, heading) : null
     terms.base_fee_proration = {
       reset_anchor: 'calendar', prorate_partial_periods: 'unclear',
-      requires_confirmation: true, confirmation_reason: reason, source_clause: null,
+      requires_confirmation: true, confirmation_reason: reason, source_clause: sourceClause,
     }
   }
   for (const fee of terms.additional_recurring_fees ?? []) {

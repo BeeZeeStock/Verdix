@@ -531,6 +531,23 @@ describe('buildServiceCreditProposalPrompt — application_state split (Growth C
     expect(prompt).toMatch(/set eligible_component_keys to null and grade application_state "decision_required"/)
   })
 
+  // Regression: two live calls against the Annual Rebate/Service Credit
+  // clauses (2026-08-21) inconsistently graded one_time as "unclear" on an
+  // earlier prompt version, which produced the compound "or whether it can
+  // be earned more than once" survival wording even though the trigger's
+  // own window ("during a Contract Year", "the applicable calendar month")
+  // already structurally establishes repeatability — a re-run against the
+  // strengthened prompt below returned one_time: false consistently (4/4).
+  // This test locks in the textual instruction that produced that result.
+  it('instructs one_time: false (not "unclear") when the trigger is defined over a contract-recurring window, distinguishing that from a genuine one-time milestone', () => {
+    const prompt = buildServiceCreditProposalPrompt({
+      sourceClause: 'If Customer processes more than 2,000,000 Transactions during a Contract Year, Customer will be entitled to a rebate equal to 5% of the transaction-processing fees paid for that Contract Year.',
+      description: 'Annual Rebate', creditType: 'rebate', statedPct: 5, statedAmount: null, currency: 'SEK',
+    })
+    expect(prompt).toMatch(/recurring-window structure IS textual grounding for one_time: false, not silence requiring "unclear"/)
+    expect(prompt).toMatch(/A rebate whose trigger is evaluated fresh "during a Contract Year"/)
+  })
+
   // Real-world regression fixture — TEST-PAY-002's actual signed contract,
   // Section 6 (Annual Volume Rebate), verified verbatim against the PDF
   // itself, not extraction output. Extraction had originally captured only
@@ -668,6 +685,29 @@ describe('validateProposalState — safety net, only ever downgrades', () => {
   it('downgrades clear_from_source to verdix_recommends when reasoning is too short to be a real quote', () => {
     const result = validateProposalState(proposal({ state: 'clear_from_source', reasoning: 'Clear.' }), true)
     expect(result.state).toBe('verdix_recommends')
+  })
+
+  // Regression: a live propose-rule call whose reasoning came back as a
+  // garbled fragment (observed live as "g. g.") used to render verbatim on
+  // the review card — no length/shape check applied outside the
+  // clear_from_source-only 20-char check above, and state wasn't even
+  // clear_from_source in the observed failure, so that check never ran at
+  // all. This is a general, state-independent floor.
+  it('downgrades to decision_required with an honest placeholder when reasoning is a garbled/malformed fragment, regardless of stated state', () => {
+    const result = validateProposalState(proposal({ state: 'decision_required', reasoning: 'g. g.' }), true)
+    expect(result.state).toBe('decision_required')
+    expect(result.proposed_interpretation).toBeNull()
+    expect(result.reasoning).not.toContain('g. g.')
+    expect(result.reasoning.length).toBeGreaterThan(10)
+  })
+
+  it('treats a genuinely empty reasoning string the same way — malformed, not just short', () => {
+    const result = validateProposalState(proposal({ state: 'verdix_recommends', reasoning: '' }), true)
+    expect(result.state).toBe('decision_required')
+  })
+
+  it('does not treat a real, if short, sentence as malformed — "Clear." still contains a real word', () => {
+    expect(validateProposalState(proposal({ state: 'decision_required', reasoning: 'Clear.' }), true).reasoning).toBe('Clear.')
   })
 
   it('nulls out proposed_interpretation when state is decision_required but the model still populated one — nothing pre-selected wins', () => {
