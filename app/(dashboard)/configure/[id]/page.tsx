@@ -2293,8 +2293,8 @@ function ConfirmedRuleCard({
   return (
     <div className="rounded-2xl p-6 bg-white" style={{ border: '1px solid rgba(26,61,43,0.1)', boxShadow: '0 1px 2px rgba(26,61,43,0.04)' }}>
       <div className="flex items-start gap-4 mb-4">
-        <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(11,92,54,0.08)' }}>
-          <i className={`ti ${icon}`} style={{ fontSize: 22, color: '#0B5C36' }} />
+        <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 bg-mint-soft">
+          <i className={`ti ${icon} text-forest`} style={{ fontSize: 22 }} />
         </div>
         <div className="min-w-0 pt-0.5">
           <p className="text-[10px] font-bold uppercase tracking-widest mb-1.5" style={{ color: '#0B5C36' }}>{typeLabel}</p>
@@ -2304,7 +2304,7 @@ function ConfirmedRuleCard({
       </div>
       {sourceClause && (
         <div className="rounded-xl p-4 mb-4 flex gap-2.5" style={{ background: '#FAFAF9' }}>
-          <i className="ti ti-quote" style={{ fontSize: 18, color: 'rgba(26,61,43,0.25)', flexShrink: 0, marginTop: 1 }} />
+          <i className="ti ti-quote text-stone-light" style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }} />
           <p className="text-[12.5px] text-stone italic leading-relaxed">{sourceClause}</p>
         </div>
       )}
@@ -2313,7 +2313,7 @@ function ConfirmedRuleCard({
           {params.map((p, i) => (
             <div key={i} className="flex items-center justify-between gap-3 text-[12.5px]">
               <dt className="flex items-center gap-1.5 text-stone flex-shrink-0">
-                <i className={`ti ${paramIcon(p.label)}`} style={{ fontSize: 13, color: '#0B5C36' }} />
+                <i className={`ti ${paramIcon(p.label)} text-forest`} style={{ fontSize: 13 }} />
                 {p.label}
               </dt>
               <dd className="font-semibold text-ink text-right">{p.value}</dd>
