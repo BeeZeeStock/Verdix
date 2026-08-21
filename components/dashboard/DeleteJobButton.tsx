@@ -40,9 +40,9 @@ export function DeleteJobButton({
       disabled={busy}
       title={`Delete ${label}`}
       aria-label={`Delete ${label}`}
-      className="flex items-center justify-center w-7 h-7 rounded-lg text-stone/40 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40"
+      className="flex items-center justify-center w-7 h-7 rounded-lg text-stone hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40"
     >
-      <i className={busy ? 'ti ti-loader-2 animate-spin' : 'ti ti-trash'} style={{ fontSize: 14 }} />
+      <i className={busy ? 'ti ti-loader-2 animate-spin' : 'ti ti-trash'} style={{ fontSize: 16 }} />
     </button>
   )
 }
