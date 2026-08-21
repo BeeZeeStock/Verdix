@@ -275,8 +275,15 @@ export interface CreditApplicationRule {
   survival_provenance?: FieldProvenance | null
   /** Only set when the contract states a specific bounded survival window
    *  (e.g. "expires after 2 quarters if unused") — the real middle ground
-   *  between carry_forward: true (forever) and 'unclear' (blocked). */
+   *  between carry_forward: true (forever) and 'unclear' (blocked). Mutually
+   *  exclusive with expiry_date in practice (a reviewer picks one bound or
+   *  the other), never both. */
   expiry_periods?: number | null
+  /** Alternative, date-bounded survival window (e.g. "expires 2027-12-31")
+   *  — a reviewer-policy choice, never AI-derived (no current contract
+   *  states an absolute expiry date; this exists for the reviewer's own
+   *  "expire on a specified date" option). ISO date string, or null. */
+  expiry_date?: string | null
   /** Only value implemented — every current credit type needs "available
    *  starting the period after it's earned", never the same period. */
   availability: 'next_period'
@@ -296,7 +303,7 @@ export interface ServiceCreditInterpretation {
   trigger_type: 'sla_breach' | 'usage_threshold' | 'promotional' | 'earned_milestone' | 'other'
   /** Plain-English condition, e.g. "uptime < 99.9% in a calendar month" — never fabricated. */
   trigger_description: string | null
-  credit_basis: 'pct_of_period_fee' | 'pct_of_affected_component' | 'flat_amount' | 'usage_units'
+  credit_basis: 'pct_of_period_fee' | 'pct_of_affected_component' | 'fixed_amount_per_unit' | 'flat_amount' | 'usage_units'
   /** What the percentage/amount is computed from, e.g. "subscription_fee",
    *  "invoice_total", "usage_charge", or a specific named component — free
    *  text, mirrors DiscountInterpretation.applies_to's convention rather

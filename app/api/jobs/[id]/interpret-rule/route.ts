@@ -22,6 +22,7 @@ import {
   buildDiscountPrompt,
   buildTierCalculationPrompt,
   buildServiceCreditPrompt,
+  buildCreditSurvivalPrompt,
   buildRuleInteractionPrompt,
   parseRuleInterpretationResponse,
   describeMissingFieldQuestions,
@@ -89,9 +90,15 @@ export async function POST(
     // 'rule_interaction' — re-parsed server-side against this job's own
     // contract_terms rather than trusted as data.
     interactionKey?: string
+    // Narrows a service_credit interpretation to ONLY the unused-balance
+    // survival question (carry_forward/expiry_periods) — used by the
+    // "Other / describe treatment" choice on that one sub-field, when none
+    // of CREDIT_SURVIVAL_OPTIONS' four structured choices fit. Every other
+    // ruleType/field this route handles ignores this param.
+    subField?: 'survival'
   }
 
-  const { ruleType, contractUnitType, selectedOption, freeText, sourceClause, discountId, creditId, interactionKey } = body
+  const { ruleType, contractUnitType, selectedOption, freeText, sourceClause, discountId, creditId, interactionKey, subField } = body
   const reviewerInput = (freeText ?? '').trim()
   if (!ruleType) return NextResponse.json({ error: 'ruleType is required' }, { status: 400 })
   if (!reviewerInput && (!selectedOption || selectedOption === 'other')) {
@@ -149,6 +156,60 @@ export async function POST(
   // Sonnet, not the reasoning tier — see lib/contract-extractor.ts's
   // identical A/B-result comment.
   const client = getAIClient()
+
+  // Narrow survival-only path — bypasses the generic multi-field
+  // parseRuleInterpretationResponse/dependency/historical-impact machinery
+  // below entirely, since that machinery is scoped to a full trigger/rate/
+  // cap/basis (or metric-level) interpretation this one sub-question never
+  // touches. Own minimal validation instead of the shared required-fields
+  // list, which doesn't have a service_credit-survival-only entry.
+  if (subField === 'survival') {
+    if (ruleType !== 'service_credit') return NextResponse.json({ error: 'subField "survival" is only valid for service_credit' }, { status: 400 })
+    const credits = terms.service_credits ?? []
+    const credit = credits.find(c => c.credit_rule_id === creditId)
+    if (!credit) return NextResponse.json({ error: `Service credit '${creditId}' not found on this job` }, { status: 404 })
+    const survivalPrompt = buildCreditSurvivalPrompt(
+      { sourceClause: sourceClauseFor(credit.source_clause, sourceClause), description: credit.description ?? '' },
+      reviewerInput,
+    )
+    let survivalRawText: string
+    try {
+      const response = await client.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4000, messages: [{ role: 'user', content: survivalPrompt }] })
+      const content = response.content[0]
+      if (content.type !== 'text') throw new Error('Unexpected response type from Claude')
+      survivalRawText = content.text
+    } catch (err) {
+      console.error(`[interpret-rule] survival AI call failed for job ${jobId}:`, err)
+      return NextResponse.json({ error: 'Verdix could not reach the AI interpretation service. Try again.' }, { status: 502 })
+    }
+    const survivalJsonMatch = survivalRawText.match(/\{[\s\S]*\}/)
+    if (!survivalJsonMatch) {
+      // Structural-only diagnostic — never the raw response, which echoes
+      // customer contract text. See propose-rule/route.ts's identical
+      // discipline.
+      console.error('[interpret-rule] survival parse failure', { jobId, creditId, failureType: 'no_json_object_found', responseLength: survivalRawText.length })
+      return NextResponse.json({ ok: false, questions: ['Verdix could not translate that into a specific treatment — try describing it differently.'] })
+    }
+    let parsedSurvival: { carry_forward?: unknown; expiry_periods?: unknown; expiry_date?: unknown; calculation_summary?: unknown }
+    try {
+      parsedSurvival = JSON.parse(survivalJsonMatch[0])
+    } catch (err) {
+      console.error('[interpret-rule] survival parse failure', { jobId, creditId, failureType: 'json_parse_error', parserError: err instanceof Error ? err.message : String(err) })
+      return NextResponse.json({ ok: false, questions: ['Verdix could not translate that into a specific treatment — try describing it differently.'] })
+    }
+    if (typeof parsedSurvival.carry_forward !== 'boolean') {
+      return NextResponse.json({ ok: false, questions: ['Be more specific about whether an unused balance carries forward or expires.'] })
+    }
+    return NextResponse.json({
+      ok: true,
+      survival: {
+        carry_forward: parsedSurvival.carry_forward,
+        expiry_periods: typeof parsedSurvival.expiry_periods === 'number' ? parsedSurvival.expiry_periods : null,
+        expiry_date: typeof parsedSurvival.expiry_date === 'string' ? parsedSurvival.expiry_date : null,
+      },
+      calculationSummary: typeof parsedSurvival.calculation_summary === 'string' ? parsedSurvival.calculation_summary : null,
+    })
+  }
 
   let prompt: string
   if (ruleType === 'minimum_commitment') {

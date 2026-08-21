@@ -10,6 +10,8 @@ import {
   buildEscalatorProposalPrompt,
   buildPartialPeriodProposalPrompt,
   buildServiceCreditProposalPrompt,
+  buildServiceCreditPrompt,
+  buildCreditSurvivalPrompt,
   validateProposalState,
   parseRuleInterpretationResponse,
   describeMissingFieldQuestions,
@@ -18,6 +20,8 @@ import {
   deriveSelectedOption,
   optionsForEdit,
   getBaseFeeProrationOptions,
+  SERVICE_CREDIT_OPTIONS,
+  CREDIT_SURVIVAL_OPTIONS,
   type MinimumCommitmentContext,
   type PartialPeriodContext,
   type EscalatorContext,
@@ -857,5 +861,64 @@ describe('validateProposalState — safety net, only ever downgrades', () => {
       const result = validateProposalState(proposal({ state: 'clear_from_source' }), true)
       expect(result.survival_state).toBeUndefined()
     })
+  })
+})
+
+describe('SERVICE_CREDIT_OPTIONS — fixed_amount_per_unit vs flat_amount distinction', () => {
+  it('offers fixed_amount_per_unit as a distinct choice from flat_amount, not a replacement for it', () => {
+    expect(SERVICE_CREDIT_OPTIONS.some(o => o.id === 'fixed_amount_per_unit')).toBe(true)
+    expect(SERVICE_CREDIT_OPTIONS.some(o => o.id === 'flat_amount')).toBe(true)
+    const perUnit = SERVICE_CREDIT_OPTIONS.find(o => o.id === 'fixed_amount_per_unit')!
+    expect(perUnit.description.toLowerCase()).toContain('multiplied')
+  })
+
+  it('both proposal prompts (propose-first and reviewer-override) accept fixed_amount_per_unit in their credit_basis schema', () => {
+    const proposalPrompt = buildServiceCreditProposalPrompt({
+      sourceClause: 'SEK 5,500 for each complete hour of excess unavailability, capped at SEK 55,000 per calendar month.',
+      description: 'Service availability credit', creditType: 'service_credit', statedPct: null, statedAmount: 5500, currency: 'SEK',
+    })
+    expect(proposalPrompt).toContain('"fixed_amount_per_unit"')
+    expect(proposalPrompt).toMatch(/"fixed_amount_per_unit" vs "flat_amount"/)
+
+    const overridePrompt = buildServiceCreditPrompt(
+      { sourceClause: 'SEK 5,500 per complete hour', description: 'Service availability credit', creditType: 'service_credit', statedPct: null, statedAmount: 5500, currency: 'SEK' },
+      'apply per hour of downtime',
+    )
+    expect(overridePrompt).toContain('"fixed_amount_per_unit"')
+  })
+
+  it('deriveSelectedOption maps credit_basis "fixed_amount_per_unit" back to its own option, not flat_amount', () => {
+    expect(deriveSelectedOption('service_credit', { credit_basis: 'fixed_amount_per_unit' })).toBe('fixed_amount_per_unit')
+    expect(deriveSelectedOption('service_credit', { credit_basis: 'flat_amount' })).toBe('flat_amount')
+  })
+})
+
+describe('CREDIT_SURVIVAL_OPTIONS + buildCreditSurvivalPrompt — inline unused-balance survival picker', () => {
+  it('offers exactly the five reviewer-facing survival treatments, in the expected order, each an actually executable policy', () => {
+    expect(CREDIT_SURVIVAL_OPTIONS.map(o => o.id)).toEqual([
+      'carry_forward_until_used', 'next_period_only', 'carry_forward_limited', 'expire_on_date', 'other',
+    ])
+    // No same-period-only expiry option — would contradict a credit whose
+    // source already establishes it applies against future amounts payable.
+    expect(CREDIT_SURVIVAL_OPTIONS.some(o => o.id === 'expire_end_of_period')).toBe(false)
+  })
+
+  it('buildCreditSurvivalPrompt asks ONLY about carry_forward/expiry_periods/expiry_date — never trigger, rate, cap, or eligibility, which are separate questions', () => {
+    const prompt = buildCreditSurvivalPrompt(
+      { sourceClause: 'Service credits will be applied against future amounts payable under this Agreement.', description: 'Service availability credit' },
+      'carries forward for 6 months',
+    )
+    expect(prompt).toContain('"carry_forward": true | false')
+    expect(prompt).toContain('"expiry_periods"')
+    expect(prompt).toContain('"expiry_date"')
+    expect(prompt).not.toContain('trigger_type')
+    expect(prompt).not.toContain('credit_basis')
+    expect(prompt).not.toContain('eligible_component_keys')
+    expect(prompt).toContain('carries forward for 6 months')
+  })
+
+  it('instructs the model never to invent a specific expiry_periods count or expiry_date the reviewer did not state', () => {
+    const prompt = buildCreditSurvivalPrompt({ sourceClause: null, description: 'x' }, 'it carries forward')
+    expect(prompt).toMatch(/never invent a count or date the reviewer didn't state/)
   })
 })

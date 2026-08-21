@@ -117,8 +117,43 @@ export const TIER_CALCULATION_OPTIONS: StructuredOption[] = [
 export const SERVICE_CREDIT_OPTIONS: StructuredOption[] = [
   { id: 'pct_of_period_fee', label: '% of that period’s recurring fee', description: 'The credit is a percentage of the subscription/platform fee actually charged for the affected period.' },
   { id: 'pct_of_affected_component', label: '% of a specific component', description: 'The credit is a percentage of one named component (e.g. only the usage charge), not the whole invoice.' },
-  { id: 'flat_amount', label: 'Flat amount', description: 'The credit is a fixed currency amount, not a percentage.' },
+  // Distinct from flat_amount: a single stated rate applied per occurrence
+  // of a named qualifying unit (e.g. "SEK 5,500 per complete hour of excess
+  // unavailability"), not one lump-sum figure. Labeling this "Flat amount"
+  // was actively misleading — the clause already states the monetary basis
+  // and the per-unit multiplier explicitly, so there's no real ambiguity to
+  // resolve here at all when this is what the source says.
+  { id: 'fixed_amount_per_unit', label: 'Fixed amount per qualifying unit', description: 'The credit is a stated currency amount multiplied by however many qualifying units occurred (e.g. per excess hour, per incident) — not one single lump sum.' },
+  { id: 'flat_amount', label: 'Flat amount', description: 'The credit is a single fixed currency amount, not a percentage and not multiplied by a unit count.' },
   { id: 'usage_units', label: 'Usage units', description: 'The credit is expressed in usage units (e.g. free requests), not currency.' },
+  { id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' },
+]
+
+// Independent of SERVICE_CREDIT_OPTIONS above (which resolves what the
+// credit's VALUE is computed from) — this resolves what happens to a
+// credited-but-unapplied balance, the survival/carry-forward question.
+// Each option here must be an actually executable reviewer policy, not a
+// theoretical possibility — deliberately excludes a same-period-only
+// expiry option (carry_forward: false), since it would directly contradict
+// a credit whose own source already establishes it applies against FUTURE
+// amounts payable (a clause that eligible for future application but never
+// survives past its own earning period is a contradiction, not a real
+// policy). Maps directly onto CreditApplicationRule.carry_forward/
+// expiry_periods/expiry_date (lib/types.ts):
+// 'carry_forward_until_used' → carry_forward: true, expiry_periods: null,
+// expiry_date: null; 'next_period_only' → carry_forward: true,
+// expiry_periods: 1 (survives exactly one additional period, then
+// expires); 'carry_forward_limited' → carry_forward: true with a
+// reviewer-specified expiry_periods; 'expire_on_date' → carry_forward:
+// true with a reviewer-specified expiry_date; 'other' routes through
+// buildCreditSurvivalPrompt for a reviewer-worded treatment this list
+// doesn't cover — translated to a PROPOSED structured rule the reviewer
+// must still explicitly confirm before it applies (never auto-applied).
+export const CREDIT_SURVIVAL_OPTIONS: StructuredOption[] = [
+  { id: 'carry_forward_until_used', label: 'Carry forward until fully used', description: 'Any unused balance rolls forward and is applied against future charges until fully consumed, with no fixed expiry.' },
+  { id: 'next_period_only', label: 'Apply to the next billing period only; unused remainder then expires', description: 'An unused balance survives exactly one additional billing period, then any remainder is forfeited.' },
+  { id: 'carry_forward_limited', label: 'Carry forward for a defined number of billing periods', description: 'Specify how many billing periods an unused balance remains available before it expires.' },
+  { id: 'expire_on_date', label: 'Expire on a specified date', description: 'Specify a fixed calendar date after which any remaining unused balance is forfeited.' },
   { id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' },
 ]
 
@@ -199,6 +234,7 @@ export function deriveSelectedOption(ruleType: RuleType, approved: Record<string
   if (ruleType === 'service_credit') {
     if (approved.credit_basis === 'pct_of_period_fee') return 'pct_of_period_fee'
     if (approved.credit_basis === 'pct_of_affected_component') return 'pct_of_affected_component'
+    if (approved.credit_basis === 'fixed_amount_per_unit') return 'fixed_amount_per_unit'
     if (approved.credit_basis === 'flat_amount') return 'flat_amount'
     if (approved.credit_basis === 'usage_units') return 'usage_units'
     return 'other'
@@ -521,7 +557,7 @@ Translate the reviewer's instruction into a structured JSON object with EXACTLY 
 {
   "trigger_type": "sla_breach" | "usage_threshold" | "promotional" | "earned_milestone" | "other",
   "trigger_description": "<plain-English condition that triggers the credit>",
-  "credit_basis": "pct_of_period_fee" | "pct_of_affected_component" | "flat_amount" | "usage_units",
+  "credit_basis": "pct_of_period_fee" | "pct_of_affected_component" | "fixed_amount_per_unit" | "flat_amount" | "usage_units",
   "basis_component": "<what the value is computed from, e.g. 'subscription_fee', 'invoice_total', or a named component>",
   "credit_value": <number>,
   "cap_amount": <number or null>,
@@ -533,8 +569,43 @@ Translate the reviewer's instruction into a structured JSON object with EXACTLY 
 
 Rules:
 - basis_component is the central ambiguity — if the reviewer's instruction doesn't specify what the percentage is computed from, omit basis_component and credit_basis rather than guessing (e.g. do not assume it's computed on the standard/undiscounted fee if the reviewer didn't say so).
+- fixed_amount_per_unit vs flat_amount: use fixed_amount_per_unit when the credit is a stated rate MULTIPLIED by however many qualifying units occurred (e.g. "SEK 5,500 per complete hour of excess unavailability"); use flat_amount only for a single lump-sum figure with no per-unit multiplier. Do not label a per-unit rate "flat" just because the per-unit figure itself is a fixed number.
 - cash_redeemable defaults to false unless the reviewer's instruction or the source clause explicitly says the customer may request a cash refund rather than a credit against future invoices.
 - Never invent a percentage, amount, or cap the reviewer didn't state or that wasn't already in the extracted data above.
+- Respond with ONLY the JSON object, no other text.`
+}
+
+export type CreditSurvivalContext = {
+  sourceClause: string | null
+  description: string
+}
+
+// Narrow, single-question translator — deliberately separate from
+// buildServiceCreditPrompt above, which resolves trigger/rate/cap/basis, a
+// different question entirely. Used only for the "Other / describe
+// treatment" choice on a credit's unused-balance survival sub-field, when
+// none of CREDIT_SURVIVAL_OPTIONS' four structured choices fit — those four
+// are translated client-side with no AI call at all, since they map
+// directly onto carry_forward/expiry_periods with no interpretation
+// required.
+export function buildCreditSurvivalPrompt(context: CreditSurvivalContext, reviewerInput: string): string {
+  return `A SaaS contract has a service-credit/rebate clause whose UNUSED-BALANCE SURVIVAL treatment a human reviewer is resolving — specifically what happens to a portion of the credit that is earned/credited but not yet applied against an invoice. This is NOT about what the credit is worth, what triggers it, or what it may be applied against — only how long an unapplied balance remains available.
+
+Source clause / description: ${context.sourceClause ?? context.description}
+Reviewer's instruction: "${reviewerInput}"
+
+Translate the reviewer's instruction into a structured JSON object with EXACTLY these fields:
+{
+  "carry_forward": true | false,
+  "expiry_periods": <number of billing periods after which an unused balance expires, or null>,
+  "expiry_date": "<ISO date YYYY-MM-DD after which an unused balance expires, or null>",
+  "calculation_summary": "<one-sentence plain-English description of the resulting survival treatment>"
+}
+
+Rules:
+- carry_forward: true means an unused balance persists into future periods (bounded by expiry_periods or expiry_date if the reviewer stated a limit, or indefinitely if both are null); false means it does NOT survive past the period it was earned/credited in.
+- Set AT MOST ONE of expiry_periods/expiry_date — a reviewer states a period count OR a specific date, never both. Only set one when the reviewer's instruction states a SPECIFIC number of periods or a SPECIFIC date — never invent a count or date the reviewer didn't state. If they said "carries forward" with no stated limit, set both to null.
+- Use ONLY what the reviewer's instruction actually says. Never invent a treatment they didn't describe.
 - Respond with ONLY the JSON object, no other text.`
 }
 
@@ -921,7 +992,7 @@ Extraction's own classification: ${context.creditType}
 Stated value: ${context.statedPct != null ? `${context.statedPct}%` : context.statedAmount != null ? `${context.statedAmount} ${context.currency}` : 'not captured as a single value'}
 
 ${proposalSchemaBlock(
-  '{"trigger_type": "sla_breach"|"usage_threshold"|"promotional"|"earned_milestone"|"other", "trigger_description": "<plain-English condition>", "credit_basis": "pct_of_period_fee"|"pct_of_affected_component"|"flat_amount"|"usage_units", "basis_component": "<what the value is computed from>", "credit_value": <number>, "cap_amount": <number or null>, "cap_pct": <number or null>, "settlement_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"per_incident"|null, "cash_redeemable": true|false, "earn_rule": {"trigger_metric_key": "<metric name, e.g. transactions>", "trigger_quantity": <number>, "trigger_comparator": "gt"|"gte", "trigger_window": "calendar_month"|"billing_period"|"contract_year"|"per_incident", "consecutive_windows_required": <number, 1 if the clause does not require a streak>, "window_anchor": "contract_start"|"calendar", "finalization_deadline_days": <number or null>}, "application_rule": {"computed_from_component_keys": [<string>]|null, "eligible_component_keys": [<string>]|"all"|null, "excluded_component_keys": [<string>], "one_time": true|false|"unclear", "carry_forward": true|false|"unclear"}, "calculation_summary": "<one sentence>"}',
+  '{"trigger_type": "sla_breach"|"usage_threshold"|"promotional"|"earned_milestone"|"other", "trigger_description": "<plain-English condition>", "credit_basis": "pct_of_period_fee"|"pct_of_affected_component"|"fixed_amount_per_unit"|"flat_amount"|"usage_units", "basis_component": "<what the value is computed from>", "credit_value": <number>, "cap_amount": <number or null>, "cap_pct": <number or null>, "settlement_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"per_incident"|null, "cash_redeemable": true|false, "earn_rule": {"trigger_metric_key": "<metric name, e.g. transactions>", "trigger_quantity": <number>, "trigger_comparator": "gt"|"gte", "trigger_window": "calendar_month"|"billing_period"|"contract_year"|"per_incident", "consecutive_windows_required": <number, 1 if the clause does not require a streak>, "window_anchor": "contract_start"|"calendar", "finalization_deadline_days": <number or null>}, "application_rule": {"computed_from_component_keys": [<string>]|null, "eligible_component_keys": [<string>]|"all"|null, "excluded_component_keys": [<string>], "one_time": true|false|"unclear", "carry_forward": true|false|"unclear"}, "calculation_summary": "<one sentence>"}',
   [
     { name: 'application_state', label: 'application_rule.eligible_component_keys ONLY — WHAT future charges this credit may reduce (never carry-forward/expiry, which survival_state covers below, and never the trigger, rate, cap, or settlement timing, which "state" already covers)' },
     { name: 'survival_state', label: 'application_rule.carry_forward and application_rule.one_time ONLY — whether an earned-but-unused credit persists or expires, and whether it can be earned more than once (never eligibility/scope, which application_state covers, and never trigger/rate/cap/settlement timing)' },
@@ -931,6 +1002,7 @@ ${proposalSchemaBlock(
 Specific guidance, by field:
 - trigger condition, credit value, cap, and settlement timing are usually stated explicitly — resolve these as "clear_from_source" when the wording is direct. These drive "state", never "application_state" or "survival_state".
 - basis_component (WHAT the percentage/amount is computed from — e.g. "the affected month's subscription fee") is often genuinely ambiguous, especially when another rule (like an introductory discount) could change what "the fee" means for a given period — if the clause doesn't specify and no other context resolves it, use "decision_required" for basis_component specifically rather than assuming the standard/undiscounted fee.
+- credit_basis "fixed_amount_per_unit" vs "flat_amount": use fixed_amount_per_unit whenever the clause states a rate multiplied by however many qualifying units occurred (e.g. "SEK 5,500 for each complete hour of excess unavailability"); this is "clear_from_source" the moment the per-unit rate and qualifying unit are both stated, exactly like any other explicit figure — it is NOT an unresolved basis question just because the rate is per-unit rather than a single sum. Reserve flat_amount for an actual single lump-sum credit with no per-unit multiplier.
 - earn_rule.consecutive_windows_required: only set above 1 when the clause explicitly requires a streak across multiple windows (e.g. "in each of 3 consecutive calendar months") — a single-period threshold is 1, never inferred as a streak just because it recurs.
 - application_rule.eligible_component_keys is the single most commonly UNSTATED field — a clause can state a credit's SIZE (e.g. "5% of transaction-processing fees paid") without ever stating what future charges that resulting credit may reduce. Do not assume it may offset "all amounts payable" or "the same component it was computed from" unless the contract actually says so. But this is a real, gradeable "clear_from_source" case whenever the clause DOES say so explicitly — e.g. "applied against future amounts payable" is explicit textual grounding for eligible_component_keys "all"; "applicable only against future transaction-processing fees" is explicit grounding for eligible_component_keys ["transaction_processing"]. Only set eligible_component_keys to null and grade application_state "decision_required" when the clause is genuinely silent on what the credit may be applied against — do not confuse silence on eligibility with silence on calculation basis; a clause stating what a credit is computed FROM (e.g. "5% of transaction-processing fees paid") does not, by itself, state what it may be applied AGAINST — those are different questions, and stating only the former leaves eligible_component_keys null.
   A SEPARATE, standalone sentence stating what a credit "applies only to" / "applies to" / "does not apply to" / "excludes" a named set of fee components is a DIFFERENT signal from the basis sentence, even when it names the SAME components the basis was computed from — a clause that has ALREADY unambiguously stated its basis in one sentence (e.g. "a rebate equal to 5% of the transaction-processing fees paid") gains no new information by a second sentence that MERELY repeats the basis a second time, so the more natural reading of that second, independent sentence — especially one phrased as an affirmative "applies to"/negative "does not apply to" scope rule, and especially when an EXCLUSION list follows ("does not apply to: platform fees; chargeback fees; other fees or charges") — is that it is answering the SEPARATE application-eligibility question, not restating basis for emphasis. Treat such a sentence as resolving eligible_component_keys to the named components (clear_from_source), not as leaving it null, UNLESS the contract's own wording or a directly conflicting later clause makes the basis-only reading the more natural one. This determination does not require the literal words "applied"/"against" — ordinary contract drafting uses "applies to"/"does not apply to" interchangeably with "is applied against"/"may not be applied against".

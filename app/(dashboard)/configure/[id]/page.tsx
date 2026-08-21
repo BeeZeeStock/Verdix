@@ -13,7 +13,7 @@ import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCa
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, contractLifecycleStatus } from '@/lib/contract-tcv-calc'
 import { ruleCadenceLabel, cadenceNoun, contractMonthLabel } from '@/lib/cadence-labels'
-import { optionsForRuleType, optionsForEdit, deriveSelectedOption, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
+import { optionsForRuleType, optionsForEdit, deriveSelectedOption, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations } from '@/lib/commercial-rule-status'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
@@ -57,7 +57,7 @@ type ServiceCredit = {
   interpretation?: {
     trigger_type: 'sla_breach' | 'usage_threshold' | 'promotional' | 'earned_milestone' | 'other'
     trigger_description: string | null
-    credit_basis: 'pct_of_period_fee' | 'pct_of_affected_component' | 'flat_amount' | 'usage_units'
+    credit_basis: 'pct_of_period_fee' | 'pct_of_affected_component' | 'fixed_amount_per_unit' | 'flat_amount' | 'usage_units'
     basis_component: string | null
     credit_value: number | null
     cap_amount: number | null
@@ -1159,6 +1159,116 @@ function RuleInterpretationCard({
   // see eligibilityStillOpen/survivalStillOpen above.
   const [eligibilityOpenAfterConfirm, setEligibilityOpenAfterConfirm] = useState(false)
   const [survivalOpenAfterConfirm, setSurvivalOpenAfterConfirm] = useState(false)
+  // Inline survival-treatment picker (service_credit, survival_state ===
+  // 'decision_required'/'verdix_recommends' only, today) — see
+  // CREDIT_SURVIVAL_OPTIONS. The reviewer must pick/confirm one of these
+  // BEFORE the main Confirm action becomes available; Override remains a
+  // separate, unrelated escape hatch for "the extracted interpretation
+  // itself is wrong", not "let me see my choices".
+  const [selectedSurvivalOption, setSelectedSurvivalOption] = useState<string | null>(null)
+  const [survivalLimitedPeriods, setSurvivalLimitedPeriods] = useState('')
+  const [survivalExpiryDate, setSurvivalExpiryDate] = useState('')
+  const [survivalFreeText, setSurvivalFreeText] = useState('')
+  const [survivalTranslating, setSurvivalTranslating] = useState(false)
+  const [survivalErrorMsg, setSurvivalErrorMsg] = useState<string | null>(null)
+  // Only "Other" ever calls the AI (buildCreditSurvivalPrompt) — every
+  // structured option maps deterministically, client-side, with no AI call
+  // at all. The translated result is a PROPOSAL, not yet applied: it sits
+  // here until the reviewer explicitly clicks "Confirm this treatment"
+  // (below), which is what actually sets survivalResolution — never
+  // auto-applied the moment translation succeeds.
+  const [survivalTranslatedPreview, setSurvivalTranslatedPreview] = useState<{ carry_forward: boolean; expiry_periods: number | null; expiry_date: string | null; calculation_summary: string | null } | null>(null)
+  // The FINAL resolved value — set instantly for the structured options
+  // (pure client-side mapping, no AI call) or only once the reviewer
+  // explicitly confirms a translated "Other" preview. Non-null is what
+  // unlocks the main confirm action once survival is the open field.
+  const [survivalResolution, setSurvivalResolution] = useState<{ carry_forward: boolean; expiry_periods: number | null; expiry_date: string | null } | null>(null)
+
+  const chooseSurvivalOption = (optionId: string) => {
+    setSelectedSurvivalOption(optionId)
+    setSurvivalErrorMsg(null)
+    setSurvivalTranslatedPreview(null)
+    if (optionId === 'carry_forward_until_used') setSurvivalResolution({ carry_forward: true, expiry_periods: null, expiry_date: null })
+    else if (optionId === 'next_period_only') setSurvivalResolution({ carry_forward: true, expiry_periods: 1, expiry_date: null })
+    else setSurvivalResolution(null) // carry_forward_limited / expire_on_date (need an input) / other (needs translation + explicit confirm)
+  }
+
+  const confirmSurvivalLimitedPeriods = () => {
+    const n = parseInt(survivalLimitedPeriods, 10)
+    if (!Number.isInteger(n) || n <= 0) { setSurvivalErrorMsg('Enter a whole number of periods greater than 0.'); return }
+    setSurvivalResolution({ carry_forward: true, expiry_periods: n, expiry_date: null })
+  }
+
+  const confirmSurvivalExpiryDate = () => {
+    if (!survivalExpiryDate) { setSurvivalErrorMsg('Pick a date.'); return }
+    setSurvivalResolution({ carry_forward: true, expiry_periods: null, expiry_date: survivalExpiryDate })
+  }
+
+  // Step 1 of 2 for "Other" — translates free text into a PROPOSED rule,
+  // shown to the reviewer as a preview (survivalTranslatedPreview), not yet
+  // applied. Step 2 (confirmSurvivalTranslatedPreview, below) is the
+  // reviewer's own explicit act of accepting it.
+  const translateSurvivalFreeText = async () => {
+    if (!survivalFreeText.trim()) { setSurvivalErrorMsg('Describe how the unused balance should be treated.'); return }
+    setSurvivalTranslating(true)
+    setSurvivalErrorMsg(null)
+    setSurvivalTranslatedPreview(null)
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/interpret-rule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ruleType: 'service_credit', creditId, sourceClause, freeText: survivalFreeText, subField: 'survival' }),
+      })
+      const data = await res.json().catch(() => ({ ok: false }))
+      if (!res.ok || !data.ok || typeof data.survival?.carry_forward !== 'boolean') {
+        setSurvivalErrorMsg(data.questions?.[0] ?? data.error ?? 'Verdix could not translate that into a specific treatment.')
+        return
+      }
+      setSurvivalTranslatedPreview({
+        carry_forward: data.survival.carry_forward,
+        expiry_periods: data.survival.expiry_periods ?? null,
+        expiry_date: data.survival.expiry_date ?? null,
+        calculation_summary: data.calculationSummary ?? null,
+      })
+    } catch {
+      setSurvivalErrorMsg('Verdix could not reach the AI interpretation service. Try again.')
+    } finally {
+      setSurvivalTranslating(false)
+    }
+  }
+
+  // Step 2 of 2 — the reviewer's explicit act of accepting the translated
+  // preview. Only this click sets survivalResolution; provenance becomes
+  // reviewer_policy because the REVIEWER confirmed it, not because the AI
+  // translated it — the translation itself is never trusted as final.
+  const confirmSurvivalTranslatedPreview = () => {
+    if (!survivalTranslatedPreview) return
+    setSurvivalResolution(survivalTranslatedPreview)
+  }
+
+  // Renders the label a reviewer would recognize for whatever
+  // survivalResolution currently holds — used both for the live
+  // "Treatment selected" confirmation line and the "Other" preview.
+  const describeSurvivalResolution = (r: { carry_forward: boolean; expiry_periods: number | null; expiry_date: string | null }): string => {
+    if (!r.carry_forward) return 'Unused balance does not carry forward past the period it was earned/credited in.'
+    if (r.expiry_date) return `Unused balance carries forward until ${r.expiry_date}, after which any remainder expires.`
+    if (r.expiry_periods === 1) return 'Unused balance applies to the next billing period only; any remainder then expires.'
+    if (r.expiry_periods && r.expiry_periods > 1) return `Unused balance carries forward for ${r.expiry_periods} billing periods.`
+    return 'Unused balance carries forward until fully used.'
+  }
+
+  // Maps an already-concrete application_rule (as returned by a
+  // verdix_recommends proposal) back to the matching CREDIT_SURVIVAL_OPTIONS
+  // id, so the recommended choice can be pre-selected and marked "Verdix
+  // recommended" — mirrors deriveSelectedOption's existing pattern for the
+  // top-level structured-option lists, scoped to this one sub-field.
+  const deriveSurvivalOptionId = (appRuleValue?: Record<string, unknown>): string | null => {
+    if (!appRuleValue || appRuleValue.carry_forward !== true) return null
+    if (appRuleValue.expiry_date) return 'expire_on_date'
+    if (appRuleValue.expiry_periods === 1) return 'next_period_only'
+    if (typeof appRuleValue.expiry_periods === 'number' && appRuleValue.expiry_periods > 1) return 'carry_forward_limited'
+    return 'carry_forward_until_used'
+  }
 
   useEffect(() => {
     if (isEditFlow) return
@@ -1182,6 +1292,29 @@ function RuleInterpretationCard({
         if (data.proposal.state !== 'decision_required' && data.proposal.proposed_interpretation) {
           setSelectedOption(deriveSelectedOption(ruleType, data.proposal.proposed_interpretation))
         }
+        // Same pre-selection discipline as above, scoped to the survival
+        // sub-field: a recommendation is shown pre-picked with its already-
+        // concrete value (never for a genuine decision_required, which
+        // starts blank) — but nothing is written anywhere until the
+        // reviewer clicks the outer Confirm action, so pre-populating
+        // survivalResolution here is safe. Sets the resolution directly
+        // (not via chooseSurvivalOption, which blanks it for the
+        // needs-more-input options) since the recommendation already
+        // carries a concrete expiry_periods/expiry_date if any.
+        if (data.proposal.survival_state === 'verdix_recommends') {
+          const rec = (data.proposal.proposed_interpretation as Record<string, unknown> | null)?.application_rule as Record<string, unknown> | undefined
+          const recId = deriveSurvivalOptionId(rec)
+          if (recId && rec) {
+            setSelectedSurvivalOption(recId)
+            setSurvivalResolution({
+              carry_forward: true,
+              expiry_periods: typeof rec.expiry_periods === 'number' ? rec.expiry_periods : null,
+              expiry_date: typeof rec.expiry_date === 'string' ? rec.expiry_date : null,
+            })
+            if (typeof rec.expiry_periods === 'number' && rec.expiry_periods > 1) setSurvivalLimitedPeriods(String(rec.expiry_periods))
+            if (typeof rec.expiry_date === 'string') setSurvivalExpiryDate(rec.expiry_date)
+          }
+        }
       } catch {
         if (!cancelled) setPhase('input')
       }
@@ -1203,16 +1336,33 @@ function RuleInterpretationCard({
     if (!aiProposal?.proposed_interpretation) return
     setPhase('confirming')
     try {
+      // A reviewer's inline survival selection (chooseSurvivalOption /
+      // confirmSurvivalLimitedPeriods / confirmSurvivalExpiryDate /
+      // confirmSurvivalTranslatedPreview) overrides whatever the AI
+      // proposed for carry_forward/expiry_periods/expiry_date — it's now an
+      // explicit reviewer choice, always reviewer_policy provenance, never
+      // derived from aiProposal.survival_state.
+      const interpretation = survivalResolution
+        ? {
+            ...aiProposal.proposed_interpretation,
+            application_rule: {
+              ...((aiProposal.proposed_interpretation as Record<string, unknown>).application_rule as Record<string, unknown> | undefined),
+              carry_forward: survivalResolution.carry_forward,
+              expiry_periods: survivalResolution.expiry_periods,
+              expiry_date: survivalResolution.expiry_date,
+            },
+          }
+        : aiProposal.proposed_interpretation
       const applicationRuleProvenance = ruleType === 'service_credit' ? {
         eligibility: forceProvenance?.eligibility ? 'reviewer_policy' as const : stateToProvenance(aiProposal.application_state),
-        survival: forceProvenance?.survival ? 'reviewer_policy' as const : stateToProvenance(aiProposal.survival_state),
+        survival: (forceProvenance?.survival || survivalResolution) ? 'reviewer_policy' as const : stateToProvenance(aiProposal.survival_state),
       } : undefined
       const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ruleType, contractUnitType, discountId, creditId, interactionKey, sourceClause, reviewerInput: aiProposal.reasoning,
-          aiProposedInterpretation: aiProposal.proposed_interpretation, approvedInterpretation: aiProposal.proposed_interpretation,
+          aiProposedInterpretation: aiProposal.proposed_interpretation, approvedInterpretation: interpretation,
           applicationRuleProvenance,
         }),
       })
@@ -1229,7 +1379,7 @@ function RuleInterpretationCard({
         setPhase('partial')
       } else {
         setEligibilityOpenAfterConfirm(ruleType === 'service_credit' && !forceProvenance?.eligibility && isSubStateOpen(aiProposal.application_state))
-        setSurvivalOpenAfterConfirm(ruleType === 'service_credit' && !forceProvenance?.survival && isSubStateOpen(aiProposal.survival_state))
+        setSurvivalOpenAfterConfirm(ruleType === 'service_credit' && !forceProvenance?.survival && !survivalResolution && isSubStateOpen(aiProposal.survival_state))
         setPhase('applied')
         onApplied()
       }
@@ -1268,12 +1418,33 @@ function RuleInterpretationCard({
     if (!proposal) return
     setPhase('confirming')
     try {
+      // A reviewer's already-resolved inline survival selection (set before
+      // switching to a different top-level option, which routes through
+      // generate()/this function rather than confirmProposal()) must not be
+      // silently dropped just because the interpretation now comes from
+      // interpret-rule instead of propose-rule — same merge as
+      // confirmProposal(), applied here too.
+      const interpretation = survivalResolution
+        ? {
+            ...(proposal as Record<string, unknown>),
+            application_rule: {
+              ...((proposal as Record<string, unknown>).application_rule as Record<string, unknown> | undefined),
+              carry_forward: survivalResolution.carry_forward,
+              expiry_periods: survivalResolution.expiry_periods,
+              expiry_date: survivalResolution.expiry_date,
+            },
+          }
+        : proposal
+      const applicationRuleProvenance = ruleType === 'service_credit' && survivalResolution
+        ? { survival: 'reviewer_policy' as const }
+        : undefined
       const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ruleType, contractUnitType, discountId, creditId, interactionKey, sourceClause, reviewerInput: freeText,
-          aiProposedInterpretation: proposal, approvedInterpretation: proposal,
+          aiProposedInterpretation: proposal, approvedInterpretation: interpretation,
+          applicationRuleProvenance,
         }),
       })
       const data = await res.json().catch(() => ({ error: `Unexpected response from server (${res.status})` }))
@@ -1286,10 +1457,10 @@ function RuleInterpretationCard({
         // The free-text Override flow's schema (buildServiceCreditPrompt)
         // doesn't ask for application_rule at all — it translates the
         // reviewer's own words into trigger/rate/cap facts only, never
-        // eligibility/survival. No applicationRuleProvenance is sent above,
-        // so confirm-rule's existing-value fallback leaves whatever
-        // provenance was already persisted untouched — this path can't
-        // resolve or regress it either way, so nothing to flag as open here.
+        // eligibility. Eligibility is therefore untouched by this path
+        // (confirm-rule's existing-value fallback leaves whatever
+        // provenance was already persisted). Survival IS covered when
+        // survivalResolution is set, per the merge above.
         setEligibilityOpenAfterConfirm(false)
         setSurvivalOpenAfterConfirm(false)
         setPhase('applied')
@@ -1307,6 +1478,26 @@ function RuleInterpretationCard({
   const aiRecommendedOptionId = aiProposal?.proposed_interpretation
     ? deriveSelectedOption(ruleType, aiProposal.proposed_interpretation)
     : null
+
+  // Computed once, shared by both the survival badge and the confirm-button
+  // logic below — carry_forward (unused-balance survival) and one_time
+  // (repeatability) are independent sub-questions bundled under one AI-
+  // graded survival_state; see the SubStateBadge render's own comment for
+  // why. The inline CREDIT_SURVIVAL_OPTIONS picker only covers the
+  // carry-forward-only case today (the one this UI pattern was built for);
+  // repeatability-open and both-open still use the SubStateBadge/Override
+  // pair unchanged. Shows for BOTH decision_required (blank start) and
+  // verdix_recommends (pre-selected, still requires explicit confirmation
+  // before it counts as reviewer_policy — see the useEffect above).
+  const appRule = (aiProposal?.proposed_interpretation as Record<string, unknown> | null)?.application_rule as Record<string, unknown> | undefined
+  const survivalCarryForwardOpen = appRule?.carry_forward === 'unclear'
+  const survivalOneTimeOpen = appRule?.one_time === 'unclear'
+  const survivalNeedsInlinePicker =
+    (aiProposal?.survival_state === 'decision_required' && survivalCarryForwardOpen && !survivalOneTimeOpen) ||
+    (aiProposal?.survival_state === 'verdix_recommends' && appRule?.carry_forward === true)
+  const survivalIsRecommendation = aiProposal?.survival_state === 'verdix_recommends'
+  const survivalRecommendedOptionId = survivalIsRecommendation ? deriveSurvivalOptionId(appRule) : null
+  const survivalSelectionPending = survivalNeedsInlinePicker && !survivalResolution
 
   if (phase === 'applied' && (eligibilityOpenAfterConfirm || survivalOpenAfterConfirm)) {
     // Two independent open items, each rendered with the action that
@@ -1464,6 +1655,61 @@ function RuleInterpretationCard({
               </dl>
             )}
           </div>
+          {/* Inline alternatives for a whole-card "Verdix recommendation" —
+              same principle as the survival sub-field picker above, applied
+              generically to every rule type this shared component serves
+              (options already comes from optionsForRuleType(ruleType, ...),
+              so no per-rule-type customization is needed here): a
+              recommendation must show its alternatives directly, not hide
+              them behind Override. selectedOption already defaults to
+              aiRecommendedOptionId (see the propose-rule useEffect above),
+              so this list starts pre-picked at Verdix's own choice; picking
+              a DIFFERENT option routes through the same generate()/
+              interpret-rule flow Override already uses (a genuinely
+              different structured value needs the same re-interpretation
+              step), while re-confirming the recommended option itself stays
+              on the fast path (confirmProposal(), no extra AI call). Not
+              shown for 'clear_from_source' — that state's plain
+              Confirm & apply / Override pair is unchanged, per instruction. */}
+          {aiProposal.state === 'verdix_recommends' && (
+            <div className="rounded-xl p-3 space-y-2" style={{ background: '#FFFDF5', border: '1px solid rgba(217,167,90,0.35)' }}>
+              <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: '#92400E' }}>Alternatives</p>
+              <div className="space-y-1.5">
+                {options.map(opt => {
+                  const isRecommended = aiRecommendedOptionId != null && opt.id === aiRecommendedOptionId
+                  return (
+                    <label
+                      key={opt.id}
+                      className="flex items-start gap-2 p-2 rounded-lg cursor-pointer border transition-colors"
+                      style={{
+                        borderColor: selectedOption === opt.id ? '#1A3D2B' : 'rgba(26,61,43,0.15)',
+                        background: selectedOption === opt.id ? '#F0FDF4' : 'white',
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name={`rule-recommendation-${contractUnitType ?? creditId ?? discountId ?? 'card'}`}
+                        checked={selectedOption === opt.id}
+                        onChange={() => setSelectedOption(opt.id)}
+                        className="mt-0.5"
+                      />
+                      <span>
+                        <span className="flex items-center gap-1.5">
+                          <span className="block text-xs font-medium text-ink">{opt.label}</span>
+                          {isRecommended && (
+                            <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(11,92,54,0.12)', color: '#0B5C36' }}>
+                              Verdix recommended
+                            </span>
+                          )}
+                        </span>
+                        <span className="block text-[11px] text-stone">{opt.description}</span>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+          )}
           {/* Application scope — service_credit only. Graded and shown
               separately from the trigger/rate/cap badge above: a credit can
               be Clear from source on what it's worth while genuinely
@@ -1499,36 +1745,184 @@ function RuleInterpretationCard({
               than always claiming both are unresolved regardless of what
               the underlying fields actually say. */}
           {aiProposal.survival_state && (() => {
-            const appRule = (aiProposal.proposed_interpretation as Record<string, unknown> | null)?.application_rule as Record<string, unknown> | undefined
-            const carryForwardOpen = appRule?.carry_forward === 'unclear'
-            const oneTimeOpen = appRule?.one_time === 'unclear'
-            const label = carryForwardOpen && !oneTimeOpen ? 'Unused balance survival'
-              : oneTimeOpen && !carryForwardOpen ? 'Repeatability'
+            const label = survivalCarryForwardOpen && !survivalOneTimeOpen ? `Unused ${creditType === 'rebate' ? 'rebate' : 'balance'} survival`
+              : survivalOneTimeOpen && !survivalCarryForwardOpen ? 'Repeatability'
               : 'Survival & expiry'
-            const decisionRequiredText = carryForwardOpen && !oneTimeOpen
-              ? "The contract doesn't state what happens to any portion of this credit that is credited but not fully applied — resolve this before it can be applied against an invoice."
-              : oneTimeOpen && !carryForwardOpen
+            const decisionRequiredText = survivalCarryForwardOpen && !survivalOneTimeOpen
+              ? "The contract doesn't state what happens to any portion of this credit that is credited but not fully applied."
+              : survivalOneTimeOpen && !survivalCarryForwardOpen
                 ? "The contract doesn't state whether this credit can be earned more than once — resolve this before it can be applied against an invoice."
                 : "The contract doesn't state how long an earned-but-unused credit remains available, or whether it can be earned more than once — resolve this before it can be applied against an invoice."
+            const resolvedText = survivalNeedsInlinePicker
+              ? 'Verdix recommends a treatment below — confirm it or choose a different one.'
+              : "Whether this credit carries forward and whether it can be earned more than once is covered in the reasoning above."
             return (
               <SubStateBadge
                 label={label}
                 state={aiProposal.survival_state}
-                decisionRequiredText={decisionRequiredText}
-                resolvedText="Whether this credit carries forward and whether it can be earned more than once is covered in the reasoning above."
+                decisionRequiredText={survivalNeedsInlinePicker ? `${decisionRequiredText} Pick how it should be treated below.` : decisionRequiredText}
+                resolvedText={resolvedText}
               />
             )
           })()}
+          {/* Inline decision-required/recommendation picker — neither state
+              should gate its choices behind Override. Override means "the
+              extracted interpretation is wrong"; this is "answer the
+              ambiguity Verdix already identified" (or "confirm/replace
+              Verdix's own recommendation"), a different action entirely.
+              Scoped to the carry-forward-only case today — see
+              survivalNeedsInlinePicker's own comment above. */}
+          {survivalNeedsInlinePicker && (
+            <div className="rounded-xl p-3 space-y-2" style={{ background: survivalIsRecommendation ? '#FFFDF5' : '#FEF2F2', border: `1px solid ${survivalIsRecommendation ? 'rgba(217,167,90,0.35)' : '#FECACA'}` }}>
+              <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: survivalIsRecommendation ? '#92400E' : '#7F1D1D' }}>How should the unused balance be treated?</p>
+              <div className="space-y-1.5">
+                {CREDIT_SURVIVAL_OPTIONS.map(opt => {
+                  const isRecommended = survivalIsRecommendation && opt.id === survivalRecommendedOptionId
+                  return (
+                    <label
+                      key={opt.id}
+                      className="flex items-start gap-2 p-2 rounded-lg cursor-pointer border transition-colors"
+                      style={{
+                        borderColor: selectedSurvivalOption === opt.id ? '#1A3D2B' : 'rgba(26,61,43,0.15)',
+                        background: selectedSurvivalOption === opt.id ? '#F0FDF4' : 'white',
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name={`survival-option-${creditId ?? contractUnitType ?? 'card'}`}
+                        checked={selectedSurvivalOption === opt.id}
+                        onChange={() => chooseSurvivalOption(opt.id)}
+                        className="mt-0.5"
+                      />
+                      <span>
+                        <span className="flex items-center gap-1.5">
+                          <span className="block text-xs font-medium text-ink">{opt.label}</span>
+                          {isRecommended && (
+                            <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(11,92,54,0.12)', color: '#0B5C36' }}>
+                              Verdix recommended
+                            </span>
+                          )}
+                        </span>
+                        <span className="block text-[11px] text-stone">{opt.description}</span>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+              {selectedSurvivalOption === 'carry_forward_limited' && (
+                <div className="flex items-center gap-2 pl-1">
+                  <input
+                    type="number"
+                    min={1}
+                    value={survivalLimitedPeriods}
+                    onChange={e => setSurvivalLimitedPeriods(e.target.value)}
+                    placeholder="Number of periods"
+                    className="w-36 text-xs border rounded-lg px-2 py-1.5"
+                    style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                  />
+                  <button
+                    onClick={confirmSurvivalLimitedPeriods}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-lg"
+                    style={{ background: '#1A3D2B', color: 'white' }}
+                  >
+                    Set
+                  </button>
+                </div>
+              )}
+              {selectedSurvivalOption === 'expire_on_date' && (
+                <div className="flex items-center gap-2 pl-1">
+                  <input
+                    type="date"
+                    value={survivalExpiryDate}
+                    onChange={e => setSurvivalExpiryDate(e.target.value)}
+                    className="text-xs border rounded-lg px-2 py-1.5"
+                    style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                  />
+                  <button
+                    onClick={confirmSurvivalExpiryDate}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-lg"
+                    style={{ background: '#1A3D2B', color: 'white' }}
+                  >
+                    Set
+                  </button>
+                </div>
+              )}
+              {/* Other — the ONLY survival choice that calls the AI at all.
+                  Translating produces a PROPOSAL (survivalTranslatedPreview),
+                  never auto-applied — the reviewer must explicitly confirm
+                  it below before it becomes survivalResolution/reviewer_policy. */}
+              {selectedSurvivalOption === 'other' && (
+                <div className="space-y-1.5 pl-1">
+                  <textarea
+                    value={survivalFreeText}
+                    onChange={e => { setSurvivalFreeText(e.target.value); setSurvivalTranslatedPreview(null) }}
+                    placeholder="Describe how this should work"
+                    rows={2}
+                    className="w-full text-xs border rounded-lg p-2"
+                    style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                  />
+                  <button
+                    onClick={translateSurvivalFreeText}
+                    disabled={survivalTranslating}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-lg disabled:opacity-40"
+                    style={{ background: '#1A3D2B', color: 'white' }}
+                  >
+                    {survivalTranslating ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : 'Translate'}
+                  </button>
+                  {survivalTranslatedPreview && (
+                    <div className="rounded-lg p-2 space-y-1.5" style={{ background: '#FFFDF5', border: '1px solid rgba(217,167,90,0.35)' }}>
+                      <p className="text-[9px] font-bold uppercase tracking-widest" style={{ color: '#92400E' }}>Verdix proposes</p>
+                      <p className="text-[11px]" style={{ color: '#78350F' }}>{survivalTranslatedPreview.calculation_summary ?? describeSurvivalResolution(survivalTranslatedPreview)}</p>
+                      <button
+                        onClick={confirmSurvivalTranslatedPreview}
+                        className="text-xs font-semibold px-3 py-1.5 rounded-lg"
+                        style={{ background: '#1A3D2B', color: 'white' }}
+                      >
+                        Confirm this treatment
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              {survivalErrorMsg && <p className="text-[11px]" style={{ color: '#DC2626' }}>{survivalErrorMsg}</p>}
+              {survivalResolution && (
+                <p className="text-[11px] flex items-center gap-1" style={{ color: '#0B5C36' }}>
+                  <i className="ti ti-circle-check-filled" style={{ fontSize: 12 }} />
+                  Treatment selected — {describeSurvivalResolution(survivalResolution)}
+                </p>
+              )}
+            </div>
+          )}
           {errorMsg && <p className="text-xs" style={{ color: '#DC2626' }}>{errorMsg}</p>}
           <div className="flex gap-2">
-            <button
-              onClick={() => confirmProposal()}
-              disabled={phase === 'confirming'}
-              className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
-              style={{ background: '#1A3D2B', color: 'white' }}
-            >
-              {phase === 'confirming' ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : 'Confirm & apply'}
-            </button>
+            {/* Combined primary action — accounts for both the top-level
+                recommendation (may need generate()'s re-interpretation step
+                if the reviewer picked a different option than Verdix's own)
+                and the survival sub-field (always a fast client-side merge,
+                never re-interpretation). An unresolved survival sub-field
+                always blocks first, regardless of the top-level state — a
+                reviewer can't confirm a whole card while one of its
+                sub-questions is still open. */}
+            {(() => {
+              const topLevelChanged = aiProposal.state === 'verdix_recommends' && selectedOption != null && selectedOption !== aiRecommendedOptionId
+              const label = topLevelChanged
+                ? 'Confirm selected treatment'
+                : survivalResolution
+                  ? (survivalIsRecommendation && selectedSurvivalOption === survivalRecommendedOptionId ? 'Confirm recommendation' : 'Confirm selected treatment')
+                  : aiProposal.state === 'verdix_recommends' ? 'Confirm recommendation' : 'Confirm & apply'
+              const handleClick = () => { if (topLevelChanged) generate(); else confirmProposal() }
+              return (
+                <button
+                  onClick={handleClick}
+                  disabled={phase === 'confirming' || survivalSelectionPending}
+                  title={survivalSelectionPending ? 'Select a treatment above to continue' : undefined}
+                  className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
+                  style={{ background: '#1A3D2B', color: 'white' }}
+                >
+                  {phase === 'confirming' ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : label}
+                </button>
+              )
+            })()}
             <button
               onClick={() => setPhase('input')}
               disabled={phase === 'confirming'}

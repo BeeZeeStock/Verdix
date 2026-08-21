@@ -62,6 +62,7 @@ export function buildCreditApplicationRule(
     carry_forward,
     survival_provenance,
     expiry_periods: (source?.expiry_periods as number | null | undefined) ?? existing?.expiry_periods ?? null,
+    expiry_date: (source?.expiry_date as string | null | undefined) ?? existing?.expiry_date ?? null,
     availability: 'next_period',
     requires_confirmation: requiresConfirmation,
     confirmation_reason: requiresConfirmation
