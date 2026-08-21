@@ -233,6 +233,20 @@ export type CommercialRuleStatus =
   | 'partially_confirmed'
   | 'ready_for_billing_configuration'
   | 'all_commercial_rules_confirmed'
+  // Step 3 (Verdix Global Rulebook activation) — an ACTIVE Rulebook
+  // invariant (lib/rulebook/activation.ts's VERDIX_RULEBOOK_ACTIVATION)
+  // found the real execution result contradicting the normalized
+  // commercial rule (e.g. a normalized floor whose real computed result
+  // behaved additively). This is a genuine engine contradiction, never a
+  // customer-specific ambiguity — no amount of reviewer confirmation can
+  // clear it, so it is never folded into 'review_required' (which implies
+  // "a reviewer can pick an option here"). Fails closed until the
+  // underlying contradiction is fixed; never silently repaired. Never
+  // emitted unless a caller explicitly supplies executionBlockers to
+  // computeCommercialRuleWorkload — nothing in production does yet (see
+  // that parameter's own comment below), so this status is unreachable
+  // today and every existing caller is unaffected.
+  | 'execution_blocked'
 
 export type CommercialRuleWorkload = {
   status: CommercialRuleStatus
@@ -267,6 +281,30 @@ export type CommercialRuleWorkload = {
   // can see precisely WHICH items make up the count instead of only its
   // size. Does not include meterMapping/vat, which are separate buckets.
   blockers: string[]
+  // Step 3 — a rulebook-detected engine contradiction (see
+  // lib/rulebook/activation.ts's RulebookInvariantExecutionBlocker), kept
+  // structurally separate from `blockers`/`totalToConfirm` on purpose:
+  // those are reviewer-facing commercial ambiguities a human resolves by
+  // picking an option; this is an execution contradiction no reviewer
+  // confirmation can fix. Always [] unless a caller explicitly passes real
+  // violations via computeCommercialRuleWorkload's executionBlockers
+  // parameter — nothing in production does yet.
+  executionBlockers: RulebookInvariantViolationLike[]
+}
+
+// A rulebook-detected engine contradiction, structurally compatible with
+// lib/rulebook/activation.ts's RulebookInvariantExecutionBlocker — but
+// intentionally NOT imported from there. This module (already depended on
+// by every commercial-rule readiness computation in the product) has zero
+// dependency on the optional, removable lib/rulebook/ layer; a real
+// RulebookInvariantExecutionBlocker[] is accepted here as-is, by
+// structural typing, with no cast required. Same "*Like" convention this
+// file already uses for TierLike/DiscountLike/CreditLike.
+export type RulebookInvariantViolationLike = {
+  type: 'rulebook_invariant_violation'
+  rule_id: string
+  field: string
+  reason: string
 }
 
 function groupTiersByUnitType(tiers: TierLike[]): Map<string, TierLike[]> {
@@ -293,6 +331,16 @@ export function computeCommercialRuleWorkload(
   // predates VAT-awareness keeps its exact prior behavior unless it
   // explicitly opts in by passing the job's real VAT status.
   vat: { configured: boolean } = { configured: true },
+  // Step 3 — real Rulebook invariant violations (typically produced via
+  // lib/rulebook/activation.ts's resolveVerdixRulebookActivation +
+  // toRulebookExecutionBlockers), when a caller has them. Defaults to []
+  // so every pre-existing caller/fixture — nothing in production computes
+  // these yet — keeps its exact prior behavior and status byte-for-byte;
+  // this parameter is additive-only. Non-empty forces status to
+  // 'execution_blocked' regardless of how resolved every other item is
+  // (see the status computation below) — a genuine engine contradiction
+  // fails closed even when every reviewer-facing decision is confirmed.
+  executionBlockers: RulebookInvariantViolationLike[] = [],
 ): CommercialRuleWorkload {
   const tiers = terms?.overage_tiers ?? []
   const groups = groupTiersByUnitType(tiers)
@@ -371,8 +419,15 @@ export function computeCommercialRuleWorkload(
   // function never emits 'extraction_complete'; a caller with its own
   // "has anyone opened the review panel yet" signal may downgrade
   // 'review_required' to it for copy purposes.
+  //
+  // executionBlocked (Step 3) is checked FIRST and short-circuits every
+  // other branch, including an otherwise-fully-confirmed contract — fail
+  // closed, per lib/rulebook/activation.ts's enforce_invariant contract.
+  // Always false unless a caller explicitly passes real executionBlockers.
+  const executionBlocked = executionBlockers.length > 0
   let status: CommercialRuleStatus
-  if (commercialRulesConfirmed && meterMappingOk && vat.configured) status = 'all_commercial_rules_confirmed'
+  if (executionBlocked) status = 'execution_blocked'
+  else if (commercialRulesConfirmed && meterMappingOk && vat.configured) status = 'all_commercial_rules_confirmed'
   else if (commercialRulesConfirmed) status = 'ready_for_billing_configuration'
   else if (totalToConfirm < totalItems) status = 'partially_confirmed'
   else status = 'review_required'
@@ -386,6 +441,7 @@ export function computeCommercialRuleWorkload(
     meterMapping,
     vat,
     blockers,
+    executionBlockers,
   }
 }
 
