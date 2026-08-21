@@ -105,15 +105,35 @@ export function buildCreditApplicationRule(
   // check below). An organization policy NEVER overwrites a value that is
   // already contract_derived or reviewer_policy — those cases never reach
   // here 'unclear', so this branch is structurally unreachable for them.
-  let survivalOrganizationRuleId: string | null = existing?.survival_organization_rule_id ?? null
-  let survivalOrganizationRuleVersion: number | null = existing?.survival_organization_rule_version ?? null
   let resolvedCarryForward = carry_forward
   if (carry_forward === 'unclear' && !isProvenanceResolved(survival_provenance) && organizationResolution?.status === 'resolved') {
     resolvedCarryForward = organizationResolution.value as boolean
     survival_provenance = 'organization_rulebook'
-    survivalOrganizationRuleId = organizationResolution.ruleId ?? null
-    survivalOrganizationRuleVersion = organizationResolution.ruleVersion ?? null
   }
+
+  // Audit fields (Step 5D fix, pre-commit review item 12) — derived from
+  // the FINAL survival_provenance, never carried forward procedurally.
+  // Fixing a bug the original Step 5C implementation had: it initialized
+  // these from `existing` and only ever overwrote them inside the
+  // resolution branch above — meaning once a field became organization_
+  // rulebook, a LATER submission that resolved it a different way (e.g. a
+  // reviewer's "Override for this agreement", Step 5D item 12, which
+  // submits a concrete value + survival: 'reviewer_policy') left the OLD
+  // rule id/version behind even though survival_provenance correctly
+  // became 'reviewer_policy' — a stale, misleading audit trail pointing at
+  // a policy that no longer governs this field. Computed here so the
+  // invariant holds unconditionally: populated if and only if the FINAL
+  // provenance is organization_rulebook, sourced fresh from
+  // organizationResolution when this call is what just resolved it, or
+  // preserved from existing when an unrelated later confirm leaves an
+  // already-organization_rulebook field untouched (organizationResolution
+  // is undefined/not-resolved on that call, so the ?? falls through).
+  const survivalOrganizationRuleId = survival_provenance === 'organization_rulebook'
+    ? (organizationResolution?.ruleId ?? existing?.survival_organization_rule_id ?? null)
+    : null
+  const survivalOrganizationRuleVersion = survival_provenance === 'organization_rulebook'
+    ? (organizationResolution?.ruleVersion ?? existing?.survival_organization_rule_version ?? null)
+    : null
 
   // Belt-and-braces: resolution requires BOTH good provenance AND an
   // actual value — a 'contract_derived'/'reviewer_policy'/'organization_

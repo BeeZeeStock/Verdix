@@ -240,6 +240,85 @@ describe('buildCreditApplicationRule — Step 5C organization resolution (fills 
     expect(second?.survival_organization_rule_version).toBe(3)
   })
 
+  // Step 5D item 12 — "Override for this agreement". The reviewer submits
+  // a concrete value + survival: 'reviewer_policy' directly (bypassing
+  // propose-rule entirely, since the current value/provenance is already
+  // known — see OrganizationPolicyControls.submitOverride in configure/
+  // [id]/page.tsx). This is the scenario that surfaced the audit-field bug
+  // fixed in this same pass: overriding an ALREADY organization_rulebook-
+  // resolved field must leave NO stale reference to the rule it replaced.
+  it('item 12, DIFFERENT value: organization policy true, reviewer explicitly chooses false -> reviewer_policy, cleared org rule id/version, org rule itself untouched (bug fix)', () => {
+    const orgResolved = buildCreditApplicationRule(
+      baseApproved({ eligible_component_keys: 'all', one_time: false, carry_forward: 'unclear' }),
+      null,
+      { eligibility: 'contract_derived', survival: undefined },
+      RESOLVED,
+    )
+    expect(orgResolved?.survival_provenance).toBe('organization_rulebook')
+    expect(orgResolved?.carry_forward).toBe(true) // RESOLVED's value, per this file's fixture
+    expect(orgResolved?.survival_organization_rule_id).toBe('rule-1')
+
+    // The override submission: a concrete value, explicit reviewer_policy
+    // provenance, no organizationResolution passed (matches exactly what
+    // OrganizationPolicyControls.submitOverride sends to confirm-rule —
+    // and, client-side, only reachable once the reviewer has explicitly
+    // clicked a radio option; see that component's overrideValue comment).
+    const overridden = buildCreditApplicationRule(
+      baseApproved({ eligible_component_keys: 'all', one_time: false, carry_forward: false }),
+      orgResolved,
+      { eligibility: undefined, survival: 'reviewer_policy' },
+      undefined,
+    )
+    expect(overridden?.carry_forward).toBe(false)
+    expect(overridden?.survival_provenance).toBe('reviewer_policy')
+    // The bug: these used to stay 'rule-1'/3 (carried over from `existing`
+    // and never cleared) even though provenance no longer says
+    // organization_rulebook — a misleading audit trail pointing at a
+    // policy that no longer governs this field.
+    expect(overridden?.survival_organization_rule_id).toBeNull()
+    expect(overridden?.survival_organization_rule_version).toBeNull()
+    expect(overridden?.requires_confirmation).toBe(false)
+    // The organization rule's own record is never touched by this
+    // function at all — it has no organization_rulebook_rules write path;
+    // this is a structural guarantee (see lib/rulebook/organization-
+    // rulebook-production.ts's own module comment), not something this
+    // pure function could violate even if it tried.
+  })
+
+  it('item 12, SAME value: organization policy true, reviewer explicitly re-confirms true for this agreement -> still becomes reviewer_policy (an explicit contract-local choice, not a silent provenance swap)', () => {
+    const orgResolved = buildCreditApplicationRule(
+      baseApproved({ eligible_component_keys: 'all', one_time: false, carry_forward: 'unclear' }),
+      null,
+      { eligibility: 'contract_derived', survival: undefined },
+      RESOLVED,
+    )
+    expect(orgResolved?.survival_provenance).toBe('organization_rulebook')
+    expect(orgResolved?.carry_forward).toBe(true)
+
+    // The reviewer explicitly picked "Carry forward until fully used" in
+    // the override panel — the SAME value the org policy already applies —
+    // but this is still a deliberate, explicit action (see configure/[id]/
+    // page.tsx's OrganizationPolicyControls: overrideValue starts at null,
+    // never pre-filled from the current value, so reaching this submission
+    // at all required a real click), so it is honored as reviewer_policy,
+    // not silently rejected as a no-op.
+    const overridden = buildCreditApplicationRule(
+      baseApproved({ eligible_component_keys: 'all', one_time: false, carry_forward: true }),
+      orgResolved,
+      { eligibility: undefined, survival: 'reviewer_policy' },
+      undefined,
+    )
+    expect(overridden?.carry_forward).toBe(true)
+    expect(overridden?.survival_provenance).toBe('reviewer_policy')
+    // Audit fields still clear — this agreement's field is no longer
+    // governed by the organization rule at all, even though the VALUE
+    // happens to currently agree with it (the org default could change
+    // later without this agreement silently following it anymore).
+    expect(overridden?.survival_organization_rule_id).toBeNull()
+    expect(overridden?.survival_organization_rule_version).toBeNull()
+    expect(overridden?.requires_confirmation).toBe(false)
+  })
+
   it('audit fields are never populated for any other survival_provenance value', () => {
     const contractResult = buildCreditApplicationRule(
       baseApproved({ eligible_component_keys: 'all', one_time: false, carry_forward: true }),

@@ -21,6 +21,8 @@ import { getCreditRepresentationCapability } from '@/lib/connectors/billing/type
 import { FinancialAmount, FinancialMetaTag } from '@/app/_components/FinancialAmount'
 import { FinancialKPICard } from '@/app/_components/FinancialKPICard'
 import { StatusInline } from '@/app/_components/StatusChip'
+import { describeMatchConditions, describeEffectivePeriod } from '@/lib/rulebook/organization-rulebook-display'
+import type { OrganizationRuleRecord } from '@/lib/rulebook/organization-rules'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
 
@@ -2394,6 +2396,241 @@ function paramIcon(label: string): string {
   return 'ti-point-filled'
 }
 
+// Step 5D — Organization Rulebook controls attached to a service credit's
+// "Unused-balance policy" line on the confirmed card. Renders one of two
+// mutually-exclusive states, matching survival_provenance exactly (never
+// both, never neither — a field is either a reviewer's own contract-local
+// decision or an organization default, per the Step 4 precedence this whole
+// subsystem is built on):
+//   'reviewer_policy'      -> "Use as organization default" (item 2) with a
+//                              preview-before-create flow (items 5, 6).
+//   'organization_rulebook' -> "View policy" (item 11) + "Override for this
+//                              agreement" (item 12).
+// Any other provenance (contract_derived, verdix_recommends, or unresolved)
+// renders nothing — promotion only makes sense for an explicit reviewer
+// decision, and there is no organization policy to view/override otherwise.
+function OrganizationPolicyControls({
+  jobId, creditId, carryForward, survivalProvenance, ruleId, ruleVersion, onChanged,
+}: {
+  jobId: string
+  creditId: string
+  carryForward: boolean | 'unclear'
+  survivalProvenance?: string | null
+  ruleId?: string | null
+  ruleVersion?: number | null
+  onChanged: () => void
+}) {
+  const [mode, setMode] = useState<'idle' | 'promote-preview' | 'view-policy' | 'override'>('idle')
+  const [preview, setPreview] = useState<{ scopeSummary: { ruleTypeLabel: string; applicationTimingLabel: string; treatmentLabel: string } } | null>(null)
+  const [policyDetail, setPolicyDetail] = useState<OrganizationRuleRecord | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  // Starts genuinely unselected (never pre-filled from the organization
+  // policy's current value) — "Save override" stays disabled until the
+  // reviewer has explicitly clicked one of the two options below, even if
+  // what they click happens to match the organization's own current value.
+  // Without this, opening the panel and clicking Save immediately would
+  // silently convert organization_rulebook -> reviewer_policy while
+  // RETAINING the org policy's value with no real decision ever made —
+  // exactly the gap this component must not have.
+  const [overrideValue, setOverrideValue] = useState<boolean | null>(null)
+  // Every app/api/org/rulebook/* route requires requireOrg('admin')
+  // server-side — that remains the real security boundary. This is purely
+  // a UX improvement: a 'member'-role reviewer would otherwise see "Use as
+  // organization default" / "View policy" and get a bare 403 on click.
+  // Fetched once per card instance (cheap, cached by the browser) rather
+  // than threading org role through the whole page's already-large prop
+  // chain. Defaults to hidden (null = "not yet known") rather than
+  // optimistically showing the control while this resolves.
+  const [isOrgAdmin, setIsOrgAdmin] = useState<boolean | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/org').then(r => r.ok ? r.json() : null).then(data => {
+      if (!cancelled) setIsOrgAdmin(data ? (data.role === 'admin' || data.role === 'owner') : false)
+    }).catch(() => { if (!cancelled) setIsOrgAdmin(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  async function openPromotePreview() {
+    setBusy(true); setMsg(null)
+    const res = await fetch('/api/org/rulebook/promote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId, creditId }),
+    })
+    const data = await res.json().catch(() => ({}))
+    setBusy(false)
+    if (!res.ok || !data.eligible) { setMsg({ ok: false, text: data.message ?? data.error ?? 'Not eligible to promote.' }); return }
+    setPreview(data.preview)
+    setMode('promote-preview')
+  }
+
+  async function confirmPromote() {
+    setBusy(true); setMsg(null)
+    const res = await fetch('/api/org/rulebook/promote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId, creditId, confirm: true }),
+    })
+    const data = await res.json().catch(() => ({}))
+    setBusy(false)
+    if (!res.ok || !data.eligible) { setMsg({ ok: false, text: data.error ?? data.message ?? 'Failed to create draft.' }); return }
+    setMode('idle')
+    setMsg({ ok: true, text: 'Created as a draft organization policy — nothing changes until it is approved in Settings → Organization Rulebook.' })
+  }
+
+  async function openViewPolicy() {
+    if (!ruleId) return
+    setBusy(true); setMsg(null)
+    const res = await fetch(`/api/org/rulebook/${ruleId}`)
+    const data = await res.json().catch(() => ({}))
+    setBusy(false)
+    if (!res.ok) { setMsg({ ok: false, text: 'Could not load policy details.' }); return }
+    setPolicyDetail(data.rule)
+    setMode('view-policy')
+  }
+
+  // Submits directly to confirm-rule with the minimal payload needed —
+  // bypasses propose-rule entirely (the current value/provenance is
+  // already known from persisted state, there is nothing for the AI to
+  // read). applicationRuleProvenance.survival: 'reviewer_policy' is exactly
+  // what a picker-driven override already produces elsewhere on this page;
+  // confirm-rule's own buildCreditApplicationRule applies it the same way
+  // regardless of which UI control produced the request. Never touches the
+  // organization rule itself — this route has no such write path (item 12).
+  async function submitOverride() {
+    // Belt-and-braces alongside the button's own disabled state — never
+    // submit without an explicit reviewer choice, even if this function
+    // were somehow invoked another way in the future.
+    if (overrideValue === null) return
+    setBusy(true); setMsg(null)
+    const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ruleType: 'service_credit', creditId,
+        reviewerInput: 'Reviewer override for this agreement (Organization Rulebook policy overridden locally)',
+        aiProposedInterpretation: null,
+        approvedInterpretation: { application_rule: { carry_forward: overrideValue } },
+        applicationRuleProvenance: { survival: 'reviewer_policy' as const },
+      }),
+    })
+    const data = await res.json().catch(() => ({ error: `Unexpected response from server (${res.status})` }))
+    setBusy(false)
+    if (!res.ok && !data.propagation) { setMsg({ ok: false, text: data.error ?? 'Failed to save override.' }); return }
+    setMode('idle')
+    onChanged()
+  }
+
+  // Every app/api/org/rulebook/* route is requireOrg('admin') — a
+  // 'member'-role reviewer would only ever see these controls fail with a
+  // 403. isOrgAdmin === null means "still loading"; treated the same as
+  // false (hidden) rather than flashing an actionable control that then
+  // disappears once the real role is known.
+  const canManageRulebook = isOrgAdmin === true
+
+  if (survivalProvenance === 'reviewer_policy' && typeof carryForward === 'boolean') {
+    if (!canManageRulebook) return null
+    return (
+      <div className="mt-2">
+        {mode !== 'promote-preview' && (
+          <button onClick={openPromotePreview} disabled={busy} className="text-[11px] font-medium text-forest hover:underline flex items-center gap-1 disabled:opacity-50">
+            <i className="ti ti-gavel" style={{ fontSize: 12 }} /> Use as organization default
+          </button>
+        )}
+        {mode === 'promote-preview' && preview && (
+          <div className="mt-2 rounded-xl p-3" style={{ background: '#EFF6FF', border: '1px solid rgba(30,64,175,0.2)' }}>
+            <p className="text-[11px] font-semibold mb-2" style={{ color: '#1E40AF' }}>New organization policy — preview</p>
+            <div className="text-[11px] mb-1.5">
+              <span className="text-stone">Where it applies</span>
+              <div className="text-ink font-medium">{preview.scopeSummary.ruleTypeLabel} · Application timing: {preview.scopeSummary.applicationTimingLabel}</div>
+            </div>
+            <div className="text-[11px] mb-2">
+              <span className="text-stone">What Verdix will do</span>
+              <div className="text-ink font-medium">{preview.scopeSummary.treatmentLabel}</div>
+            </div>
+            <p className="text-[10px] text-stone/80 mb-2 leading-relaxed">
+              Explicit contract language always overrides this policy. A reviewer can override it for an individual agreement.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={confirmPromote} disabled={busy} className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-forest text-white disabled:opacity-50">
+                {busy ? 'Creating…' : 'Create as draft'}
+              </button>
+              <button onClick={() => setMode('idle')} className="text-[11px] px-3 py-1.5 rounded-lg border border-forest/20 text-stone">Cancel</button>
+            </div>
+          </div>
+        )}
+        {msg && <p className={`text-[11px] mt-1 ${msg.ok ? 'text-forest' : 'text-red-600'}`}>{msg.text}</p>}
+      </div>
+    )
+  }
+
+  if (survivalProvenance === 'organization_rulebook') {
+    return (
+      <div className="mt-2">
+        <div className="flex items-center gap-3">
+          {/* GET /api/org/rulebook/[id] is also requireOrg('admin') — a
+              'member' reviewer can still see the "Organization policy"
+              badge/summary already rendered elsewhere on this card, just
+              not this route-backed detail lookup. "Override for this
+              agreement" stays visible regardless of role, same as every
+              other edit action already on this page (e.g. "Edit
+              interpretation") — none of those are role-gated today either;
+              narrowing just this one new action would be an inconsistent,
+              half-fix rather than a real one. */}
+          {canManageRulebook && (
+            <button onClick={openViewPolicy} disabled={busy || !ruleId} className="text-[11px] font-medium text-forest hover:underline flex items-center gap-1 disabled:opacity-50">
+              <i className="ti ti-eye" style={{ fontSize: 12 }} /> View policy{ruleVersion ? ` (v${ruleVersion})` : ''}
+            </button>
+          )}
+          <button
+            onClick={() => { setOverrideValue(null); setMode(mode === 'override' ? 'idle' : 'override') }}
+            className="text-[11px] font-medium text-stone hover:text-ink flex items-center gap-1"
+          >
+            <i className="ti ti-user-edit" style={{ fontSize: 12 }} /> Override for this agreement
+          </button>
+        </div>
+        {mode === 'view-policy' && policyDetail && (
+          <div className="mt-2 rounded-xl p-3" style={{ background: '#EFF6FF', border: '1px solid rgba(30,64,175,0.2)' }}>
+            <p className="text-[11px] font-semibold mb-1" style={{ color: '#1E40AF' }}>{policyDetail.name} · v{policyDetail.version}</p>
+            <p className="text-[11px] text-ink mb-1">{describeMatchConditions(policyDetail.matchConditions).join(' · ')}</p>
+            <p className="text-[11px] text-stone mb-2">{describeEffectivePeriod(policyDetail.effectiveFrom, policyDetail.effectiveTo)}</p>
+            <button onClick={() => setMode('idle')} className="text-[11px] text-stone underline">Close</button>
+          </div>
+        )}
+        {mode === 'override' && (
+          <div className="mt-2 rounded-xl p-3" style={{ background: '#FAFAF9', border: '1px solid rgba(26,61,43,0.1)' }}>
+            <p className="text-[11px] font-medium text-ink mb-2">This changes this agreement only — the organization policy itself is not affected.</p>
+            <div className="flex flex-col gap-1.5 mb-2">
+              <label className="flex items-center gap-2 text-[11px] text-ink">
+                <input type="radio" checked={overrideValue === true} onChange={() => setOverrideValue(true)} />
+                Carry forward until fully used{carryForward === true ? ' (current organization policy)' : ''}
+              </label>
+              <label className="flex items-center gap-2 text-[11px] text-ink">
+                <input type="radio" checked={overrideValue === false} onChange={() => setOverrideValue(false)} />
+                Expires after next invoice{carryForward === false ? ' (current organization policy)' : ''}
+              </label>
+            </div>
+            {/* Deliberately starts with NEITHER option selected (see
+                overrideValue's own comment) — picking the option that
+                happens to match the current organization policy is still a
+                real, explicit choice (a reviewer may want THIS agreement
+                pinned to that treatment even if the org default later
+                changes), it just requires the same active click as picking
+                the other one. Save stays disabled until either is clicked. */}
+            <div className="flex gap-2">
+              <button onClick={submitOverride} disabled={busy || overrideValue === null} className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-forest text-white disabled:opacity-50">
+                {busy ? 'Saving…' : 'Save override'}
+              </button>
+              <button onClick={() => { setOverrideValue(null); setMode('idle') }} className="text-[11px] px-3 py-1.5 rounded-lg border border-forest/20 text-stone">Cancel</button>
+            </div>
+          </div>
+        )}
+        {msg && <p className={`text-[11px] mt-1 ${msg.ok ? 'text-forest' : 'text-red-600'}`}>{msg.text}</p>}
+      </div>
+    )
+  }
+
+  return null
+}
+
 // Read-only card for the "Confirmed billing rules" section — the persistent,
 // post-confirmation counterpart to RuleInterpretationCard's pre-confirmation
 // review flow. Deliberately does not reuse RuleInterpretationCard itself:
@@ -2405,7 +2642,7 @@ function paramIcon(label: string): string {
 // freshly-opened job, and can never show a different value than what
 // billing/invoicing itself reads.
 function ConfirmedRuleCard({
-  icon, typeLabel, title, sourceClause, interpretation, params, provenance, auditReviewer, auditDate, onViewSource, onEdit,
+  icon, typeLabel, title, sourceClause, interpretation, params, provenance, auditReviewer, auditDate, onViewSource, onEdit, footer,
 }: {
   // Tabler icon name (e.g. "ti-wallet"), no "ti " prefix — chosen per rule
   // kind at the card-builder call site, not guessed here.
@@ -2424,6 +2661,12 @@ function ConfirmedRuleCard({
   auditDate?: string | null
   onViewSource?: () => void
   onEdit: () => void
+  // Step 5D — an optional, rule-kind-specific control block rendered below
+  // the provenance badges (Organization Rulebook promotion/view-policy/
+  // override-for-this-agreement, today only ever passed for a service
+  // credit's survival sub-field). Every other rule kind passes nothing —
+  // this card stays generic; the specifics live entirely at the call site.
+  footer?: React.ReactNode
 }) {
   const resolvedProvenance = provenance.filter(p => provenanceLabel(p.value) != null)
   return (
@@ -2476,6 +2719,7 @@ function ConfirmedRuleCard({
           })}
         </div>
       )}
+      {footer}
       <div className="flex items-center justify-between gap-3 pt-4 mt-4" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
         <p className="text-[11px] text-stone/70">
           {(auditReviewer || auditDate) && <>Confirmed{auditReviewer ? ` by ${auditReviewer}` : ''}{auditDate ? ` · ${auditDate}` : ''}</>}
@@ -6074,6 +6318,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 key: string; icon: string; typeLabel: string; title: string; sourceClause?: string | null; interpretation: string
                 params: { label: string; value: string }[]; provenance: { label: string; value?: string | null }[]
                 auditReviewer?: string | null; auditDate?: string | null; onViewSource?: () => void; onEdit: () => void
+                footer?: React.ReactNode
               }
               const cards: Card[] = []
 
@@ -6226,10 +6471,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 params.push({ label: 'Repeatable', value: appRule.one_time === true ? 'No — one-time' : appRule.one_time === false ? 'Yes' : 'Decision required' })
                 if (typeof appRule.carry_forward === 'boolean') {
                   params.push({ label: 'Unused balance', value: describeSurvivalResolution({ carry_forward: appRule.carry_forward, expiry_periods: appRule.expiry_periods, expiry_date: appRule.expiry_date }) })
-                  // Step 5C — plain informational text, not a clickable
-                  // "View policy" link: there's no organization-rulebook
-                  // management UI yet to link to. Only ever present when
-                  // this field was actually resolved by an org policy.
+                  // Step 5C/5D — plain informational id/version text here
+                  // (a real, clickable "View policy" action now lives in
+                  // OrganizationPolicyControls, this card's footer — see
+                  // item 11). Only ever present when this field was
+                  // actually resolved by an org policy.
                   if (appRule.survival_provenance === 'organization_rulebook' && appRule.survival_organization_rule_id) {
                     params.push({
                       label: 'Organization policy',
@@ -6291,6 +6537,17 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
                   onViewSource: src.service_credits ? () => openPDF(src.service_credits) : undefined,
                   onEdit: () => setEditingRule(`credit:${c.credit_rule_id}`),
+                  footer: c.credit_rule_id ? (
+                    <OrganizationPolicyControls
+                      jobId={id}
+                      creditId={c.credit_rule_id}
+                      carryForward={appRule.carry_forward}
+                      survivalProvenance={appRule.survival_provenance}
+                      ruleId={appRule.survival_organization_rule_id}
+                      ruleVersion={appRule.survival_organization_rule_version}
+                      onChanged={() => { fetchJob(); fetchRuleInterpretations() }}
+                    />
+                  ) : undefined,
                 })
               }
 
@@ -6347,6 +6604,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             auditDate={c.auditDate}
                             onViewSource={c.onViewSource}
                             onEdit={c.onEdit}
+                            footer={c.footer}
                           />
                         ))}
                       </div>

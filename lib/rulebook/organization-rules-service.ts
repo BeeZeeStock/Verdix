@@ -315,3 +315,96 @@ export async function listMatchableOrganizationRules(organizationId: string): Pr
   if (error || !data) return []
   return (data as OrganizationRuleRow[]).map(rowToRecord)
 }
+
+// Step 5D — the management page's query: every status, for one
+// organization. Distinct from listActiveOrganizationRules/
+// listMatchableOrganizationRules (both matching-oriented, deliberately
+// excluding draft/disabled) — this is the ONLY query in this module that
+// returns draft/disabled rows, and it exists solely for display, never for
+// resolution. Never used by any matching/resolution code path.
+export async function listAllOrganizationRules(organizationId: string): Promise<OrganizationRuleRecord[]> {
+  const { data, error } = await supabaseServer
+    .from('organization_rulebook_rules')
+    .select('*')
+    .eq('organization_id', organizationId)
+    .order('target_field', { ascending: true })
+    .order('created_at', { ascending: false })
+
+  if (error || !data) return []
+  return (data as OrganizationRuleRow[]).map(rowToRecord)
+}
+
+// Step 5D item 8 — "before activation, surface when an existing policy
+// occupies the same policy slot." A policy SLOT is (organization_id,
+// target_field, match_conditions) — the exact scope the database's own
+// org_rulebook_no_overlapping_scope exclusion constraint protects
+// (20260823000001_organization_rulebook_temporal_validity.sql). This is a
+// proactive, read-only check the API layer runs BEFORE calling
+// activateOrganizationRule, so the reviewer sees a clear "current vs
+// proposed" comparison instead of a raw database constraint-violation
+// error. match_conditions is compared the same way the database does — as
+// canonicalized JSON text — so this function and the constraint agree on
+// what "the same slot" means; see that migration's own comment on the
+// (documented, pre-existing) array-order limitation this inherits.
+//
+// Excludes rows in the SAME lineage as candidateRuleId — a draft superseding
+// its own predecessor is the NORMAL, expected activation path (handled by
+// activate_organization_rule_supersession's atomic retire-then-activate),
+// not an "overlap" in the sense this function reports.
+export async function findActiveRuleForSameSlot(
+  organizationId: string, targetField: string, matchConditions: MatchCondition[], excludeLineageId: string,
+): Promise<OrganizationRuleRecord | null> {
+  const { data, error } = await supabaseServer
+    .from('organization_rulebook_rules')
+    .select('*')
+    .eq('organization_id', organizationId)
+    .eq('target_field', targetField)
+    .eq('status', 'active')
+    .neq('lineage_id', excludeLineageId)
+
+  if (error || !data) return null
+  const candidateJson = JSON.stringify(matchConditions)
+  const match = (data as OrganizationRuleRow[]).find(row => JSON.stringify(row.match_conditions_json ?? []) === candidateJson)
+  return match ? rowToRecord(match) : null
+}
+
+// Step 5D — discards a never-activated draft (e.g. a promoted draft the
+// reviewer/admin decides not to pursue, or one superseded by a "replace"
+// choice at activation time — see app/api/org/rulebook/[id]/activate/
+// route.ts). Deliberately restricted to status = 'draft' only: an ACTIVE
+// rule is retired exclusively through activateOrganizationRule's atomic
+// supersession path (never through this function), so a real, historically-
+// resolving policy can never be silently removed from matching by this
+// call. Org-scoped via the same getOrganizationRule lookup every other
+// mutation in this module uses.
+export async function discardDraftOrganizationRule(organizationId: string, ruleId: string): Promise<void> {
+  const rule = await getOrganizationRule(organizationId, ruleId)
+  if (!rule) throw new Error(`organization-rules-service: rule ${ruleId} not found in organization ${organizationId}`)
+  if (rule.status !== 'draft') throw new Error(`organization-rules-service: only a draft rule can be discarded (rule ${ruleId} is ${rule.status})`)
+
+  const { error } = await supabaseServer
+    .from('organization_rulebook_rules')
+    .update({ status: 'disabled', updated_at: new Date().toISOString() })
+    .eq('id', ruleId)
+    .eq('organization_id', organizationId)
+  if (error) throw new Error(`organization-rules-service: failed to discard draft ${ruleId}: ${error.message}`)
+}
+
+// Step 5D item 9 — cosmetic-only edit, safe to apply in place regardless of
+// status (never touches target_field/value_json/match_conditions_json/
+// status/version — every SEMANTIC property). A change to any semantic
+// property must go through supersedeOrganizationRule + activateOrganizationRule
+// instead, so historical resolution stays reproducible.
+export async function updateOrganizationRuleDescription(
+  organizationId: string, ruleId: string, description: string | null,
+): Promise<OrganizationRuleRecord> {
+  const { data, error } = await supabaseServer
+    .from('organization_rulebook_rules')
+    .update({ description, updated_at: new Date().toISOString() })
+    .eq('id', ruleId)
+    .eq('organization_id', organizationId)
+    .select('*')
+    .maybeSingle()
+  if (error || !data) throw new Error(`organization-rules-service: rule ${ruleId} not found in organization ${organizationId}`)
+  return rowToRecord(data as OrganizationRuleRow)
+}

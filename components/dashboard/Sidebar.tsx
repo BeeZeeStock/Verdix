@@ -47,6 +47,7 @@ const settingsItems = [
   { href: '/settings/meters',       icon: 'ti-antenna',         label: 'Billing meters', exact: false },
   { href: '/settings/billing-test', icon: 'ti-flask',           label: 'Billing test',   exact: false },
   { href: '/settings/team', icon: 'ti-users', label: 'Team', exact: false },
+  { href: '/settings/rulebook', icon: 'ti-gavel', label: 'Organization Rulebook', exact: false },
 ]
 
 const ADMIN_EMAILS = ['bilal.zahoor@yahoo.com', 'bilal@lynoraai.com']
