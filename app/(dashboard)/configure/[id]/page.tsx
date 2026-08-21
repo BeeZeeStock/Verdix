@@ -2207,6 +2207,10 @@ const CREDIT_BASIS_LABEL: Record<string, string> = {
 // credit's own description/CREDIT_BASIS_LABEL wherever a credit_type isn't
 // one of these three named product concepts.
 const CREDIT_TYPE_LABEL: Record<string, string> = { rebate: 'Annual Rebate', conditional_credit: 'Growth Credit', service_credit: 'Service Credit' }
+// Icon per credit_type for the Confirmed billing rules cards — falls back
+// to the same receipt icon the review-panel Service credits section
+// already uses for anything not one of these three named product concepts.
+const CREDIT_TYPE_ICON: Record<string, string> = { rebate: 'ti-percentage', conditional_credit: 'ti-rocket', service_credit: 'ti-clock-check' }
 
 function formatFieldValue(field: string, value: unknown, currency: string): string {
   if (value == null) return '—'
@@ -2235,6 +2239,25 @@ function provenanceLabel(p?: string | null): string | null {
   return p === 'contract_derived' ? 'Clear from source' : p === 'reviewer_policy' ? 'Reviewer policy' : null
 }
 
+// Small icon per parameter row, matched heuristically off the label text
+// rather than threading an icon through every params.push(...) call site —
+// the label vocabulary here is small and stable (cadence/date fields,
+// trigger, scope, exclusions, repeatability, balance), so a substring match
+// stays accurate without coupling every card builder to a fixed icon list.
+// Falls back to a plain bullet for anything unmatched, never a wrong icon.
+function paramIcon(label: string): string {
+  const l = label.toLowerCase()
+  if (l.includes('billing period') || l.includes('partial-period') || l.includes('effective')) return 'ti-calendar'
+  if (l.includes('trigger')) return 'ti-bolt'
+  if (l.includes('eligible') || l.includes('applies to')) return 'ti-list-check'
+  if (l.includes('excluded')) return 'ti-circle-x'
+  if (l.includes('repeatable')) return 'ti-repeat'
+  if (l.includes('unused balance')) return 'ti-wallet'
+  if (l.includes('cap')) return 'ti-gauge'
+  if (l.includes('frequency')) return 'ti-refresh'
+  return 'ti-point-filled'
+}
+
 // Read-only card for the "Confirmed billing rules" section — the persistent,
 // post-confirmation counterpart to RuleInterpretationCard's pre-confirmation
 // review flow. Deliberately does not reuse RuleInterpretationCard itself:
@@ -2246,8 +2269,11 @@ function provenanceLabel(p?: string | null): string | null {
 // freshly-opened job, and can never show a different value than what
 // billing/invoicing itself reads.
 function ConfirmedRuleCard({
-  typeLabel, title, sourceClause, interpretation, params, provenance, auditReviewer, auditDate, onViewSource, onEdit,
+  icon, typeLabel, title, sourceClause, interpretation, params, provenance, auditReviewer, auditDate, onViewSource, onEdit,
 }: {
+  // Tabler icon name (e.g. "ti-wallet"), no "ti " prefix — chosen per rule
+  // kind at the card-builder call site, not guessed here.
+  icon: string
   typeLabel: string
   title: string
   sourceClause?: string | null
@@ -2265,31 +2291,42 @@ function ConfirmedRuleCard({
 }) {
   const resolvedProvenance = provenance.filter(p => provenanceLabel(p.value) != null)
   return (
-    <div className="rounded-xl p-4" style={{ background: '#F6FAF4', border: '1px solid rgba(74,124,89,0.2)' }}>
-      <p className="text-[9px] font-bold uppercase tracking-widest text-stone/60 mb-1">{typeLabel}</p>
-      <p className="text-sm font-semibold text-ink leading-snug mb-2">{title}</p>
+    <div className="rounded-2xl p-6 bg-white" style={{ border: '1px solid rgba(26,61,43,0.1)', boxShadow: '0 1px 2px rgba(26,61,43,0.04)' }}>
+      <div className="flex items-start gap-4 mb-4">
+        <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(11,92,54,0.08)' }}>
+          <i className={`ti ${icon}`} style={{ fontSize: 22, color: '#0B5C36' }} />
+        </div>
+        <div className="min-w-0 pt-0.5">
+          <p className="text-[10px] font-bold uppercase tracking-widest mb-1.5" style={{ color: '#0B5C36' }}>{typeLabel}</p>
+          <p className="text-lg font-semibold text-ink leading-snug mb-1.5">{title}</p>
+          {interpretation && <p className="text-[13px] text-stone leading-relaxed">{interpretation}</p>}
+        </div>
+      </div>
       {sourceClause && (
-        <p className="text-[11px] text-stone italic leading-relaxed mb-2 pl-2" style={{ borderLeft: '2px solid rgba(26,61,43,0.15)' }}>
-          &ldquo;{sourceClause}&rdquo;
-        </p>
+        <div className="rounded-xl p-4 mb-4 flex gap-2.5" style={{ background: '#FAFAF9' }}>
+          <i className="ti ti-quote" style={{ fontSize: 18, color: 'rgba(26,61,43,0.25)', flexShrink: 0, marginTop: 1 }} />
+          <p className="text-[12.5px] text-stone italic leading-relaxed">{sourceClause}</p>
+        </div>
       )}
-      <p className="text-[12px] text-ink leading-relaxed mb-2">{interpretation}</p>
       {params.length > 0 && (
-        <dl className="space-y-1 mb-2 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
+        <dl className="space-y-2.5 pt-4 mb-4" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
           {params.map((p, i) => (
-            <div key={i} className="flex justify-between gap-3 text-[11px]">
-              <dt className="text-stone flex-shrink-0">{p.label}</dt>
-              <dd className="font-medium text-ink text-right">{p.value}</dd>
+            <div key={i} className="flex items-center justify-between gap-3 text-[12.5px]">
+              <dt className="flex items-center gap-1.5 text-stone flex-shrink-0">
+                <i className={`ti ${paramIcon(p.label)}`} style={{ fontSize: 13, color: '#0B5C36' }} />
+                {p.label}
+              </dt>
+              <dd className="font-semibold text-ink text-right">{p.value}</dd>
             </div>
           ))}
         </dl>
       )}
       {resolvedProvenance.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+        <div className="flex flex-wrap items-center gap-2 mb-1">
           {resolvedProvenance.map((p, i) => {
             const label = provenanceLabel(p.value)!
             return (
-              <span key={i} className="text-[9px] font-semibold px-2 py-0.5 rounded-full" style={{
+              <span key={i} className="text-[11px] font-semibold px-3 py-1 rounded-full" style={{
                 background: label === 'Clear from source' ? 'rgba(11,92,54,0.1)' : 'rgba(180,83,9,0.1)',
                 color: label === 'Clear from source' ? '#0B5C36' : '#92400E',
               }}>
@@ -2299,16 +2336,20 @@ function ConfirmedRuleCard({
           })}
         </div>
       )}
-      {(auditReviewer || auditDate) && (
-        <p className="text-[10px] text-stone/60 mb-2">
-          Confirmed{auditReviewer ? ` by ${auditReviewer}` : ''}{auditDate ? ` · ${auditDate}` : ''}
+      <div className="flex items-center justify-between gap-3 pt-4 mt-4" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
+        <p className="text-[11px] text-stone/70">
+          {(auditReviewer || auditDate) && <>Confirmed{auditReviewer ? ` by ${auditReviewer}` : ''}{auditDate ? ` · ${auditDate}` : ''}</>}
         </p>
-      )}
-      <div className="flex items-center gap-3 pt-1">
-        {onViewSource && (
-          <button onClick={onViewSource} className="text-[11px] font-medium text-forest hover:underline">View source ↗</button>
-        )}
-        <button onClick={onEdit} className="text-[11px] font-medium text-stone hover:text-ink">Edit interpretation</button>
+        <div className="flex items-center gap-4 flex-shrink-0">
+          {onViewSource && (
+            <button onClick={onViewSource} className="flex items-center gap-1 text-[12px] font-medium text-forest hover:underline">
+              <i className="ti ti-external-link" style={{ fontSize: 13 }} /> View source
+            </button>
+          )}
+          <button onClick={onEdit} className="flex items-center gap-1 text-[12px] font-medium text-stone hover:text-ink">
+            <i className="ti ti-pencil" style={{ fontSize: 13 }} /> Edit interpretation
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -5887,7 +5928,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               }
 
               type Card = {
-                key: string; typeLabel: string; title: string; sourceClause?: string | null; interpretation: string
+                key: string; icon: string; typeLabel: string; title: string; sourceClause?: string | null; interpretation: string
                 params: { label: string; value: string }[]; provenance: { label: string; value?: string | null }[]
                 auditReviewer?: string | null; auditDate?: string | null; onViewSource?: () => void; onEdit: () => void
               }
@@ -5904,6 +5945,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 const audit = findAudit('tier_calculation', unitType)
                 cards.push({
                   key: `tier:${unitType}`,
+                  icon: 'ti-chart-bar',
                   typeLabel: 'Transaction pricing',
                   title: `${TIER_METHOD_DISPLAY[tierCalc.method] ?? tierCalc.method} · ${unitType}`,
                   sourceClause: tierCalc.source_clause,
@@ -5943,6 +5985,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 }
                 cards.push({
                   key: `min:${unitType}`,
+                  icon: 'ti-shield',
                   typeLabel: MODE_LABEL[mc.mode] ?? mc.mode,
                   title: `${fmt(mc.amount, cur)}${ruleCadenceLabel(mc.period, t0?.reset_anchor) ? ` / ${ruleCadenceLabel(mc.period, t0?.reset_anchor)}` : ''} — ${unitType}`,
                   sourceClause: mc.source_clause,
@@ -5970,6 +6013,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   : e.description || null
                 cards.push({
                   key: `esc:${i}`,
+                  icon: 'ti-trending-up',
                   typeLabel: 'Price escalation',
                   title: notApplied ? 'Not applied' : `${interp.index}${interp.cap_pct != null ? `, capped ${interp.cap_pct}%` : interp.index !== 'other' ? ', uncapped' : ''}`,
                   sourceClause: sourceTerm,
@@ -6000,6 +6044,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 const audit = findAudit('base_fee_proration', BASE_FEE_PRORATION_SENTINEL)
                 cards.push({
                   key: 'basefee',
+                  icon: 'ti-wallet',
                   typeLabel: 'Platform fee',
                   title: `${fmt(terms.base_monthly_fee, cur)} / ${cadenceLabel}`,
                   sourceClause: bfp.source_clause,
@@ -6047,6 +6092,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 ].filter(Boolean)
                 cards.push({
                   key: `credit:${c.credit_rule_id}`,
+                  icon: CREDIT_TYPE_ICON[c.credit_type ?? ''] ?? 'ti-receipt-refund',
                   typeLabel: CREDIT_TYPE_LABEL[c.credit_type ?? ''] ?? CREDIT_BASIS_LABEL[c.credit_type ?? 'other'] ?? 'Service credit',
                   title: c.description || CREDIT_TYPE_LABEL[c.credit_type ?? ''] || 'Service credit',
                   sourceClause: c.source_clause,
@@ -6100,10 +6146,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   </button>
                   {confirmedRulesExpanded && (
                     <>
-                      <div className="p-6 grid grid-cols-2 gap-4">
+                      <div className="p-6 grid grid-cols-2 gap-5" style={{ background: '#FAF8F4' }}>
                         {cards.map(c => (
                           <ConfirmedRuleCard
                             key={c.key}
+                            icon={c.icon}
                             typeLabel={c.typeLabel}
                             title={c.title}
                             sourceClause={c.sourceClause}
