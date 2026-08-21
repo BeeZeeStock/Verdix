@@ -55,6 +55,19 @@ export interface MatchCondition {
 // a real future adapter can build consistent field names across the whole
 // Rulebook subsystem. Add entries only when a concrete scenario needs
 // them — this is not meant to eventually cover every normalized field.
+//
+// Known schema capability gap (Step 5B review): there is deliberately NO
+// field here for "how long a carried-forward balance survives" / "expiry
+// treatment" (e.g. the concept behind lib/types.ts's CreditApplicationRule
+// .expiry_periods/.expiry_date) — that is a genuinely different commercial
+// dimension from BOTH survival.carry_forward (does an unused balance
+// survive to another period AT ALL) and survival.one_time (can the
+// credit/benefit be EARNED once vs. repeatedly). An organization rule
+// cannot yet express "carry forward, AND specifically until fully used"
+// as a single decision — only the plain carry_forward boolean. Do not
+// overload survival.carry_forward or survival.one_time to stand in for
+// this; add a real allowlisted field (e.g. 'survival.expiry_periods')
+// once a concrete scenario needs it, rather than approximating it here.
 export const ORGANIZATION_RULEBOOK_ALLOWLISTED_FIELDS = [
   'rule_type',
   'application.timing',
