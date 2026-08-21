@@ -3999,6 +3999,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
   const [activeTab, setActiveTab]       = useState<'terms' | 'model'>('terms')
   const [reviewPanelOpen, setReviewPanelOpen] = useState(false)
+  // Collapsed by default — the Confirmed billing rules section can hold a
+  // card per commercial rule plus the usage-input list, which is a lot of
+  // vertical space to show unprompted on every page load once a contract
+  // has several rules confirmed. The reviewer opens it deliberately via the
+  // header, same collapse affordance MeterMappingPanel already uses.
+  const [confirmedRulesExpanded, setConfirmedRulesExpanded] = useState(false)
 
   // Read-only summary for the main-tab meter-mapping status chip — the
   // review-drawer's MeterMappingPanel mount (inside ReviewPanel) is the only
@@ -6233,42 +6239,53 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
               return (
                 <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
-                  <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                    <div>
-                      <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Confirmed billing rules</h2>
-                      <p className="text-[11px] text-stone mt-1">How this agreement is currently configured to bill — updates immediately as each rule is confirmed or edited.</p>
-                    </div>
-                    <span className="text-[11px] text-stone flex-shrink-0">{cards.length} rule{cards.length === 1 ? '' : 's'} confirmed</span>
-                  </div>
-                  <div className="p-6 grid grid-cols-2 gap-4">
-                    {cards.map(c => (
-                      <ConfirmedRuleCard
-                        key={c.key}
-                        typeLabel={c.typeLabel}
-                        title={c.title}
-                        sourceClause={c.sourceClause}
-                        interpretation={c.interpretation}
-                        params={c.params}
-                        provenance={c.provenance}
-                        auditReviewer={c.auditReviewer}
-                        auditDate={c.auditDate}
-                        onViewSource={c.onViewSource}
-                        onEdit={c.onEdit}
-                      />
-                    ))}
-                  </div>
-                  {usageRows.length > 0 && (
-                    <div className="px-6 pb-6 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
-                      <p className="text-[10px] font-bold uppercase tracking-widest text-stone mb-2">Usage input configuration</p>
-                      <div className="grid gap-x-8 gap-y-1.5 text-[12px]" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
-                        {usageRows.map(r => (
-                          <div key={r.unitType} className="flex items-center justify-between gap-2">
-                            <p><span className="text-stone capitalize">{r.unitType}:</span> <span className={`font-medium ${r.resolved ? 'text-ink' : ''}`} style={!r.resolved ? { color: '#B45309' } : undefined}>{r.description}</span></p>
-                            <button onClick={() => setReviewPanelOpen(true)} className="text-[11px] font-medium text-stone hover:text-ink flex-shrink-0">{r.resolved ? 'Change' : 'Confirm'}</button>
-                          </div>
-                        ))}
+                  <button
+                    onClick={() => setConfirmedRulesExpanded(v => !v)}
+                    className="w-full p-6 flex items-center justify-between text-left"
+                    style={confirmedRulesExpanded ? { borderBottom: '1px solid rgba(26,61,43,0.07)' } : undefined}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <i className={`ti ti-chevron-right text-stone/50 transition-transform flex-shrink-0 ${confirmedRulesExpanded ? 'rotate-90' : ''}`} style={{ fontSize: 12 }} />
+                      <div className="min-w-0">
+                        <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Confirmed billing rules</h2>
+                        <p className="text-[11px] text-stone mt-1">How this agreement is currently configured to bill — updates immediately as each rule is confirmed or edited.</p>
                       </div>
                     </div>
+                    <span className="text-[11px] text-stone flex-shrink-0">{cards.length} rule{cards.length === 1 ? '' : 's'} confirmed</span>
+                  </button>
+                  {confirmedRulesExpanded && (
+                    <>
+                      <div className="p-6 grid grid-cols-2 gap-4">
+                        {cards.map(c => (
+                          <ConfirmedRuleCard
+                            key={c.key}
+                            typeLabel={c.typeLabel}
+                            title={c.title}
+                            sourceClause={c.sourceClause}
+                            interpretation={c.interpretation}
+                            params={c.params}
+                            provenance={c.provenance}
+                            auditReviewer={c.auditReviewer}
+                            auditDate={c.auditDate}
+                            onViewSource={c.onViewSource}
+                            onEdit={c.onEdit}
+                          />
+                        ))}
+                      </div>
+                      {usageRows.length > 0 && (
+                        <div className="px-6 pb-6 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-stone mb-2">Usage input configuration</p>
+                          <div className="grid gap-x-8 gap-y-1.5 text-[12px]" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+                            {usageRows.map(r => (
+                              <div key={r.unitType} className="flex items-center justify-between gap-2">
+                                <p><span className="text-stone capitalize">{r.unitType}:</span> <span className={`font-medium ${r.resolved ? 'text-ink' : ''}`} style={!r.resolved ? { color: '#B45309' } : undefined}>{r.description}</span></p>
+                                <button onClick={() => setReviewPanelOpen(true)} className="text-[11px] font-medium text-stone hover:text-ink flex-shrink-0">{r.resolved ? 'Change' : 'Confirm'}</button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               )
