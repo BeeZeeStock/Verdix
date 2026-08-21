@@ -296,11 +296,20 @@ describe('getBaseFeeProrationOptions', () => {
     expect(contractMonth).toBeDefined()
     expect(contractMonth!.label).toContain('17th–16th')
     // A real choice among peers, not a variant of "prorate or bill full" —
-    // calendar_full/prorate_days/prorate_months all still exist alongside it.
+    // calendar_full/prorate_days still exist alongside it. calendar_prorate_months
+    // is deliberately NOT offered for a monthly cadence — prorating a month
+    // "by months" is a degenerate, redundant choice next to prorate_days when
+    // the period itself IS a month (see getBaseFeeProrationOptions's comment).
     expect(options.some(o => o.id === 'calendar_full')).toBe(true)
     expect(options.some(o => o.id === 'calendar_prorate_days')).toBe(true)
-    expect(options.some(o => o.id === 'calendar_prorate_months')).toBe(true)
+    expect(options.some(o => o.id === 'calendar_prorate_months')).toBe(false)
     expect(options.some(o => o.id === 'other')).toBe(true)
+    expect(options).toHaveLength(4)
+  })
+
+  it('offers "prorate by months" for a coarser (non-monthly) cadence, where it is a genuinely distinct choice from day-proration', () => {
+    const options = getBaseFeeProrationOptions('year', null)
+    expect(options.some(o => o.id === 'calendar_prorate_months')).toBe(true)
   })
 })
 

@@ -1092,7 +1092,7 @@ function SubStateBadge({ label, state, decisionRequiredText, resolvedText }: {
 }
 
 function RuleInterpretationCard({
-  jobId, kind, contractUnitType, discountId, creditId, interactionKey, cadenceLabel, contractPeriodLabel, sourceClause, currency, meterMappingConfirmed, meterSuggestion, showMeterDependencyNotice, onApplied,
+  jobId, kind, contractUnitType, discountId, creditId, creditType, interactionKey, cadenceLabel, contractPeriodLabel, sourceClause, currency, meterMappingConfirmed, meterSuggestion, showMeterDependencyNotice, onApplied,
   initialSelectedOption, initialFreeText,
 }: {
   jobId: string
@@ -1104,6 +1104,10 @@ function RuleInterpretationCard({
   discountId?: string
   // Same addressing pattern as discountId, when kind maps to ruleType 'service_credit'.
   creditId?: string
+  // Only meaningful for kind 'service_credit' — picks the credit-type-
+  // specific survival wording below ("unused rebate balance" vs "unused
+  // service-credit balance") instead of a one-size-fits-all sentence.
+  creditType?: string
   // Composite key from lib/rule-interactions.ts, when kind maps to ruleType 'rule_interaction'.
   interactionKey?: string
   // The metric's cadence noun (e.g. "month"/"quarter"/"year") — only
@@ -1314,6 +1318,12 @@ function RuleInterpretationCard({
     // there is no recommendation to confirm. Never a blanket "Resolve X and
     // Y" button that could be clicked without the reviewer registering
     // which specific claim they're endorsing.
+    // Survival wording is credit-type-specific: Contract-Year repeatability
+    // (whether the credit can be earned again next period) is a separate,
+    // source-derived question already answered by the earn rule — it's not
+    // part of what's actually unresolved here, so the sentence only names
+    // the genuinely open question, what happens to an unused balance.
+    const survivalNoun = creditType === 'rebate' ? 'rebate' : 'service-credit'
     const openItems = [
       eligibilityOpenAfterConfirm ? {
         key: 'eligibility', label: 'Application scope', state: aiProposal?.application_state,
@@ -1322,9 +1332,11 @@ function RuleInterpretationCard({
         onConfirmRecommendation: () => confirmProposal({ eligibility: true }),
       } : null,
       survivalOpenAfterConfirm ? {
-        key: 'survival', label: 'Survival & expiry', state: aiProposal?.survival_state,
-        recommendsReason: 'Verdix recommends this based on the reasoning above — the contract doesn’t explicitly state what happens to an unused balance, or whether this credit can be earned more than once.',
-        decisionRequiredReason: "The contract doesn't state how long an earned-but-unused credit remains available, or whether it can be earned more than once.",
+        key: 'survival', label: `Unused ${survivalNoun} balance`, state: aiProposal?.survival_state,
+        recommendsReason: `Verdix recommends this based on the reasoning above — the agreement doesn’t state what happens to any portion of ${creditType === 'rebate' ? 'an earned rebate' : 'an unused Service Credit'} that remains ${creditType === 'rebate' ? 'unused after it is credited' : 'unused'}.`,
+        decisionRequiredReason: creditType === 'rebate'
+          ? 'The agreement does not state what happens to any portion of an earned rebate that remains unused after it is credited.'
+          : 'The agreement does not specify whether an unused Service Credit carries forward, expires, or for how long it remains available.',
         onConfirmRecommendation: () => confirmProposal({ survival: true }),
       } : null,
     ].filter((x): x is NonNullable<typeof x> => x !== null)
@@ -2690,6 +2702,7 @@ function ReviewPanel({
                             jobId={jobId}
                             kind="service_credit"
                             creditId={creditId}
+                            creditType={c.credit_type}
                             sourceClause={c.source_clause ?? label}
                             currency={cur ?? 'EUR'}
                             onApplied={onRefresh}
@@ -2769,15 +2782,20 @@ function ReviewPanel({
                 </div>
                 <div className="space-y-3">
                   {baseUnresolved && (
-                    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FAC775', background: 'white' }}>
+                    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FECACA', background: 'white' }}>
                       <div className="px-4 pt-4 pb-3">
                         <div className="flex items-center gap-1.5 mb-2.5">
                           <i className="ti ti-calendar-exclamation text-stone" style={{ fontSize: 12 }} />
-                          <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Partial-period treatment</span>
+                          <span
+                            className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full"
+                            style={{ background: 'rgba(153,27,27,0.1)', color: '#991B1B' }}
+                          >
+                            Decision required
+                          </span>
                         </div>
-                        <p className="text-sm font-medium text-ink leading-snug mb-1">Platform subscription fee</p>
+                        <p className="text-sm font-medium text-ink leading-snug mb-1">Platform fee billing-period treatment</p>
                         <p className="text-[11px] text-stone leading-relaxed mb-3">
-                          The agreement states the {fmt(baseFeeAmount, cur ?? 'EUR')} fee is billed {contractBillingFrequency ?? 'monthly'} in advance, but does not say whether billing periods reset on calendar boundaries or on the contract start date itself{contractStartDate ? ` (${contractStartDate})` : ''}. This decides whether a partial-period question exists at all.
+                          The contract states {fmt(baseFeeAmount, cur ?? 'EUR')}/{contractBillingFrequency === 'annual' ? 'year' : contractBillingFrequency === 'quarterly' ? 'quarter' : 'month'} billed {contractBillingFrequency ?? 'monthly'} in advance, but does not specify whether {contractBillingFrequency === 'annual' ? 'annual' : contractBillingFrequency === 'quarterly' ? 'quarterly' : 'monthly'} periods follow the Effective Date{contractStartDate ? ` (${contractStartDate})` : ''} or calendar {contractBillingFrequency === 'annual' ? 'years' : contractBillingFrequency === 'quarterly' ? 'quarters' : 'months'}.
                         </p>
                         <RuleInterpretationCard
                           jobId={jobId}

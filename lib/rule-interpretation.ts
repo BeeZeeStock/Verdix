@@ -65,9 +65,16 @@ export function getBaseFeeProrationOptions(cadenceLabel: string = 'period', cont
   options.push(
     { id: 'calendar_full', label: `Full fee each calendar ${cadenceLabel}`, description: `Billing resets on calendar ${cadenceLabel} boundaries; a partial first or final ${cadenceLabel} is still charged in full.` },
     { id: 'calendar_prorate_days', label: 'Prorate by days on calendar boundaries', description: `Billing resets on calendar ${cadenceLabel} boundaries; a partial ${cadenceLabel} is reduced in proportion to the days actually covered.` },
-    { id: 'calendar_prorate_months', label: 'Prorate by months on calendar boundaries', description: `Billing resets on calendar ${cadenceLabel} boundaries; a partial ${cadenceLabel} is reduced in proportion to the months actually covered.` },
-    { id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' },
   )
+  // Prorating by months only means something when the cadence itself is
+  // coarser than a month (e.g. an annual fee prorated across the months of
+  // a partial year) — for a monthly cadence the period IS a month, so
+  // "prorate by months" is a degenerate, redundant choice next to
+  // calendar_prorate_days and would just clutter the monthly case.
+  if (cadenceLabel !== 'month') {
+    options.push({ id: 'calendar_prorate_months', label: 'Prorate by months on calendar boundaries', description: `Billing resets on calendar ${cadenceLabel} boundaries; a partial ${cadenceLabel} is reduced in proportion to the months actually covered.` })
+  }
+  options.push({ id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' })
   return options
 }
 

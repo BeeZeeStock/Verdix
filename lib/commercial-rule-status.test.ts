@@ -266,4 +266,44 @@ describe('computeCommercialRuleWorkload.blockers — every blocker key traces to
       if (!blockedIds.has(credit.credit_rule_id!)) expect(isServiceCreditUnresolved(credit)).toBe(false)
     }
   })
+
+  // Grounded in the real, currently-unreviewed state of job
+  // 83c5d8dc-4468-4278-ab8c-59ef86dd1634 (TEST-PAY-002, AUTO_CONFIGURE),
+  // read live from Supabase on 2026-08-21 after fixing execute/route.ts's
+  // upsert to stop silently dropping base_fee_proration. Each key in
+  // `blockers` is exactly what page.tsx addresses one review card by
+  // (BASE_FEE_PRORATION_SENTINEL for base_fee_proration, creditId for
+  // service_credit:*, the tier's unit_type for partial_period:*) — this
+  // test is the "canonical blocker count === rendered actionable control
+  // count" invariant at the data layer: every key present here must have
+  // exactly one corresponding card, and no card exists without a key here.
+  it('TEST-PAY-002 real current state: 5 blockers — transaction partial-period, platform-fee proration, and all 3 fully-unreviewed service credits', () => {
+    const terms: CommercialRuleTerms = {
+      contract_start_date: '2026-08-17',
+      base_fee_proration: { requires_confirmation: true },
+      overage_tiers: [
+        {
+          unit_type: 'transaction', rate_per_unit: 1, reset_anchor: 'calendar', measurement_period: 'monthly',
+          minimum_commitment: { mode: 'floor', requires_confirmation: false, prorate_partial_periods: 'unclear' },
+        },
+        { unit_type: 'chargeback', rate_per_unit: 195 },
+      ],
+      escalators: [],
+      discounts: [],
+      service_credits: [
+        { credit_rule_id: '12036e1b', interpretation: null },
+        { credit_rule_id: '9f7f5ea8', interpretation: null },
+        { credit_rule_id: '716f7088', interpretation: null },
+      ],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.blockers).toEqual([
+      'partial_period:transaction',
+      'base_fee_proration',
+      'service_credit:12036e1b',
+      'service_credit:9f7f5ea8',
+      'service_credit:716f7088',
+    ])
+    expect(workload.totalToConfirm).toBe(5)
+  })
 })
