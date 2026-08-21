@@ -39,10 +39,10 @@ export function DeleteJobButton({
       onClick={handleDelete}
       disabled={busy}
       title={`Delete ${label}`}
-      className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-red-500 hover:text-red-700 hover:bg-red-50 transition-colors disabled:opacity-40 whitespace-nowrap"
+      aria-label={`Delete ${label}`}
+      className="flex items-center justify-center w-7 h-7 rounded-lg text-stone/40 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40"
     >
       <i className={busy ? 'ti ti-loader-2 animate-spin' : 'ti ti-trash'} style={{ fontSize: 14 }} />
-      <span className="text-xs font-medium">Delete</span>
     </button>
   )
 }
