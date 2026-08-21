@@ -1,4 +1,4 @@
-// Private Organization Rulebook — DB-touching orchestration (Step 5A,
+// Private Organization Rulebook — DB-touching orchestration (Step 5A/5B.5,
 // shadow mode only). Pure matching/validation logic lives in
 // organization-rules.ts; this file is the read/write glue around it,
 // mirroring the split already established between lib/credit-ledger.ts
@@ -29,6 +29,7 @@
 // always calls requireOrg() first and uses its orgId, never a body field).
 //
 // Nothing in app/api or app/(dashboard) imports this module yet.
+import { randomUUID } from 'node:crypto'
 import { supabaseServer } from '@/lib/supabase'
 import { validateOrganizationRuleShape } from './organization-rules'
 import type { OrganizationRuleRecord, OrganizationRuleStatus, OrganizationRuleSourceKind, MatchCondition } from './organization-rules'
@@ -44,12 +45,14 @@ interface OrganizationRuleRow {
   status: OrganizationRuleStatus
   version: number
   supersedes_rule_id: string | null
+  lineage_id: string
   source_kind: OrganizationRuleSourceKind
   created_by: string
   approved_by: string | null
   created_at: string
   updated_at: string
   effective_from: string | null
+  effective_to: string | null
 }
 
 function rowToRecord(row: OrganizationRuleRow): OrganizationRuleRecord {
@@ -64,12 +67,14 @@ function rowToRecord(row: OrganizationRuleRow): OrganizationRuleRecord {
     status: row.status,
     version: row.version,
     supersedesRuleId: row.supersedes_rule_id,
+    lineageId: row.lineage_id,
     sourceKind: row.source_kind,
     createdBy: row.created_by,
     approvedBy: row.approved_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     effectiveFrom: row.effective_from,
+    effectiveTo: row.effective_to,
   }
 }
 
@@ -78,8 +83,8 @@ function rowToRecord(row: OrganizationRuleRow): OrganizationRuleRecord {
 // mirrored here so a caller gets a clear application-level error before
 // ever reaching the database, rather than a raw constraint-violation
 // message. There is no other path to 'active' — this validation runs for
-// every create/version call, regardless of source_kind, so a
-// verdix_pattern_suggestion is exactly as gated as a manual rule.
+// every create call, regardless of source_kind, so a verdix_pattern_
+// suggestion is exactly as gated as a manual rule.
 function assertActivationIsExplicit(status: OrganizationRuleStatus | undefined, approvedBy: string | null | undefined) {
   if (status === 'active' && !approvedBy) {
     throw new Error('organization-rules-service: status "active" requires an explicit approvedBy — a rule can never activate itself')
@@ -97,7 +102,9 @@ export interface CreateOrganizationRuleInput {
   createdBy: string
   // Defaults to 'draft' — creation never implies approval. Pass 'active'
   // together with approvedBy only when the caller is itself the explicit
-  // approval action.
+  // approval action. Safe to do directly here (unlike supersession) — a
+  // brand-new rule has no predecessor to overlap with, so there is no
+  // temporal-validity race to guard against.
   status?: OrganizationRuleStatus
   approvedBy?: string | null
   effectiveFrom?: string | null
@@ -108,9 +115,15 @@ export async function createOrganizationRule(input: CreateOrganizationRuleInput)
   if (!shape.valid) throw new Error(`organization-rules-service: ${shape.reason}`)
   assertActivationIsExplicit(input.status, input.approvedBy)
 
+  // Generated client-side (not left to the DB's gen_random_uuid() default)
+  // so lineage_id can be set to the row's OWN id in the same insert — a
+  // fresh rule is the root of its own lineage (Step 5B.5).
+  const id = randomUUID()
+
   const { data, error } = await supabaseServer
     .from('organization_rulebook_rules')
     .insert({
+      id,
       organization_id: input.organizationId,
       name: input.name,
       description: input.description ?? null,
@@ -120,6 +133,7 @@ export async function createOrganizationRule(input: CreateOrganizationRuleInput)
       status: input.status ?? 'draft',
       version: 1,
       supersedes_rule_id: null,
+      lineage_id: id,
       source_kind: input.sourceKind,
       created_by: input.createdBy,
       approved_by: input.approvedBy ?? null,
@@ -141,37 +155,26 @@ export interface SupersedeOrganizationRuleInput {
   value: unknown
   matchConditions: MatchCondition[]
   createdBy: string
-  effectiveFrom?: string | null
-  // Deliberately NO status/approvedBy here — see this function's own
-  // comment for why. Call activateOrganizationRule(...) as a separate,
-  // later step once supersession is confirmed to have succeeded.
+  // Deliberately NO status/approvedBy/effectiveFrom here — see this
+  // function's own comment. Both the new version's effective_from AND the
+  // previous version's effective_to are set together, atomically, by
+  // activateOrganizationRule (Step 5B.5) — never here.
 }
 
 // Editing an active rule produces a NEW version rather than silently
 // changing historical meaning (Step 5A item 8) — the previous row is
-// marked 'superseded', never deleted or mutated in place, so any future
-// audit of "what did this rule say on date X" stays answerable.
+// eventually marked 'superseded' (with a recorded effective_to), never
+// deleted or mutated in place, so a historical asOf can still resolve it.
 //
-// SAFETY: the new version is created as 'draft' UNCONDITIONALLY — there is
-// no parameter that lets a caller insert it pre-activated. This is what
-// makes the "two simultaneously active versions" failure mode structurally
-// impossible rather than merely unlikely: if this function inserted an
-// ACTIVE replacement and the following update-to-superseded step then
-// failed, the old row would still say 'active' AND the new row would also
-// say 'active' — exactly the unsafe state Step 5A's review flagged. By
-// forcing the new row to always start 'draft', the worst outcome of a
-// failed second write is "an extra harmless draft that isn't linked to
-// anything active" (see the throw below) — never two active versions.
-// Activating the new version is therefore a deliberate, separate
-// operation (activateOrganizationRule) that a caller only reaches AFTER
-// this function has already returned successfully, i.e. after supersession
-// is confirmed.
-//
-// Not wrapped in a single database transaction (no RPC exists for it, and
-// none is warranted yet — nothing consumes this table's contents in
-// production) — the ordering (insert draft, then mark previous superseded,
-// requiring the previous row to still genuinely be 'active') is what
-// carries the safety guarantee instead.
+// SAFETY (Step 5A, refined by Step 5B.5): the new version is created as
+// 'draft' UNCONDITIONALLY, and this function does NOT touch the previous
+// row's status or timestamps AT ALL — the previous row stays exactly
+// 'active' until a later, separate activateOrganizationRule call succeeds.
+// This means supersedeOrganizationRule alone can never produce two active
+// versions (it only ever ADDS a draft; nothing here can retire the
+// predecessor), and a failed/never-called activation simply leaves the
+// predecessor active and the new version an inert draft forever — never a
+// gap, never an overlap.
 export async function supersedeOrganizationRule(input: SupersedeOrganizationRuleInput): Promise<OrganizationRuleRecord> {
   const shape = validateOrganizationRuleShape({ targetField: input.targetField, matchConditions: input.matchConditions })
   if (!shape.valid) throw new Error(`organization-rules-service: ${shape.reason}`)
@@ -186,9 +189,11 @@ export async function supersedeOrganizationRule(input: SupersedeOrganizationRule
     throw new Error(`organization-rules-service: rule ${input.previousRuleId} not found in organization ${input.organizationId}`)
   }
 
+  const id = randomUUID()
   const { data: inserted, error: insertError } = await supabaseServer
     .from('organization_rulebook_rules')
     .insert({
+      id,
       organization_id: input.organizationId,
       name: input.name,
       description: input.description ?? null,
@@ -199,57 +204,66 @@ export async function supersedeOrganizationRule(input: SupersedeOrganizationRule
       approved_by: null,
       version: previous.version + 1,
       supersedes_rule_id: previous.id,
+      lineage_id: previous.lineageId,
       source_kind: previous.sourceKind,
       created_by: input.createdBy,
-      effective_from: input.effectiveFrom ?? null,
+      effective_from: null,
     })
     .select('*')
     .single()
 
   if (insertError || !inserted) throw new Error(`organization-rules-service: failed to create new version: ${insertError?.message}`)
-
-  // Only ever supersedes a row that is genuinely still 'active' at this
-  // exact moment (the .eq('status', 'active') guard) — if it's already
-  // been superseded, disabled, or otherwise changed by a concurrent
-  // operation, this matches zero rows, which is treated as a failure
-  // below, not silently ignored.
-  const { data: supersededRows, error: supersedeError } = await supabaseServer
-    .from('organization_rulebook_rules')
-    .update({ status: 'superseded' })
-    .eq('id', previous.id)
-    .eq('organization_id', input.organizationId)
-    .eq('status', 'active')
-    .select('id')
-
-  if (supersedeError || !supersededRows || supersededRows.length === 0) {
-    throw new Error(
-      `organization-rules-service: created version ${(inserted as OrganizationRuleRow).id} as a harmless, never-activated draft, but failed to mark ${previous.id} superseded ` +
-      `(0 rows matched — it may no longer be active — or an update error occurred: ${supersedeError?.message ?? 'no matching active row'}). ` +
-      'The new draft version is inert and safe to leave as-is or delete; it was never activated.',
-    )
-  }
-
   return rowToRecord(inserted as OrganizationRuleRow)
 }
 
-// Activates a draft rule (typically one just created by createOrganizationRule
-// or supersedeOrganizationRule) — the ONLY function in this module that can
-// ever set status = 'active'. Requires an explicit approvedBy; there is no
-// path from 'draft' to 'active' that does not go through this function or
-// createOrganizationRule's own explicit status/approvedBy parameters.
-export async function activateOrganizationRule(organizationId: string, ruleId: string, approvedBy: string): Promise<OrganizationRuleRecord> {
+// Activates a draft rule — the ONLY function in this module that can ever
+// set status = 'active', and (Step 5B.5) the ONLY place effective_from/
+// effective_to are ever written. Calls the atomic
+// activate_organization_rule_supersession database function
+// (supabase/migrations/20260823000001_organization_rulebook_temporal_
+// validity.sql) rather than doing a plain UPDATE, so — when the draft has
+// a predecessor (supersedesRuleId) — retiring the predecessor
+// (effective_to = effectiveAt, status -> 'superseded') and activating the
+// new version (effective_from = effectiveAt, status -> 'active') happen in
+// ONE database transaction. Either both succeed, or neither does: there is
+// no application-code sequencing gap where the predecessor is already
+// retired but the new version isn't active yet (or vice versa), and the
+// database's own no-overlap exclusion constraint would reject the
+// transaction outright if the two windows ever failed to be adjacent.
+//
+// effectiveAt defaults to "now" for real usage but is a real parameter
+// (never read from inside a pure function) so tests can supply an exact,
+// deterministic cutover instant.
+//
+// Retroactive-activation policy (Step 5B.5 review item 3): the database
+// function rejects an effectiveAt more than ~60 seconds in the past
+// (a small grace window for normal request latency, not an exact
+// less-than-now check, which would be flaky) — an ordinary activation may
+// never silently rewrite what policy was authoritative during an ALREADY-
+// INVOICED period. A future-dated effectiveAt is always fine (the
+// predecessor correctly stays authoritative until that instant arrives).
+// This restriction applies ONLY to this function (the supersession/
+// activation path) — a brand-new rule's own initial effectiveFrom, set
+// directly via createOrganizationRule, is unrestricted, since there is no
+// existing authoritative record being retired. A deliberate, audited
+// backdating/correction workflow may be added in a later step; none
+// exists yet.
+export async function activateOrganizationRule(
+  organizationId: string, ruleId: string, approvedBy: string, effectiveAt: Date = new Date(),
+): Promise<OrganizationRuleRecord> {
   if (!approvedBy) throw new Error('organization-rules-service: activateOrganizationRule requires an explicit approvedBy — a rule can never activate itself')
 
-  const { data, error } = await supabaseServer
-    .from('organization_rulebook_rules')
-    .update({ status: 'active', approved_by: approvedBy })
-    .eq('organization_id', organizationId)
-    .eq('id', ruleId)
-    .select('*')
-    .single()
+  const { data, error } = await supabaseServer.rpc('activate_organization_rule_supersession', {
+    p_organization_id: organizationId,
+    p_new_rule_id: ruleId,
+    p_approved_by: approvedBy,
+    p_effective_at: effectiveAt.toISOString(),
+  })
 
-  if (error || !data) throw new Error(`organization-rules-service: failed to activate rule ${ruleId} in organization ${organizationId}: ${error?.message}`)
-  return rowToRecord(data as OrganizationRuleRow)
+  if (error) throw new Error(`organization-rules-service: failed to activate rule ${ruleId} in organization ${organizationId}: ${error.message}`)
+  const row = Array.isArray(data) ? data[0] : data
+  if (!row) throw new Error(`organization-rules-service: activation of rule ${ruleId} returned no row`)
+  return rowToRecord(row as OrganizationRuleRow)
 }
 
 // Organization-scoped single-row lookup — returns null (not another
@@ -266,9 +280,9 @@ export async function getOrganizationRule(organizationId: string, ruleId: string
   return rowToRecord(data as OrganizationRuleRow)
 }
 
-// The only query the Step 5A matcher ever needs — active rules for
-// exactly one organization. Ordered by target_field then created_at for a
-// stable, deterministic result across repeated calls (matchOrganizationRules
+// The query a CURRENT-only matcher call needs — active rules for exactly
+// one organization. Ordered by target_field then created_at for a stable,
+// deterministic result across repeated calls (matchOrganizationRules
 // itself does no sorting).
 export async function listActiveOrganizationRules(organizationId: string): Promise<OrganizationRuleRecord[]> {
   const { data, error } = await supabaseServer
@@ -276,6 +290,25 @@ export async function listActiveOrganizationRules(organizationId: string): Promi
     .select('*')
     .eq('organization_id', organizationId)
     .eq('status', 'active')
+    .order('target_field', { ascending: true })
+    .order('created_at', { ascending: true })
+
+  if (error || !data) return []
+  return (data as OrganizationRuleRow[]).map(rowToRecord)
+}
+
+// The query a HISTORICAL matcher call needs (Step 5B.5) — active AND
+// superseded rules for exactly one organization, since matchOrganizationRules
+// itself now decides temporal eligibility (via each row's validity window)
+// rather than relying on status alone. 'draft'/'disabled' rows are still
+// excluded here at the query level — they are never authoritative for any
+// asOf, so there is no reason to even fetch them for matching.
+export async function listMatchableOrganizationRules(organizationId: string): Promise<OrganizationRuleRecord[]> {
+  const { data, error } = await supabaseServer
+    .from('organization_rulebook_rules')
+    .select('*')
+    .eq('organization_id', organizationId)
+    .in('status', ['active', 'superseded'])
     .order('target_field', { ascending: true })
     .order('created_at', { ascending: true })
 

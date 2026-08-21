@@ -26,12 +26,14 @@ function orgRule(overrides: Partial<OrganizationRuleRecord> = {}): OrganizationR
     status: 'active',
     version: 1,
     supersedesRuleId: null,
+    lineageId: 'rule-1',
     sourceKind: 'manual',
     createdBy: 'owner@org-a.test',
     approvedBy: 'owner@org-a.test',
     createdAt: '2026-08-01T00:00:00Z',
     updatedAt: '2026-08-01T00:00:00Z',
     effectiveFrom: null,
+    effectiveTo: null,
     ...overrides,
   }
 }
@@ -96,8 +98,8 @@ describe('matchOrganizationRules — deterministic, status-gated matching', () =
     const rule = orgRule({ status: 'disabled' })
     expect(matchOrganizationRules('org-a', { context: MATCHING_CONTEXT, contractResolvedFields: NO_RESOLVED_FIELDS }, [rule], AS_OF)).toEqual([])
   })
-  it('a SUPERSEDED rule is ignored even though its conditions match', () => {
-    const rule = orgRule({ status: 'superseded' })
+  it('a SUPERSEDED rule with no recorded effectiveTo (ambiguous legacy data) is excluded, fail closed -- Step 5B.5: superseded status alone no longer means "always excluded", but an unrecorded retirement time is not treated as infinite validity either', () => {
+    const rule = orgRule({ status: 'superseded', effectiveTo: null })
     expect(matchOrganizationRules('org-a', { context: MATCHING_CONTEXT, contractResolvedFields: NO_RESOLVED_FIELDS }, [rule], AS_OF)).toEqual([])
   })
   it('a rule whose conditions do NOT match the context is excluded', () => {
@@ -163,6 +165,70 @@ describe('matchOrganizationRules — effective_from is enforced via an explicit 
     const currentRule = orgRule({ id: 'rule-current', value: true, effectiveFrom: '2026-08-01T00:00:00.000Z' })
     const matched = matchOrganizationRules('org-a', { context: MATCHING_CONTEXT, contractResolvedFields: NO_RESOLVED_FIELDS }, [futureRule, currentRule], AS_OF)
     expect(matched).toEqual([currentRule])
+  })
+})
+
+// Step 5B.5 — a superseded rule remains historically resolvable for an
+// asOf within its real [effectiveFrom, effectiveTo) validity window, even
+// though its CURRENT status is 'superseded'. Extends the same canonical
+// matchOrganizationRules (no second/parallel historical matcher).
+describe('matchOrganizationRules — historical resolution across a supersession (Step 5B.5)', () => {
+  // Rule A: effective 1 Jan 2026, superseded (retired) exactly 1 Jul 2026.
+  // Rule B: effective 1 Jul 2026 onward, no successor yet.
+  const ruleA = orgRule({
+    id: 'rule-a', lineageId: 'lineage-1', value: 'carry_forward_a', version: 1,
+    status: 'superseded', effectiveFrom: '2026-01-01T00:00:00.000Z', effectiveTo: '2026-07-01T00:00:00.000Z',
+  })
+  const ruleB = orgRule({
+    id: 'rule-b', lineageId: 'lineage-1', value: 'carry_forward_b', version: 2, supersedesRuleId: 'rule-a',
+    status: 'active', effectiveFrom: '2026-07-01T00:00:00.000Z', effectiveTo: null,
+  })
+  const lineage = [ruleA, ruleB]
+  const matchFor = (asOf: Date) => matchOrganizationRules('org-a', { context: MATCHING_CONTEXT, contractResolvedFields: NO_RESOLVED_FIELDS }, lineage, asOf)
+
+  it('31 Dec 2025 (before Rule A even starts) -> no match', () => {
+    expect(matchFor(new Date('2025-12-31T23:59:59.999Z'))).toEqual([])
+  })
+  it('1 Jan 2026 (Rule A\'s exact start) -> Rule A', () => {
+    expect(matchFor(new Date('2026-01-01T00:00:00.000Z'))).toEqual([ruleA])
+  })
+  it('30 Jun 2026 (last instant still inside Rule A\'s window) -> Rule A', () => {
+    expect(matchFor(new Date('2026-06-30T23:59:59.999Z'))).toEqual([ruleA])
+  })
+  it('exactly 1 Jul 2026 (the cutover instant) -> Rule B, NOT Rule A -- no ambiguous overlap at T', () => {
+    const result = matchFor(new Date('2026-07-01T00:00:00.000Z'))
+    expect(result).toEqual([ruleB])
+  })
+  it('1 Aug 2026 (well after cutover) -> Rule B', () => {
+    expect(matchFor(new Date('2026-08-01T00:00:00.000Z'))).toEqual([ruleB])
+  })
+  it('no temporal overlap: no asOf value ever matches both Rule A and Rule B simultaneously', () => {
+    const probes = [
+      new Date('2025-06-01T00:00:00.000Z'), new Date('2026-01-01T00:00:00.000Z'), new Date('2026-03-15T00:00:00.000Z'),
+      new Date('2026-06-30T23:59:59.999Z'), new Date('2026-07-01T00:00:00.000Z'), new Date('2026-07-01T00:00:00.001Z'),
+      new Date('2026-12-31T00:00:00.000Z'),
+    ]
+    for (const asOf of probes) expect(matchFor(asOf).length).toBeLessThanOrEqual(1)
+  })
+  it('no temporal gap: every instant from Rule A\'s start onward matches exactly one of the two rules', () => {
+    const probes = [
+      new Date('2026-01-01T00:00:00.000Z'), new Date('2026-04-15T00:00:00.000Z'), new Date('2026-06-30T23:59:59.999Z'),
+      new Date('2026-07-01T00:00:00.000Z'), new Date('2026-09-01T00:00:00.000Z'),
+    ]
+    for (const asOf of probes) expect(matchFor(asOf)).toHaveLength(1)
+  })
+  it('deterministic across repeated calls for the same historical asOf', () => {
+    const asOf = new Date('2026-04-01T00:00:00.000Z')
+    const first = matchFor(asOf)
+    const second = matchFor(asOf)
+    expect(second).toEqual(first)
+    expect(first).toEqual([ruleA])
+  })
+  it('a historical Org A policy never leaks into an Org B resolution for the identical lineage shape', () => {
+    const orgBLineage = lineage.map(r => ({ ...r, organizationId: 'org-b' }))
+    // Org A's own historical query against Org B's (structurally identical
+    // but differently-owned) rows returns nothing.
+    expect(matchOrganizationRules('org-a', { context: MATCHING_CONTEXT, contractResolvedFields: NO_RESOLVED_FIELDS }, orgBLineage, new Date('2026-04-01T00:00:00.000Z'))).toEqual([])
   })
 })
 

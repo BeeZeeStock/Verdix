@@ -124,6 +124,12 @@ export interface OrganizationRuleRecord {
   status: OrganizationRuleStatus
   version: number
   supersedesRuleId: string | null
+  // Groups every version of the "same logical rule" together — the
+  // original rule and everything that transitively supersedes it.
+  // Distinct from id (this specific version) and supersedesRuleId (only
+  // the immediately prior version). Assigned once at creation (Step 5B.5)
+  // and never changes across a supersession chain.
+  lineageId: string
   // How this rule originated — descriptive only, NEVER a source of
   // authority. Once a rule is active: 'organization_rulebook' is its
   // resolution authority regardless of source_kind (Step 5A item 9). A
@@ -135,7 +141,14 @@ export interface OrganizationRuleRecord {
   approvedBy: string | null
   createdAt: string
   updatedAt: string
+  // Validity window — [effectiveFrom, effectiveTo), inclusive lower bound,
+  // exclusive upper bound (Step 5B.5). effectiveFrom: null means "always
+  // valid from the beginning of time"; effectiveTo: null means "still
+  // valid, no end yet" for an 'active' row, but see matchOrganizationRules'
+  // own comment for why a 'superseded' row with effectiveTo: null is
+  // treated as ambiguous legacy data and excluded, not as infinitely valid.
   effectiveFrom: string | null
+  effectiveTo: string | null
 }
 
 // ── Matching ────────────────────────────────────────────────────────────
@@ -198,9 +211,28 @@ function conditionMatches(condition: MatchCondition, context: OrganizationRuleMa
 // `asOf` is a REQUIRED, explicit parameter — never read from an ambient
 // Date.now() inside this pure function, so a given (organizationId, input,
 // rules, asOf) tuple always produces the identical result no matter when
-// it's called. A rule matches effectiveFrom's condition exactly when
-// effectiveFrom is null (always effective) OR effectiveFrom <= asOf (its
-// effective date has already arrived, inclusive of the exact instant).
+// it's called, including for a HISTORICAL asOf in the past (Step 5B.5).
+//
+// Temporal eligibility — [effectiveFrom, effectiveTo), inclusive lower
+// bound, exclusive upper bound:
+//   effectiveFrom is null OR effectiveFrom <= asOf   (already started)
+//   AND
+//   effectiveTo is null OR asOf < effectiveTo         (not yet ended)
+// This means a rule that has since been SUPERSEDED can still match a
+// historical asOf that falls within the window it was actually active
+// for — status alone (Step 5B.5 item 2/5) is no longer sufficient to
+// exclude a rule from matching; a 'superseded' row is eligible exactly
+// like an 'active' one, gated only by its validity window. 'draft' and
+// 'disabled' remain unconditionally excluded regardless of asOf — neither
+// was ever authoritative for any point in time.
+//
+// One deliberate fail-closed exception: a 'superseded' row with
+// effectiveTo: null is ambiguous legacy data (a row that was retired
+// without recording when) — rather than treat it as infinitely valid, it
+// is excluded entirely. This can only occur for rows superseded before
+// this temporal model existed; every row superseded through
+// activate_organization_rule_supersession (organization-rules-service.ts)
+// always has effectiveTo set atomically with the retirement itself.
 export function matchOrganizationRules(
   organizationId: string,
   input: OrganizationRuleMatchInput,
@@ -209,9 +241,11 @@ export function matchOrganizationRules(
 ): OrganizationRuleRecord[] {
   return rules.filter(rule => {
     if (rule.organizationId !== organizationId) return false
-    if (rule.status !== 'active') return false
+    if (rule.status !== 'active' && rule.status !== 'superseded') return false
+    if (rule.status === 'superseded' && rule.effectiveTo === null) return false
     if (input.contractResolvedFields.has(rule.targetField)) return false
     if (rule.effectiveFrom !== null && new Date(rule.effectiveFrom) > asOf) return false
+    if (rule.effectiveTo !== null && asOf >= new Date(rule.effectiveTo)) return false
     return rule.matchConditions.every(condition => conditionMatches(condition, input.context))
   })
 }

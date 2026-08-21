@@ -23,12 +23,14 @@ function orgRule(overrides: Partial<OrganizationRuleRecord> = {}): OrganizationR
     status: 'active',
     version: 1,
     supersedesRuleId: null,
+    lineageId: 'rule-1',
     sourceKind: 'manual',
     createdBy: 'owner@org-a.test',
     approvedBy: 'owner@org-a.test',
     createdAt: '2026-08-01T00:00:00Z',
     updatedAt: '2026-08-01T00:00:00Z',
     effectiveFrom: null,
+    effectiveTo: null,
     ...overrides,
   }
 }
@@ -382,5 +384,54 @@ describe('purity — no mutation, deterministic repeated calls (item 19)', () =>
       organizationRules: [rule], asOf: AS_OF,
     })
     expect(results.map(r => r.field)).toEqual(['application.timing', 'survival.carry_forward', 'survival.one_time'])
+  })
+})
+
+// Step 5B.5 — the shadow resolver reproduces historical organization
+// candidates correctly: a superseded rule remains the correct candidate
+// for an asOf within its real validity window, and the successor takes
+// over at (and only at) its own cutover instant. Composes the identical
+// matchOrganizationRules/resolveFieldAuthority machinery — no new
+// resolution logic was needed for this to work.
+describe('historical resolution through the shadow resolver (Step 5B.5)', () => {
+  const ruleA = orgRule({
+    id: 'rule-a', lineageId: 'lineage-1', value: 'carry_forward_a', version: 1,
+    status: 'superseded', effectiveFrom: '2026-01-01T00:00:00.000Z', effectiveTo: '2026-07-01T00:00:00.000Z',
+  })
+  const ruleB = orgRule({
+    id: 'rule-b', lineageId: 'lineage-1', value: 'carry_forward_b', version: 2, supersedesRuleId: 'rule-a',
+    status: 'active', effectiveFrom: '2026-07-01T00:00:00.000Z', effectiveTo: null,
+  })
+  const lineage = [ruleA, ruleB]
+  const unresolvedContext = context({ 'survival.carry_forward': { value: null, provenance: null } })
+
+  it('a historical asOf inside Rule A\'s window resolves to Rule A\'s value, even though Rule A is currently superseded', () => {
+    const results = resolveOrganizationRulebookShadow({
+      organizationId: 'org-a', commercialContext: unresolvedContext, organizationRules: lineage,
+      asOf: new Date('2026-04-01T00:00:00.000Z'),
+    })
+    const field = results.find(r => r.field === 'survival.carry_forward')!
+    expect(field.result).toBe('candidate')
+    expect(field.organizationCandidate).toEqual({ value: 'carry_forward_a', ruleId: 'rule-a', ruleVersion: 1 })
+  })
+  it('an asOf at or after the cutover resolves to Rule B\'s value', () => {
+    const results = resolveOrganizationRulebookShadow({
+      organizationId: 'org-a', commercialContext: unresolvedContext, organizationRules: lineage,
+      asOf: new Date('2026-07-01T00:00:00.000Z'),
+    })
+    const field = results.find(r => r.field === 'survival.carry_forward')!
+    expect(field.organizationCandidate).toEqual({ value: 'carry_forward_b', ruleId: 'rule-b', ruleVersion: 2 })
+  })
+  it('an asOf before Rule A even started resolves to no_match', () => {
+    const results = resolveOrganizationRulebookShadow({
+      organizationId: 'org-a', commercialContext: unresolvedContext, organizationRules: lineage,
+      asOf: new Date('2025-06-01T00:00:00.000Z'),
+    })
+    expect(results.find(r => r.field === 'survival.carry_forward')!.result).toBe('no_match')
+  })
+  it('repeated calls for the same historical asOf are byte-identical', () => {
+    const asOf = new Date('2026-04-01T00:00:00.000Z')
+    const call = () => resolveOrganizationRulebookShadow({ organizationId: 'org-a', commercialContext: unresolvedContext, organizationRules: lineage, asOf })
+    expect(call()).toEqual(call())
   })
 })
