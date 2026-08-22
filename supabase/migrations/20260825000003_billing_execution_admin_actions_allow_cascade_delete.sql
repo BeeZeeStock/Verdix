@@ -1,0 +1,21 @@
+-- Step 14 correction, round 2 — the unconditional DELETE-blocking trigger
+-- added in 20260825000002 was over-aggressive: billing_execution_attempts
+-- and (transitively) billing_execution_admin_actions both cascade-delete
+-- from jobs (job_id ... on delete cascade), and app/api/jobs/[id]/route.ts
+-- already has an existing, legitimate "delete this job and all its data"
+-- capability (it explicitly deletes leakage_findings and other child
+-- tables directly, and relies on FK cascade for the rest). Confirmed live:
+-- the DELETE-blocking trigger caused a cascaded delete-attempt-and-its-
+-- admin-actions to fail entirely, which would have made deleting ANY job
+-- with billing execution history impossible — a real regression to an
+-- existing feature, not something Step 14 should introduce.
+--
+-- The real risk item 24 cares about is silent MUTATION of a historical
+-- admin action (rewriting who did what, or when) — never whole-job
+-- deletion, which is an already-accepted, existing product capability
+-- applying uniformly to a job's data. UPDATE stays permanently blocked;
+-- DELETE is allowed again (and, in practice, only ever happens via the
+-- job-cascade path — no application code calls .delete() on this table
+-- directly).
+
+drop trigger if exists billing_execution_admin_actions_no_delete on billing_execution_admin_actions;

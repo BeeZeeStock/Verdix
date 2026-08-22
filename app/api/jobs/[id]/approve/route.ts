@@ -1,13 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg, type OrgContext } from '@/lib/org'
-import { configureBilling } from '@/lib/billing-writer'
+import { configureBilling, recoverConfigureResultFromSucceededAttempt } from '@/lib/billing-writer'
 import { computeCommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { setCustomerVatConfig, getCustomerVatConfig } from '@/lib/vat-service'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { ContractTerms } from '@/lib/types'
 import type { OperationalEventEvidence, OperationalEventEvidenceSource } from '@/lib/operational-event-evidence'
+import { BillingPreconditionError } from '@/lib/billing-execution-attempt'
+import {
+  UnresolvedPriorBillingAttemptError, PriorBillingAttemptExecutedError, PriorBillingAttemptExecutedPlanChangedError,
+  PriorBillingAttemptPartiallyExecutedError, getAttemptById, getAttemptOperations,
+} from '@/lib/billing-execution-store'
 
 export async function POST(
   req: NextRequest,
@@ -330,35 +335,147 @@ export async function POST(
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    // Part B, item 8 — everything that reaches this catch block happens
-    // AT OR AFTER the configureBilling() call: the only thing in the try
-    // block before it is the freshWorkload re-check above, which returns
-    // its own explicit 400 response directly and never throws. So a
+
+    // Step 14, item 13/14 — a BillingPreconditionError is thrown by
+    // billing-writer.ts strictly BEFORE any execution attempt is created
+    // and BEFORE any provider call is attempted (missing API key,
+    // unsupported currency, missing required field) — deterministic, no
+    // external side effect possible. This is the same "no external
+    // attempt -> no ambiguity" case as the freshWorkload check above, so
+    // it gets the identical treatment: restore the real claimed-from
+    // state, never the ambiguous FAILED state used for a genuinely
+    // uncertain provider outcome.
+    if (err instanceof BillingPreconditionError) {
+      await supabaseServer.from('jobs').update({ execute_status: claimedFrom }).eq('id', id).eq('execute_status', 'APPROVING')
+      return NextResponse.json({ error: message }, { status: 400 })
+    }
+
+    // Step 14 final financial-state correction, items 1-4, refined by the
+    // state-integrity correction below — every operation on a prior
+    // attempt for this job+provider succeeded, AND that attempt's stored
+    // billing_plan_fingerprint still matches the CURRENT plan (the
+    // getOrCreateAttempt barrier only throws this specific error, rather
+    // than PriorBillingAttemptExecutedPlanChangedError, when the
+    // fingerprints agree). This is the ordinary crash-recovery case: a
+    // crash between the attempt being marked 'succeeded' and this job
+    // being marked COMPLETED, for the SAME commercial plan that was
+    // actually billed. Never creates a new attempt, never replays any
+    // provider call — recovers the job straight to COMPLETED using the
+    // already-succeeded attempt's own recorded results. Returns success,
+    // exactly as a normal Approve would have, because financially it did.
+    if (err instanceof PriorBillingAttemptExecutedError) {
+      const executedAttempt = await getAttemptById(err.executedAttemptId)
+      if (!executedAttempt) {
+        // Should not happen — the id came from a row we just read. Fail
+        // closed rather than guess.
+        throw new Error(`Recovery failed: executed attempt ${err.executedAttemptId} could not be re-read.`)
+      }
+      const executedOperations = await getAttemptOperations(err.executedAttemptId)
+      const result = await recoverConfigureResultFromSucceededAttempt(executedAttempt, executedOperations, org.orgId)
+      await supabaseServer.from('jobs').update({
+        execute_status: 'COMPLETED',
+        billing_platform: result.platform,
+        billing_subscription_id: result.subscriptionId,
+        billing_customer_id: result.customerId,
+      }).eq('id', id)
+      // Deliberately does NOT re-run VAT promotion or recordSync here —
+      // both are best-effort/self-healing elsewhere (lib/vat-service.ts's
+      // resolveEffectiveVatForJob self-heals a stuck pending VAT value;
+      // re-running recordSync risks double-counting a sync credit for a
+      // job that may have already recorded one before the crash, which is
+      // the more harmful direction to guess wrong in).
+      return NextResponse.json({
+        success: true, platform: result.platform, stripeSubscriptionId: result.subscriptionId,
+        customerId: result.customerId, dashboardUrl: result.dashboardUrl,
+      })
+    }
+
+    // Step 14 final state-integrity correction — a prior attempt fully
+    // succeeded, but under a DIFFERENT billing plan than the one currently
+    // computed for this job (the contract/commercial terms changed after
+    // billing already executed). Unlike the same-fingerprint case above,
+    // this is NOT a crash-recovery scenario — the current plan was never
+    // billed, so recovering to COMPLETED would misrepresent it as billed;
+    // and a new attempt would risk sending plan A's already-sent charges a
+    // second time under a new plan. Both truths are preserved: the
+    // executed attempt (plan A) remains the untouched, authoritative
+    // billing record; nothing is created, replayed, or silently marked
+    // executed for the current plan (B). Structured, fail-closed 409 —
+    // resolving this requires an explicit correction/reconciliation
+    // workflow, deliberately not built in Step 14.
+    if (err instanceof PriorBillingAttemptExecutedPlanChangedError) {
+      await supabaseServer.from('jobs').update({ execute_status: claimedFrom }).eq('id', id).eq('execute_status', 'APPROVING')
+      return NextResponse.json(
+        {
+          error: 'Billing has already been executed using an earlier billing plan. The current commercial configuration differs from the executed plan and cannot be billed again automatically — this requires an explicit correction/reconciliation workflow.',
+          code: 'billing_already_executed_plan_changed',
+          attemptId: err.executedAttemptId,
+        },
+        { status: 409 },
+      )
+    }
+
+    // Step 14 final financial-state correction, item 5 — a prior attempt
+    // has a genuine MIX of succeeded and failed operations: real external
+    // objects already exist (e.g. an invoice was created and one row was
+    // added, but a second row's outcome is now known to never have
+    // happened) — the outcome is fully KNOWN but that does not make it
+    // safe to supersede. A fresh attempt would either duplicate the
+    // succeeded part or have no way to finish the rest. Step 14
+    // deliberately does not build credit/rebill/amendment machinery (item
+    // 9) — this blocks, structured, and requires manual recovery outside
+    // this flow. Nothing new was attempted in this request, so — like the
+    // other pre-execution errors above — the job is restored to its real
+    // prior state rather than the ambiguous FAILED.
+    if (err instanceof PriorBillingAttemptPartiallyExecutedError) {
+      await supabaseServer.from('jobs').update({ execute_status: claimedFrom }).eq('id', id).eq('execute_status', 'APPROVING')
+      return NextResponse.json(
+        { error: 'A previous billing attempt for this job partially succeeded — some financial side effects already occurred and some did not. This cannot be safely superseded by a new attempt; manual recovery is required.', code: 'prior_billing_attempt_partially_executed', attemptId: err.partiallyExecutedAttemptId },
+        { status: 409 },
+      )
+    }
+
+    // Step 14 final amendment, items 1-4 — "a new commercial plan does not
+    // erase uncertainty about money that may already have been sent under
+    // the old plan." Thrown by getOrCreateAttempt (lib/billing-execution-
+    // store.ts) BEFORE this request's own configureBilling ever reaches a
+    // provider call, whenever the billing plan changed and an EARLIER
+    // attempt for this job+provider still has a genuinely unresolved
+    // (outcome_uncertain) operation. Nothing new happened in THIS request
+    // — the ambiguity belongs entirely to that earlier attempt, already
+    // correctly recorded — so this also restores claimedFrom, structured
+    // as 409 (a real, named conflict) rather than the generic ambiguous
+    // FAILED path. Reconciling the old attempt's operation (POST /api/
+    // jobs/[id]/reconcile-billing-operation) is the only way past this.
+    if (err instanceof UnresolvedPriorBillingAttemptError) {
+      await supabaseServer.from('jobs').update({ execute_status: claimedFrom }).eq('id', id).eq('execute_status', 'APPROVING')
+      return NextResponse.json(
+        { error: 'A previous billing attempt for this job has an unresolved outcome and must be reconciled before a changed billing plan can proceed.', code: 'unresolved_prior_billing_attempt', attemptId: err.unresolvedAttemptId },
+        { status: 409 },
+      )
+    }
+
+    // Everything else that reaches this catch block happens AT OR AFTER a
+    // real provider call was attempted (an execution attempt/operation was
+    // created — see lib/billing-execution-attempt.ts's domain model). A
     // failure here means the external Stripe/Remembill side effect may
     // already have partially or fully happened, even though this request
     // is reporting an error.
     //
-    // Audited (not assumed) whether a blind retry would be safe:
-    // lib/billing-writer.ts's configureStripe calls stripe.invoices.create/
-    // invoiceItems.create/finalizeInvoice with NO idempotency key at all —
-    // only customer creation has a soft, name-based dedup search. configure
-    // Rememhill's invoice creation DOES send an `Idempotency-Key` header,
-    // but it's built from `pushStamp = Date.now().toString(36)`, generated
-    // fresh on every call to configureRememhill — so it does NOT protect a
-    // genuine retry from a second Approve request (a new pushStamp means a
-    // new key, which Remembill will not recognize as a duplicate); its row-
-    // creation endpoint (POST /invoices/:id/rows) carries no idempotency
-    // key at any layer. Neither platform's write path is provably safe to
-    // blindly retry — so per item 8's "use the smallest existing failure/
-    // manual-reconciliation state rather than pretending execution
-    // definitely failed," this stays 'FAILED' (the only failure state this
-    // app has — no new state invented), but the message makes the
-    // ambiguity explicit rather than inviting an immediate reflexive retry.
-    // Manual recovery — verify the platform, then POST
-    // /api/jobs/[id]/authorize-billing-retry (item 5) — is the only
-    // documented path back to an approvable state from here; the claim
-    // boundary above now refuses to re-enter APPROVING from FAILED
-    // directly, for exactly this reason.
+    // Audited (not assumed) whether a blind retry would be safe — see the
+    // Step 14 provider capability matrix in lib/rulebook/STEP14_
+    // IMMUTABLE_BILLING_EXECUTION.md: Stripe's invoice-write operations now
+    // carry real, stable, per-operation idempotency keys (idempotent_
+    // retry); Remembill's do not have a confirmed provider-side guarantee
+    // (manual_verification_required, with local reconciliation only where
+    // Verdix's own persisted customer id provides it). Per item 8's "use
+    // the smallest existing failure/manual-reconciliation state rather
+    // than pretending execution definitely failed," this stays 'FAILED'
+    // (the only failure state this app has — no new job-level state
+    // invented), but the message makes the ambiguity explicit rather than
+    // inviting an immediate reflexive retry. Manual recovery — verify the
+    // platform, then POST /api/jobs/[id]/authorize-billing-retry (item 5)
+    // — is the only documented path back to an approvable state from here.
     const ambiguousMessage = `Billing may have partially executed on the billing platform before this error — verify in Stripe/Remembill for a duplicate or partial invoice before retrying. Original error: ${message}`
     await supabaseServer.from('jobs').update({
       execute_status: 'FAILED',

@@ -1,10 +1,20 @@
-import { ContractTerms, PeriodProrationRule, type BillabilityCondition } from './types'
+import { ContractTerms, PeriodProrationRule } from './types'
 import { billingInterval } from './stripe-meter'
 import { supabaseServer } from './supabase'
 import { monthCursor, enumerateContractWindows, isPartialWindow } from './tariff'
 import { resolveVatTreatment, computeVat, type VatMode, type VatTreatment } from './vat'
 import { getCustomerVatConfig } from './vat-service'
 import { isOneTimeFeeHeldForExecution, type OperationalEventEvidence } from './operational-event-evidence'
+import { buildBillingPlanSnapshot, fingerprintBillingPlan, fingerprintValue, planComponentKey, planComponentKeysInSnapshot, type BillingPlanLineInstruction, type BillingPlanSnapshot } from './billing-execution-plan'
+import {
+  deriveIdempotencyKey, operationKeyFor, classifyStripeFailure, classifyFetchOutcome, BillingPreconditionError,
+  canSafelyRetryBillingOperation, STRIPE_IDEMPOTENCY_KEY_RETENTION_HOURS,
+  type BillingOperationRetryCapability, type BillingExecutionAttempt, type BillingExecutionOperation,
+} from './billing-execution-attempt'
+import {
+  getOrCreateAttempt, markAttemptExecuting, markAttemptStatus,
+  getOrCreateOperation, markOperationStarted, markOperationSucceeded, markOperationFailedSafe, markOperationOutcomeUncertain,
+} from './billing-execution-store'
 
 // Re-exported so existing importers of monthCursor from this file (e.g.
 // execute/route.ts) don't need to change their import path — the function
@@ -325,9 +335,14 @@ export interface ConfigureResult {
 export async function configureBilling(
   terms: ContractTerms,
   lineItems: LineItemInput[],
-  platform?: BillingPlatform,
-  jobId?: string,
-  orgId?: string,
+  platform: BillingPlatform | undefined,
+  // Step 14 — required, not optional: every attempt/operation record is
+  // scoped to a real job and org (never a client-supplied identity — both
+  // always come from approve/route.ts's session-derived org and the job it
+  // already loaded). configureChargebee alone still accepts these as
+  // optional internally — Chargebee is unchanged, out of Step 14's scope.
+  jobId: string,
+  orgId: string,
   existingCustomerId?: string,
   // Step 13 — real operational_event_evidence rows for this job, when the
   // caller has them (approve/route.ts loads them via supabaseServer).
@@ -336,53 +351,110 @@ export async function configureBilling(
   // stays held/parked, never auto-invoiced — the safe default.
   operationalEventEvidence: OperationalEventEvidence[] = [],
 ): Promise<ConfigureResult> {
-  const resolved = platform ?? (orgId ? await detectOrgPlatform(orgId) : detectPlatform())
+  const resolved = platform ?? (await detectOrgPlatform(orgId))
   if (resolved === 'chargebee')  return configureChargebee(terms, lineItems, jobId, orgId)
   if (resolved === 'remembill')  return configureRememhill(terms, lineItems, jobId, orgId, existingCustomerId, operationalEventEvidence)
   return configureStripe(terms, lineItems, jobId, orgId, operationalEventEvidence)
 }
 
+// ── Step 14 shared operation-execution helper ───────────────────────────────
+// Runs one tracked, idempotency-keyed provider side effect. Handles the
+// full get-or-create-operation / persist-immediately-on-success /
+// classify-and-persist-on-failure lifecycle (items 5, 10, 14) identically
+// for every Stripe and Remembill operation, so that logic exists in exactly
+// one place rather than being re-implemented per call site.
+//
+// Retry semantics on re-entry (item 16 case A, "safe idempotent resume",
+// and the Step 14 final amendment's items 5-9, time-bounded idempotency):
+//   - status 'succeeded'        -> return the cached externalObjectId,
+//                                   never call the provider again.
+//   - status 'outcome_uncertain' -> gated through
+//                                   canSafelyRetryBillingOperation(op, now),
+//                                   not just a static capability check:
+//                                   'idempotent_retry' is only safe to
+//                                   replay with the SAME idempotency key
+//                                   while still inside the provider's own
+//                                   retention window (Stripe: ~23h,
+//                                   conservative under its documented
+//                                   ~24h) — past it, or for any other
+//                                   capability, this refuses and requires
+//                                   explicit admin reconciliation first
+//                                   (item 16 case B / the final
+//                                   amendment's degrade-to-manual rule),
+//                                   which flips status away from
+//                                   outcome_uncertain before this can run
+//                                   again.
+//   - status 'pending'/'started'/'failed_safe'
+//                               -> attempt (or re-attempt) execution now.
+//                                   'failed_safe' means "confirmed nothing
+//                                   was created" — safe to simply try
+//                                   again once whatever caused it is
+//                                   addressed.
+async function runTrackedOperation(params: {
+  attemptId: string
+  provider: 'stripe' | 'remembill'
+  operationType: string
+  componentKey?: string
+  requestFingerprint: string
+  retryCapability: BillingOperationRetryCapability
+  execute: (idempotencyKey: string) => Promise<string | null>
+  classifyFailure: (err: unknown) => 'failed_safe' | 'outcome_uncertain'
+  errorClassOf: (err: unknown) => string
+}): Promise<string | null> {
+  const { attemptId, provider, operationType, componentKey, requestFingerprint, retryCapability, execute, classifyFailure, errorClassOf } = params
+  const operationKey = operationKeyFor(operationType, componentKey)
+  const idempotencyKey = deriveIdempotencyKey(attemptId, provider, operationType, componentKey)
+  const op = await getOrCreateOperation({ attemptId, operationKey, operationType, idempotencyKey, requestFingerprint, retryCapability })
+
+  if (op.status === 'succeeded') return op.externalObjectId
+  if (op.status === 'outcome_uncertain' && !canSafelyRetryBillingOperation(op, new Date())) {
+    const windowNote = op.retryCapability === 'idempotent_retry'
+      ? ` (its ${STRIPE_IDEMPOTENCY_KEY_RETENTION_HOURS}h provider idempotency-retention window has elapsed since it was first attempted)`
+      : ''
+    throw new Error(`Operation ${operationKey} has an uncertain outcome (capability: ${op.retryCapability})${windowNote} — requires admin verification before it can proceed. See POST /api/jobs/[id]/reconcile-billing-operation.`)
+  }
+
+  await markOperationStarted(op.id, op.startedAt === null)
+  try {
+    const externalObjectId = await execute(idempotencyKey)
+    await markOperationSucceeded(op.id, externalObjectId)
+    return externalObjectId
+  } catch (err) {
+    const classification = classifyFailure(err)
+    const errorClass = errorClassOf(err)
+    if (classification === 'failed_safe') await markOperationFailedSafe(op.id, errorClass)
+    else await markOperationOutcomeUncertain(op.id, errorClass)
+    throw err
+  }
+}
+
+function stripeErrorClassOf(err: unknown): string {
+  const e = err as { type?: string; code?: string } | null
+  return e?.type ? `${e.type}${e.code ? `:${e.code}` : ''}` : (err instanceof Error ? err.constructor.name : 'unknown_error')
+}
+
+function fetchErrorClassOf(err: unknown, httpStatus?: number): string {
+  if (httpStatus) return `http_${httpStatus}`
+  return err instanceof Error ? err.constructor.name : 'unknown_error'
+}
+
 async function configureStripe(
   terms: ContractTerms,
   lineItems: LineItemInput[],
-  jobId?: string,
-  orgId?: string,
+  jobId: string,
+  orgId: string,
   operationalEventEvidence: OperationalEventEvidence[] = [],
 ): Promise<ConfigureResult> {
   const { default: Stripe } = await import('stripe')
-  const orgConfig = orgId ? await getOrgConfig(orgId, 'stripe') : null
+  const orgConfig = await getOrgConfig(orgId, 'stripe')
   const stripeKey = orgConfig?.secret_key ?? process.env.STRIPE_SECRET_KEY!
   const stripe    = new Stripe(stripeKey, { apiVersion: '2026-06-24.dahlia' })
 
   const cur         = (terms.currency ?? 'EUR').toLowerCase()
-  const contractId  = terms.contract_id ?? jobId ?? 'unknown'
+  const contractId  = terms.contract_id ?? jobId
   const daysUntilDue = terms.payment_terms_days ?? 30
   const now          = new Date()
-
-  // ── 1. Upsert Stripe customer ───────────────────────────────────────────────
-  const emailInContact = terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
-  const billingEmail   = emailInContact
-    ?? `billing@${(terms.customer_name ?? 'customer').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}.com`
-
-  const safeName = (terms.customer_name ?? '').replace(/'/g, "\\'")
-  const existing = safeName
-    ? await stripe.customers.search({ query: `name:'${safeName}'`, limit: 1 }).catch(() => ({ data: [] }))
-    : { data: [] }
-  let customer = existing.data[0]
-  const customerFields = {
-    name:     terms.customer_name ?? undefined,
-    email:    billingEmail,
-    address:  terms.customer_address ? { line1: terms.customer_address } : undefined,
-    metadata: { contract_id: contractId, source: 'verdix' },
-  }
-  customer = customer
-    ? await stripe.customers.update(customer.id, customerFields)
-    : await stripe.customers.create(customerFields)
-
-  const isTest = !customer.livemode
-
-  // ── 2. Compute full billing schedule ────────────────────────────────────────
-  const periods = computeBillingSchedule(terms)
+  const isTestKey    = stripeKey.includes('_test_')
 
   const fmtLabel  = (d: Date) => d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
   const formatDate = (d: Date) => {
@@ -401,7 +473,6 @@ async function configureStripe(
     sent_at: string | null
     line_item_id?: string | null; quantity?: number | null; unit_price?: number | null
   }
-  const plannedRows: PlannedRow[] = []
 
   // Idempotent repush: carry forward already-sent invoices unchanged, and
   // clear stale not-yet-sent rows before regenerating — otherwise every
@@ -409,261 +480,232 @@ async function configureStripe(
   // creates a second real Stripe invoice for any period that's already due
   // and leaves the first set of planned_invoices rows in place, duplicating
   // the billing schedule. Mirrors configureRememhill's existing pattern.
-  type ExistingSentRow = {
-    year_num: number | null
-    period_start: string; period_end: string
-    invoice_type: string; fee_label: string | null
-    stripe_invoice_id: string | null; stripe_invoice_url: string | null
-    base_amount: number; currency: string
-    sent_at: string | null; status: string
-  }
-  let sentRows: ExistingSentRow[] = []
-  if (jobId) {
-    const { data: sent } = await supabaseServer
-      .from('planned_invoices')
-      .select('year_num, period_start, period_end, invoice_type, fee_label, stripe_invoice_id, stripe_invoice_url, base_amount, currency, sent_at, status')
-      .eq('job_id', jobId)
-      .in('status', ['sent', 'paid'])
-    sentRows = (sent ?? []) as ExistingSentRow[]
+  const { data: sent } = await supabaseServer
+    .from('planned_invoices')
+    .select('year_num, period_start, period_end, invoice_type, fee_label, stripe_invoice_id, stripe_invoice_url, base_amount, currency, sent_at, status')
+    .eq('job_id', jobId)
+    .in('status', ['sent', 'paid'])
+  const sentRows = sent ?? []
+  const alreadySentKeys = new Set(sentRows.map(r => planComponentKey({
+    invoice_type: r.invoice_type, year_num: r.year_num, period_start: r.period_start, fee_label: r.fee_label,
+  })))
 
-    const { error: cleanErr } = await supabaseServer
-      .from('planned_invoices')
-      .delete()
-      .eq('job_id', jobId)
-      .in('status', ['scheduled', 'parked', 'processing', 'draft'])
-    if (cleanErr) console.error('[billing-writer/stripe] stale planned_invoices cleanup failed', cleanErr)
-  }
+  const { error: cleanErr } = await supabaseServer
+    .from('planned_invoices')
+    .delete()
+    .eq('job_id', jobId)
+    .in('status', ['scheduled', 'parked', 'processing', 'draft'])
+  if (cleanErr) console.error('[billing-writer/stripe] stale planned_invoices cleanup failed', cleanErr)
 
-  // ── 3. Send immediately-due period invoices; queue future ones ──────────────
-  for (const period of periods) {
-    const periodStartStr = formatDate(period.periodStart)
-    // Already sent in a previous push — leave the existing row untouched
-    // (don't reinsert a copy). It may since have been updated in place by
-    // invoice-scheduler (e.g. overage_line_items for arrears billing), which
-    // a reinserted copy here would silently drop; and reinserting at all
-    // just duplicates the row on every repush without ever recreating a
-    // real Stripe invoice for it, since alreadySent already means one exists.
-    const alreadySent = sentRows.find(
-      r => r.invoice_type === 'period' && r.year_num === period.yearNum && r.period_start === periodStartStr,
-    )
-    if (alreadySent) continue
-
-    const isDue = period.periodStart <= now
-
-    const description = `Base subscription — Year ${period.yearNum} (${fmtLabel(period.periodStart)} – ${fmtLabel(period.periodEnd)})`
-
-    if (isDue && period.baseAmount > 0) {
-      const inv = await stripe.invoices.create({
-        customer:                       customer.id,
-        collection_method:              'send_invoice',
-        days_until_due:                 daysUntilDue,
-        pending_invoice_items_behavior: 'exclude',
-        metadata: {
-          verdix_job:      jobId ?? '',
-          verdix_contract: contractId,
-          invoice_type:    'period',
-          year:            String(period.yearNum),
-          scheduled_date:  formatDate(period.periodStart),
-        },
-      })
-
-      await stripe.invoiceItems.create({
-        customer:    customer.id,
-        invoice:     inv.id,
-        amount:      Math.round(period.baseAmount * 100),
-        currency:    cur,
-        description,
-      })
-
-      const finalized = await stripe.invoices.finalizeInvoice(inv.id).catch(err => {
-        console.error('[billing-writer] finalizeInvoice failed', err)
-        return inv
-      })
-
-      plannedRows.push({
-        year_num:          period.yearNum,
-        period_start:      formatDate(period.periodStart),
-        period_end:        formatDate(period.periodEnd),
-        base_amount:       period.baseAmount,
-        currency:          terms.currency ?? 'EUR',
-        fee_label:         null,
-        invoice_type:      'period',
-        status:            'sent',
-        stripe_invoice_id: inv.id,
-        stripe_invoice_url: finalized.hosted_invoice_url ?? null,
-        sent_at:           new Date().toISOString(),
-      })
-    } else {
-      plannedRows.push({
-        year_num:          period.yearNum,
-        period_start:      formatDate(period.periodStart),
-        period_end:        formatDate(period.periodEnd),
-        base_amount:       period.baseAmount,
-        currency:          terms.currency ?? 'EUR',
-        fee_label:         null,
-        invoice_type:      'period',
-        status:            period.baseAmount > 0 ? 'scheduled' : 'scheduled',
-        stripe_invoice_id: null,
-        stripe_invoice_url: null,
-        sent_at:           null,
-      })
-    }
-  }
-
-  // ── 4. One-time fees: immediately-due → Stripe now; future → planned row ─────
-  type OneTimeFeeInput = {
-    fee_label: string
-    amount: number
-    due_date?: string | null
-    manual_trigger?: boolean
-    metric_name?: string | null
-    rate_per_unit?: number | null
-    billability_condition?: BillabilityCondition | null
-    fee_id?: string
-  }
-  const oneTimeFees = (terms.one_time_fees ?? []) as OneTimeFeeInput[]
-  // Step 13, item 11 — held vs executable is decided fresh, right here, by
-  // isOneTimeFeeHeldForExecution (condition + real evidence), never by
-  // trusting a persisted manual_trigger value for an event-conditioned fee
-  // — see that function's own comment. A genuine manual_trigger fee (no
-  // billability_condition) falls through to the exact Step 11 check.
-  const isHeld = (fee: OneTimeFeeInput) => isOneTimeFeeHeldForExecution(fee, operationalEventEvidence, now)
-
-  // Park manual-trigger / not-yet-evidenced event fees — they need human
-  // confirmation (or, for event fees, real evidence) before invoicing.
-  for (const fee of oneTimeFees.filter(isHeld)) {
-    // Same reasoning as the period loop above: already-sent rows are left
-    // untouched rather than reinserted.
-    const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
-    if (alreadySent) continue
-    const li = findOneTimeLineItem(lineItems, fee.fee_label)
-    plannedRows.push({
-      year_num:           null,
-      period_start:       fee.due_date ?? formatDate(now),
-      period_end:         fee.due_date ?? formatDate(now),
-      base_amount:        fee.amount ?? 0,
-      currency:           terms.currency ?? 'EUR',
-      fee_label:          fee.fee_label,
-      invoice_type:       'one_time',
-      status:             'parked',
-      stripe_invoice_id:  null,
-      stripe_invoice_url: null,
-      sent_at:            null,
-      line_item_id: li?.id ?? null,
-      // Real quantity isn't known until a human confirms delivery (parked-invoices
-      // route) — only the rate can be pre-filled from the approved line item.
-      quantity: null, unit_price: li?.unit_price ?? fee.rate_per_unit ?? null,
+  // Step 14, item 3 — the deterministic snapshot of everything that needs
+  // to be sent RIGHT NOW, built before any external call. The Stripe path
+  // has never set per-line VAT (Stripe Tax/manual are out of scope here,
+  // unchanged) — vat stays a fixed 'not_configured' placeholder in the
+  // Stripe snapshot rather than a real resolved treatment.
+  const snapshot = buildBillingPlanSnapshot({
+    terms, lineItems, evidence: operationalEventEvidence, alreadySentKeys, provider: 'stripe',
+    vat: { mode: 'not_configured', ratePct: null }, now, computeBillingSchedule,
+  })
+  const fingerprint = fingerprintBillingPlan(snapshot)
+  // Step 14 final state-integrity correction — see getOrCreateAttempt's own
+  // param doc. Only invoked for a prior attempt whose every operation
+  // succeeded; reconstructs "what the plan would fingerprint as right now
+  // if THAT attempt's own already-sent lines were still pending", so a
+  // changed-commercial-data comparison isn't confounded by that attempt's
+  // own success having drained alreadySentKeys.
+  const recomputeFingerprintExcludingPriorSnapshot = (priorSnapshot: BillingPlanSnapshot): string => {
+    const excludedKeys = planComponentKeysInSnapshot(priorSnapshot)
+    const reducedAlreadySentKeys = new Set([...alreadySentKeys].filter(k => !excludedKeys.has(k)))
+    const counterfactual = buildBillingPlanSnapshot({
+      terms, lineItems, evidence: operationalEventEvidence, alreadySentKeys: reducedAlreadySentKeys, provider: 'stripe',
+      vat: { mode: 'not_configured', ratePct: null }, now, computeBillingSchedule,
     })
+    return fingerprintBillingPlan(counterfactual)
   }
+  const attempt = await getOrCreateAttempt({ orgId, jobId, provider: 'stripe', fingerprint, snapshot, recomputeFingerprintExcludingPriorSnapshot })
+  await markAttemptExecuting(attempt.id)
 
-  for (const fee of oneTimeFees.filter(f => !isHeld(f) && f.amount > 0)) {
-    const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
-    if (alreadySent) continue
-    const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
-    const isDue      = !feeDueDate || feeDueDate <= now
+  try {
+    // ── Op: resolve customer (search is read-only/best-effort; the actual
+    // create-or-update call is the tracked, idempotency-keyed side effect) ──
+    const emailInContact = terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
+    const billingEmail   = emailInContact
+      ?? `billing@${(terms.customer_name ?? 'customer').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}.com`
+    const safeName = (terms.customer_name ?? '').replace(/'/g, "\\'")
+    const customerFields = {
+      name:     terms.customer_name ?? undefined,
+      email:    billingEmail,
+      address:  terms.customer_address ? { line1: terms.customer_address } : undefined,
+      metadata: { contract_id: contractId, source: 'verdix' },
+    }
+    const customerId = (await runTrackedOperation({
+      attemptId: attempt.id, provider: 'stripe', operationType: 'resolve_customer',
+      requestFingerprint: fingerprintValue(customerFields),
+      // Item 7 — a real Stripe request-level idempotencyKey now backs this
+      // call (added below), so a same-key retry is Stripe's own guarantee,
+      // not a local heuristic — idempotent_retry, not merely reconcilable.
+      retryCapability: 'idempotent_retry',
+      classifyFailure: classifyStripeFailure, errorClassOf: stripeErrorClassOf,
+      execute: async (idempotencyKey) => {
+        const existing = safeName
+          ? await stripe.customers.search({ query: `name:'${safeName}'`, limit: 1 }).catch(() => ({ data: [] }))
+          : { data: [] }
+        const found = existing.data[0]
+        const customer = found
+          ? await stripe.customers.update(found.id, customerFields, { idempotencyKey })
+          : await stripe.customers.create(customerFields, { idempotencyKey })
+        return customer.id
+      },
+    })) as string
+    const isTest = isTestKey
 
-    // Prefer the approved line_items row (may carry a human-corrected
-    // quantity/unit_price/total) over the raw extracted contract amount.
-    const li          = findOneTimeLineItem(lineItems, fee.fee_label)
-    const amount      = li?.total_amount ?? fee.amount
-    const hasBreakdown = !!li && li.quantity > 0 && li.unit_price > 0
-    const description  = hasBreakdown
-      ? `${fee.fee_label} — ${li.quantity.toLocaleString()} × ${cur.toUpperCase()} ${li.unit_price.toLocaleString()}`
-      : fee.fee_label
+    // ── Due-now operations: create_invoice -> create_invoice_item -> finalize_invoice, per line ──
+    for (const line of snapshot.lines) {
+      const description = line.kind === 'period'
+        ? (() => {
+            const [yearNumStr, periodIndexStr] = line.componentKey.split(':').slice(1)
+            const period = computeBillingSchedule(terms).find(p => p.yearNum === Number(yearNumStr) && p.periodIndex === Number(periodIndexStr))!
+            return `Base subscription — Year ${period.yearNum} (${fmtLabel(period.periodStart)} – ${fmtLabel(period.periodEnd)})`
+          })()
+        : (line.unitPrice != null
+            ? `${line.componentKey.slice(4)} — ${line.quantity.toLocaleString()} × ${cur.toUpperCase()} ${line.unitPrice.toLocaleString()}`
+            : line.componentKey.slice(4))
 
-    if (isDue) {
-      const netDays         = terms.payment_terms_days ?? 30
-      const feeDueDaysFromNow = feeDueDate
-        ? Math.ceil((feeDueDate.getTime() - Date.now()) / 86_400_000)
-        : 0
-      const days = feeDueDaysFromNow > 1 ? feeDueDaysFromNow : netDays
+      const invMetadata = {
+        verdix_job: jobId, verdix_contract: contractId,
+        invoice_type: line.kind === 'period' ? 'period' : 'one_time',
+        fee_type: line.kind === 'one_time_fee' ? 'one_time' : '',
+        fee_label: line.kind === 'one_time_fee' ? line.componentKey.slice(4) : '',
+        scheduled_date: line.dueDate ?? '',
+      }
+      const days = line.kind === 'period'
+        ? daysUntilDue
+        : (() => {
+            const feeDueDate = line.dueDate ? new Date(line.dueDate + 'T00:00:00') : null
+            const feeDueDaysFromNow = feeDueDate ? Math.ceil((feeDueDate.getTime() - Date.now()) / 86_400_000) : 0
+            return feeDueDaysFromNow > 1 ? feeDueDaysFromNow : (terms.payment_terms_days ?? 30)
+          })()
 
-      const oneTimeInv = await stripe.invoices.create({
-        customer:                       customer.id,
-        collection_method:              'send_invoice',
-        days_until_due:                 days,
-        pending_invoice_items_behavior: 'exclude',
-        metadata: {
-          verdix_job:      jobId ?? '',
-          verdix_contract: contractId,
-          fee_type:        'one_time',
-          fee_label:       fee.fee_label,
-          invoice_type:    'one_time',
-          scheduled_date:  formatDate(feeDueDate ?? now),
+      const invoiceId = await runTrackedOperation({
+        attemptId: attempt.id, provider: 'stripe', operationType: 'create_invoice', componentKey: line.componentKey,
+        requestFingerprint: fingerprintValue({ customerId, days, invMetadata }),
+        retryCapability: 'idempotent_retry', classifyFailure: classifyStripeFailure, errorClassOf: stripeErrorClassOf,
+        execute: async (idempotencyKey) => {
+          const inv = await stripe.invoices.create({
+            customer: customerId, collection_method: 'send_invoice', days_until_due: days,
+            pending_invoice_items_behavior: 'exclude', metadata: invMetadata,
+          }, { idempotencyKey })
+          return inv.id
+        },
+      }) as string
+
+      await runTrackedOperation({
+        attemptId: attempt.id, provider: 'stripe', operationType: 'create_invoice_item', componentKey: line.componentKey,
+        requestFingerprint: fingerprintValue({ invoiceId, amount: line.amount, currency: line.currency, description }),
+        retryCapability: 'idempotent_retry', classifyFailure: classifyStripeFailure, errorClassOf: stripeErrorClassOf,
+        execute: async (idempotencyKey) => {
+          const item = await stripe.invoiceItems.create({
+            customer: customerId, invoice: invoiceId, amount: Math.round(line.amount * 100), currency: cur, description,
+          }, { idempotencyKey })
+          return item.id
         },
       })
 
-      // Stripe invoice items only take a flat amount + quantity=1 here (real
-      // per-unit quantity/rate needs price_data.unit_amount, a Decimal type —
-      // not worth the added complexity when the description already carries
-      // the real breakdown). Remembill (below) gets true quantity/unit_price.
-      await stripe.invoiceItems.create({
-        customer:    customer.id,
-        invoice:     oneTimeInv.id,
-        amount:      Math.round(amount * 100),
-        currency:    cur,
-        description,
+      // Item 7 — the previous code silently swallowed EVERY finalizeInvoice
+      // failure (`.catch(err => { console.error(...); return inv })`),
+      // treating a genuinely failed/uncertain finalize as if it had
+      // succeeded, using the stale unfinalized invoice object. That is
+      // exactly the "silently misclassify an ambiguous outcome as success"
+      // failure mode Step 14 exists to close — errors now propagate through
+      // the same classify-and-persist path as every other operation.
+      let hostedInvoiceUrl: string | null = null
+      await runTrackedOperation({
+        attemptId: attempt.id, provider: 'stripe', operationType: 'finalize_invoice', componentKey: line.componentKey,
+        requestFingerprint: fingerprintValue({ invoiceId }),
+        retryCapability: 'idempotent_retry', classifyFailure: classifyStripeFailure, errorClassOf: stripeErrorClassOf,
+        execute: async (idempotencyKey) => {
+          const finalized = await stripe.invoices.finalizeInvoice(invoiceId, {}, { idempotencyKey })
+          hostedInvoiceUrl = finalized.hosted_invoice_url ?? null
+          return invoiceId
+        },
       })
 
-      const finalized = await stripe.invoices.finalizeInvoice(oneTimeInv.id).catch(err => {
-        console.error('[billing-writer] one-time finalizeInvoice failed', err)
-        return oneTimeInv
-      })
+      // Item 10 — persisted immediately after this specific line's external
+      // side effects all succeeded, not batched with every other line at
+      // the very end — a crash after line N no longer loses knowledge that
+      // lines 1..N-1 already have real Stripe invoices.
+      const plannedRow: PlannedRow = line.kind === 'period'
+        ? { year_num: Number(line.componentKey.split(':')[1]), period_start: line.dueDate!, period_end: line.dueDate!, base_amount: line.amount, currency: terms.currency ?? 'EUR', fee_label: null, invoice_type: 'period', status: 'sent', stripe_invoice_id: invoiceId, stripe_invoice_url: hostedInvoiceUrl, sent_at: new Date().toISOString() }
+        : { year_num: null, period_start: line.dueDate!, period_end: line.dueDate!, base_amount: line.amount, currency: terms.currency ?? 'EUR', fee_label: line.componentKey.slice(4), invoice_type: 'one_time', status: 'sent', stripe_invoice_id: invoiceId, stripe_invoice_url: hostedInvoiceUrl, sent_at: new Date().toISOString(), quantity: line.unitPrice != null ? line.quantity : null, unit_price: line.unitPrice }
+      const { error: rowErr } = await supabaseServer.from('planned_invoices').insert({ ...plannedRow, job_id: jobId, org_id: orgId })
+      if (rowErr) console.error('[billing-writer/stripe] planned_invoices insert failed for a sent line', rowErr)
+    }
 
-      const dueDateStr = formatDate(feeDueDate ?? now)
-      plannedRows.push({
-        year_num:           null,
-        period_start:       dueDateStr,
-        period_end:         dueDateStr,
-        base_amount:        amount,
-        currency:           terms.currency ?? 'EUR',
-        fee_label:          fee.fee_label,
-        invoice_type:       'one_time',
-        status:             'sent',
-        stripe_invoice_id:  oneTimeInv.id,
-        stripe_invoice_url: finalized.hosted_invoice_url ?? null,
-        sent_at:            new Date().toISOString(),
-        line_item_id: li?.id ?? null,
-        quantity:     hasBreakdown ? li.quantity   : null,
-        unit_price:   hasBreakdown ? li.unit_price : null,
-      })
-    } else {
-      const dueDateStr = formatDate(feeDueDate!)
-      plannedRows.push({
-        year_num:           null,
-        period_start:       dueDateStr,
-        period_end:         dueDateStr,
-        base_amount:        amount,
-        currency:           terms.currency ?? 'EUR',
-        fee_label:          fee.fee_label,
-        invoice_type:       'one_time',
-        status:             'scheduled',
-        stripe_invoice_id:  null,
-        stripe_invoice_url: null,
-        sent_at:            null,
-        line_item_id: li?.id ?? null,
-        quantity:     hasBreakdown ? li.quantity   : null,
-        unit_price:   hasBreakdown ? li.unit_price : null,
+    // ── Scheduled/parked rows for everything NOT due now — no external
+    // call, so these are safe to batch-insert with no operation tracking. ──
+    const scheduledRows: PlannedRow[] = []
+    for (const period of computeBillingSchedule(terms)) {
+      const periodStartStr = formatDate(period.periodStart)
+      if (alreadySentKeys.has(`period:${period.yearNum}:${periodStartStr}`)) continue
+      if (period.periodStart <= now && period.baseAmount > 0) continue // already handled above
+      scheduledRows.push({
+        year_num: period.yearNum, period_start: periodStartStr, period_end: formatDate(period.periodEnd),
+        base_amount: period.baseAmount, currency: terms.currency ?? 'EUR', fee_label: null,
+        invoice_type: 'period', status: 'scheduled', stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
       })
     }
-  }
+    const oneTimeFees = terms.one_time_fees ?? []
+    const isHeld = (fee: typeof oneTimeFees[number]) => isOneTimeFeeHeldForExecution(fee, operationalEventEvidence, now)
+    for (const fee of oneTimeFees.filter(isHeld)) {
+      if (alreadySentKeys.has(`one_time_fee:${fee.fee_label}`)) continue
+      const li = findOneTimeLineItem(lineItems, fee.fee_label)
+      scheduledRows.push({
+        year_num: null, period_start: fee.due_date ?? formatDate(now), period_end: fee.due_date ?? formatDate(now),
+        base_amount: fee.amount ?? 0, currency: terms.currency ?? 'EUR', fee_label: fee.fee_label,
+        invoice_type: 'one_time', status: 'parked', stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
+        line_item_id: li?.id ?? null, quantity: null, unit_price: li?.unit_price ?? fee.rate_per_unit ?? null,
+      })
+    }
+    for (const fee of oneTimeFees.filter(f => !isHeld(f) && f.amount > 0)) {
+      if (alreadySentKeys.has(`one_time_fee:${fee.fee_label}`)) continue
+      const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
+      const isDue = !feeDueDate || feeDueDate <= now
+      if (isDue) continue // already handled above
+      const li = findOneTimeLineItem(lineItems, fee.fee_label)
+      const amount = li?.total_amount ?? fee.amount
+      const hasBreakdown = !!li && li.quantity > 0 && li.unit_price > 0
+      const dueDateStr = formatDate(feeDueDate!)
+      scheduledRows.push({
+        year_num: null, period_start: dueDateStr, period_end: dueDateStr, base_amount: amount,
+        currency: terms.currency ?? 'EUR', fee_label: fee.fee_label, invoice_type: 'one_time', status: 'scheduled',
+        stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null, line_item_id: li?.id ?? null,
+        quantity: hasBreakdown ? li.quantity : null, unit_price: hasBreakdown ? li.unit_price : null,
+      })
+    }
+    if (scheduledRows.length > 0) {
+      const { error: schedErr } = await supabaseServer.from('planned_invoices').insert(scheduledRows.map(r => ({ ...r, job_id: jobId, org_id: orgId })))
+      if (schedErr) console.error('[billing-writer/stripe] scheduled planned_invoices insert failed', schedErr)
+    }
 
-  // ── 5. Persist planned rows ──────────────────────────────────────────────────
-  if (jobId && plannedRows.length > 0) {
-    const { error } = await supabaseServer
-      .from('planned_invoices')
-      .insert(plannedRows.map(r => ({ ...r, job_id: jobId, org_id: orgId })))
-    if (error) console.error('[billing-writer] planned_invoices insert failed', error)
-  }
+    await markAttemptStatus(attempt.id, 'succeeded')
 
-  const dashboardUrl = `https://dashboard.stripe.com/${isTest ? 'test/' : ''}customers/${customer.id}`
-
-  return {
-    platform:       'stripe',
-    subscriptionId: null,
-    customerId:     customer.id,
-    lineItemCount:  periods.length + oneTimeFees.filter(f => f.amount > 0).length,
-    dashboardUrl,
+    const dashboardUrl = `https://dashboard.stripe.com/${isTest ? 'test/' : ''}customers/${customerId}`
+    return {
+      platform:       'stripe',
+      subscriptionId: null,
+      customerId,
+      lineItemCount:  computeBillingSchedule(terms).length + oneTimeFees.filter(f => f.amount > 0).length,
+      dashboardUrl,
+    }
+  } catch (err) {
+    // The individual operation that threw already recorded its own
+    // failed_safe/outcome_uncertain status; the attempt as a whole is
+    // marked with the same classification — conservative by default (item
+    // 15 wants the attempt to explain where uncertainty began, not just
+    // echo the last error).
+    const attemptOutcome = classifyStripeFailure(err)
+    await markAttemptStatus(attempt.id, attemptOutcome)
+    throw err
   }
 }
 
@@ -704,17 +746,42 @@ function remembillHeaders(apiKey: string): Record<string, string> {
   }
 }
 
+// A definitive HTTP response FROM Remembill (even an error one) — thrown
+// explicitly by the operation code below, distinct from `fetch()` itself
+// throwing (network failure, no response received at all).
+class RemembillHttpError extends Error {
+  constructor(public readonly status: number, message: string) { super(message) }
+}
+
+// Item 14 — the same conservative two-bucket rule as classifyFetchOutcome,
+// adapted to this file's control flow: a RemembillHttpError means a
+// definitive response came back (failed_safe); anything else thrown
+// (fetch() itself failed — network error, timeout, abort) means no
+// definitive response was ever received (outcome_uncertain).
+function remembillClassifyFailure(err: unknown): 'failed_safe' | 'outcome_uncertain' {
+  return classifyFetchOutcome({ requestThrew: !(err instanceof RemembillHttpError), receivedResponse: err instanceof RemembillHttpError })
+}
+function remembillErrorClassOf(err: unknown): string {
+  return err instanceof RemembillHttpError ? fetchErrorClassOf(err, err.status) : fetchErrorClassOf(err)
+}
+
 async function configureRememhill(
   terms: ContractTerms,
   lineItems: LineItemInput[],
-  jobId?: string,
-  orgId?: string,
+  jobId: string,
+  orgId: string,
   existingCustomerId?: string,
   operationalEventEvidence: OperationalEventEvidence[] = [],
 ): Promise<ConfigureResult> {
-  const orgConfig = orgId ? await getOrgConfig(orgId, 'remembill') : null
+  const orgConfig = await getOrgConfig(orgId, 'remembill')
   const apiKey = orgConfig?.api_key ?? process.env.REMEMBILL_API_KEY
-  if (!apiKey) throw new Error('Remembill API key not configured')
+  // Item 14 — deterministic, local, pre-any-external-call validation
+  // failures. Thrown as BillingPreconditionError, BEFORE any execution
+  // attempt is even created, so approve/route.ts can restore the job to
+  // its real prior state (item 3's "no external attempt -> no ambiguity")
+  // instead of landing in the same FAILED state used for a genuinely
+  // uncertain provider outcome.
+  if (!apiKey) throw new BillingPreconditionError('Remembill API key not configured')
 
   const h      = remembillHeaders(apiKey)
   const cur    = (terms.currency || 'SEK').toUpperCase()   // || so empty string falls back too
@@ -727,182 +794,75 @@ async function configureRememhill(
   const addDays  = (d: Date, n: number) => new Date(d.getTime() + n * 86_400_000)
 
   if (!cur) {
-    throw new Error('Remembill: currency is missing from contract terms — set it in the contract details and try again.')
+    throw new BillingPreconditionError('Remembill: currency is missing from contract terms — set it in the contract details and try again.')
   }
   if (cur !== 'SEK') {
-    throw new Error(
+    throw new BillingPreconditionError(
       `Remembill only supports invoicing in SEK. This contract is in ${cur}. ` +
       'Please use Stripe for non-SEK contracts, or update the contract currency to SEK.',
     )
   }
+  if (!existingCustomerId && !terms.customer_org_number) {
+    throw new BillingPreconditionError(
+      'Remembill requires a company registration number (org number). ' +
+      'Please add it in the contract details under "Customer org / reg number" and try again.',
+    )
+  }
 
-  // ── 1. Customer — reuse from a previous attempt or create fresh ─────────────
-  let customerId: string
-
+  // Item 3 — VAT resolved deterministically before any external call, from
+  // whichever source is actually available pre-customer-creation: the
+  // real customer_vat_config for an existing customer, or the job's staged
+  // pending_vat_mode/rate (set pre-approval, before any customer exists —
+  // the same source approve/route.ts's own readiness gate already reads)
+  // for a brand-new one. Never left unresolved into the snapshot.
+  let vatTreatmentForPush: VatTreatment
   if (existingCustomerId) {
-    // Re-push after a failed attempt: the customer already exists in Remembill.
-    customerId = existingCustomerId
-    console.log('[billing-writer/remembill] reusing existing customer:', customerId)
+    const customerVatConfig = await getCustomerVatConfig(orgId, existingCustomerId)
+    vatTreatmentForPush = resolveVatTreatment(customerVatConfig, null)
   } else {
-    // Remembill requires: name, type, org_number, and at least one of email or phone.
-    const realEmail = terms.customer_email
-      ?? terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
-      ?? null
+    const { data: vatRow } = await supabaseServer.from('jobs').select('pending_vat_mode, pending_vat_rate_pct').eq('id', jobId).maybeSingle()
+    vatTreatmentForPush = {
+      mode: (vatRow?.pending_vat_mode as VatMode | undefined) ?? 'not_configured',
+      ratePct: vatRow?.pending_vat_mode === 'rate' ? (vatRow?.pending_vat_rate_pct as number | null) : null,
+    }
+  }
 
-    const customerBody: Record<string, string> = {
-      type: 'business',
-      name: terms.customer_name ?? 'Unknown',
-    }
-    if (realEmail) {
-      customerBody.email = realEmail
-    } else {
-      const slug = (terms.customer_name ?? 'customer')
-        .toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 30) || 'customer'
-      customerBody.email = `billing+${slug}@verdix-noreply.com`
-    }
-    if (terms.customer_org_number) {
-      customerBody.org_number = terms.customer_org_number
-    } else {
-      throw new Error(
-        'Remembill requires a company registration number (org number). ' +
-        'Please add it in the contract details under "Customer org / reg number" and try again.',
-      )
-    }
+  // ── Preserve already-sent invoices; delete only unsent rows ────────────────
+  const { data: sent } = await supabaseServer
+    .from('planned_invoices')
+    .select('year_num, period_start, period_end, invoice_type, fee_label, stripe_invoice_id, stripe_invoice_url, base_amount, currency, sent_at, status')
+    .eq('job_id', jobId)
+    .in('status', ['sent', 'paid'])
+  const sentRows = sent ?? []
+  const alreadySentKeys = new Set(sentRows.map(r => planComponentKey({
+    invoice_type: r.invoice_type, year_num: r.year_num, period_start: r.period_start, fee_label: r.fee_label,
+  })))
 
-    const custRes = await fetch(`${REMEMBILL_BASE}/customers`, {
-      method: 'POST', headers: h,
-      body: JSON.stringify(customerBody),
+  const { error: cleanErr } = await supabaseServer
+    .from('planned_invoices')
+    .delete()
+    .eq('job_id', jobId)
+    .in('status', ['scheduled', 'parked', 'processing', 'draft'])
+  if (cleanErr) console.error('[billing-writer/remembill] stale planned_invoices cleanup failed', cleanErr)
+
+  const snapshot = buildBillingPlanSnapshot({
+    terms, lineItems, evidence: operationalEventEvidence, alreadySentKeys, provider: 'remembill',
+    vat: { mode: vatTreatmentForPush.mode, ratePct: vatTreatmentForPush.ratePct }, now, computeBillingSchedule,
+  })
+  const fingerprint = fingerprintBillingPlan(snapshot)
+  // Step 14 final state-integrity correction — see getOrCreateAttempt's own
+  // param doc / the Stripe call site's identical comment above.
+  const recomputeFingerprintExcludingPriorSnapshot = (priorSnapshot: BillingPlanSnapshot): string => {
+    const excludedKeys = planComponentKeysInSnapshot(priorSnapshot)
+    const reducedAlreadySentKeys = new Set([...alreadySentKeys].filter(k => !excludedKeys.has(k)))
+    const counterfactual = buildBillingPlanSnapshot({
+      terms, lineItems, evidence: operationalEventEvidence, alreadySentKeys: reducedAlreadySentKeys, provider: 'remembill',
+      vat: { mode: vatTreatmentForPush.mode, ratePct: vatTreatmentForPush.ratePct }, now, computeBillingSchedule,
     })
-    const custRawBody = await custRes.text()
-    if (!custRes.ok) {
-      console.error('[billing-writer/remembill] customer creation failed', custRes.status, custRawBody)
-      throw new Error(`Remembill customer creation failed (${custRes.status}): ${custRawBody}`)
-    }
-    console.log('[billing-writer/remembill] customer creation response:', custRawBody)
-    const custJson = JSON.parse(custRawBody) as Record<string, unknown>
-    const custObj  = (custJson.customer ?? custJson.data ?? custJson) as Record<string, unknown>
-    const newCustomerId = custObj.id as string | undefined
-    if (!newCustomerId) {
-      throw new Error(`Remembill customer creation: could not extract id from response: ${custRawBody}`)
-    }
-    customerId = newCustomerId
-
-    // Persist the customer ID immediately so a re-push can reuse it if invoicing fails later.
-    if (jobId) {
-      const { error: saveErr } = await supabaseServer.from('jobs').update({ billing_customer_id: customerId }).eq('id', jobId)
-      if (saveErr) console.error('[billing-writer/remembill] failed to persist customer_id early', saveErr)
-    }
+    return fingerprintBillingPlan(counterfactual)
   }
-  console.log('[billing-writer/remembill] customerId:', customerId, '| currency:', cur)
-
-  // Verdix owns the complete invoice instruction for any invoice pushed
-  // immediately at approval time too (a period already due today), not
-  // just the daily-cron path — same resolution/fail-closed gate as
-  // invoice-scheduler. No orgId (an internal/test caller) is treated the
-  // same as an unconfigured customer: fail closed rather than silently bill
-  // 0% VAT. Only actually enforced once a period is due right now — see the
-  // `period.periodStart <= now` guard below, which is the only place this
-  // value is used.
-  const customerVatConfig = orgId ? await getCustomerVatConfig(orgId, customerId) : null
-  const vatTreatmentForPush = resolveVatTreatment(customerVatConfig, null)
-
-  // ── 1b. Preserve already-sent invoices; delete only unsent rows ─────────────
-  // Sent invoices have already been delivered to the customer — never create
-  // duplicates. Scheduled/parked rows are safe to delete and re-compute.
-  type ExistingSentRow = {
-    year_num: number | null
-    period_start: string; period_end: string
-    invoice_type: string; fee_label: string | null
-    stripe_invoice_id: string | null; stripe_invoice_url: string | null
-    base_amount: number; currency: string
-    sent_at: string | null; status: string
-  }
-  let sentRows: ExistingSentRow[] = []
-  if (jobId) {
-    const { data: sent } = await supabaseServer
-      .from('planned_invoices')
-      .select('year_num, period_start, period_end, invoice_type, fee_label, stripe_invoice_id, stripe_invoice_url, base_amount, currency, sent_at, status')
-      .eq('job_id', jobId)
-      .in('status', ['sent', 'paid'])
-    sentRows = (sent ?? []) as ExistingSentRow[]
-
-    const { error: cleanErr } = await supabaseServer
-      .from('planned_invoices')
-      .delete()
-      .eq('job_id', jobId)
-      .in('status', ['scheduled', 'parked', 'processing', 'draft'])
-    if (cleanErr) console.error('[billing-writer/remembill] stale planned_invoices cleanup failed', cleanErr)
-  }
-
-  // Per-push timestamp so idempotency keys are unique across retry attempts.
-  const pushStamp = Date.now().toString(36)
-
-  // ── 2. Helper: draft invoice → add row → send via email ────────────────────
-  // Parameters are passed explicitly (not closed over) so values are unambiguous.
-  // Confirmed via probe: Remembill ignores rows[] in the creation body and
-  // rejects PUT. The only working strategy is POST /invoices/:id/rows.
-  async function pushInvoice(
-    description: string,
-    unitPrice: number,
-    issueDate: Date,
-    idempotencyKey: string,
-    invoiceCustomerId: string,
-    invoiceCurrency: string,
-    quantity = 1,
-    vatRatePct = 0,
-  ): Promise<{ id: string; url: string | null }> {
-    const dueDate = addDays(issueDate, netDays)
-
-    const invoiceBody = {
-      customer_id:   invoiceCustomerId,
-      currency:      invoiceCurrency,
-      issue_date:    fmtDate(issueDate),
-      due_date:      fmtDate(dueDate),
-      payment_terms: `Net ${netDays}`,
-    }
-    const invRes = await fetch(`${REMEMBILL_BASE}/invoices`, {
-      method: 'POST', headers: { ...h, 'Idempotency-Key': idempotencyKey },
-      body: JSON.stringify(invoiceBody),
-    })
-    const invRawBody = await invRes.text()
-    if (!invRes.ok) {
-      console.error('[billing-writer/remembill] invoice creation failed', invRes.status, invRawBody)
-      throw new Error(`Remembill invoice creation failed (${invRes.status}): ${invRawBody}`)
-    }
-    const invJson  = JSON.parse(invRawBody) as Record<string, unknown>
-    const invObj   = (invJson.invoice ?? invJson.data ?? invJson) as Record<string, unknown>
-    const invoiceId = invObj.id as string | undefined
-    if (!invoiceId) {
-      throw new Error(`Remembill invoice creation: could not extract id from response: ${invRawBody}`)
-    }
-
-    // price is in öre (minor units): 1 kr = 100 öre. vat is 0–100 percent,
-    // resolved by the caller from customer_vat_config (never hardcoded).
-    // quantity defaults to 1 (period/flat fees); one-time fees with a real
-    // per-unit breakdown pass their actual quantity so Remembill's invoice
-    // shows e.g. "4 × 45,000" instead of a single lump-sum row.
-    // POST /invoices/:id/rows is the only endpoint that reliably attaches a row.
-    const rowBody = { name: description, quantity, price: Math.round(unitPrice * 100), vat: Math.round(vatRatePct) }
-    const rowRes  = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, {
-      method: 'POST', headers: h,
-      body: JSON.stringify(rowBody),
-    })
-    const rowRawBody = await rowRes.text()
-    if (!rowRes.ok) {
-      console.error(`[billing-writer/remembill] row creation failed (${rowRes.status}):`, rowRawBody)
-      throw new Error(`Remembill row creation failed (${rowRes.status}): ${rowRawBody}`)
-    }
-
-    // Deliver via email — returns 202 Accepted when queued
-    await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/email`, {
-      method: 'POST', headers: h, body: JSON.stringify({}),
-    }).catch(err => console.error('[billing-writer/remembill] email delivery failed', err))
-
-    return { id: invoiceId, url: remembillAppUrl('') }
-  }
-
-  // ── 3. Billing schedule ─────────────────────────────────────────────────────
-  const periods = computeBillingSchedule(terms)
+  const attempt = await getOrCreateAttempt({ orgId, jobId, provider: 'remembill', fingerprint, snapshot, recomputeFingerprintExcludingPriorSnapshot })
+  await markAttemptExecuting(attempt.id)
 
   type PlannedRow = {
     job_id?: string; org_id?: string
@@ -913,133 +873,191 @@ async function configureRememhill(
     sent_at: string | null
     line_item_id?: string | null; quantity?: number | null; unit_price?: number | null
   }
-  const plannedRows: PlannedRow[] = []
 
-  // ── 4. Period invoices ──────────────────────────────────────────────────────
-  for (const period of periods) {
-    const periodStartStr = fmtDate(period.periodStart)
-    const periodEndStr   = fmtDate(period.periodEnd)
+  try {
+    // ── Op: resolve customer. Reusing existingCustomerId is itself the
+    // local reconciliation mechanism (Verdix's own persisted
+    // jobs.billing_customer_id, written immediately on first success below)
+    // — that is what makes this 'reconcilable' rather than
+    // 'manual_verification_required': a retry that finds existingCustomerId
+    // already set never re-attempts creation at all. ──
+    const customerId = (await runTrackedOperation({
+      attemptId: attempt.id, provider: 'remembill', operationType: 'resolve_customer',
+      requestFingerprint: fingerprintValue({ existingCustomerId: existingCustomerId ?? null, name: terms.customer_name, orgNumber: terms.customer_org_number }),
+      retryCapability: 'reconcilable', classifyFailure: remembillClassifyFailure, errorClassOf: remembillErrorClassOf,
+      execute: async (idempotencyKey) => {
+        if (existingCustomerId) {
+          console.log('[billing-writer/remembill] reusing existing customer:', existingCustomerId)
+          return existingCustomerId
+        }
+        const realEmail = terms.customer_email
+          ?? terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
+          ?? null
+        const customerBody: Record<string, string> = { type: 'business', name: terms.customer_name ?? 'Unknown' }
+        if (realEmail) {
+          customerBody.email = realEmail
+        } else {
+          const slug = (terms.customer_name ?? 'customer').toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 30) || 'customer'
+          customerBody.email = `billing+${slug}@verdix-noreply.com`
+        }
+        customerBody.org_number = terms.customer_org_number!
 
-    // If this period's invoice was already sent in a previous push, leave
-    // the existing row untouched rather than reinserting a copy — it may
-    // since have been updated in place by invoice-scheduler (e.g.
-    // overage_line_items for arrears billing), which a reinserted copy here
-    // would silently drop, and reinserting duplicates the row on every
-    // repush without ever creating a second real Remembill invoice for it.
-    const alreadySent = sentRows.find(
-      r => r.invoice_type === 'period' && r.year_num === period.yearNum && r.period_start === periodStartStr,
-    )
-    if (alreadySent) continue
+        const custRes = await fetch(`${REMEMBILL_BASE}/customers`, {
+          method: 'POST', headers: { ...h, 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(customerBody),
+        })
+        const custRawBody = await custRes.text()
+        if (!custRes.ok) throw new RemembillHttpError(custRes.status, `Remembill customer creation failed (${custRes.status}): ${custRawBody}`)
+        const custJson = JSON.parse(custRawBody) as Record<string, unknown>
+        const custObj  = (custJson.customer ?? custJson.data ?? custJson) as Record<string, unknown>
+        const newCustomerId = custObj.id as string | undefined
+        if (!newCustomerId) throw new Error(`Remembill customer creation: could not extract id from response: ${custRawBody}`)
 
-    const description = `Base subscription — Year ${period.yearNum} (${fmtLabel(period.periodStart)} – ${fmtLabel(period.periodEnd)})`
+        // Persist immediately — this write IS the reconciliation mechanism
+        // a future retry relies on (existingCustomerId above).
+        const { error: saveErr } = await supabaseServer.from('jobs').update({ billing_customer_id: newCustomerId }).eq('id', jobId)
+        if (saveErr) console.error('[billing-writer/remembill] failed to persist customer_id early', saveErr)
+        return newCustomerId
+      },
+    })) as string
+    console.log('[billing-writer/remembill] customerId:', customerId, '| currency:', cur)
 
-    if (period.periodStart <= now && period.baseAmount > 0) {
-      const periodVat = computeVat(period.baseAmount, vatTreatmentForPush)
-      if (!periodVat.ok) throw new Error(`Billing blocked: ${periodVat.reason}`)
-      const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-${pushStamp}-period-${period.yearNum}-${period.periodIndex}`)
-      const { id, url } = await pushInvoice(description, Math.round(period.baseAmount * 100) / 100, now, key, customerId, cur, 1, periodVat.calculation.vatRatePct)
-      plannedRows.push({
-        year_num: period.yearNum, period_start: periodStartStr, period_end: periodEndStr,
-        base_amount: period.baseAmount, currency: terms.currency ?? 'SEK', fee_label: null,
-        invoice_type: 'period', status: 'sent',
-        stripe_invoice_id: id, stripe_invoice_url: url, sent_at: new Date().toISOString(),
+    async function pushLine(line: BillingPlanLineInstruction, description: string, unitPrice: number, issueDate: Date, quantity: number, vatRatePct: number): Promise<{ id: string; url: string | null }> {
+      const dueDate = addDays(issueDate, netDays)
+      const invoiceBody = { customer_id: customerId, currency: cur, issue_date: fmtDate(issueDate), due_date: fmtDate(dueDate), payment_terms: `Net ${netDays}` }
+
+      // Item 8 — the stable, attempt-derived key REPLACES the old
+      // Date.now()-based pushStamp, which regenerated on every configure
+      // call and so never actually protected a retry from a second Approve
+      // request. Capability stays 'manual_verification_required' —
+      // whether Remembill's backend genuinely honors this header across
+      // retries is unverified (no sandbox environment safely available;
+      // see the STEP14 doc's capability matrix) — a stable key is strictly
+      // better than the old bug regardless of whether Remembill honors it,
+      // but Verdix does not claim a safety guarantee it cannot prove.
+      const invoiceId = await runTrackedOperation({
+        attemptId: attempt.id, provider: 'remembill', operationType: 'create_invoice', componentKey: line.componentKey,
+        requestFingerprint: fingerprintValue(invoiceBody),
+        retryCapability: 'manual_verification_required', classifyFailure: remembillClassifyFailure, errorClassOf: remembillErrorClassOf,
+        execute: async (idempotencyKey) => {
+          const invRes = await fetch(`${REMEMBILL_BASE}/invoices`, {
+            method: 'POST', headers: { ...h, 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(invoiceBody),
+          })
+          const invRawBody = await invRes.text()
+          if (!invRes.ok) throw new RemembillHttpError(invRes.status, `Remembill invoice creation failed (${invRes.status}): ${invRawBody}`)
+          const invJson = JSON.parse(invRawBody) as Record<string, unknown>
+          const invObj  = (invJson.invoice ?? invJson.data ?? invJson) as Record<string, unknown>
+          const id = invObj.id as string | undefined
+          if (!id) throw new Error(`Remembill invoice creation: could not extract id from response: ${invRawBody}`)
+          return id
+        },
+      }) as string
+
+      // price is in öre (minor units): 1 kr = 100 öre. vat is 0–100 percent,
+      // resolved by the caller from customer_vat_config (never hardcoded).
+      const rowBody = { name: description, quantity, price: Math.round(unitPrice * 100), vat: Math.round(vatRatePct) }
+      await runTrackedOperation({
+        attemptId: attempt.id, provider: 'remembill', operationType: 'create_invoice_row', componentKey: line.componentKey,
+        requestFingerprint: fingerprintValue(rowBody),
+        // No idempotency mechanism exists for this endpoint at all
+        // (confirmed: POST /invoices/:id/rows carries no Idempotency-Key
+        // in the first place) — honestly marked manual_verification_
+        // required, never invented local dedup and called it safe.
+        retryCapability: 'manual_verification_required', classifyFailure: remembillClassifyFailure, errorClassOf: remembillErrorClassOf,
+        execute: async () => {
+          const rowRes = await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/rows`, { method: 'POST', headers: h, body: JSON.stringify(rowBody) })
+          const rowRawBody = await rowRes.text()
+          if (!rowRes.ok) throw new RemembillHttpError(rowRes.status, `Remembill row creation failed (${rowRes.status}): ${rowRawBody}`)
+          return null
+        },
       })
-    } else {
-      plannedRows.push({
-        year_num: period.yearNum, period_start: periodStartStr, period_end: periodEndStr,
+
+      // Email delivery is best-effort and NOT a financial side effect (a
+      // duplicate send is a minor annoyance, not a billing-correctness
+      // risk) — left outside the tracked-operation model, unchanged.
+      await fetch(`${REMEMBILL_BASE}/invoices/${invoiceId}/email`, {
+        method: 'POST', headers: h, body: JSON.stringify({}),
+      }).catch(err => console.error('[billing-writer/remembill] email delivery failed', err))
+
+      return { id: invoiceId, url: remembillAppUrl('') }
+    }
+
+    for (const line of snapshot.lines) {
+      const description = line.kind === 'period'
+        ? (() => {
+            const [yearNumStr, periodIndexStr] = line.componentKey.split(':').slice(1)
+            const period = computeBillingSchedule(terms).find(p => p.yearNum === Number(yearNumStr) && p.periodIndex === Number(periodIndexStr))!
+            return `Base subscription — Year ${period.yearNum} (${fmtLabel(period.periodStart)} – ${fmtLabel(period.periodEnd)})`
+          })()
+        : line.componentKey.slice(4)
+      const issueDate = line.kind === 'period' ? now : (line.dueDate ? new Date(line.dueDate + 'T00:00:00') : now)
+      const unitPrice = line.unitPrice ?? line.amount
+      const { id, url } = await pushLine(line, description, unitPrice, issueDate, line.quantity, line.vatRatePct ?? 0)
+
+      const plannedRow: PlannedRow = line.kind === 'period'
+        ? { year_num: Number(line.componentKey.split(':')[1]), period_start: line.dueDate!, period_end: line.dueDate!, base_amount: line.amount, currency: terms.currency ?? 'SEK', fee_label: null, invoice_type: 'period', status: 'sent', stripe_invoice_id: id, stripe_invoice_url: url, sent_at: new Date().toISOString() }
+        : { year_num: null, period_start: line.dueDate!, period_end: line.dueDate!, base_amount: line.amount, currency: terms.currency ?? 'SEK', fee_label: line.componentKey.slice(4), invoice_type: 'one_time', status: 'sent', stripe_invoice_id: id, stripe_invoice_url: url, sent_at: new Date().toISOString(), quantity: line.unitPrice != null ? line.quantity : null, unit_price: line.unitPrice }
+      const { error: rowErr } = await supabaseServer.from('planned_invoices').insert({ ...plannedRow, job_id: jobId, org_id: orgId })
+      if (rowErr) console.error('[billing-writer/remembill] planned_invoices insert failed for a sent line', rowErr)
+    }
+
+    // ── Scheduled/parked rows for everything NOT due now — no external call. ──
+    const scheduledRows: PlannedRow[] = []
+    for (const period of computeBillingSchedule(terms)) {
+      const periodStartStr = fmtDate(period.periodStart)
+      if (alreadySentKeys.has(`period:${period.yearNum}:${periodStartStr}`)) continue
+      if (period.periodStart <= now && period.baseAmount > 0) continue
+      scheduledRows.push({
+        year_num: period.yearNum, period_start: periodStartStr, period_end: fmtDate(period.periodEnd),
         base_amount: period.baseAmount, currency: terms.currency ?? 'SEK', fee_label: null,
-        invoice_type: 'period', status: 'scheduled',
-        stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
+        invoice_type: 'period', status: 'scheduled', stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
       })
     }
-  }
-
-  // ── 5. One-time fees ────────────────────────────────────────────────────────
-  type OneTimeFeeInput = {
-    fee_label: string; amount: number; due_date?: string | null
-    manual_trigger?: boolean; metric_name?: string | null; rate_per_unit?: number | null
-    billability_condition?: BillabilityCondition | null; fee_id?: string
-  }
-  const oneTimeFees = (terms.one_time_fees ?? []) as OneTimeFeeInput[]
-  // Step 13 — same shared decision as configureStripe; see that call site's comment.
-  const isHeld = (fee: OneTimeFeeInput) => isOneTimeFeeHeldForExecution(fee, operationalEventEvidence, now)
-
-  for (const fee of oneTimeFees.filter(isHeld)) {
-    // Same reasoning as the period loop above: already-sent rows are left
-    // untouched rather than reinserted.
-    const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
-    if (alreadySent) continue
-    const li = findOneTimeLineItem(lineItems, fee.fee_label)
-    plannedRows.push({
-      year_num: null, period_start: fee.due_date ?? fmtDate(now), period_end: fee.due_date ?? fmtDate(now),
-      base_amount: fee.amount ?? 0, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
-      invoice_type: 'one_time', status: 'parked',
-      stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
-      line_item_id: li?.id ?? null,
-      // Real quantity isn't known until a human confirms delivery — only the
-      // rate can be pre-filled from the approved line item.
-      quantity: null, unit_price: li?.unit_price ?? fee.rate_per_unit ?? null,
-    })
-  }
-
-  for (const fee of oneTimeFees.filter(f => !isHeld(f) && f.amount > 0)) {
-    const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
-    const isDue      = !feeDueDate || feeDueDate <= now
-    const dueDateStr = fmtDate(feeDueDate ?? now)
-
-    // Don't re-send an already-sent one-time fee
-    const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
-    if (alreadySent) continue
-
-    // Prefer the approved line_items row (may carry a human-corrected
-    // quantity/unit_price/total) over the raw extracted contract amount.
-    const li           = findOneTimeLineItem(lineItems, fee.fee_label)
-    const amount       = li?.total_amount ?? fee.amount
-    const hasBreakdown = !!li && li.quantity > 0 && li.unit_price > 0
-
-    if (isDue) {
-      const oneTimeVat = computeVat(amount, vatTreatmentForPush)
-      if (!oneTimeVat.ok) throw new Error(`Billing blocked: ${oneTimeVat.reason}`)
-      const key = safeHeaderValue(`verdix-${jobId ?? 'unknown'}-${pushStamp}-onetime-${fee.fee_label}`)
-      const { id, url } = hasBreakdown
-        ? await pushInvoice(fee.fee_label, li.unit_price, feeDueDate ?? now, key, customerId, cur, li.quantity, oneTimeVat.calculation.vatRatePct)
-        : await pushInvoice(fee.fee_label, amount, feeDueDate ?? now, key, customerId, cur, 1, oneTimeVat.calculation.vatRatePct)
-      plannedRows.push({
-        year_num: null, period_start: dueDateStr, period_end: dueDateStr,
-        base_amount: amount, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
-        invoice_type: 'one_time', status: 'sent',
-        stripe_invoice_id: id, stripe_invoice_url: url, sent_at: new Date().toISOString(),
-        line_item_id: li?.id ?? null,
-        quantity:     hasBreakdown ? li.quantity   : null,
-        unit_price:   hasBreakdown ? li.unit_price : null,
-      })
-    } else {
-      plannedRows.push({
-        year_num: null, period_start: dueDateStr, period_end: dueDateStr,
-        base_amount: amount, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
-        invoice_type: 'one_time', status: 'scheduled',
-        stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
-        line_item_id: li?.id ?? null,
-        quantity:     hasBreakdown ? li.quantity   : null,
-        unit_price:   hasBreakdown ? li.unit_price : null,
+    const oneTimeFees = terms.one_time_fees ?? []
+    const isHeld = (fee: typeof oneTimeFees[number]) => isOneTimeFeeHeldForExecution(fee, operationalEventEvidence, now)
+    for (const fee of oneTimeFees.filter(isHeld)) {
+      if (alreadySentKeys.has(`one_time_fee:${fee.fee_label}`)) continue
+      const li = findOneTimeLineItem(lineItems, fee.fee_label)
+      scheduledRows.push({
+        year_num: null, period_start: fee.due_date ?? fmtDate(now), period_end: fee.due_date ?? fmtDate(now),
+        base_amount: fee.amount ?? 0, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
+        invoice_type: 'one_time', status: 'parked', stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
+        line_item_id: li?.id ?? null, quantity: null, unit_price: li?.unit_price ?? fee.rate_per_unit ?? null,
       })
     }
-  }
+    for (const fee of oneTimeFees.filter(f => !isHeld(f) && f.amount > 0)) {
+      if (alreadySentKeys.has(`one_time_fee:${fee.fee_label}`)) continue
+      const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
+      const isDue = !feeDueDate || feeDueDate <= now
+      if (isDue) continue
+      const li = findOneTimeLineItem(lineItems, fee.fee_label)
+      const amount = li?.total_amount ?? fee.amount
+      const hasBreakdown = !!li && li.quantity > 0 && li.unit_price > 0
+      const dueDateStr = fmtDate(feeDueDate!)
+      scheduledRows.push({
+        year_num: null, period_start: dueDateStr, period_end: dueDateStr, base_amount: amount,
+        currency: terms.currency ?? 'SEK', fee_label: fee.fee_label, invoice_type: 'one_time', status: 'scheduled',
+        stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null, line_item_id: li?.id ?? null,
+        quantity: hasBreakdown ? li.quantity : null, unit_price: hasBreakdown ? li.unit_price : null,
+      })
+    }
+    if (scheduledRows.length > 0) {
+      const { error: schedErr } = await supabaseServer.from('planned_invoices').insert(scheduledRows.map(r => ({ ...r, job_id: jobId, org_id: orgId })))
+      if (schedErr) console.error('[billing-writer/remembill] scheduled planned_invoices insert failed', schedErr)
+    }
 
-  // ── 6. Persist planned rows ─────────────────────────────────────────────────
-  if (jobId && plannedRows.length > 0) {
-    const { error } = await supabaseServer
-      .from('planned_invoices')
-      .insert(plannedRows.map(r => ({ ...r, job_id: jobId, org_id: orgId })))
-    if (error) console.error('[billing-writer/remembill] planned_invoices insert failed', error)
-  }
+    await markAttemptStatus(attempt.id, 'succeeded')
 
-  return {
-    platform:       'remembill',
-    subscriptionId: null,
-    customerId,
-    lineItemCount:  periods.length + oneTimeFees.filter(f => f.amount > 0).length,
-    dashboardUrl:   remembillAppUrl(''),
+    return {
+      platform:       'remembill',
+      subscriptionId: null,
+      customerId,
+      lineItemCount:  computeBillingSchedule(terms).length + oneTimeFees.filter(f => f.amount > 0).length,
+      dashboardUrl:   remembillAppUrl(''),
+    }
+  } catch (err) {
+    const attemptOutcome = remembillClassifyFailure(err)
+    await markAttemptStatus(attempt.id, attemptOutcome)
+    throw err
   }
 }
 
@@ -1099,12 +1117,6 @@ async function configureChargebee(
     lineItemCount:  lineItems.length,
     dashboardUrl:   `https://${site}.chargebee.com/subscriptions/${subscriptionId}`,
   }
-}
-
-function detectPlatform(): BillingPlatform {
-  if (process.env.CHARGEBEE_API_KEY) return 'chargebee'
-  if (process.env.REMEMBILL_API_KEY) return 'remembill'
-  return 'stripe'
 }
 
 // Creates a one-off invoice with arbitrary line items on the org's connected
@@ -1234,6 +1246,41 @@ export async function createAdHocInvoice(params: {
 
   const finalized = await stripe.invoices.finalizeInvoice(inv.id).catch(() => inv)
   return { invoiceId: inv.id, hostedUrl: finalized.hosted_invoice_url ?? null, vat: vatSnapshot }
+}
+
+// Step 14 final financial-state correction, item 3 — "Verdix should
+// recover/finish the job from the durable successful attempt." Called by
+// approve/route.ts when getOrCreateAttempt throws PriorBillingAttemptExecutedError
+// (every operation on a prior attempt succeeded — the crash-after-success
+// scenario). Reconstructs a ConfigureResult purely from already-persisted
+// facts — customerId from the resolve_customer operation's own recorded
+// external_object_id — NEVER calls the provider again. subscriptionId is
+// always null for Stripe/Remembill (matches every other ConfigureResult
+// this file returns for these two platforms — only Chargebee has a real
+// subscription id, out of scope here).
+export async function recoverConfigureResultFromSucceededAttempt(
+  attempt: BillingExecutionAttempt, operations: BillingExecutionOperation[], orgId: string,
+): Promise<ConfigureResult> {
+  const customerOp = operations.find(o => o.operationType === 'resolve_customer')
+  const customerId = customerOp?.externalObjectId
+  if (!customerId) {
+    throw new Error(`Cannot recover billing result: succeeded attempt ${attempt.id} has no resolve_customer operation with a recorded external object id.`)
+  }
+  const lineItemCount = operations.filter(o => o.operationType === 'create_invoice').length
+
+  if (attempt.provider === 'stripe') {
+    const orgConfig = await getOrgConfig(orgId, 'stripe')
+    const stripeKey = orgConfig?.secret_key ?? process.env.STRIPE_SECRET_KEY!
+    const isTest = stripeKey.includes('_test_')
+    return {
+      platform: 'stripe', subscriptionId: null, customerId, lineItemCount,
+      dashboardUrl: `https://dashboard.stripe.com/${isTest ? 'test/' : ''}customers/${customerId}`,
+    }
+  }
+  if (attempt.provider === 'remembill') {
+    return { platform: 'remembill', subscriptionId: null, customerId, lineItemCount, dashboardUrl: remembillAppUrl('') }
+  }
+  throw new Error(`Cannot recover billing result for provider "${attempt.provider}" — not supported by this recovery path.`)
 }
 
 // Re-export computeBillingSchedule for use by the invoice scheduler

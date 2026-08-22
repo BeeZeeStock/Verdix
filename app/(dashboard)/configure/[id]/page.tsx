@@ -5395,7 +5395,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
           {/* ── Model tab: full screen ────────────────────────────────────── */}
           {activeTab === 'model' && terms && (
-            <RevenueModelTab terms={terms} items={items} cur={cur} jobId={id} onSaved={fetchJob} onRepush={handleApprove} baseTcv={tcv} meterMappingsConfirmed={meterMappingsConfirmed} />
+            <RevenueModelTab terms={terms} items={items} cur={cur} jobId={id} onSaved={fetchJob} onRepush={handleApprove} baseTcv={tcv} meterMappingsConfirmed={meterMappingsConfirmed} isConfigured={isConfigured} />
           )}
           {activeTab === 'model' && !terms && (
             <div className="flex-1 flex items-center justify-center text-stone text-sm">

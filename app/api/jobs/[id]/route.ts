@@ -9,6 +9,7 @@ import { getContractSummaries } from '@/lib/contract-tcv'
 import { removeStorageObject } from '@/lib/storage'
 import { logDeletion } from '@/lib/deletion-log'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
+import { resolveStuckAttemptsForJob } from '@/lib/billing-execution-store'
 
 const GENERIC_INFRA_ERROR = 'This contract couldn’t be processed right now due to a temporary system issue. Please contact bilal@lynoraai.com for help.'
 
@@ -244,6 +245,20 @@ export async function PATCH(
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
     if (!recovered || recovered.length === 0)
       return NextResponse.json({ error: 'Job is no longer in the "approving" state — it may have just completed or failed on its own.' }, { status: 409 })
+
+    // Step 14, item 21 — a crash during this job's APPROVING window may
+    // have left a non-terminal billing_execution_attempts row behind, with
+    // no way to know whether it actually reached the provider. Resolving
+    // it to outcome_uncertain here (never silently succeeded/failed_safe)
+    // both records that honestly and frees the one-active-attempt-per-
+    // job/provider uniqueness constraint for a future, explicitly
+    // authorized retry — without this, authorize-billing-retry's own next
+    // Approve would otherwise be permanently blocked by the orphaned row.
+    const resolvedAttemptIds = await resolveStuckAttemptsForJob(id)
+    if (resolvedAttemptIds.length > 0) {
+      console.log('[jobs/route] resolved stuck execution attempts to outcome_uncertain during crash recovery:', resolvedAttemptIds)
+    }
+
     // From here the job sits at FAILED like any other failed attempt — the
     // next step, once the admin has actually verified the billing platform,
     // is POST /api/jobs/[id]/authorize-billing-retry (item 5), not a normal

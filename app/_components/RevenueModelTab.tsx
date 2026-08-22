@@ -147,9 +147,17 @@ interface Props {
    *  approve is, otherwise corrected/added tiers can get pushed to billing
    *  with no meter to pull usage from. */
   meterMappingsConfirmed?: boolean
+  /** Step 14, item 23 — the same canonical "job.execute_status === 'COMPLETED'"
+   *  signal the parent page already computes. approve/route.ts's claim
+   *  boundary unconditionally rejects Approve for a COMPLETED job
+   *  (billing_already_executed — Stripe/Remembill invoice creation is not
+   *  safely repeatable), so re-push is no longer an offerable action once
+   *  true; the repush button is replaced with an explanatory state instead
+   *  of being left to always fail. */
+  isConfigured?: boolean
 }
 
-export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, baseTcv, meterMappingsConfirmed }: Props) {
+export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, baseTcv, meterMappingsConfirmed, isConfigured }: Props) {
   const allTiers   = terms.overage_tiers ?? []
   const unconfirmedTiers = allTiers.length > 0 && !meterMappingsConfirmed
   const userTiers  = allTiers.filter(t => t.unit_type?.toLowerCase().includes('user'))
@@ -1991,42 +1999,60 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                         </li>
                         <li className="flex items-start gap-2 text-[11px] text-amber-800">
                           <i className="ti ti-edit flex-shrink-0 mt-0.5" style={{ fontSize: 12 }} />
-                          <span>Contract terms may have been updated after the billing schedule was last pushed. Re-push below to sync the latest terms.</span>
+                          <span>
+                            {isConfigured
+                              ? 'Contract terms may have been updated after the billing schedule was last pushed.'
+                              : 'Contract terms may have been updated after the billing schedule was last pushed. Re-push below to sync the latest terms.'}
+                          </span>
                         </li>
                       </ul>
                       {repushError && (
                         <p className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">{repushError}</p>
                       )}
-                      {unconfirmedTiers && (
-                        <p className="text-[11px] text-amber-800 bg-amber-100 border border-amber-200 rounded-lg px-3 py-2 mb-3">
-                          Confirm billing meter mappings above before re-pushing — usage-based tiers here aren&apos;t all mapped yet.
+                      {/* Step 14, item 23 — billing already completed once, and
+                          re-pushing is no longer offerable at all (Stripe/
+                          Remembill invoice creation is not safely repeatable):
+                          an explanatory state, never a button that would only
+                          ever surface a 409 billing_already_executed error. */}
+                      {isConfigured ? (
+                        <p className="text-[11px] text-stone bg-stone-50 border border-stone-200 rounded-lg px-3 py-2">
+                          <i className="ti ti-circle-check-filled mr-1" style={{ fontSize: 12, color: '#0B5C36' }} />
+                          Billing completed — this contract has already been configured for billing and can&apos;t be re-pushed. Contact support if the schedule needs to change.
                         </p>
-                      )}
-                      {onRepush && (
-                        <button
-                          disabled={repushLoading || unconfirmedTiers}
-                          onClick={async () => {
-                            setRepushLoading(true)
-                            setRepushError(null)
-                            try {
-                              await onRepush()
-                              if (jobId) {
-                                const data = await fetch(`/api/jobs/${jobId}/billing-summary`).then(r => r.ok ? r.json() : null) as BillingSummaryData | null
-                                if (data?.subscription) setBillingData(data)
+                      ) : (
+                        <>
+                          {unconfirmedTiers && (
+                            <p className="text-[11px] text-amber-800 bg-amber-100 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+                              Confirm billing meter mappings above before re-pushing — usage-based tiers here aren&apos;t all mapped yet.
+                            </p>
+                          )}
+                          {onRepush && (
+                            <button
+                              disabled={repushLoading || unconfirmedTiers}
+                              onClick={async () => {
+                                setRepushLoading(true)
+                                setRepushError(null)
+                                try {
+                                  await onRepush()
+                                  if (jobId) {
+                                    const data = await fetch(`/api/jobs/${jobId}/billing-summary`).then(r => r.ok ? r.json() : null) as BillingSummaryData | null
+                                    if (data?.subscription) setBillingData(data)
+                                  }
+                                } catch (err) {
+                                  setRepushError(err instanceof Error ? err.message : String(err))
+                                } finally {
+                                  setRepushLoading(false)
+                                }
+                              }}
+                              className="inline-flex items-center gap-1.5 text-[11px] font-semibold bg-amber-700 text-white px-3 py-1.5 rounded-lg hover:bg-amber-800 transition-colors disabled:opacity-50"
+                            >
+                              {repushLoading
+                                ? <><span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Re-pushing…</>
+                                : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Re-push billing schedule</>
                               }
-                            } catch (err) {
-                              setRepushError(err instanceof Error ? err.message : String(err))
-                            } finally {
-                              setRepushLoading(false)
-                            }
-                          }}
-                          className="inline-flex items-center gap-1.5 text-[11px] font-semibold bg-amber-700 text-white px-3 py-1.5 rounded-lg hover:bg-amber-800 transition-colors disabled:opacity-50"
-                        >
-                          {repushLoading
-                            ? <><span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Re-pushing…</>
-                            : <><i className="ti ti-refresh" style={{ fontSize: 12 }} /> Re-push billing schedule</>
-                          }
-                        </button>
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
