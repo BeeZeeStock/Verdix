@@ -158,6 +158,23 @@ export function planComponentKeysInSnapshot(snapshot: BillingPlanSnapshot): Set<
   return keys
 }
 
+// Step 15 — the set-difference step billing-writer.ts's two
+// recomputeFingerprintExcludingPriorSnapshot closures, and the
+// reconciliation resolver's own counterfactual-snapshot reconstruction,
+// both need: "the current already-sent set, minus whatever this specific
+// prior attempt itself sent". Factored out here so both call sites reuse
+// the identical operation rather than re-deriving it — a caller that needs
+// only the fingerprint still calls buildBillingPlanSnapshot +
+// fingerprintBillingPlan itself with the result; a caller that needs the
+// full counterfactual snapshot (Step 15's correction assessment) does the
+// same but keeps the snapshot instead of hashing it away.
+export function excludePriorSnapshotFromAlreadySent(
+  alreadySentKeys: Set<string>, priorSnapshot: BillingPlanSnapshot,
+): Set<string> {
+  const excludedKeys = planComponentKeysInSnapshot(priorSnapshot)
+  return new Set([...alreadySentKeys].filter(k => !excludedKeys.has(k)))
+}
+
 /**
  * Deterministic, stable serialization — sorted object keys throughout (the
  * snapshot's own values are already primitives/arrays of primitives, but

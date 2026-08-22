@@ -5,7 +5,7 @@ import { monthCursor, enumerateContractWindows, isPartialWindow } from './tariff
 import { resolveVatTreatment, computeVat, type VatMode, type VatTreatment } from './vat'
 import { getCustomerVatConfig } from './vat-service'
 import { isOneTimeFeeHeldForExecution, type OperationalEventEvidence } from './operational-event-evidence'
-import { buildBillingPlanSnapshot, fingerprintBillingPlan, fingerprintValue, planComponentKey, planComponentKeysInSnapshot, type BillingPlanLineInstruction, type BillingPlanSnapshot } from './billing-execution-plan'
+import { buildBillingPlanSnapshot, fingerprintBillingPlan, fingerprintValue, planComponentKey, excludePriorSnapshotFromAlreadySent, type BillingPlanLineInstruction, type BillingPlanSnapshot } from './billing-execution-plan'
 import {
   deriveIdempotencyKey, operationKeyFor, classifyStripeFailure, classifyFetchOutcome, BillingPreconditionError,
   canSafelyRetryBillingOperation, STRIPE_IDEMPOTENCY_KEY_RETENTION_HOURS,
@@ -513,9 +513,14 @@ async function configureStripe(
   // if THAT attempt's own already-sent lines were still pending", so a
   // changed-commercial-data comparison isn't confounded by that attempt's
   // own success having drained alreadySentKeys.
+  // TODO(follow-up): currently verified only via live integration
+  // (real Stripe test-mode execution + real planned_invoices state), not
+  // a permanent automated regression — extract as much of this
+  // reconstruction/comparison as practical into a deterministic,
+  // DB-free test seam. Logged per explicit instruction not to hold the
+  // Step 14 commit for it.
   const recomputeFingerprintExcludingPriorSnapshot = (priorSnapshot: BillingPlanSnapshot): string => {
-    const excludedKeys = planComponentKeysInSnapshot(priorSnapshot)
-    const reducedAlreadySentKeys = new Set([...alreadySentKeys].filter(k => !excludedKeys.has(k)))
+    const reducedAlreadySentKeys = excludePriorSnapshotFromAlreadySent(alreadySentKeys, priorSnapshot)
     const counterfactual = buildBillingPlanSnapshot({
       terms, lineItems, evidence: operationalEventEvidence, alreadySentKeys: reducedAlreadySentKeys, provider: 'stripe',
       vat: { mode: 'not_configured', ratePct: null }, now, computeBillingSchedule,
@@ -853,8 +858,7 @@ async function configureRememhill(
   // Step 14 final state-integrity correction — see getOrCreateAttempt's own
   // param doc / the Stripe call site's identical comment above.
   const recomputeFingerprintExcludingPriorSnapshot = (priorSnapshot: BillingPlanSnapshot): string => {
-    const excludedKeys = planComponentKeysInSnapshot(priorSnapshot)
-    const reducedAlreadySentKeys = new Set([...alreadySentKeys].filter(k => !excludedKeys.has(k)))
+    const reducedAlreadySentKeys = excludePriorSnapshotFromAlreadySent(alreadySentKeys, priorSnapshot)
     const counterfactual = buildBillingPlanSnapshot({
       terms, lineItems, evidence: operationalEventEvidence, alreadySentKeys: reducedAlreadySentKeys, provider: 'remembill',
       vat: { mode: vatTreatmentForPush.mode, ratePct: vatTreatmentForPush.ratePct }, now, computeBillingSchedule,

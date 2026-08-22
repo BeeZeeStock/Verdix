@@ -27,6 +27,14 @@ export interface BillingExecutionAttempt {
   provider: 'stripe' | 'remembill' | 'chargebee'
   attemptNumber: number
   billingPlanFingerprint: string
+  // Step 15 — the domain type didn't previously surface this (the barrier
+  // in billing-execution-store.ts reads it off raw rows directly), but the
+  // reconciliation resolver needs it to reconstruct the counterfactual
+  // "what would this attempt's own lines look like against current
+  // commercial data" comparison (see billing-reconciliation.ts). Typed
+  // loosely here (not BillingPlanSnapshot) to avoid a store -> plan module
+  // dependency for a field this module never interprets itself.
+  billingPlanSnapshot: unknown
   status: BillingExecutionAttemptStatus
   createdAt: string
   startedAt: string | null

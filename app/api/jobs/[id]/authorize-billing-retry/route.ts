@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
-import { getLatestAttempt, getAttemptOperations, recordAdminAction } from '@/lib/billing-execution-store'
-import { canSafelyRetryBillingOperation, STRIPE_IDEMPOTENCY_KEY_RETENTION_HOURS } from '@/lib/billing-execution-attempt'
+import { recordAdminAction } from '@/lib/billing-execution-store'
+import { STRIPE_IDEMPOTENCY_KEY_RETENTION_HOURS } from '@/lib/billing-execution-attempt'
+import { getBillingReconciliationState } from '@/lib/billing-reconciliation'
 
 /**
  * POST /api/jobs/[id]/authorize-billing-retry
@@ -45,6 +46,32 @@ import { canSafelyRetryBillingOperation, STRIPE_IDEMPOTENCY_KEY_RETENTION_HOURS 
  *      but only after the job was already moved to READY_TO_APPROVE,
  *      confusingly).
  *
+ * Step 15, item 3/22 — this now consumes the SAME derived
+ * BillingReconciliationState the reconciliation panel/API use
+ * (lib/billing-reconciliation.ts), rather than re-deriving its own
+ * "which attempt, which provider" judgment. This also fixed a real
+ * pre-existing bug the Step 15 audit found: this route previously derived
+ * the provider to inspect via `jobs.billing_platform ?? 'stripe'` — but
+ * `jobs.billing_platform` is only ever WRITTEN on a successful Approve, so
+ * a job that failed before ever completing (e.g. pushed to Remembill, but
+ * every attempt so far failed) had a null billing_platform, silently
+ * causing this route to inspect Stripe's (nonexistent) attempt history
+ * instead of the job's real Remembill one — trivially "case A" every
+ * time, skipping the actual safety check entirely. The shared resolver
+ * derives provider from the job's real attempt history instead.
+ *
+ * Item 22 — this route's scope stays narrow: it authorizes exactly the
+ * states where the NEXT Approve call is known to either (a) genuinely
+ * retry safely, or (b) recover automatically with no new provider call
+ * ('none' / 'safe_to_resume' / 'executed_same_plan' / an
+ * 'operation_outcome_uncertain' whose every uncertain operation is still
+ * inside its idempotent-retry window). It deliberately refuses — pointing
+ * at the reconciliation state instead — for 'partially_executed' and
+ * 'executed_plan_changed': retrying either would just hit the identical
+ * block on the next Approve call, and 'executed_plan_changed' specifically
+ * needs a correction assessment, not a retry (item 10: never offer Retry/
+ * Approve again/Bill current plan for that state).
+ *
  * Requires: admin (same bar as Approve/Revoke — this is billing-execution-
  * adjacent), current execute_status === 'FAILED' exactly, atomically
  * re-asserted on the write. Takes no body — there is nothing to submit;
@@ -77,7 +104,7 @@ export async function POST(
   const { id } = await params
 
   const { data: job } = await supabaseServer
-    .from('jobs').select('org_id, execute_status, billing_platform').eq('id', id).single()
+    .from('jobs').select('org_id, execute_status').eq('id', id).single()
   if (!job || job.org_id !== org.orgId)
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
@@ -88,15 +115,34 @@ export async function POST(
     )
   }
 
-  // Item 16 — inspect the latest attempt (if any) before authorizing.
-  // A job whose FAILED status came from a BillingPreconditionError (no
-  // attempt ever created — see approve/route.ts's catch block) has nothing
-  // to inspect: trivially case A.
-  const platform = (job.billing_platform as 'stripe' | 'remembill' | 'chargebee' | null) ?? 'stripe'
-  const latestAttempt = await getLatestAttempt(id, platform)
-  if (latestAttempt) {
-    const operations = await getAttemptOperations(latestAttempt.id)
-    const now = new Date()
+  // Item 3/16/22 — the single canonical resolver decides what this attempt
+  // history actually means; this route only decides which of those
+  // meanings it is willing to authorize past. A job whose FAILED status
+  // came from a BillingPreconditionError (no attempt ever created — see
+  // approve/route.ts's catch block) resolves to 'none': trivially safe.
+  const { state } = await getBillingReconciliationState(id, org.orgId, new Date())
+
+  if (state.kind === 'partially_executed') {
+    return NextResponse.json(
+      {
+        error: 'A previous billing attempt for this job partially succeeded — retrying would not resolve this. Manual recovery is required; see the billing reconciliation panel.',
+        code: 'prior_billing_attempt_partially_executed',
+        attemptId: state.attemptId,
+      },
+      { status: 400 },
+    )
+  }
+  if (state.kind === 'executed_plan_changed') {
+    return NextResponse.json(
+      {
+        error: 'Billing already executed using an earlier plan, and the current configuration differs — retrying would not resolve this. Review the correction assessment in the billing reconciliation panel.',
+        code: 'billing_already_executed_plan_changed',
+        attemptId: state.attemptId,
+      },
+      { status: 400 },
+    )
+  }
+  if (state.kind === 'operation_outcome_uncertain') {
     // Step 14 final amendment, items 5-8 — the same time-bounded check
     // runTrackedOperation itself uses (never a bare capability check): an
     // idempotent_retry operation stops being auto-safe once the
@@ -105,7 +151,7 @@ export async function POST(
     // changes (that field is immutable — see the migration). Authorizing
     // here and then having the next Approve immediately refuse the same
     // operation would be a confusing, avoidable round trip.
-    const blocking = operations.find(op => op.status === 'outcome_uncertain' && !canSafelyRetryBillingOperation(op, now))
+    const blocking = state.operations.find(op => op.status === 'outcome_uncertain' && !op.idempotencyWindowStillValid)
     if (blocking) {
       const windowNote = blocking.retryCapability === 'idempotent_retry'
         ? ` its ${STRIPE_IDEMPOTENCY_KEY_RETENTION_HOURS}h provider idempotency-retention window has elapsed since it was first attempted, so a blind replay is no longer safe.`
@@ -121,6 +167,9 @@ export async function POST(
       )
     }
   }
+  // 'none' / 'safe_to_resume' / 'executed_same_plan' / an
+  // 'operation_outcome_uncertain' whose every uncertain operation is still
+  // safely idempotent-retryable -> authorization proceeds.
 
   const { data: authorized, error } = await supabaseServer
     .from('jobs')
@@ -136,8 +185,8 @@ export async function POST(
   if (!authorized || authorized.length === 0)
     return NextResponse.json({ error: 'Job is no longer FAILED — it may already be in progress or have changed state.' }, { status: 409 })
 
-  if (latestAttempt) {
-    await recordAdminAction({ attemptId: latestAttempt.id, action: 'retry_authorized', actorEmail: org.userEmail })
+  if (state.kind !== 'none') {
+    await recordAdminAction({ attemptId: state.attemptId, action: 'retry_authorized', actorEmail: org.userEmail })
   }
 
   return NextResponse.json({ ok: true })

@@ -21,6 +21,7 @@ import { getCreditRepresentationCapability } from '@/lib/connectors/billing/type
 import { FinancialAmount, FinancialMetaTag } from '@/app/_components/FinancialAmount'
 import { FinancialKPICard } from '@/app/_components/FinancialKPICard'
 import { StatusInline } from '@/app/_components/StatusChip'
+import { BillingReconciliationPanel } from '@/app/_components/BillingReconciliationPanel'
 import { describeMatchConditions, describeEffectivePeriod } from '@/lib/rulebook/organization-rulebook-display'
 import type { OrganizationRuleRecord } from '@/lib/rulebook/organization-rules'
 
@@ -5101,6 +5102,31 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const handleApprove = async () => {
     setApproving(true)
     setApproveError(null)
+
+    // Step 15 audit fix — "Retry push" previously called /approve directly,
+    // which always rejects a FAILED job (approve/route.ts's claim boundary
+    // excludes FAILED on purpose — see its own comment) with a message
+    // telling the admin to use "Authorize billing retry" first. That route
+    // had no UI path to reach it at all, making retry a dead end. Fixed:
+    // authorize first (the resolver-backed safety check now lives there),
+    // and only proceed to the real approve call if that succeeds.
+    if (isFailed) {
+      try {
+        const authRes = await fetch(`/api/jobs/${id}/authorize-billing-retry`, { method: 'POST' })
+        const authData = await authRes.json()
+        if (!authRes.ok) {
+          setApproveError(authData.error ?? 'Billing retry could not be authorized.')
+          setApproving(false)
+          fetchJob()
+          return
+        }
+      } catch {
+        setApproveError('Network error — please check your connection and try again.')
+        setApproving(false)
+        return
+      }
+    }
+
     const modifiedItems = items.map(i => ({
       ...i,
       product_name: corrections[i.id]?.value || i.product_name,
@@ -5389,6 +5415,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             </div>
           </div>
         )}
+
+        {/* Step 15 — derived reconciliation state, shown whenever it
+            genuinely needs admin attention (renders nothing for
+            none/safe_to_resume/executed_same_plan — item 9). Deliberately
+            shown regardless of isFailed/isConfigured: an executed-plan-
+            changed correction assessment is just as relevant on an
+            already-COMPLETED job (item 10/23) as on a FAILED one. */}
+        <div className="flex-shrink-0 mx-8 mt-4">
+          <BillingReconciliationPanel jobId={id} currency={cur} onResolved={fetchJob} />
+        </div>
 
         {/* Content row */}
         <div className="flex flex-1 overflow-hidden">

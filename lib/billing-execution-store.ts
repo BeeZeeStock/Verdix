@@ -101,7 +101,8 @@ function toAttempt(row: Row): BillingExecutionAttempt {
   return {
     id: row.id as string, organizationId: row.org_id as string, jobId: row.job_id as string,
     provider: row.provider as BillingExecutionAttempt['provider'], attemptNumber: row.attempt_number as number,
-    billingPlanFingerprint: row.billing_plan_fingerprint as string, status: row.status as BillingExecutionAttemptStatus,
+    billingPlanFingerprint: row.billing_plan_fingerprint as string, billingPlanSnapshot: row.billing_plan_snapshot,
+    status: row.status as BillingExecutionAttemptStatus,
     createdAt: row.created_at as string, startedAt: row.started_at as string | null, completedAt: row.completed_at as string | null,
     retryOfAttemptId: row.retry_of_attempt_id as string | null,
   }
@@ -408,6 +409,18 @@ export async function getAttemptById(attemptId: string): Promise<BillingExecutio
 // admin-authorized retry can create a new attempt rather than being
 // permanently blocked by this one. Returns the ids resolved, for the
 // caller's own audit trail.
+//
+// Step 15 audit finding, fixed here — this previously updated ONLY the
+// attempt's own status, leaving any of its operations still 'pending'/
+// 'started' (the state a crash mid-call would realistically leave them in)
+// untouched. reconcile-billing-operation requires an operation to be
+// EXACTLY 'outcome_uncertain' before an admin can resolve it — a stuck
+// 'pending'/'started' operation was therefore unreconcilable through any
+// UI/API path, a real gap the reconciliation resolver's audit surfaced.
+// Fixed by bringing operation-level state into sync with the attempt-level
+// judgment at the moment of stuck-recovery, using the same operation-level
+// classification (never silently upgraded to 'succeeded'/'failed_safe' —
+// only ever the same honest 'outcome_uncertain' the attempt itself gets).
 export async function resolveStuckAttemptsForJob(jobId: string): Promise<string[]> {
   const { data: stuck } = await supabaseServer
     .from('billing_execution_attempts').select('id')
@@ -417,8 +430,27 @@ export async function resolveStuckAttemptsForJob(jobId: string): Promise<string[
     await supabaseServer.from('billing_execution_attempts')
       .update({ status: 'outcome_uncertain', completed_at: new Date().toISOString() })
       .eq('id', attemptId)
+    await supabaseServer.from('billing_execution_operations')
+      .update({ status: 'outcome_uncertain', error_class: 'stuck_attempt_crash_recovery', completed_at: new Date().toISOString() })
+      .eq('attempt_id', attemptId).in('status', ['pending', 'started'])
   }
   return ids
+}
+
+// Step 15 — all non-cancelled attempts for a job+provider, most recent
+// first. Reused by the reconciliation resolver so it scans the SAME
+// (attempt, provider) history getOrCreateAttempt's own barrier does,
+// rather than assuming "only the latest attempt ever matters" as an
+// unstated invariant — true today (the barrier never lets a new attempt
+// exist alongside an unresolved/executed/partially-executed older one),
+// but the resolver stays correct even if that invariant is ever
+// loosened, since it performs the identical scan rather than a shortcut.
+export async function getAttemptsForJob(jobId: string, provider: string): Promise<BillingExecutionAttempt[]> {
+  const { data } = await supabaseServer
+    .from('billing_execution_attempts').select('*')
+    .eq('job_id', jobId).eq('provider', provider).neq('status', 'cancelled')
+    .order('attempt_number', { ascending: false })
+  return (data ?? []).map(toAttempt)
 }
 
 // Item 24 — append-only, enforced by triggers that reject every UPDATE/
