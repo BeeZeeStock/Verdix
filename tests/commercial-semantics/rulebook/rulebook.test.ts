@@ -24,9 +24,13 @@ function tier(overrides: Partial<OverageTier> = {}): OverageTier {
 }
 
 describe('the Rulebook registry itself', () => {
-  it('has between 6 and 8 rules, matching Step 2\'s "start with only validated rules" scope', () => {
+  // Upper bound raised to 9 by the Step 7 amendment's explicit
+  // credit.application_scope_ne_cash_redeemability rule — still a small,
+  // deliberately curated set, not an attempt to codify every commercial
+  // semantic Verdix knows about.
+  it('has between 6 and 9 rules, matching Step 2\'s "start with only validated rules" scope', () => {
     expect(verdixCommercialRulebook.length).toBeGreaterThanOrEqual(6)
-    expect(verdixCommercialRulebook.length).toBeLessThanOrEqual(8)
+    expect(verdixCommercialRulebook.length).toBeLessThanOrEqual(9)
   })
   // Step 6 — category ('invariant' | 'semantic') was replaced by the
   // finer-grained ruleClass taxonomy; see tests/commercial-semantics/

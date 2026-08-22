@@ -105,8 +105,45 @@ export interface CommercialSemanticContext {
     carryForward: CreditApplicationRule['carry_forward'] | null
     survivalProvenance?: FieldProvenance | null
     availability?: CreditApplicationRule['availability'] | null
+    // Step 7 amendment — cash redeemability lives on
+    // ServiceCreditInterpretation (sibling to application_rule), not on
+    // CreditApplicationRule itself; see lib/rulebook/context.ts's
+    // creditApplicationContext adapter for how the two are joined into
+    // this one context slice. 'unclear' (not null) is the genuinely-open
+    // case — mirrors carryForward's own three-state shape immediately
+    // above, deliberately, since both are "restriction on one axis does
+    // not resolve a different axis" questions.
+    cashRedeemable?: boolean | 'unclear' | null
+    cashRedeemableProvenance?: FieldProvenance | null
   } | null
   provenancedFields?: ProvenancedField[]
+}
+
+// Step 7 — closed set of AI call sites that can request Rulebook
+// interpretation guidance (lib/rulebook/ai-guidance.ts's
+// getRulebookAIGuidance/renderRulebookAIGuidance). A rule's aiGuidance
+// .appliesTo is a subset of this union, never a free string — so a typo'd
+// context name fails to compile rather than silently matching nothing.
+// minimum_commitment_proposal/meter_mapping are unrelated-context proof
+// tags only (no rule targets them yet) — they exist so a test can assert
+// those prompts see no Rulebook section rather than the Rulebook simply
+// never having been asked about them.
+export type RuleInterpretationContext =
+  | 'service_credit_proposal'
+  | 'service_credit_interpretation'
+  | 'service_credit_survival'
+  | 'minimum_commitment_proposal'
+  | 'meter_mapping'
+
+// Static, curated, version-controlled Verdix product text — never
+// generated from AI output, never derived from a specific customer's
+// contract. See lib/rulebook/ai-guidance.ts's module doc comment for the
+// full set of structural guarantees this attaches to (anti_inference/
+// semantic_interpretation only, no Organization Rulebook data, no
+// authority creation).
+export interface RulebookAIGuidance {
+  appliesTo: RuleInterpretationContext[]
+  instruction: string
 }
 
 // A Rulebook entry is pure and read-only by construction: matches/evaluate
@@ -126,6 +163,13 @@ export interface VerdixRulebookRule {
   description: string
   matches: (input: CommercialSemanticContext) => boolean
   evaluate: (input: CommercialSemanticContext) => RulebookFinding[]
+  // Step 7 — optional static AI contract-interpretation guidance. Only
+  // ever meaningful for anti_inference/semantic_interpretation rules;
+  // lib/rulebook/ai-guidance.ts's getRulebookAIGuidance filters on
+  // ruleClass structurally, not just by convention, so an invariant or
+  // default_policy rule accidentally given this field still never
+  // reaches a prompt.
+  aiGuidance?: RulebookAIGuidance
 }
 
 export interface RulebookShadowResult {

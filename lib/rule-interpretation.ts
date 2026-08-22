@@ -6,6 +6,14 @@
 // must never diverge between what the API reports and what the UI shows).
 
 import { cadenceNoun, contractMonthLabel } from './cadence-labels'
+// Step 7 — the ONE canonical Verdix Global Rulebook AI-guidance renderer;
+// this file never duplicates instruction text itself. Only ever called
+// with a RuleInterpretationContext, never with organization-scoped data —
+// see lib/rulebook/ai-guidance.ts's own header for why Organization
+// Rulebook policy structurally cannot reach these prompts through this
+// import (this module has no organization_id parameter anywhere, and
+// ai-guidance.ts itself has no database import at all).
+import { renderRulebookAIGuidance } from './rulebook/ai-guidance'
 
 export type RuleType = 'minimum_commitment' | 'escalator' | 'partial_period' | 'discount' | 'tier_calculation' | 'service_credit' | 'rule_interaction' | 'base_fee_proration' | 'recurring_fee_proration'
 
@@ -553,6 +561,8 @@ Stated value: ${context.statedPct != null ? `${context.statedPct}%` : context.st
 ${optionContext('service_credit', selectedOption)}
 Reviewer's instruction: "${reviewerInput}"
 
+${renderRulebookAIGuidance('service_credit_interpretation')}
+
 Translate the reviewer's instruction into a structured JSON object with EXACTLY these fields:
 {
   "trigger_type": "sla_breach" | "usage_threshold" | "promotional" | "earned_milestone" | "other",
@@ -595,6 +605,8 @@ export function buildCreditSurvivalPrompt(context: CreditSurvivalContext, review
 
 Source clause / description: ${context.sourceClause ?? context.description}
 Reviewer's instruction: "${reviewerInput}"
+
+${renderRulebookAIGuidance('service_credit_survival')}
 
 Translate the reviewer's instruction into a structured JSON object with EXACTLY these fields:
 {
@@ -1036,6 +1048,8 @@ Extraction's own summary/description: ${context.description || '(none)'}
 Both of the above come from the SAME extraction pass and may each contain facts the other omits — extraction sometimes captures an application-scope or carry-forward fact (e.g. "applicable against future transaction-processing fees only", "applied against future amounts payable") in the description that isn't repeated in the shorter source clause, or vice versa. Read BOTH before deciding any state — never grade a field "decision_required" solely because one of the two fields is silent on it if the other one isn't.
 Extraction's own classification: ${context.creditType}
 Stated value: ${context.statedPct != null ? `${context.statedPct}%` : context.statedAmount != null ? `${context.statedAmount} ${context.currency}` : 'not captured as a single value'}
+
+${renderRulebookAIGuidance('service_credit_proposal')}
 
 ${proposalSchemaBlock(
   '{"trigger_type": "sla_breach"|"usage_threshold"|"promotional"|"earned_milestone"|"other", "trigger_description": "<plain-English condition>", "credit_basis": "pct_of_period_fee"|"pct_of_affected_component"|"fixed_amount_per_unit"|"flat_amount"|"usage_units", "basis_component": "<what the value is computed from>", "credit_value": <number>, "cap_amount": <number or null>, "cap_pct": <number or null>, "settlement_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"per_incident"|null, "cash_redeemable": true|false|"unclear", "earn_rule": {"trigger_metric_key": "<metric name, e.g. transactions>", "trigger_quantity": <number>, "trigger_comparator": "gt"|"gte"|"lt"|"lte"|"eq", "trigger_window": "calendar_month"|"billing_period"|"contract_year"|"per_incident", "consecutive_windows_required": <number, 1 if the clause does not require a streak>, "window_anchor": "contract_start"|"calendar", "finalization_deadline_days": <number or null>, "quantity_treatment": "exact"|"complete_units"}, "application_rule": {"computed_from_component_keys": [<string>]|null, "eligible_component_keys": [<string>]|"all"|null, "excluded_component_keys": [<string>], "one_time": true|false|"unclear", "carry_forward": true|false|"unclear"}, "calculation_summary": "<one sentence>"}',

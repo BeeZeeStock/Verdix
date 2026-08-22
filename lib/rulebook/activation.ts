@@ -86,10 +86,10 @@ export type RulebookActivationEntry =
 // invariants (G, H, in lib/rulebook/rules.ts's own lettering — target:
 // promotion) that reinforce, rather than compete with, the existing
 // isProvenanceResolved() gate (lib/commercial-rule-status.ts). The
-// remaining four (C, D, E, F) stay diagnostic — they tell Verdix what
-// cannot safely be INFERRED; they do not themselves supply the missing
-// customer commercial policy, so they must never resolve a field or block
-// execution on their own.
+// remaining five (C, D, E, F, and the Step 7 amendment's cash-redeemability
+// rule) stay diagnostic — they tell Verdix what cannot safely be INFERRED;
+// they do not themselves supply the missing customer commercial policy, so
+// they must never resolve a field or block execution on their own.
 export const VERDIX_RULEBOOK_ACTIVATION: Record<string, RulebookActivationEntry> = {
   'minimum.floor.non_additive': { authority: 'enforce_invariant', target: 'execution' },
   'pricing.all_units.non_graduated': { authority: 'enforce_invariant', target: 'execution' },
@@ -97,6 +97,7 @@ export const VERDIX_RULEBOOK_ACTIVATION: Record<string, RulebookActivationEntry>
   'credit.next_invoice_timing_ne_carry_forward': { authority: 'diagnostic' },
   'credit.future_payable_scope_ne_indefinite_survival': { authority: 'diagnostic' },
   'credit.explicit_carry_forward_authoritative': { authority: 'diagnostic' },
+  'credit.application_scope_ne_cash_redeemability': { authority: 'diagnostic' },
   'provenance.silence_cannot_become_contract_derived': { authority: 'enforce_invariant', target: 'promotion' },
   'provenance.verdix_recommendation_cannot_clear_readiness': { authority: 'enforce_invariant', target: 'promotion' },
 }

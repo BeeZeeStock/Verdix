@@ -26,8 +26,13 @@ export function tierCalculationContext(
   return { method: tc.method, observed: observed ?? null }
 }
 
+// cash — Step 7 amendment. cash_redeemable/cash_redeemable_provenance live
+// on ServiceCreditInterpretation itself, a sibling of application_rule, not
+// on CreditApplicationRule — so this adapter takes them as a second,
+// independent argument rather than pretending they're part of appRule.
 export function creditApplicationContext(
   appRule: Pick<CreditApplicationRule, 'eligible_component_keys' | 'eligibility_provenance' | 'carry_forward' | 'survival_provenance' | 'availability'> | null | undefined,
+  cash?: { cash_redeemable: boolean | 'unclear'; cash_redeemable_provenance?: FieldProvenance | null } | null,
 ): CommercialSemanticContext['creditApplication'] {
   if (!appRule) return null
   return {
@@ -36,6 +41,8 @@ export function creditApplicationContext(
     carryForward: appRule.carry_forward,
     survivalProvenance: appRule.survival_provenance,
     availability: appRule.availability,
+    cashRedeemable: cash?.cash_redeemable ?? null,
+    cashRedeemableProvenance: cash?.cash_redeemable_provenance ?? null,
   }
 }
 

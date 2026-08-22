@@ -160,6 +160,13 @@ const creditBasisNeApplicationScope: VerdixRulebookRule = {
       reason: `Application scope has a value but no independent contract_derived/reviewer_policy grounding yet (provenance: ${app.eligibilityProvenance ?? 'none'}).`,
     }]
   },
+  // Step 7 — static, curated AI contract-interpretation guidance (see
+  // lib/rulebook/ai-guidance.ts). Applies to every service-credit prompt
+  // that reasons about application_rule.eligible_component_keys.
+  aiGuidance: {
+    appliesTo: ['service_credit_proposal', 'service_credit_interpretation'],
+    instruction: 'A component used to calculate the amount of a credit or rebate does not by itself establish which invoice components that credit may offset. Keep calculation basis and application eligibility separate unless the source explicitly links them.',
+  },
 }
 
 // D — Next-invoice timing does not establish carry-forward, either way.
@@ -199,6 +206,14 @@ const nextInvoiceTimingNeCarryForward: VerdixRulebookRule = {
       reason: `carry_forward=${app.carryForward} has no independent contract_derived/reviewer_policy grounding — next-invoice timing alone must never establish a carry-forward answer.`,
     }]
   },
+  // Step 7 — the canonical "next invoice ≠ carry-forward" mistake this
+  // whole step exists to prevent. Applies to every service-credit prompt
+  // that reasons about survival, including the narrow survival-only
+  // override translator.
+  aiGuidance: {
+    appliesTo: ['service_credit_proposal', 'service_credit_interpretation', 'service_credit_survival'],
+    instruction: '"Applied to the next invoice" establishes application timing. It does not by itself establish whether an unused remainder carries forward or expires after that invoice. Preserve the remainder treatment as unresolved unless the source explicitly states it.',
+  },
 }
 
 // E — Future-payable application scope does not establish indefinite
@@ -237,6 +252,13 @@ const futurePayableScopeNeIndefiniteSurvival: VerdixRulebookRule = {
       reason: 'carry_forward has no independent contract_derived/reviewer_policy grounding — future-payable eligibility scope alone must never establish indefinite survival.',
     }]
   },
+  // Step 7 — same "applies to future amounts" scope-vs-survival distinction
+  // as the timing rule above, for the eligible_component_keys="all" shape
+  // specifically.
+  aiGuidance: {
+    appliesTo: ['service_credit_proposal', 'service_credit_interpretation', 'service_credit_survival'],
+    instruction: 'Language allowing a credit to be applied against future payable amounts does not by itself establish indefinite carry-forward or survival until fully used. Keep application scope/timing separate from unused-balance survival.',
+  },
 }
 
 // F — Explicit, source-derived carry-forward is authoritative.
@@ -269,6 +291,15 @@ const explicitCarryForwardAuthoritative: VerdixRulebookRule = {
     expected_value: true,
     reason: 'Source-derived carry-forward is explicit and authoritative — Verdix semantics agree with the confirmed treatment (unused balance carries forward until fully used).',
   }],
+  // Step 7 — the one guidance entry that tells the model to TRUST an
+  // explicit reading rather than downgrade it. Authority still resolves
+  // to contract_derived downstream (see this rule's own ruleClass comment
+  // above) — this instruction is about not under-reading clear language,
+  // never about the Rulebook itself becoming the source of the value.
+  aiGuidance: {
+    appliesTo: ['service_credit_proposal', 'service_credit_interpretation', 'service_credit_survival'],
+    instruction: 'When the source explicitly states that an unused portion carries forward until fully used, preserve that meaning as contractual evidence rather than treating survival as a recommendation or reviewer policy.',
+  },
 }
 
 // G — Contract silence cannot become contract_derived.
@@ -338,6 +369,56 @@ const verdixRecommendationCannotClearReadiness: VerdixRulebookRule = {
     })),
 }
 
+// I — Application scope restrictions do not establish cash redeemability,
+// either way. Step 7 amendment: promotes a synthetic finding (a clause
+// restricting a rebate to future transaction-processing fees was, before
+// this rule existed, correctly resolved to cash_redeemable=unresolved only
+// as an incidental side effect of the four guidance entries above) into an
+// explicit, durable anti_inference rule of its own, rather than continuing
+// to rely on that indirect correction. Same shape as D/E: restricting WHERE
+// a credit may be applied on an invoice is a scope/timing question,
+// independent of WHETHER it may be paid/redeemed in cash — neither
+// direction may be inferred from the other.
+const creditApplicationScopeNeCashRedeemability: VerdixRulebookRule = {
+  id: 'credit.application_scope_ne_cash_redeemability',
+  version: 1,
+  // Step 6 classification: anti_inference — states what must NOT be
+  // inferred (invoice application scope -> cash redeemability), never
+  // itself supplies a value. Diagnostic only; see activation.ts.
+  ruleClass: 'anti_inference',
+  description: 'Restrictions on where a credit or rebate may be applied on an invoice do not by themselves establish whether the credit may or may not be redeemed or paid in cash. Cash redeemability must remain unresolved unless the source explicitly addresses cash payment/redemption.',
+  matches: (input) => !!input.creditApplication && input.creditApplication.eligibleComponentKeys != null,
+  evaluate: (input) => {
+    const app = input.creditApplication!
+    const rule_id = 'credit.application_scope_ne_cash_redeemability'
+    const field = 'creditApplication.cashRedeemable'
+    if (app.cashRedeemable == null || app.cashRedeemable === 'unclear') {
+      return [{
+        rule_id, field, outcome: 'remains_unresolved',
+        reason: 'Application scope restricts which invoice components the credit may offset — it does not by itself resolve cash redeemability, which correctly remains unresolved here.',
+      }]
+    }
+    const grounded = app.cashRedeemableProvenance === 'contract_derived' || app.cashRedeemableProvenance === 'reviewer_policy'
+    if (grounded) {
+      return [{
+        rule_id, field, outcome: 'supports', expected_value: app.cashRedeemable,
+        reason: `cash_redeemable=${app.cashRedeemable} is independently grounded (provenance: ${app.cashRedeemableProvenance}), not derived from invoice application scope.`,
+      }]
+    }
+    return [{
+      rule_id, field, outcome: 'contradicts',
+      reason: `cash_redeemable=${app.cashRedeemable} has no independent contract_derived/reviewer_policy grounding — invoice application scope alone must never establish cash redeemability.`,
+    }]
+  },
+  // Step 7 amendment — cash redeemability is only ever evaluated in the
+  // proposal/interpretation prompts; service_credit_survival never reasons
+  // about cash treatment, so it's deliberately excluded here.
+  aiGuidance: {
+    appliesTo: ['service_credit_proposal', 'service_credit_interpretation'],
+    instruction: 'Invoice application scope and cash redeemability are independent. Language restricting a credit to particular invoice components or future invoices does not establish that cash payment is prohibited or allowed. Resolve cash redeemability only from explicit source language.',
+  },
+}
+
 // Code-defined and version-controlled, deliberately not persisted to the
 // database (Step 2 spec, item 3) — these are Verdix product semantics, not
 // organization/customer data.
@@ -350,4 +431,5 @@ export const verdixCommercialRulebook: VerdixRulebookRule[] = [
   explicitCarryForwardAuthoritative,
   silenceCannotBecomeContractDerived,
   verdixRecommendationCannotClearReadiness,
+  creditApplicationScopeNeCashRedeemability,
 ]

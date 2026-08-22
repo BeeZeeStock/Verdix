@@ -4,7 +4,7 @@
 // guard (lib/rulebook/promotion-guard.ts), and — most importantly — that
 // activating four invariants changes NOTHING about existing engine output,
 // that 'remains_unresolved' NEVER becomes an execution violation (for any
-// rule, including an enforce_invariant one), and that the four rules left
+// rule, including an enforce_invariant one), and that the five rules left
 // diagnostic can never affect production even when they detect a real
 // contradiction. No AI calls, no database, no mutation.
 //
@@ -44,6 +44,7 @@ const DIAGNOSTIC_RULE_IDS = [
   'credit.next_invoice_timing_ne_carry_forward',
   'credit.future_payable_scope_ne_indefinite_survival',
   'credit.explicit_carry_forward_authoritative',
+  'credit.application_scope_ne_cash_redeemability',
 ]
 
 describe('the activation registry', () => {
@@ -53,10 +54,10 @@ describe('the activation registry', () => {
     const enforceCount = Object.values(VERDIX_RULEBOOK_ACTIVATION).filter(e => e.authority === 'enforce_invariant').length
     expect(enforceCount).toBe(4)
   })
-  it('leaves exactly the four specified rules diagnostic (no target), and no others', () => {
+  it('leaves exactly the five specified rules diagnostic (no target), and no others', () => {
     for (const id of DIAGNOSTIC_RULE_IDS) expect(VERDIX_RULEBOOK_ACTIVATION[id]).toEqual({ authority: 'diagnostic' })
     const diagnosticCount = Object.values(VERDIX_RULEBOOK_ACTIVATION).filter(e => e.authority === 'diagnostic').length
-    expect(diagnosticCount).toBe(4)
+    expect(diagnosticCount).toBe(5)
   })
   it('activates zero rules at resolve_semantic — semantic field resolution is not enabled in Step 3', () => {
     expect(Object.values(VERDIX_RULEBOOK_ACTIVATION).filter(e => e.authority === 'resolve_semantic')).toHaveLength(0)

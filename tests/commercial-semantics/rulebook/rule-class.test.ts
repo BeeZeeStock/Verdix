@@ -134,8 +134,12 @@ describe('authority vs. method — reconfirmed, not reinvented (item 6)', () => 
 // Item 2 — verified against the actual implementation (lib/rulebook/
 // rules.ts) and its actual, already-passing test coverage (rulebook.test.ts),
 // not copied from the hypothesis. Each assertion's comment states WHY,
-// referencing the rule's real matches()/evaluate() behavior.
-describe('classification of the eight current Verdix Global Rulebook rules (item 2)', () => {
+// referencing the rule's real matches()/evaluate() behavior. Extended by
+// the Step 7 amendment for the 9th rule (credit.application_scope_ne_
+// cash_redeemability), which promotes what was previously only an
+// incidental side effect of the other four credit rules' guidance into its
+// own durable, explicit anti_inference rule.
+describe('classification of the nine current Verdix Global Rulebook rules (item 2)', () => {
   function ruleClassOf(id: string): VerdixRuleClass {
     const rule = verdixCommercialRulebook.find(r => r.id === id)
     if (!rule) throw new Error(`rule ${id} not found in verdixCommercialRulebook`)
@@ -166,9 +170,12 @@ describe('classification of the eight current Verdix Global Rulebook rules (item
   it('provenance.verdix_recommendation_cannot_clear_readiness -> invariant, not anti_inference (unconditional — never checks whether a value was wrongly inferred FROM something else; directly mirrors isProvenanceResolved(), the canonical readiness gate)', () => {
     expect(ruleClassOf('provenance.verdix_recommendation_cannot_clear_readiness')).toBe('invariant')
   })
+  it('credit.application_scope_ne_cash_redeemability -> anti_inference (Step 7 amendment — states what must not be inferred: invoice application scope does not by itself establish cash redeemability, in either direction; never supplies a value, only affirms an independently-grounded one or reports remains_unresolved)', () => {
+    expect(ruleClassOf('credit.application_scope_ne_cash_redeemability')).toBe('anti_inference')
+  })
 
-  it('every current rule has exactly one of the four classes, and the registry has exactly eight rules (matches Step 6\'s audit scope)', () => {
-    expect(verdixCommercialRulebook).toHaveLength(8)
+  it('every current rule has exactly one of the four classes, and the registry has exactly nine rules (Step 6\'s original eight plus the Step 7 amendment\'s cash-redeemability rule)', () => {
+    expect(verdixCommercialRulebook).toHaveLength(9)
     for (const rule of verdixCommercialRulebook) {
       expect(ALL_CLASSES).toContain(rule.ruleClass)
     }
@@ -183,7 +190,7 @@ describe('classification of the eight current Verdix Global Rulebook rules (item
 // in this file should need to change, since the classification/capability
 // machinery already supports default_policy fully.
 describe('zero rules currently classified default_policy (items 3, 9 — current-registry audit, not a forever rule)', () => {
-  it('none of the eight current rules are default_policy — no Verdix default has been manufactured just because the architecture supports one', () => {
+  it('none of the nine current rules are default_policy — no Verdix default has been manufactured just because the architecture supports one; this holds after the Step 7 amendment too, since the new rule is explicitly anti_inference, not default_policy', () => {
     const defaultPolicyRules = verdixCommercialRulebook.filter(r => r.ruleClass === 'default_policy')
     expect(defaultPolicyRules).toHaveLength(0)
   })
@@ -207,7 +214,7 @@ describe('activation registry audit against ruleClass (item 7)', () => {
   })
 
   it('every anti_inference-classed rule is registered as diagnostic only — never enforce_invariant or resolve_semantic', () => {
-    expect(antiInferenceIds).toHaveLength(3) // C, D, E
+    expect(antiInferenceIds).toHaveLength(4) // C, D, E, and the Step 7 amendment's cash-redeemability rule
     for (const id of antiInferenceIds) {
       expect(VERDIX_RULEBOOK_ACTIVATION[id]?.authority).toBe('diagnostic')
     }
@@ -226,7 +233,7 @@ describe('activation registry audit against ruleClass (item 7)', () => {
     expect(resolveSemanticEntries).toHaveLength(0)
   })
 
-  it('no mismatch found — the audit conclusion, stated as a single assertion: class and activation agree for all eight current rules', () => {
+  it('no mismatch found — the audit conclusion, stated as a single assertion: class and activation agree for all nine current rules', () => {
     const mismatches: string[] = []
     for (const rule of verdixCommercialRulebook) {
       const entry = VERDIX_RULEBOOK_ACTIVATION[rule.id]
