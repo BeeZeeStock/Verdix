@@ -141,7 +141,20 @@ function resolveOneField(
   }
 
   if (resolved.selected?.authority === 'organization_rulebook') {
-    const winningRule = ruleById.get(resolved.selected.rule_id!)!
+    // resolved.selected may be the CURRENT-STATE echo candidate itself,
+    // not one of the rule-sourced candidates — this happens when the
+    // field's already-persisted provenance is ALREADY organization_
+    // rulebook and a live matching rule agrees with the same value:
+    // resolveWithinBand picks whichever same-authority candidate appears
+    // first in `candidates` (the echo is pushed first), and the echo
+    // carries no rule_id. Every candidate inside a 'resolved' same-
+    // authority band is guaranteed to agree in value (resolveWithinBand's
+    // own precondition), so any rule-sourced candidate in that band
+    // identifies the exact same winning value/rule for reporting purposes
+    // — look one up explicitly rather than assuming resolved.selected
+    // itself carries a rule_id.
+    const ruleSourced = resolved.selected.rule_id ? resolved.selected : candidates.find(c => c.authority === 'organization_rulebook' && c.rule_id)
+    const winningRule = ruleById.get(ruleSourced!.rule_id!)!
     const specificityNote = supersededBySpecificityCount > 0
       ? ` (${supersededBySpecificityCount} broader, less-specific matching rule(s) were superseded by specificity before precedence)`
       : ''
