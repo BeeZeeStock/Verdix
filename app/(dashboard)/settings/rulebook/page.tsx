@@ -246,8 +246,8 @@ export default function OrganizationRulebookPage() {
       <div className="mb-8">
         <h1 className="font-display font-light text-ink text-2xl mb-1">Organization Rulebook</h1>
         <p className="text-stone text-sm">
-          Private defaults that fill genuinely silent contract fields — never override what a contract or a reviewer already decided.
-          Currently supports one field: unused-balance carry-forward for service credits, rebates, and conditional credits.
+          Set reusable billing policies from decisions your team has already approved during contract review.
+          Verdix can apply these policies when an agreement does not specify the treatment. Contract terms always take priority.
         </p>
       </div>
 
@@ -255,7 +255,7 @@ export default function OrganizationRulebookPage() {
         <div className="bg-white border border-forest/10 rounded-2xl px-6 py-16 text-center">
           <i className="ti ti-gavel text-stone/25 block mb-4" style={{ fontSize: 32 }} />
           <p className="text-sm font-medium text-ink mb-1">No organization policies yet</p>
-          <p className="text-sm text-stone">Promote a reviewer decision from a contract review to create your first one.</p>
+          <p className="text-sm text-stone">When your team approves a reusable billing decision during contract review, you can save it as an organization policy for future agreements.</p>
         </div>
       )}
 
