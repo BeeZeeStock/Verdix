@@ -2,6 +2,8 @@ import { writeFileSync } from 'fs'
 import { ContractTerms, OverageTier, ServiceCredit, OneTimeFee } from './types'
 import { buildLearningContext } from './learning-context'
 import { getAIClient, AI_PROVIDER } from './ai-client'
+import { parseBillabilityCondition, projectBillabilityConditionToExecutionFields } from './billability-condition'
+import { isProvenanceResolved } from './commercial-rule-status'
 
 // Stays on the standard (Sonnet) client — a live A/B against TEST-PAY-002
 // (2026-08-20/21) found extraction quality/source-completeness EQUIVALENT
@@ -82,10 +84,22 @@ Rules:
   - Only extract clauses that actually reduce a charge. A clause that merely describes a service-level TARGET with no stated financial consequence (no credit, no refund, no reduction) is not a service credit — do not invent one.
   - Actively search for this clause type — it is frequently located in an "SLA", "Service Levels", or "Availability" section physically separate from the pricing/fees section, not necessarily adjacent to the discount or escalator clauses. Do not skip it just because it isn't near the other commercial terms.
   - PENALTY CLAUSES (opposite polarity — do NOT put these in service_credits): a clause that imposes an ADDITIONAL charge on a condition (e.g. a late-payment penalty, a breach penalty, an early-termination fee) is not a service credit — service_credits only ever represents a reduction. There is no structured field for a conditional additional charge yet. Never drop it silently: write a plain-English sentence describing it (trigger condition, amount/percentage, what it applies to) into extraction_notes so a human reviewer still sees it, e.g. "Penalty clause detected but not structured: a 1.5% monthly interest penalty applies to invoices unpaid after 30 days (§7.2) — needs manual review." If extraction_notes already has content, append this as a new sentence rather than replacing it.
-- one_time_fees: non-recurring charges paid once (e.g. onboarding, implementation, setup, migration, professional services). Each entry: fee_label (short name), amount (number), due_date (ISO date or null), description (brief note or null), manual_trigger (boolean), metric_name (string or null), rate_per_unit (number or null).
-  - Set manual_trigger=true when the fee cannot be invoiced until the service is delivered and confirmed (e.g. "professional services at €150/hour", "implementation services — billed on delivery", "training sessions"). These fees need human confirmation and a metric entry (hours, days, sessions) before the invoice is issued.
+- one_time_fees: non-recurring charges paid once (e.g. onboarding, implementation, setup, migration, professional services). Each entry: fee_label (short name), amount (number), due_date (ISO date or null), description (brief note or null), manual_trigger (boolean), metric_name (string or null), rate_per_unit (number or null), billability_condition (structured object, see below).
+  - Set manual_trigger=true when the fee is priced per unit of variable work and cannot be invoiced until that work is delivered and confirmed (e.g. "professional services at €150/hour", "training sessions" — genuinely variable-quantity work, not a fixed one-time amount). These fees need human confirmation and a metric entry (hours, days, sessions) before the invoice is issued. Do NOT set manual_trigger=true merely because a FIXED-amount fee's billing timing depends on an event (e.g. "SEK 100,000 upon customer acceptance") — that is a billability_condition (event), not a manual_trigger fee; see below.
   - When manual_trigger=true, set metric_name to the unit of work (e.g. "hours", "days", "sessions", "units") and rate_per_unit to the per-unit rate. Set amount=0 when the total is variable/unknown at contract time.
-  - Set manual_trigger=false (or omit it) for fixed-amount fees with a known amount and clear due date (e.g. "€5,000 onboarding fee due at contract start").
+  - Set manual_trigger=false (or omit it) for fixed-amount fees — this includes fees gated on a contractual event (billability_condition.kind = "event"), not just fees with a clear calendar due date.
+  - billability_condition — REQUIRED for every fixed-amount (non-manual_trigger) one_time_fees entry: the contractual condition that makes THIS fee billable, one of:
+    {"kind": "immediate"} — the contract states the fee is due/payable immediately, with NO further condition (e.g. "payable immediately", "due upon execution of this Agreement with no further condition"). Do NOT use this merely because no due date is stated elsewhere — see the null case below.
+    {"kind": "fixed_date", "date": "YYYY-MM-DD"} — the contract states a specific calendar date on which the fee becomes billable.
+    {"kind": "event", "event_type": "contract_signature"|"delivery"|"customer_acceptance"|"final_acceptance"|"change_order_signature"} — the fee becomes billable only once a specific contractual EVENT occurs, not a calendar date.
+      - "contract_signature": "upon signing" / "upon execution of this Agreement". CRITICAL: use this even when the contract's effective/start date is known elsewhere in the document — signing is a distinct commercial event from the stated start date, and must NEVER be collapsed into due_date/fixed_date just because a start date happens to be extractable. This is the single most common failure mode to avoid.
+      - "delivery": "upon delivery" / "upon completion of the Services" — distinct from acceptance; do not use this for language that instead describes a customer sign-off/approval step.
+      - "customer_acceptance": "upon Customer's acceptance" / "upon written acceptance of the deliverables".
+      - "final_acceptance": ONLY when the contract itself explicitly distinguishes an earlier/interim acceptance from a separate, later FINAL acceptance milestone — otherwise use "customer_acceptance".
+      - "change_order_signature": "upon execution of a signed Change Order".
+      - COUNTEREXAMPLE: if the contract explicitly states an equivalence such as "delivery shall constitute acceptance", use event_type "delivery" (the contract's own stated trigger) — do not invent a general rule that delivery always equals acceptance for other fees where the contract does not say this.
+    null — the contract does not state any determinable billing timing or triggering condition for this fee. NEVER default to "immediate" merely because no date/event is stated — that silence must stay null. NEVER force a condition that doesn't clearly fit one of the five events above into the closest-sounding category (e.g. a "deemed accepted after 10 business days unless rejected" clause, or a partial-now/partial-on-milestone retention split) — leave billability_condition null for these and note the complication in description; a human will review it.
+  - due_date should be kept consistent with billability_condition when you set one: fixed_date -> due_date = billability_condition.date; event or immediate -> due_date = null. Verdix's own normalization is the actual source of truth for due_date, so this consistency matters less than getting billability_condition itself right.
   - Do NOT include recurring fees here.
 - contract_id: the contract reference, PO number, order number, or agreement ID printed on the document (e.g. "CLR-2024-0001", "PO-12345"). Use null if no reference number is found.
 - field_sources: object mapping each extracted field to the section heading it was taken from (e.g. {"base_monthly_fee": "1.1 Base Platform Fee", "escalators": "1.2 Annual Price Escalator"})
@@ -141,7 +155,7 @@ Output:
     {"tier_label": "Calls 100,001+", "from_unit": 100001, "to_unit": null, "rate_per_unit": 0.01, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null, "tier_calculation": {"method": "graduated", "source_clause": null, "requires_confirmation": true, "confirmation_reason": "Contract states per-call rates for each tier but does not specify whether crossing a threshold re-rates all calls or only the calls above it."}}
   ],
   "additional_recurring_fees": [],
-  "one_time_fees": [{"fee_label": "Onboarding fee", "amount": 5000, "due_date": "2024-02-01", "description": "One-time onboarding and implementation fee due at contract start"}],
+  "one_time_fees": [{"fee_label": "Onboarding fee", "amount": 5000, "due_date": "2024-02-01", "description": "One-time onboarding and implementation fee due at contract start", "billability_condition": {"kind": "fixed_date", "date": "2024-02-01"}}],
   "field_sources": {
     "base_monthly_fee": "1.1 Base Platform Fee",
     "year_pricing": "1.1 Base Platform Fee",
@@ -353,6 +367,7 @@ export function applyExtractionSafetyNets(terms: ContractTerms, contractText?: s
   terms.discounts = assignDiscountRuleIds(terms.discounts)
   terms.service_credits = assignServiceCreditRuleIds(terms.service_credits ?? [])
   terms.one_time_fees = flagAmbiguousOneTimeFees(terms.one_time_fees ?? [])
+  terms.one_time_fees = normalizeBillabilityCondition(terms.one_time_fees ?? [])
   flagAmbiguousBaseFeeProration(terms, contractText)
   if (contractText) preserveExclusionLanguage(terms, contractText)
 
@@ -598,6 +613,126 @@ function flagAmbiguousOneTimeFees(fees: OneTimeFee[]): OneTimeFee[] {
       unresolved_kind: 'needs_review' as const,
       confirmation_reason: 'This fee has no stated due date and is not gated on manual delivery confirmation — the contract does not establish when it becomes billable.',
     }
+  })
+}
+
+// Step 12 final lifecycle correction — a genuinely pre-existing, unrelated
+// pricing mechanism: variable/per-unit professional-services billing
+// (an hourly/per-session rate applied to a quantity only known at delivery
+// time). This is NOT a "fixed OneTimeFee awaiting a billability condition"
+// — the BillabilityCondition ontology was never meant to normalize per-unit
+// pricing at all (out of scope from the original Step 12 spec, same as
+// milestone scheduling or retention). Structural, based on the fee's
+// EXISTING extracted shape — never manual_trigger (which a fixed-amount fee
+// can also carry, e.g. item 4's regression case below, and which must never
+// by itself exempt anything from canonical semantics).
+export function isExistingVariableRateFeeShape(fee: OneTimeFee): boolean {
+  return !!fee.metric_name && typeof fee.rate_per_unit === 'number' && fee.rate_per_unit > 0 && !(fee.amount > 0)
+}
+
+// Step 12 final lifecycle correction — populates/normalizes
+// billability_condition from the model's raw output and applies the ONE
+// deterministic projection onto due_date/manual_trigger
+// (lib/billability-condition.ts's projectBillabilityConditionToExecutionFields)
+// so the two representations can never silently disagree (item 15). Runs
+// after flagAmbiguousOneTimeFees, which has already set the
+// amount_provenance/billability_provenance/requires_confirmation baseline
+// this function builds on.
+//
+// THE LIFECYCLE DISCRIMINATOR is NEVER manual_trigger (items 1-4, all three
+// amendment rounds). A prior draft had `if (fee.manual_trigger) return fee`
+// as its first check, letting a model-emitted legacy execution flag bypass
+// the closed-union parser entirely for any fee that also happened to carry
+// it. A later draft fixed that but still let `rawCondition === undefined`
+// alone mean "legacy" — which conflated two different things: a genuinely
+// historical PERSISTED record that never passed through this function at
+// all, versus a FRESH extraction where the model simply omitted the field.
+// The latter has, by definition, been evaluated by this pipeline just now,
+// and "the model omitted it" is never, by itself, evidence of intentional
+// manual/discretionary billing (item 3/5) — so it must canonicalize to
+// `null` (evaluated, unresolved), not stay `undefined`.
+//
+// The ONLY narrow exemption from that canonicalization is
+// isExistingVariableRateFeeShape (above) — checked ONLY once no valid
+// condition was parsed (item 1: a valid condition always wins, even for a
+// fee that otherwise looks rate-based), and ONLY when the raw key was
+// genuinely absent (`rawCondition === undefined`, not an explicit `null`
+// and not a malformed value the model attempted and got wrong — item 4's
+// "do not use the exemption to hide malformed Step-12 semantics"). A
+// fixed-amount fee with manual_trigger:true and no condition does NOT
+// qualify for this exemption (isExistingVariableRateFeeShape requires
+// metric_name + a positive rate_per_unit + no positive amount) — it
+// canonicalizes to null like any other unanswered fixed fee.
+//
+// `undefined` is therefore reserved EXCLUSIVELY for (a) a genuine
+// historical record that never passed through this function, and (b) the
+// narrow variable-rate-shape exemption — a persistence/shape distinction,
+// never a "the model didn't answer" distinction.
+//
+// Never re-normalizes a fee whose billability is already reviewer/contract
+// resolved (isProvenanceResolved(billability_provenance)) — re-extraction
+// must not silently overwrite a human's prior confirmation or a genuine
+// contract_derived resolution.
+function normalizeBillabilityCondition(fees: OneTimeFee[]): OneTimeFee[] {
+  return fees.map(fee => {
+    if (isProvenanceResolved(fee.billability_provenance)) return fee
+
+    const rawCondition = (fee as unknown as { billability_condition?: unknown }).billability_condition
+    const parsed = parseBillabilityCondition(rawCondition)
+
+    if (parsed) {
+      let next: OneTimeFee = { ...fee, billability_condition: parsed }
+      const projection = projectBillabilityConditionToExecutionFields(parsed)
+      next = { ...next, due_date: projection.due_date, manual_trigger: projection.manual_trigger }
+      if (next.billability_provenance === undefined) next = { ...next, billability_provenance: null }
+      // flagAmbiguousOneTimeFees (which already ran) stamps a generic "no
+      // stated due date" confirmation_reason for any due_date:null fee,
+      // including 'immediate'/'event' conditions whose due_date is
+      // legitimately null BY DESIGN (item 15's own projection). That
+      // wording is stale/misleading once a real condition has been
+      // identified — replace it with condition-aware text describing what
+      // actually needs confirming, without changing WHETHER confirmation
+      // is required (unresolved_kind/requires_confirmation themselves are
+      // untouched — only the human-facing reason string).
+      if (next.requires_confirmation && next.unresolved_kind === 'needs_review') {
+        next = {
+          ...next,
+          confirmation_reason: parsed.kind === 'event'
+            ? `The contract ties billability to a "${parsed.event_type.replace(/_/g, ' ')}" event — confirm this interpretation is correct.`
+            : parsed.kind === 'immediate'
+              ? 'The contract states this fee is payable immediately — confirm this interpretation is correct.'
+              : `The contract states a fixed billing date (${parsed.date}) — confirm this interpretation is correct.`,
+        }
+      }
+      return next
+    }
+
+    // No valid condition. The one narrow, shape-based exemption.
+    if (rawCondition === undefined && isExistingVariableRateFeeShape(fee)) return fee
+
+    // Everything else — genuine explicit silence, a malformed/rejected
+    // model answer, OR a fixed-amount fee that simply never got asked
+    // (item 5: fail closed rather than let omission read as a semantic
+    // decision) — canonicalizes to null. due_date/manual_trigger are reset
+    // to the safe/held projection (null/true) rather than left as whatever
+    // the model separately produced — belt-and-suspenders alongside the
+    // real enforcement point (billability_provenance staying unresolved
+    // keeps this fee blocking via isOneTimeFeeBillabilityUnresolved/
+    // computeCommercialRuleWorkload regardless), so a stray "due now" or
+    // "safe legacy" shaped pair can never survive as competing meaning on
+    // a newly-governed record.
+    let next: OneTimeFee = { ...fee, billability_condition: null, due_date: null, manual_trigger: true }
+    if (next.billability_provenance === undefined) next = { ...next, billability_provenance: null }
+    if (next.amount > 0 && !next.requires_confirmation) {
+      next = {
+        ...next,
+        requires_confirmation: true,
+        unresolved_kind: next.unresolved_kind ?? 'needs_review',
+        confirmation_reason: next.confirmation_reason
+          ?? 'This fee has no stated billing condition Verdix can normalize — the contract does not establish when it becomes billable.',
+      }
+    }
+    return next
   })
 }
 

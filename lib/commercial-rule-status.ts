@@ -9,7 +9,8 @@
 // with each other the way two hand-rolled booleans could.
 import { isEscalatorUnresolved, type EscalatorLike } from './escalator-status'
 import { findCadenceWindowContaining, isPartialWindow } from './tariff'
-import type { FieldProvenance } from './types'
+import type { FieldProvenance, BillabilityCondition, BillabilityEventType } from './types'
+import { getBillabilityExecutionCapability } from './billability-condition'
 
 // The single place "is this field actually resolved" is decided, for any
 // field carrying a FieldProvenance. AI confidence is not provenance: a
@@ -260,26 +261,39 @@ type OneTimeFeeLike = {
   requires_confirmation?: boolean
   unresolved_kind?: 'needs_review' | 'unsupported_semantics'
   billability_provenance?: FieldProvenance | null
+  // Step 12 — see lib/types.ts's OneTimeFee.billability_condition for the
+  // full three-state discriminator this drives below.
+  billability_condition?: BillabilityCondition | null
+}
+
+function isOneTimeFeeAmountUnresolved(fee: OneTimeFeeLike): boolean {
+  // Canonically provenance-driven once evaluated; legacy requires_
+  // confirmation fallback only for records amount_provenance never touched
+  // at all (backward compatibility, item 1).
+  if (fee.amount_provenance !== undefined) return !isProvenanceResolved(fee.amount_provenance)
+  return !!fee.requires_confirmation
+}
+
+// Step 12 — once a record has entered the Step-12 lifecycle
+// (billability_condition !== undefined), whether billability still needs a
+// reviewer decision is governed by billability_provenance ALONE — never
+// gated by manual_trigger. manual_trigger is now purely an execution
+// projection (lib/billability-condition.ts), not a semantic signal, so it
+// must never be read here to decide whether a Step-12 fee's contractual
+// meaning is resolved (item 3: "these meanings must no longer be
+// conflated"). Legacy records (billability_condition still undefined) keep
+// the EXACT pre-Step-12 manual_trigger-gated check, byte for byte, so
+// nothing about this change reopens a historical record (item 19).
+function isOneTimeFeeBillabilityUnresolved(fee: OneTimeFeeLike): boolean {
+  if (fee.billability_condition !== undefined) {
+    return fee.billability_provenance !== undefined && !isProvenanceResolved(fee.billability_provenance)
+  }
+  return !fee.manual_trigger && fee.billability_provenance !== undefined && !isProvenanceResolved(fee.billability_provenance)
 }
 
 export function isOneTimeFeeUnresolved(fee: OneTimeFeeLike): boolean {
   if (fee.unresolved_kind === 'unsupported_semantics') return false
-
-  // Amount — canonically provenance-driven once evaluated; legacy
-  // requires_confirmation fallback only for records amount_provenance
-  // never touched at all (backward compatibility, item 1).
-  if (fee.amount_provenance !== undefined) {
-    if (!isProvenanceResolved(fee.amount_provenance)) return true
-  } else if (fee.requires_confirmation) {
-    return true
-  }
-
-  // Billability — unchanged from the prior amendment.
-  if (!fee.manual_trigger && fee.billability_provenance !== undefined && !isProvenanceResolved(fee.billability_provenance)) {
-    return true
-  }
-
-  return false
+  return isOneTimeFeeAmountUnresolved(fee) || isOneTimeFeeBillabilityUnresolved(fee)
 }
 
 type ProrationLike = { requires_confirmation: boolean } | null | undefined
@@ -411,7 +425,25 @@ export type UnsupportedCommercialSemanticsBlocker = {
   reason: string
 }
 
-export type CommercialRuleExecutionBlocker = RulebookInvariantViolationLike | UnsupportedCommercialSemanticsBlocker
+// Step 12, item 6 — deliberately NOT 'unsupported_commercial_semantics':
+// after Step 12, the CONTRACTUAL MEANING of an 'event' condition IS
+// supported and, in this state, has already been confirmed
+// (billability_provenance is resolved) — see isOneTimeFeeBillabilityUnresolved
+// above, which stops counting it as a reviewer decision the moment
+// provenance resolves. What's missing is real-world EVIDENCE that the
+// event occurred, which is a structurally different kind of "cannot
+// execute" than "Verdix cannot represent this at all." `reason` is always a
+// short, generic, structural description — never raw source text, same
+// discipline as UnsupportedCommercialSemanticsBlocker's own `reason`.
+export type RequiredOperationalEventMissingBlocker = {
+  type: 'required_operational_event_missing'
+  rule_family: string
+  event_type: BillabilityEventType
+  field: string
+  reason: string
+}
+
+export type CommercialRuleExecutionBlocker = RulebookInvariantViolationLike | UnsupportedCommercialSemanticsBlocker | RequiredOperationalEventMissingBlocker
 
 function groupTiersByUnitType(tiers: TierLike[]): Map<string, TierLike[]> {
   const groups = new Map<string, TierLike[]>()
@@ -534,7 +566,16 @@ export function computeCommercialRuleWorkload(
   //     represent what the source describes at all — never counted as a
   //     reviewer decision (nothing to pick between); becomes a capability
   //     blocker instead, merged into executionBlockers below.
-  const oneTimeFeeCapabilityBlockers: UnsupportedCommercialSemanticsBlocker[] = []
+  //   - Step 12: billability_condition.kind === 'event', semantically
+  //     RESOLVED (billability_provenance already isProvenanceResolved) —
+  //     the contractual meaning is understood, so this is never an
+  //     unsupported-semantics capability gap; it becomes a DIFFERENT
+  //     capability blocker instead (RequiredOperationalEventMissingBlocker
+  //     — real-world evidence of the event is missing, not the semantics).
+  //     Amount is still checked and counted independently — resolving
+  //     billability's blocker status must never hide an outstanding amount
+  //     decision (item 5's independence requirement, still true post-Step-12).
+  const oneTimeFeeCapabilityBlockers: Array<UnsupportedCommercialSemanticsBlocker | RequiredOperationalEventMissingBlocker> = []
   for (const fee of terms?.one_time_fees ?? []) {
     if (!fee.fee_label) continue
     if (fee.unresolved_kind === 'unsupported_semantics') {
@@ -545,6 +586,18 @@ export function computeCommercialRuleWorkload(
         field: `one_time_fee:${fee.fee_label}`,
         reason: 'The source describes a billability condition this fee shape cannot yet represent.',
       })
+      continue
+    }
+    const capability = fee.billability_condition ? getBillabilityExecutionCapability(fee.billability_condition) : null
+    if (capability && !capability.executable && capability.reason === 'requires_operational_event' && isProvenanceResolved(fee.billability_provenance)) {
+      oneTimeFeeCapabilityBlockers.push({
+        type: 'required_operational_event_missing',
+        rule_family: 'one_time_fee',
+        event_type: capability.event_type,
+        field: `one_time_fee:${fee.fee_label}`,
+        reason: 'Billability is confirmed to depend on an operational event Verdix has not yet observed evidence for.',
+      })
+      countItem(`one_time_fee:${fee.fee_label}`, isOneTimeFeeAmountUnresolved(fee))
       continue
     }
     countItem(`one_time_fee:${fee.fee_label}`, isOneTimeFeeUnresolved(fee))

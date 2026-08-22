@@ -146,6 +146,13 @@ type OneTimeFee = {
   requires_confirmation?: boolean
   confirmation_reason?: string | null
   unresolved_kind?: 'needs_review' | 'unsupported_semantics'
+  // Step 12 — see lib/types.ts's BillabilityCondition. Same
+  // define-locally-not-imported convention as the provenance fields above.
+  billability_condition?:
+    | { kind: 'immediate' }
+    | { kind: 'fixed_date'; date: string }
+    | { kind: 'event'; event_type: 'contract_signature' | 'delivery' | 'customer_acceptance' | 'final_acceptance' | 'change_order_signature' }
+    | null
 }
 type PeriodProrationRule = {
   reset_anchor: 'contract_start' | 'calendar' | null
@@ -3835,10 +3842,35 @@ function ReviewPanel({
               'unsupported_semantics') shows no action at all — there is
               nothing a reviewer can confirm their way out of (item 3). */}
           {(() => {
-            const feesNeedingAttention = (oneTimeFees ?? []).filter(
-              f => isOneTimeFeeUnresolved(f) || f.unresolved_kind === 'unsupported_semantics'
+            // Step 12 — a semantically-resolved event condition is no
+            // longer "unresolved" (isOneTimeFeeUnresolved correctly stops
+            // counting it), but it must stay visible: confirming WHAT the
+            // trigger is is not the same as the trigger having happened.
+            // Kept here, not in isOneTimeFeeUnresolved, since this is a
+            // display/visibility concern, not a readiness/blocking one —
+            // Approve's own gate (via RequiredOperationalEventMissingBlocker)
+            // is the actual enforcement point, unaffected by this filter.
+            const feesNeedingAttention = (oneTimeFees ?? []).filter(f =>
+              isOneTimeFeeUnresolved(f) ||
+              f.unresolved_kind === 'unsupported_semantics' ||
+              (f.billability_condition?.kind === 'event' &&
+                (f.billability_provenance === 'contract_derived' || f.billability_provenance === 'reviewer_policy'))
             )
             if (feesNeedingAttention.length === 0) return null
+
+            const BILLABILITY_EVENT_LABELS: Record<string, string> = {
+              contract_signature: 'Contract signature',
+              delivery: 'Delivery',
+              customer_acceptance: 'Customer acceptance',
+              final_acceptance: 'Final acceptance',
+              change_order_signature: 'Signed change order',
+            }
+            const billabilityConditionLabel = (c: OneTimeFee['billability_condition']): string | null => {
+              if (!c) return null
+              if (c.kind === 'immediate') return 'Immediate'
+              if (c.kind === 'fixed_date') return `Fixed date — ${c.date}`
+              return BILLABILITY_EVENT_LABELS[c.event_type] ?? c.event_type
+            }
 
             // The client only ever says WHICH dimension it is confirming —
             // confirmAmount / confirmBillability, plain booleans — never an
@@ -3884,7 +3916,21 @@ function ReviewPanel({
                   {feesNeedingAttention.map((f, i) => {
                     const blocked = f.unresolved_kind === 'unsupported_semantics'
                     const amountResolved = f.amount_provenance === 'contract_derived' || f.amount_provenance === 'reviewer_policy'
-                    const billabilityResolved = !!f.manual_trigger
+                    // Step 12 final amendment — manual_trigger is now purely
+                    // an execution PROJECTION (lib/billability-condition.ts):
+                    // every confirmed AND unconfirmed 'event' condition
+                    // projects to manual_trigger:true, so it can no longer be
+                    // read as "genuinely manual, nothing to confirm" once a
+                    // record has entered the Step 12 lifecycle
+                    // (billability_condition !== undefined) — that would
+                    // incorrectly hide the confirm button and mislabel an
+                    // UNCONFIRMED event condition as already resolved. Only
+                    // a genuine legacy/professional-services fee (no
+                    // billability_condition at all) still gets the
+                    // manual_trigger-implies-resolved treatment.
+                    const isStep12Condition = f.billability_condition !== undefined
+                    const genuineManualHold = !isStep12Condition && !!f.manual_trigger
+                    const billabilityResolved = genuineManualHold
                       || f.billability_provenance === 'contract_derived' || f.billability_provenance === 'reviewer_policy'
                     return (
                       <div key={f.fee_label ?? i} className="rounded-2xl border overflow-hidden" style={{ borderColor: blocked ? '#FECACA' : '#FAC775', background: 'white' }}>
@@ -3897,9 +3943,10 @@ function ReviewPanel({
 
                           {blocked ? (
                             <p className="text-[11px] leading-relaxed" style={{ color: '#991B1B' }}>
-                              Verdix cannot yet represent this fee&apos;s billability condition (e.g. an acceptance or approval
-                              event) with a confirmable date/trigger — this stays blocked from billing until that capability
-                              exists. There is no confirmation that resolves it.
+                              Verdix cannot represent this fee&apos;s billability condition — it does not fit a fixed date, an
+                              immediate due, or a supported contractual event (signature, delivery, customer acceptance, final
+                              acceptance, signed change order) — so this stays blocked from billing. There is no confirmation
+                              that resolves it.
                             </p>
                           ) : (
                             <div className="space-y-2 mt-2">
@@ -3918,25 +3965,49 @@ function ReviewPanel({
                                   </button>
                                 )}
                               </div>
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-[11px] text-stone">
-                                  Billing timing — {f.manual_trigger
-                                    ? 'held for manual delivery confirmation'
-                                    : billabilityResolved
-                                      ? `confirmed (${f.billability_provenance === 'contract_derived' ? 'clear from source' : 'reviewer policy'})`
-                                      : 'needs confirmation'}
-                                </span>
-                                {!f.manual_trigger && !billabilityResolved && (
-                                  <button
-                                    onClick={() => confirmOneTimeFee(f.fee_label, 'billability')}
-                                    disabled={saving === `one_time_fee:${f.fee_label}:billability`}
-                                    className="text-[11px] font-medium px-2.5 py-1 rounded-lg border"
-                                    style={{ borderColor: 'rgba(26,61,43,0.15)' }}
-                                  >
-                                    {saving === `one_time_fee:${f.fee_label}:billability` ? 'Confirming…' : 'Confirm billing timing'}
-                                  </button>
-                                )}
-                              </div>
+                              {(() => {
+                                // Step 12 — three distinct billability states, never
+                                // conflated: manual_trigger (professional-services,
+                                // unrelated to billability_condition); an event
+                                // condition that's already confirmed (waiting on
+                                // real-world evidence Verdix cannot yet ingest — no
+                                // "bill now"/fake-date escape hatch is ever offered
+                                // for this state); and the ordinary needs-confirmation
+                                // / confirmed case for immediate/fixed_date/unconfirmed
+                                // conditions.
+                                const conditionLabel = billabilityConditionLabel(f.billability_condition)
+                                const eventAwaitingEvidence = f.billability_condition?.kind === 'event' && billabilityResolved
+                                return (
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div>
+                                      {conditionLabel && (
+                                        <p className="text-[11px] text-stone">
+                                          Billing condition — <span className="font-medium text-ink">{conditionLabel}</span>
+                                        </p>
+                                      )}
+                                      <span className="text-[11px] text-stone">
+                                        {genuineManualHold
+                                          ? 'held for manual delivery confirmation'
+                                          : eventAwaitingEvidence
+                                            ? 'Interpretation confirmed — waiting for required operational event'
+                                            : billabilityResolved
+                                              ? `confirmed (${f.billability_provenance === 'contract_derived' ? 'clear from source' : 'reviewer policy'})`
+                                              : 'needs confirmation'}
+                                      </span>
+                                    </div>
+                                    {!genuineManualHold && !billabilityResolved && (
+                                      <button
+                                        onClick={() => confirmOneTimeFee(f.fee_label, 'billability')}
+                                        disabled={saving === `one_time_fee:${f.fee_label}:billability`}
+                                        className="text-[11px] font-medium px-2.5 py-1 rounded-lg border shrink-0"
+                                        style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                                      >
+                                        {saving === `one_time_fee:${f.fee_label}:billability` ? 'Confirming…' : 'Confirm billing timing'}
+                                      </button>
+                                    )}
+                                  </div>
+                                )
+                              })()}
                               {saveError[f.fee_label] && (
                                 <p className="text-[11px]" style={{ color: '#DC2626' }}>{saveError[f.fee_label]}</p>
                               )}

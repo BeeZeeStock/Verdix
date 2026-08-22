@@ -442,6 +442,71 @@ export interface CreditApplicationPriority {
   source_clause?: string | null
 }
 
+// Step 12 — the closed, initial set of contractual events Verdix can
+// normalize a OneTimeFee's billability trigger to. Deliberately small and
+// closed (item 2: "do not add a generic free-text executable event") —
+// justified only by the concrete Step 10/11 fixtures, not by anticipated
+// future contract shapes:
+//   'contract_signature'     — "upon signing" / "upon execution of this
+//                               Agreement". NEVER collapsed into the
+//                               contract's effective/start date, even when
+//                               they are likely the same calendar day (see
+//                               BillabilityCondition's own comment — this is
+//                               the exact Step 11C nondeterminism this type
+//                               exists to close).
+//   'delivery'                — "upon delivery" / "upon completion of the
+//                               Services", distinct from acceptance.
+//   'customer_acceptance'    — "upon Customer's acceptance" / "upon written
+//                               acceptance of the deliverables".
+//   'final_acceptance'       — ONLY when the contract itself distinguishes
+//                               an earlier/interim acceptance from a
+//                               separate, later FINAL acceptance milestone.
+//   'change_order_signature' — "upon execution of a signed Change Order".
+// An event that doesn't fit one of these five is never forced into the
+// closest-sounding category — see BillabilityCondition's own comment.
+export type BillabilityEventType =
+  | 'contract_signature'
+  | 'delivery'
+  | 'customer_acceptance'
+  | 'final_acceptance'
+  | 'change_order_signature'
+
+// Step 12 — the normalized answer to "what does the agreement say must
+// happen before this fee becomes billable?" A small, closed discriminated
+// union — deliberately NOT a free-text field, NOT a date derived by
+// guessing, and NOT the same thing as `manual_trigger`/`due_date` (which
+// remain execution-representation fields, projected FROM this condition —
+// see lib/billability-condition.ts's projectBillabilityConditionToExecutionFields
+// — never the canonical contractual meaning themselves; item 3).
+//
+//   'immediate'  — the contract states the fee is due/payable immediately,
+//                  with NO further condition. Only ever set when the source
+//                  text actually says so (item 10) — "no date was
+//                  extracted" is NOT evidence of 'immediate'; that silence
+//                  stays represented as a null/undefined condition (see
+//                  OneTimeFee.billability_condition's own comment). The old
+//                  "due_date: null -> bill now" behavior must never leak
+//                  back into this layer.
+//   'fixed_date' — the contract states (or a reviewer confirms) a specific
+//                  calendar date. Distinct from 'immediate' even when the
+//                  date happens to be the contract's own start date — see
+//                  the counterexample regressions in lib/billability-
+//                  condition.test.ts.
+//   'event'      — billability depends on a real-world contractual EVENT
+//                  from the closed BillabilityEventType set, not a
+//                  calendar date. A resolved 'event' condition (billability_
+//                  provenance is contract_derived/reviewer_policy) means
+//                  Verdix understands WHAT the trigger is — it does NOT
+//                  mean the trigger has occurred. Whether it has occurred
+//                  is a separate, execution-layer question — see
+//                  lib/billability-condition.ts's getBillabilityExecutionCapability
+//                  and lib/commercial-rule-status.ts's
+//                  RequiredOperationalEventMissingBlocker.
+export type BillabilityCondition =
+  | { kind: 'immediate' }
+  | { kind: 'fixed_date'; date: string }
+  | { kind: 'event'; event_type: BillabilityEventType }
+
 export interface OneTimeFee {
   fee_label: string
   amount: number
@@ -530,6 +595,41 @@ export interface OneTimeFee {
    *  "safely held" rather than blocking). A real FieldProvenance value
    *  means resolved. */
   billability_provenance?: FieldProvenance | null
+  /** Step 12 — the normalized contractual billability trigger (see
+   *  BillabilityCondition's own comment for the full domain-model
+   *  rationale). `billability_provenance` (above) continues to be the ONE
+   *  provenance field for this decision — Step 12 does NOT add a second,
+   *  competing provenance inside the union (item 4): `billability_
+   *  condition = { kind: 'event', event_type: 'customer_acceptance' }` +
+   *  `billability_provenance = 'reviewer_policy'` means "a reviewer
+   *  confirmed that customer acceptance is the contractual billability
+   *  condition" — it does NOT mean customer acceptance has occurred (item
+   *  5). Whether it has occurred is answered separately, at execution time,
+   *  by lib/commercial-rule-status.ts's RequiredOperationalEventMissingBlocker
+   *  — never by this field or its provenance.
+   *
+   *  THREE-state discriminator, same shape as every other Step 11/12 field
+   *  on this type (item 19): `undefined` means this record predates Step
+   *  12 entirely (every historical record, and every record only ever
+   *  touched by Step 11's manual_trigger/due_date-only lifecycle) — NEVER
+   *  retroactively evaluated; `lib/commercial-rule-status.ts`'s
+   *  isOneTimeFeeUnresolved falls back to the exact pre-Step-12
+   *  manual_trigger-gated check for these. `null` means Step 12 extraction
+   *  ran and could not determine a condition — genuine contractual silence,
+   *  which must NEVER be interpreted as `{ kind: 'immediate' }` (item 10) —
+   *  it behaves like the old due_date-null "needs review" case. A concrete
+   *  BillabilityCondition value means Step 12 extraction (or a reviewer)
+   *  identified a specific condition; its resolution status is still
+   *  governed entirely by billability_provenance, exactly as before.
+   *
+   *  `due_date`/`manual_trigger` are execution-representation fields
+   *  deterministically PROJECTED from this condition wherever it is known
+   *  (lib/billability-condition.ts's projectBillabilityConditionToExecutionFields)
+   *  — never independently set once billability_condition is populated, so
+   *  the two can never silently disagree (item 15). They remain the sole
+   *  source of truth only for legacy records where billability_condition is
+   *  still undefined. */
+  billability_condition?: BillabilityCondition | null
 }
 
 // Same structural gap as MinimumCommitment.prorate_partial_periods, now

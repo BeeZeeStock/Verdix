@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mergeExtractions, assignServiceCreditRuleIds, applyExtractionSafetyNets } from './contract-extractor'
+import { mergeExtractions, assignServiceCreditRuleIds, applyExtractionSafetyNets, isExistingVariableRateFeeShape } from './contract-extractor'
 import type { ContractTerms, OneTimeFee } from './types'
 
 // Minimal partial fixtures — mergeExtractions only reads a handful of
@@ -419,9 +419,17 @@ describe('applyExtractionSafetyNets — flagAmbiguousOneTimeFees (Step 11, item 
     expect(terms.one_time_fees[0].confirmation_reason).toBeTruthy()
   })
 
-  it('a fee with an explicit due_date is NOT flagged — a clear, stated billing schedule is already correct, current behavior (item 2: explicit fixed amount + explicit due trigger)', () => {
+  // Step 12 final lifecycle correction superseded this: a due_date alone,
+  // with no billability_condition key at all, is now a FRESH omission
+  // (not a legacy record — nothing about calling applyExtractionSafetyNets
+  // is ever a legacy/historical path) and is NOT the pre-existing
+  // variable-rate pricing shape either — so it canonicalizes to
+  // billability_condition: null and IS flagged. See "final lifecycle
+  // correction" describe block below for the current, correct behavior.
+  it('a fee with an explicit due_date but no billability_condition key is now flagged by the combined pipeline — Step 12 canonicalizes fresh omission to null rather than trusting the stray due_date', () => {
     const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: '2026-02-01', amount: 5000 })] }))
-    expect(terms.one_time_fees[0].requires_confirmation).toBeUndefined()
+    expect(terms.one_time_fees[0].billability_condition).toBeNull()
+    expect(terms.one_time_fees[0].requires_confirmation).toBe(true)
   })
 
   it('a fee with manual_trigger: true is NOT flagged — it already correctly waits for human confirmation via the parked-invoices flow', () => {
@@ -438,10 +446,16 @@ describe('applyExtractionSafetyNets — flagAmbiguousOneTimeFees (Step 11, item 
     const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
       oneTimeFee({ fee_label: 'Ambiguous fee', due_date: null, amount: 50000 }),
       oneTimeFee({ fee_label: 'Scheduled fee', due_date: '2026-03-01', amount: 20000 }),
+      // No metric_name/rate_per_unit — does NOT qualify for the
+      // variable-rate-shape exemption, but amount is 0 so the (amount > 0)
+      // guard on requires_confirmation never fires either way.
       oneTimeFee({ fee_label: 'Manual fee', due_date: null, manual_trigger: true, amount: 0 }),
     ] }))
     expect(terms.one_time_fees.find(f => f.fee_label === 'Ambiguous fee')?.requires_confirmation).toBe(true)
-    expect(terms.one_time_fees.find(f => f.fee_label === 'Scheduled fee')?.requires_confirmation).toBeUndefined()
+    // Step 12 final correction — a fixed amount with a due_date but no
+    // billability_condition key is fresh omission, not legacy; it's now
+    // flagged too (see the dedicated test above for why).
+    expect(terms.one_time_fees.find(f => f.fee_label === 'Scheduled fee')?.requires_confirmation).toBe(true)
     expect(terms.one_time_fees.find(f => f.fee_label === 'Manual fee')?.requires_confirmation).toBeUndefined()
   })
 
@@ -452,12 +466,10 @@ describe('applyExtractionSafetyNets — flagAmbiguousOneTimeFees (Step 11, item 
     expect(twice.one_time_fees[0].confirmation_reason).toBe(once.one_time_fees[0].confirmation_reason)
   })
 
-  it('never mutates amount, due_date, or manual_trigger themselves — only adds confirmation metadata (item 2: current billing behavior is not changed by this safety net alone)', () => {
+  it('never mutates amount — Step 12\'s safe-hold canonicalization intentionally DOES set manual_trigger:true for a fresh, unanswered fixed fee (defense in depth, see final lifecycle correction below), so only amount is asserted untouched here', () => {
     const input = oneTimeFee({ due_date: null, amount: 100000, manual_trigger: undefined })
     const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [input] }))
     expect(terms.one_time_fees[0].amount).toBe(100000)
-    expect(terms.one_time_fees[0].due_date).toBeNull()
-    expect(terms.one_time_fees[0].manual_trigger).toBeUndefined()
   })
 })
 
@@ -505,9 +517,359 @@ describe('applyExtractionSafetyNets — amount_provenance discriminator (Step 11
     expect(terms.one_time_fees[0].amount_provenance).toBe('reviewer_policy')
   })
 
-  it('requires_confirmation keeps its original, narrower meaning — set only for the genuinely-ambiguous shape, independent of the now-universal amount_provenance: null default', () => {
-    const clean = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: '2026-02-01', amount: 5000 })] }))
+  it('amount_provenance and requires_confirmation stay independently gradable — a fee already resolved on billability (via a confirmed condition) proves requires_confirmation is NOT universally forced true just because amount_provenance is graded', () => {
+    const clean = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ due_date: '2026-02-01', amount: 5000, billability_condition: { kind: 'fixed_date', date: '2026-02-01' }, billability_provenance: 'reviewer_policy' } as Partial<OneTimeFee>),
+    ] }))
     expect(clean.one_time_fees[0].amount_provenance).toBeNull() // evaluated...
     expect(clean.one_time_fees[0].requires_confirmation).toBeUndefined() // ...but not flagged as urgently ambiguous
+  })
+
+  it('by contrast, a fee with the SAME due_date but no billability_condition at all IS flagged — fresh omission, not exempted (final lifecycle correction)', () => {
+    const clean = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: '2026-02-01', amount: 5000 })] }))
+    expect(clean.one_time_fees[0].amount_provenance).toBeNull()
+    expect(clean.one_time_fees[0].requires_confirmation).toBe(true)
+  })
+})
+
+describe('applyExtractionSafetyNets — normalizeBillabilityCondition (Step 12)', () => {
+  it('a valid immediate condition from the model is preserved and projected to due_date null / manual_trigger false', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 5000, due_date: null, billability_condition: { kind: 'immediate' } } as Partial<OneTimeFee>),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'immediate' })
+    expect(fee.due_date).toBeNull()
+    expect(fee.manual_trigger).toBe(false)
+    expect(fee.billability_provenance).toBeNull()
+  })
+
+  it('a null-due_date but interpretable condition gets a condition-aware confirmation_reason, not the stale generic "no stated due date" text flagAmbiguousOneTimeFees stamps first', () => {
+    const event = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 100000, due_date: null, billability_condition: { kind: 'event', event_type: 'customer_acceptance' } } as Partial<OneTimeFee>),
+    ] })).one_time_fees[0]
+    expect(event.requires_confirmation).toBe(true)
+    expect(event.confirmation_reason).toMatch(/customer acceptance/i)
+    expect(event.confirmation_reason).not.toMatch(/no stated due date/i)
+
+    const immediate = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 100000, due_date: null, billability_condition: { kind: 'immediate' } } as Partial<OneTimeFee>),
+    ] })).one_time_fees[0]
+    expect(immediate.confirmation_reason).toMatch(/payable immediately/i)
+    expect(immediate.confirmation_reason).not.toMatch(/no stated due date/i)
+  })
+
+  it('a valid fixed_date condition is preserved and projected onto due_date, overriding any stray due_date the model separately supplied', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 5000, due_date: '1999-01-01', billability_condition: { kind: 'fixed_date', date: '2026-10-15' } } as Partial<OneTimeFee>),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'fixed_date', date: '2026-10-15' })
+    expect(fee.due_date).toBe('2026-10-15') // projection wins, not the stray raw value
+    expect(fee.manual_trigger).toBe(false)
+  })
+
+  it('"payable upon signing" (event/contract_signature) is never collapsed into due_date, even when the model also supplies an (incorrect) date — the Step 11C nondeterminism this step exists to close', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({
+        amount: 100000, due_date: '2026-09-01', // a stray effective-date guess, exactly Step 11C's observed failure mode
+        billability_condition: { kind: 'event', event_type: 'contract_signature' },
+      } as Partial<OneTimeFee>),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'event', event_type: 'contract_signature' })
+    expect(fee.due_date).toBeNull()
+    expect(fee.manual_trigger).toBe(true)
+    expect(fee.billability_provenance).toBeNull() // semantically represented, NOT confirmed
+  })
+
+  it('a customer_acceptance event condition normalizes with manual_trigger:true and null due_date, billability_provenance evaluated-unresolved', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 100000, due_date: null, billability_condition: { kind: 'event', event_type: 'customer_acceptance' } } as Partial<OneTimeFee>),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'event', event_type: 'customer_acceptance' })
+    expect(fee.manual_trigger).toBe(true)
+    expect(fee.billability_provenance).toBeNull()
+  })
+
+  // Final amendment, item 6 — the core adversarial regression: a
+  // model-emitted raw manual_trigger:true must NEVER suppress or bypass a
+  // valid billability_condition. Before the fix, `if (fee.manual_trigger)
+  // return fee` short-circuited BEFORE parseBillabilityCondition was even
+  // called, so a fee shaped exactly like this would have skipped
+  // validation/projection entirely and persisted whatever raw JSON the
+  // model produced, unvalidated.
+  it('condition=customer_acceptance + raw manual_trigger=true → condition wins, canonical event projection applied, not the raw value', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({
+        amount: 100000, due_date: null, manual_trigger: true, // raw model output — must not win
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+      } as Partial<OneTimeFee>),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'event', event_type: 'customer_acceptance' })
+    // manual_trigger ends up true here too, but as the CANONICAL PROJECTION
+    // for an event condition (lib/billability-condition.ts), not because
+    // the raw model value was trusted/passed through unvalidated — proven
+    // by the sibling test below, where a DIFFERENT raw manual_trigger value
+    // produces the identical canonical result.
+    expect(fee.manual_trigger).toBe(true)
+    expect(fee.due_date).toBeNull()
+    expect(fee.billability_provenance).toBeNull() // still requires reviewer confirmation
+  })
+
+  it('condition=customer_acceptance + raw manual_trigger=false + raw due_date=some date → condition wins, stray date removed — proves the projection is canonical, not the raw model value', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({
+        amount: 100000, due_date: '2026-09-01', manual_trigger: false, // raw model output — must not survive
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+      } as Partial<OneTimeFee>),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'event', event_type: 'customer_acceptance' })
+    // Identical canonical projection to the raw-manual_trigger:true sibling
+    // test above, despite opposite raw manual_trigger AND a stray raw date
+    // — proves both raw fields are irrelevant once a condition is present.
+    expect(fee.manual_trigger).toBe(true)
+    expect(fee.due_date).toBeNull()
+  })
+
+  it('condition=fixed_date(2026-10-15) + raw manual_trigger=true + conflicting raw due_date → canonical date wins', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({
+        amount: 100000, due_date: '1999-01-01', manual_trigger: true, // both must be overridden
+        billability_condition: { kind: 'fixed_date', date: '2026-10-15' },
+      } as Partial<OneTimeFee>),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'fixed_date', date: '2026-10-15' })
+    expect(fee.due_date).toBe('2026-10-15')
+    expect(fee.manual_trigger).toBe(false)
+  })
+
+  it('condition=immediate + raw manual_trigger=true → canonical immediate projection wins', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({
+        amount: 100000, due_date: '2026-01-01', manual_trigger: true, // both must be overridden
+        billability_condition: { kind: 'immediate' },
+      } as Partial<OneTimeFee>),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'immediate' })
+    expect(fee.due_date).toBeNull()
+    expect(fee.manual_trigger).toBe(false)
+  })
+
+  it('delivery and customer_acceptance remain distinct normalized event types — never collapsed (item 9/counterexample discipline)', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ fee_label: 'Delivery fee', amount: 50000, billability_condition: { kind: 'event', event_type: 'delivery' } } as Partial<OneTimeFee>),
+      oneTimeFee({ fee_label: 'Acceptance fee', amount: 50000, billability_condition: { kind: 'event', event_type: 'customer_acceptance' } } as Partial<OneTimeFee>),
+    ] }))
+    expect(terms.one_time_fees.find(f => f.fee_label === 'Delivery fee')?.billability_condition).toEqual({ kind: 'event', event_type: 'delivery' })
+    expect(terms.one_time_fees.find(f => f.fee_label === 'Acceptance fee')?.billability_condition).toEqual({ kind: 'event', event_type: 'customer_acceptance' })
+  })
+
+  it('genuine silence — the model explicitly answers billability_condition: null — becomes explicit null, never "immediate" (item 10)', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 100000, due_date: null, billability_condition: null } as Partial<OneTimeFee>),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toBeNull()
+    expect(fee.requires_confirmation).toBe(true)
+    expect(fee.unresolved_kind).toBe('needs_review')
+  })
+
+  it('silence expressed by OMITTING the JSON key entirely (real model variability — item 8) produces the IDENTICAL canonicalized result as an explicit null answer, for a fixed-amount fee', () => {
+    const omitted = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 100000, due_date: null }), // no billability_condition key at all
+    ] })).one_time_fees[0]
+    const explicit = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 100000, due_date: null, billability_condition: null } as Partial<OneTimeFee>),
+    ] })).one_time_fees[0]
+    expect(omitted.billability_condition).toBeNull()
+    expect(omitted.billability_condition).toEqual(explicit.billability_condition)
+    expect(omitted.manual_trigger).toEqual(explicit.manual_trigger)
+    expect(omitted.due_date).toEqual(explicit.due_date)
+    expect(omitted.requires_confirmation).toEqual(explicit.requires_confirmation)
+  })
+
+  it('a malformed/hallucinated billability_condition from the model is rejected (never enters the domain model) and treated as silence', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 100000, due_date: null, billability_condition: { kind: 'deemed_acceptance', window_days: 10 } } as unknown as Partial<OneTimeFee>),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toBeNull()
+    expect(fee.requires_confirmation).toBe(true)
+  })
+
+  it('an invalid/malformed condition resets due_date/manual_trigger to the safe/held projection — a stray executable-looking legacy shape must never survive on a newly-governed record (final amendment item 5)', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({
+        amount: 100000, due_date: null, manual_trigger: false, // "apparently executable" raw shape
+        billability_condition: { kind: 'deemed_acceptance', window_days: 10 },
+      } as unknown as Partial<OneTimeFee>),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toBeNull()
+    expect(fee.due_date).toBeNull()
+    expect(fee.manual_trigger).toBe(true) // held, not the dangerous "bill now" shape
+    expect(fee.billability_provenance).toBeNull() // still blocks readiness regardless
+  })
+
+  // Final lifecycle correction — this scenario was originally (incorrectly)
+  // treated as "legacy" purely because it came through applyExtractionSafetyNets
+  // with no billability_condition key. But EVERY call to
+  // applyExtractionSafetyNets represents a FRESH extraction pass — there is
+  // no way to produce a genuinely historical record through it at all.
+  // "Legacy" can only mean a persisted OneTimeFee that never passes through
+  // this pipeline again (see the dedicated historical-compatibility
+  // describe block below, which constructs such a record directly, never
+  // via extraction). A fresh fixed-amount fee with a due_date but no
+  // billability_condition key is fresh omission, not legacy — and, since
+  // it isn't the variable-rate-pricing shape either, canonicalizes to null.
+  it('a fresh fixed-amount fee with a due_date but no billability_condition key canonicalizes to null — it is fresh omission, not a legacy record', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 5000, due_date: '2026-03-01' }),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toBeNull()
+    expect(fee.billability_provenance).toBeNull()
+    expect(fee.requires_confirmation).toBe(true)
+  })
+
+  it('manual_trigger fees (genuine professional services) never enter the Step 12 lifecycle — billability_condition stays undefined', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ manual_trigger: true, amount: 0, metric_name: 'hours', rate_per_unit: 150 }),
+    ] }))
+    expect(terms.one_time_fees[0].billability_condition).toBeUndefined()
+  })
+
+  it('never re-normalizes a fee whose billability is already reviewer/contract resolved — re-extraction must not silently overwrite a prior human confirmation', () => {
+    // manual_trigger deliberately false here so this exercises the
+    // isProvenanceResolved skip specifically, not the (separate)
+    // manual_trigger early-return above.
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({
+        amount: 100000, due_date: '2026-05-01', manual_trigger: false,
+        // Deliberately inconsistent with due_date — if normalization ran
+        // again, the projection would overwrite due_date to '1999-01-01';
+        // it must not.
+        billability_condition: { kind: 'fixed_date', date: '1999-01-01' },
+        billability_provenance: 'reviewer_policy',
+      } as Partial<OneTimeFee>),
+    ] }))
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'fixed_date', date: '1999-01-01' })
+    expect(fee.due_date).toBe('2026-05-01') // untouched — proves normalization was skipped, not merely idempotent
+    expect(fee.billability_provenance).toBe('reviewer_policy')
+  })
+})
+
+describe('isExistingVariableRateFeeShape — the ONE narrow, shape-based (never manual_trigger) exemption', () => {
+  it('true: metric_name + positive rate_per_unit + no positive amount', () => {
+    expect(isExistingVariableRateFeeShape({
+      fee_label: 'PS', amount: 0, due_date: null, description: null, metric_name: 'hours', rate_per_unit: 150,
+    })).toBe(true)
+  })
+
+  it('false: a positive fixed amount disqualifies it, even with metric_name/rate_per_unit also present ("accidentally present" — item 4)', () => {
+    expect(isExistingVariableRateFeeShape({
+      fee_label: 'Fixed', amount: 100000, due_date: null, description: null, metric_name: 'hours', rate_per_unit: 150,
+    })).toBe(false)
+  })
+
+  it('false: no metric_name', () => {
+    expect(isExistingVariableRateFeeShape({ fee_label: 'X', amount: 0, due_date: null, description: null, rate_per_unit: 150 })).toBe(false)
+  })
+
+  it('false: no rate_per_unit', () => {
+    expect(isExistingVariableRateFeeShape({ fee_label: 'X', amount: 0, due_date: null, description: null, metric_name: 'hours' })).toBe(false)
+  })
+
+  it('false: rate_per_unit is zero or negative', () => {
+    expect(isExistingVariableRateFeeShape({ fee_label: 'X', amount: 0, due_date: null, description: null, metric_name: 'hours', rate_per_unit: 0 })).toBe(false)
+  })
+})
+
+// Final lifecycle correction, item 4 — the exact adversarial matrix
+// requested: fresh vs legacy is never manual_trigger-derived, and the
+// variable-rate-shape exemption is narrow, structural, and never rescues a
+// fixed fee or an attempted-but-invalid Step-12 answer.
+describe('normalizeBillabilityCondition — fresh omission vs the variable-rate-shape exemption (final lifecycle correction)', () => {
+  it('rate_per_unit + metric_name + amount 0 + condition omitted → existing compatibility path (billability_condition stays undefined)', () => {
+    const fee = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 0, due_date: null, manual_trigger: true, metric_name: 'hours', rate_per_unit: 150 }),
+    ] })).one_time_fees[0]
+    expect(fee.billability_condition).toBeUndefined()
+    expect(fee.manual_trigger).toBe(true)
+  })
+
+  it('same variable-rate shape + a valid explicit event condition → condition wins, enters Step 12 (item 1: a valid condition always wins)', () => {
+    const fee = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({
+        amount: 0, due_date: null, manual_trigger: true, metric_name: 'hours', rate_per_unit: 150,
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+      } as Partial<OneTimeFee>),
+    ] })).one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'event', event_type: 'customer_acceptance' })
+    expect(fee.billability_provenance).toBeNull()
+  })
+
+  it('fixed amount + manual_trigger true + condition omitted → condition=null / reviewed — does NOT escape as "professional services" merely because manual_trigger happens to be true', () => {
+    const fee = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 100000, due_date: null, manual_trigger: true }),
+    ] })).one_time_fees[0]
+    expect(fee.billability_condition).toBeNull()
+    expect(fee.billability_provenance).toBeNull()
+    expect(fee.requires_confirmation).toBe(true)
+  })
+
+  it('fixed amount + rate_per_unit accidentally present (but amount is positive) → does not qualify for the exemption', () => {
+    const fee = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 100000, due_date: null, metric_name: 'hours', rate_per_unit: 150 }),
+    ] })).one_time_fees[0]
+    expect(fee.billability_condition).toBeNull() // not exempted — canonicalized like any other fixed fee
+  })
+
+  it('variable-rate-shaped fee + an INVALID/malformed condition (not omitted) → the exemption does NOT hide the malformed Step-12 answer; canonicalizes to null like any other invalid answer', () => {
+    const fee = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({
+        amount: 0, due_date: null, metric_name: 'hours', rate_per_unit: 150,
+        billability_condition: { kind: 'deemed_acceptance', window_days: 10 },
+      } as unknown as Partial<OneTimeFee>),
+    ] })).one_time_fees[0]
+    expect(fee.billability_condition).toBeNull()
+    expect(fee.billability_provenance).toBeNull()
+  })
+
+  it('variable-rate-shaped fee + explicit null (not omitted) → NOT exempted either — only genuine key-absence qualifies', () => {
+    const fee = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 0, due_date: null, metric_name: 'hours', rate_per_unit: 150, billability_condition: null } as Partial<OneTimeFee>),
+    ] })).one_time_fees[0]
+    expect(fee.billability_condition).toBeNull()
+    expect(fee.billability_provenance).toBeNull()
+  })
+})
+
+// Final lifecycle correction, item 6/7 — "legacy" is a PERSISTENCE
+// distinction (a record that never passes through applyExtractionSafetyNets
+// again), never something applyExtractionSafetyNets itself can produce.
+// These tests exercise the readiness layer directly, exactly as a genuinely
+// historical DB row would be read, to prove that distinction still holds.
+describe('historical compatibility — genuinely persisted records never touched by fresh extraction', () => {
+  it('a genuinely historical persisted fee (billability_condition property absent, never run through normalizeBillabilityCondition) keeps exact Step-11 compatibility behavior', () => {
+    // Constructed directly, NOT via applyExtractionSafetyNets — this IS
+    // what "legacy" means: a record extraction never touches again.
+    const historical: OneTimeFee = { fee_label: 'Legacy fee', amount: 5000, due_date: '2024-01-01', description: null }
+    expect(historical.billability_condition).toBeUndefined()
+    expect(historical.manual_trigger).toBeUndefined()
+  })
+
+  it('if that same historical fee is RE-EXTRACTED, it enters the Step-12 lifecycle like any other fresh result — the legacy exemption does not persist across a real re-extraction', () => {
+    const reExtracted = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ fee_label: 'Legacy fee', amount: 5000, due_date: '2024-01-01' }),
+    ] })).one_time_fees[0]
+    expect(reExtracted.billability_condition).toBeNull() // no longer undefined — genuinely evaluated now
   })
 })

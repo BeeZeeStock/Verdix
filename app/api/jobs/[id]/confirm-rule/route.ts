@@ -476,6 +476,14 @@ export async function POST(
     // existing 'contract_derived', never downgrading it) — see that
     // module's header for why. This route no longer accepts or forwards
     // any client-supplied FieldProvenance for this rule type.
+    //
+    // Step 12 — confirmBillability now confirms the normalized
+    // billability_condition (lib/types.ts) exactly as it did the old
+    // due_date/manual_trigger pair, unchanged mechanically: no new field is
+    // read from the request body for this. Condition EDITING is not
+    // introduced (Step 12 item 18 — confirmation of the persisted,
+    // extraction-proposed condition only), so there is nothing new to
+    // sanitize here.
     const fees = ((termsRow as { one_time_fees?: OneTimeFee[] | null }).one_time_fees ?? []) as OneTimeFee[]
     const targetIndex = fees.findIndex(f => f.fee_label === contractUnitType)
     if (targetIndex === -1) {

@@ -136,11 +136,22 @@ export const MILESTONE_DELIVERY_NE_ACCEPTANCE_CANDIDATE: VerdixRuleCandidate = {
     '(10 business days to reject, else deemed accepted) and a deliberately opposite clause (delivery explicitly ' +
     'constitutes acceptance, no review). Both correctly avoided over-inference in either direction — neither the ' +
     'deemed-acceptance case invented a false-negative "not yet accepted" block, nor did the explicit-collapse ' +
-    'case wrongly withhold billability once delivery is confirmed. This validates the PRINCIPLE. It does NOT yet ' +
-    'validate that Verdix can ENFORCE it: both cases currently extract to the same OneTimeFee shape ' +
-    '(manual_trigger: true, distinction only in free-text description) because no normalized acceptance-event ' +
-    'field exists. Promotion to active is blocked on that semantic-model gap, not on evidence quality — see ' +
-    'lib/rulebook/MILESTONE_BILLING_FINDINGS.md.',
+    'case wrongly withhold billability once delivery is confirmed. This validates the PRINCIPLE. At the time this ' +
+    'was written it did NOT yet validate that Verdix could ENFORCE it: both cases extracted to the same OneTimeFee ' +
+    'shape (manual_trigger: true, distinction only in free-text description) because no normalized acceptance-event ' +
+    'field existed. ' +
+    'STEP 12 UPDATE: that specific semantic-model gap is now closed — lib/types.ts\'s BillabilityCondition gives ' +
+    '\'delivery\' and \'customer_acceptance\' (plus \'final_acceptance\') distinct, structurally separate ' +
+    'normalized event_type values, and the live Sonnet A-F verification run for Step 12 (see that step\'s report) ' +
+    'confirmed the model assigns them correctly, including the explicit-collapse counterexample (Case F) mapping ' +
+    'to event_type \'delivery\' rather than a generic/ambiguous acceptance value. This candidate is now technically ' +
+    'ACTIVATABLE in a future step — a real Global Rulebook rule would need a new ruleClass \'anti_inference\' ' +
+    'evaluate() function operating on a new CommercialSemanticContext domain slice for billability_condition (none ' +
+    'exists yet; today\'s 9 active rules have no such slice), plus wiring into lib/rulebook/context.ts and the ' +
+    'shadow/activation resolvers. Step 12 deliberately does NOT build that integration or promote this candidate ' +
+    '(status stays \'validated\', never \'approved\'/\'active\') — the modeling primitive and the Rulebook ' +
+    'integration are separate pieces of work, and Step 12\'s explicit scope is only the former. See ' +
+    'lib/rulebook/MILESTONE_BILLING_FINDINGS.md for the original Step 10 finding this update supersedes.',
 }
 
 // Step 10 — four further principles item 8 named as candidates to

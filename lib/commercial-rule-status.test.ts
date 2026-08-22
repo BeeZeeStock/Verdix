@@ -599,3 +599,123 @@ describe('computeCommercialRuleWorkload — OneTimeFee readiness integration (St
     expect(workload.totalToConfirm).toBe(0)
   })
 })
+
+describe('isOneTimeFeeUnresolved — Step 12 billability_condition awareness', () => {
+  it('legacy record (billability_condition undefined) keeps the exact pre-Step-12 manual_trigger-gated check', () => {
+    expect(isOneTimeFeeUnresolved({
+      fee_label: 'Legacy', amount: 100000, amount_provenance: 'reviewer_policy',
+      manual_trigger: true, billability_provenance: null,
+    })).toBe(false) // manual_trigger short-circuits billability, exactly as Step 11
+  })
+
+  it('a Step-12 event condition with billability_provenance null blocks — needs reviewer confirmation, regardless of the (unrelated) projected manual_trigger:true', () => {
+    expect(isOneTimeFeeUnresolved({
+      fee_label: 'Milestone fee', amount: 100000, amount_provenance: 'reviewer_policy',
+      billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+      manual_trigger: true, // projection side effect — must NOT suppress the check under Step 12
+      billability_provenance: null,
+    })).toBe(true)
+  })
+
+  it('a Step-12 event condition with billability_provenance resolved is no longer counted as an ordinary unresolved item', () => {
+    expect(isOneTimeFeeUnresolved({
+      fee_label: 'Milestone fee', amount: 100000, amount_provenance: 'reviewer_policy',
+      billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+      manual_trigger: true, billability_provenance: 'reviewer_policy',
+    })).toBe(false)
+  })
+
+  it('a Step-12 immediate/fixed_date condition behaves like any other provenance-gated field — manual_trigger stays false, provenance governs directly', () => {
+    const unconfirmed = { fee_label: 'Fixed', amount: 100000, amount_provenance: 'reviewer_policy' as const, billability_condition: { kind: 'fixed_date' as const, date: '2026-10-15' }, billability_provenance: null }
+    const confirmed = { ...unconfirmed, billability_provenance: 'reviewer_policy' as const }
+    expect(isOneTimeFeeUnresolved(unconfirmed)).toBe(true)
+    expect(isOneTimeFeeUnresolved(confirmed)).toBe(false)
+  })
+})
+
+describe('computeCommercialRuleWorkload — Step 12 operational-evidence blocker (item 6/16)', () => {
+  it('an event condition, confirmed (reviewer_policy), produces a required_operational_event_missing blocker — never unsupported_commercial_semantics', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Design Milestone Fee', amount: 100000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        manual_trigger: true, billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).toBe('execution_blocked')
+    expect(workload.executionBlockers).toHaveLength(1)
+    expect(workload.executionBlockers[0]).toMatchObject({
+      type: 'required_operational_event_missing',
+      rule_family: 'one_time_fee',
+      event_type: 'customer_acceptance',
+      field: 'one_time_fee:Design Milestone Fee',
+    })
+    // Never counted as an ordinary reviewer decision — nothing left to confirm.
+    expect(workload.totalToConfirm).toBe(0)
+    expect(workload.blockers).not.toContain('one_time_fee:Design Milestone Fee')
+  })
+
+  it('an event condition NOT yet confirmed is an ordinary reviewer decision, not yet a blocker at all', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Design Milestone Fee', amount: 100000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        manual_trigger: true, billability_provenance: null,
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.executionBlockers).toHaveLength(0)
+    expect(workload.totalToConfirm).toBe(1)
+    expect(workload.blockers).toContain('one_time_fee:Design Milestone Fee')
+  })
+
+  it('amount stays independently counted even once billability becomes an operational-evidence blocker (item 5 independence, post-Step-12)', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Design Milestone Fee', amount: 100000, amount_provenance: null,
+        billability_condition: { kind: 'event', event_type: 'delivery' },
+        manual_trigger: true, billability_provenance: 'contract_derived',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.executionBlockers).toHaveLength(1)
+    expect(workload.executionBlockers[0].type).toBe('required_operational_event_missing')
+    expect(workload.totalToConfirm).toBe(1) // amount still needs a reviewer decision
+    expect(workload.blockers).toContain('one_time_fee:Design Milestone Fee')
+  })
+
+  it('an immediate/fixed_date condition, confirmed, never produces an operational-evidence blocker — reaches full readiness', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Implementation Fee', amount: 100000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'fixed_date', date: '2026-10-15' },
+        billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.executionBlockers).toHaveLength(0)
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+
+  it('unresolved_kind: unsupported_semantics still takes priority over billability_condition — a genuinely unrepresentable fee never reaches the operational-evidence branch', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Deemed Acceptance Fee', amount: 100000, amount_provenance: 'contract_derived',
+        billability_condition: null, requires_confirmation: true, unresolved_kind: 'unsupported_semantics',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.executionBlockers).toHaveLength(1)
+    expect(workload.executionBlockers[0].type).toBe('unsupported_commercial_semantics')
+  })
+
+  it('legacy fee (billability_condition undefined, manual_trigger true) never produces an operational-evidence blocker — Step 12 does not reopen historical manual_trigger fees', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{ fee_label: 'Professional services', amount: 0, manual_trigger: true }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.executionBlockers).toHaveLength(0)
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+})

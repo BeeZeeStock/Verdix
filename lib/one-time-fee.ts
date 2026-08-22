@@ -1,9 +1,24 @@
-// Verdix commercial rules — OneTimeFee confirmation (Step 11 + amendments).
+// Verdix commercial rules — OneTimeFee confirmation (Step 11 + amendments,
+// Step 12).
 //
 // The minimal review/provenance path this step introduces (item 9) — NOT
 // a new elaborate milestone review workflow. A reviewer explicitly
 // confirming a one-time fee's amount and/or its billability/timing
 // treatment is the ONE thing this module does.
+//
+// Step 12 note — this module needs NO functional change for
+// BillabilityCondition. confirmBillability already mints reviewer_policy
+// for whatever billability_provenance currently gates — under Step 12 that
+// is the same field, now describing "is the normalized billability_
+// condition confirmed" rather than the old due_date/manual_trigger pair
+// (see lib/types.ts's OneTimeFee.billability_condition). Per Step 12 item
+// 18, this step deliberately offers confirmation of the ALREADY-persisted,
+// extraction-proposed condition only — no free-form condition editing —
+// so there is no new client input surface here to secure: a reviewer
+// cannot submit a BillabilityCondition value through this function at all.
+// If condition editing is ever introduced, it must get the exact same
+// trusted-value immutability discipline buildOneTimeFeeConfirmation already
+// gives `amount` below (never silently overwrite a contract_derived value).
 //
 // Final security correction — this function accepts NO client-asserted
 // FieldProvenance value at all, for either dimension. The caller (a route
