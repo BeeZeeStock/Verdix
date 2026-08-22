@@ -1,25 +1,21 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import Link from 'next/link'
 import type { OrganizationRuleRecord } from '@/lib/rulebook/organization-rules'
 
-// Kept in sync by hand with lib/rulebook/organization-rulebook-display.ts —
-// that module has zero DB/React imports and is safe to import directly
-// from a 'use client' component, so this page imports it rather than
-// re-deriving the same formatting.
+// Kept in sync by hand with lib/rulebook/organization-rulebook-display.ts /
+// organization-policy-catalog.ts — both are zero-DB/React pure modules,
+// safe to import directly from a 'use client' component, so this page
+// imports them rather than re-deriving the same formatting or temporal
+// logic (item 14).
 import {
-  describeTargetField, describeTreatment, describeMatchConditions,
-  describeEffectivePeriod, describeSourceKind, groupForDisplay,
-  type RulebookDisplayGroup,
+  describeTreatment, describeMatchConditions, describeEffectivePeriod, describeSourceKind,
 } from '@/lib/rulebook/organization-rulebook-display'
-
-const GROUP_ORDER: { key: RulebookDisplayGroup; label: string; blurb: string }[] = [
-  { key: 'active', label: 'Active', blurb: 'Currently resolving genuinely silent contract fields.' },
-  { key: 'future', label: 'Future', blurb: 'Approved and scheduled, not yet in effect.' },
-  { key: 'draft', label: 'Draft', blurb: 'Not yet approved — has no effect on any agreement.' },
-  { key: 'superseded', label: 'Superseded', blurb: 'Retired by a later version — kept for historical resolution.' },
-  { key: 'disabled', label: 'Disabled', blurb: 'Discarded drafts and manually disabled policies.' },
-]
+import {
+  buildOrganizationPolicySettingsModel,
+  type OrganizationPolicyCardModel,
+} from '@/lib/rulebook/organization-policy-catalog'
 
 const STATUS_COLOR: Record<string, { bg: string; fg: string }> = {
   active: { bg: 'rgba(11,92,54,0.1)', fg: '#0B5C36' },
@@ -57,7 +53,11 @@ function RuleDetails({ rule }: { rule: OrganizationRuleRecord }) {
   )
 }
 
-function RuleCard({ rule, onChanged }: { rule: OrganizationRuleRecord; onChanged: () => void }) {
+// One organization rule's detail + management actions. Rendered inside a
+// PolicyCard's active/scheduled/draft section — several may appear in the
+// same card when multiple scoped rules exist for the same policy field
+// (item 13), each shown in full rather than collapsed to one value.
+function RuleRow({ rule, onChanged }: { rule: OrganizationRuleRecord; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [conflict, setConflict] = useState<{ currentPolicy: OrganizationRuleRecord } | null>(null)
@@ -103,15 +103,12 @@ function RuleCard({ rule, onChanged }: { rule: OrganizationRuleRecord; onChanged
   }
 
   return (
-    <div className="rounded-2xl p-5 bg-white border border-forest/10">
+    <div className="rounded-xl p-4 bg-cream/30 border border-forest/8">
       <div className="flex items-start justify-between gap-3 mb-2">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-sm font-semibold text-ink">{rule.name}</span>
-            <StatusBadge status={rule.status} />
-            <span className="text-[11px] text-stone/60">v{rule.version}</span>
-          </div>
-          <p className="text-xs text-stone">{describeTargetField(rule.targetField)}</p>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-ink">{rule.name}</span>
+          <StatusBadge status={rule.status} />
+          <span className="text-[11px] text-stone/60">v{rule.version}</span>
         </div>
       </div>
 
@@ -120,7 +117,7 @@ function RuleCard({ rule, onChanged }: { rule: OrganizationRuleRecord; onChanged
       <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs mb-2">
         <div>
           <span className="text-stone/60">Applies when</span>
-          <div className="text-ink">{describeMatchConditions(rule.matchConditions).join(' · ') || 'No conditions (broad default)'}</div>
+          <div className="text-ink">{describeMatchConditions(rule.matchConditions).join(' · ') || 'The agreement does not specify the treatment'}</div>
         </div>
         <div>
           <span className="text-stone/60">Verdix will do</span>
@@ -133,14 +130,6 @@ function RuleCard({ rule, onChanged }: { rule: OrganizationRuleRecord; onChanged
         <div>
           <span className="text-stone/60">Source</span>
           <div className="text-ink">{describeSourceKind(rule.sourceKind)}</div>
-        </div>
-        <div>
-          <span className="text-stone/60">Created by</span>
-          <div className="text-ink">{rule.createdBy}</div>
-        </div>
-        <div>
-          <span className="text-stone/60">Approved by</span>
-          <div className="text-ink">{rule.approvedBy ?? '—'}</div>
         </div>
       </div>
 
@@ -204,6 +193,130 @@ function RuleCard({ rule, onChanged }: { rule: OrganizationRuleRecord; onChanged
   )
 }
 
+// Read-only history row — superseded/disabled versions (item 12). No
+// activate/discard/edit actions: history is kept accessible, not editable.
+function HistoryRow({ rule }: { rule: OrganizationRuleRecord }) {
+  return (
+    <div className="rounded-xl p-3 bg-white border border-forest/8">
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="text-xs font-medium text-ink">{rule.name}</span>
+        <StatusBadge status={rule.status} />
+        <span className="text-[11px] text-stone/60">v{rule.version}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[11px]">
+        <div>
+          <span className="text-stone/60">Value</span>
+          <div className="text-ink">{describeTreatment(rule.targetField, rule.value)}</div>
+        </div>
+        <div>
+          <span className="text-stone/60">Effective period</span>
+          <div className="text-ink">{describeEffectivePeriod(rule.effectiveFrom, rule.effectiveTo)}</div>
+        </div>
+        <div>
+          <span className="text-stone/60">Applies when</span>
+          <div className="text-ink">{describeMatchConditions(rule.matchConditions).join(' · ') || 'The agreement does not specify the treatment'}</div>
+        </div>
+        <div>
+          <span className="text-stone/60">Source</span>
+          <div className="text-ink">{describeSourceKind(rule.sourceKind)}</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PolicyHistoryDisclosure({ history }: { history: OrganizationRuleRecord[] }) {
+  const [open, setOpen] = useState(false)
+  if (history.length === 0) return null
+  return (
+    <div className="mt-3 pt-3 border-t border-forest/8">
+      <button onClick={() => setOpen(o => !o)} className="text-xs text-stone hover:text-forest transition-colors flex items-center gap-1">
+        <i className={`ti ${open ? 'ti-chevron-down' : 'ti-chevron-right'}`} style={{ fontSize: 12 }} />
+        View policy history ({history.length})
+      </button>
+      {open && (
+        <div className="flex flex-col gap-2 mt-2">
+          {history.map(rule => <HistoryRow key={rule.id} rule={rule} />)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// A supported policy TYPE this organization has NOT configured — layer B
+// only, no organization data to show. Deliberately does not render "Not
+// configured" as a value-shaped fact about the organization's carry-
+// forward treatment; it names the capability and points at the real
+// workflow, nothing more (item 7).
+function SupportedTypeCard({ policy }: { policy: OrganizationPolicyCardModel }) {
+  return (
+    <div className="rounded-2xl p-5 bg-white border border-forest/10">
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-sm font-semibold text-ink">{policy.title}</span>
+        <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full" style={{ background: 'rgba(120,113,108,0.14)', color: '#57534E' }}>
+          Not configured
+        </span>
+      </div>
+      <p className="text-xs text-stone mb-3">{policy.description}</p>
+      <Link href="/configure" className="text-xs font-semibold text-forest hover:text-sage transition-colors inline-flex items-center gap-1">
+        <i className="ti ti-arrow-right" style={{ fontSize: 12 }} /> {policy.howCreated}
+      </Link>
+    </div>
+  )
+}
+
+// An actual, organization-owned policy (layer C) — active, scheduled,
+// and/or draft rules exist for this type. "Not configured" never appears
+// here; a card only reaches this component once the organization has a
+// real rule row for the field.
+function PolicyCard({ policy, onChanged }: { policy: OrganizationPolicyCardModel; onChanged: () => void }) {
+  const hasMultipleActive = policy.activeRules.length > 1
+
+  return (
+    <div className="rounded-2xl p-5 bg-white border border-forest/10">
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-sm font-semibold text-ink">{policy.title}</span>
+      </div>
+      <p className="text-xs text-stone mb-4">{policy.description}</p>
+
+      {(policy.state === 'active' || policy.state === 'active_with_scheduled_change') && (
+        <div className="mb-3">
+          {(policy.state === 'active_with_scheduled_change' || hasMultipleActive) && (
+            <p className="text-[11px] font-medium text-stone/70 mb-2">
+              {policy.state === 'active_with_scheduled_change' ? 'Current policy' : `${policy.activeRules.length} configured policies`}
+            </p>
+          )}
+          <div className="flex flex-col gap-2">
+            {policy.activeRules.map(rule => <RuleRow key={rule.id} rule={rule} onChanged={onChanged} />)}
+          </div>
+        </div>
+      )}
+
+      {(policy.state === 'scheduled' || policy.state === 'active_with_scheduled_change') && (
+        <div className="mb-3">
+          <p className="text-[11px] font-medium text-stone/70 mb-2">
+            {policy.state === 'active_with_scheduled_change' ? 'Scheduled change' : 'Scheduled'}
+          </p>
+          <div className="flex flex-col gap-2">
+            {policy.scheduledRules.map(rule => <RuleRow key={rule.id} rule={rule} onChanged={onChanged} />)}
+          </div>
+        </div>
+      )}
+
+      {policy.state === 'draft' && (
+        <div className="mb-3">
+          <p className="text-[11px] font-medium text-stone/70 mb-2">Draft — awaiting activation</p>
+          <div className="flex flex-col gap-2">
+            {policy.draftRules.map(rule => <RuleRow key={rule.id} rule={rule} onChanged={onChanged} />)}
+          </div>
+        </div>
+      )}
+
+      <PolicyHistoryDisclosure history={policy.history} />
+    </div>
+  )
+}
+
 export default function OrganizationRulebookPage() {
   const [rules, setRules] = useState<OrganizationRuleRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -239,38 +352,61 @@ export default function OrganizationRulebookPage() {
     )
   }
 
-  const grouped = GROUP_ORDER.map(g => ({ ...g, rules: rules.filter(r => groupForDisplay(r) === g.key) }))
+  const model = buildOrganizationPolicySettingsModel(rules)
+  // Layer C (this organization's own policies) vs layer B (what Verdix
+  // supports but this organization hasn't configured) — a type appears in
+  // exactly one section, never both, and moves between them purely as a
+  // function of its own state (item 8).
+  const configuredTypes = model.policyTypes.filter(p => p.state !== 'not_configured')
+  const unconfiguredTypes = model.policyTypes.filter(p => p.state === 'not_configured')
 
   return (
     <div className="p-4 md:p-8 max-w-4xl">
       <div className="mb-8">
         <h1 className="font-display font-light text-ink text-2xl mb-1">Organization Rulebook</h1>
         <p className="text-stone text-sm">
-          Set reusable billing policies from decisions your team has already approved during contract review.
-          Verdix can apply these policies when an agreement does not specify the treatment. Contract terms always take priority.
+          Define reusable policies for situations where an agreement does not specify the treatment. Agreement terms always take priority.
+          Policies can be created from decisions your team approves during contract review.
         </p>
       </div>
 
-      {rules.length === 0 && (
+      {model.summary.supportedTypes === 0 ? (
         <div className="bg-white border border-forest/10 rounded-2xl px-6 py-16 text-center">
           <i className="ti ti-gavel text-stone/25 block mb-4" style={{ fontSize: 32 }} />
-          <p className="text-sm font-medium text-ink mb-1">No organization policies yet</p>
-          <p className="text-sm text-stone">When your team approves a reusable billing decision during contract review, you can save it as an organization policy for future agreements.</p>
+          <p className="text-sm font-medium text-ink mb-1">No organization policy types are available yet</p>
         </div>
-      )}
+      ) : (
+        <>
+          <div className="mb-8">
+            <div className="flex items-baseline gap-2 mb-1">
+              <h2 className="text-sm font-semibold text-ink">Your organization policies</h2>
+              <span className="text-xs text-stone/60">{model.summary.configuredPolicies} configured</span>
+            </div>
+            {configuredTypes.length === 0 ? (
+              <div className="bg-white border border-forest/10 rounded-2xl px-6 py-10 text-center mt-3">
+                <p className="text-sm font-medium text-ink mb-1">No organization policies configured yet.</p>
+                <p className="text-xs text-stone">When your team approves a reusable decision during contract review, you can save it as an organization policy.</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-4 mt-3">
+                {configuredTypes.map(policy => <PolicyCard key={policy.field} policy={policy} onChanged={load} />)}
+              </div>
+            )}
+          </div>
 
-      {grouped.filter(g => g.rules.length > 0).map(g => (
-        <div key={g.key} className="mb-8">
-          <div className="flex items-baseline gap-2 mb-3">
-            <h2 className="text-sm font-semibold text-ink">{g.label}</h2>
-            <span className="text-xs text-stone/60">{g.rules.length}</span>
-          </div>
-          <p className="text-xs text-stone/60 mb-3">{g.blurb}</p>
-          <div className="flex flex-col gap-3">
-            {g.rules.map(rule => <RuleCard key={rule.id} rule={rule} onChanged={load} />)}
-          </div>
-        </div>
-      ))}
+          {unconfiguredTypes.length > 0 && (
+            <div>
+              <div className="flex items-baseline gap-2 mb-3">
+                <h2 className="text-sm font-semibold text-ink">Supported policy types</h2>
+                <span className="text-xs text-stone/60">{unconfiguredTypes.length}</span>
+              </div>
+              <div className="flex flex-col gap-4">
+                {unconfiguredTypes.map(policy => <SupportedTypeCard key={policy.field} policy={policy} />)}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }
