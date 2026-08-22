@@ -28,11 +28,15 @@ describe('the Rulebook registry itself', () => {
     expect(verdixCommercialRulebook.length).toBeGreaterThanOrEqual(6)
     expect(verdixCommercialRulebook.length).toBeLessThanOrEqual(8)
   })
-  it('every rule has a stable id, a version, and a category of invariant or semantic', () => {
+  // Step 6 — category ('invariant' | 'semantic') was replaced by the
+  // finer-grained ruleClass taxonomy; see tests/commercial-semantics/
+  // rulebook/rule-class.test.ts for the full per-rule classification
+  // coverage this test deliberately doesn't duplicate.
+  it('every rule has a stable id, a version, and a ruleClass', () => {
     for (const rule of verdixCommercialRulebook) {
       expect(rule.id).toMatch(/^[a-z0-9_.]+$/)
       expect(rule.version).toBeGreaterThanOrEqual(1)
-      expect(['invariant', 'semantic']).toContain(rule.category)
+      expect(['invariant', 'semantic_interpretation', 'default_policy', 'anti_inference']).toContain(rule.ruleClass)
     }
   })
   it('rule ids are unique', () => {

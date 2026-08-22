@@ -12,17 +12,9 @@
 // point, and tests/commercial-semantics/rulebook/ for how this is exercised
 // against the same scenarios the Step 1 regression corpus already covers.
 import type { FieldProvenance, MinimumCommitment, TierCalculationMethod, CreditApplicationRule } from '@/lib/types'
+import type { VerdixRuleClass } from './rule-class'
 
-export type RulebookRuleCategory =
-  // A structural guarantee the calculation/readiness engine must always
-  // hold (e.g. "floor is never additive") — violating it is always a bug.
-  | 'invariant'
-  // A reusable interpretive principle about how normalized fields relate
-  // to each other (e.g. "calculation basis does not establish application
-  // scope") — used to catch a field being derived from another field it
-  // doesn't actually prove, not a hard structural guarantee about a single
-  // value's shape.
-  | 'semantic'
+export type { VerdixRuleClass }
 
 export type RulebookFindingOutcome =
   // The normalized state (and, where supplied, the observed execution
@@ -123,7 +115,14 @@ export interface CommercialSemanticContext {
 export interface VerdixRulebookRule {
   id: string
   version: number
-  category: RulebookRuleCategory
+  // Step 6 — what KIND of authority this rule is architecturally allowed
+  // to have (invariant / semantic_interpretation / default_policy /
+  // anti_inference — see lib/rulebook/rule-class.ts for the full
+  // taxonomy and RULE_CLASS_CAPABILITIES). Distinct from, and never to be
+  // conflated with, whether the rule is actually SWITCHED ON in
+  // production today — that's lib/rulebook/activation.ts's
+  // VERDIX_RULEBOOK_ACTIVATION registry.
+  ruleClass: VerdixRuleClass
   description: string
   matches: (input: CommercialSemanticContext) => boolean
   evaluate: (input: CommercialSemanticContext) => RulebookFinding[]

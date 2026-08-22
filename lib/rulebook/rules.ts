@@ -26,7 +26,13 @@ export const VERDIX_RULEBOOK_VERSION = '0.1.0'
 const minimumFloorNonAdditive: VerdixRulebookRule = {
   id: 'minimum.floor.non_additive',
   version: 1,
-  category: 'invariant',
+  // Step 6 classification: invariant. A structural fact about how the
+  // CALCULATION ENGINE must behave (payable = max(charge, minimum),
+  // never additive) — has nothing to do with what a silent contract
+  // should resolve to, and a 'contradicts' finding here is always an
+  // engine bug, never a customer-specific ambiguity. Matches the existing
+  // Step 3 activation (enforce_invariant, target: execution).
+  ruleClass: 'invariant',
   description: 'A minimum commitment in floor mode is payable = max(calculated_charge, minimum), never calculated_charge + minimum — regardless of how the commitment is represented (e.g. duplicated across multiple tier rows).',
   matches: (input) => input.minimumCommitment?.mode === 'floor',
   evaluate: (input) => {
@@ -65,7 +71,11 @@ const minimumFloorNonAdditive: VerdixRulebookRule = {
 const allUnitsNonGraduated: VerdixRulebookRule = {
   id: 'pricing.all_units.non_graduated',
   version: 1,
-  category: 'invariant',
+  // Step 6 classification: invariant — same reasoning as minimumFloor
+  // NonAdditive above: a structural fact about tier-execution behavior,
+  // never a customer policy question. Matches the existing Step 3
+  // activation (enforce_invariant, target: execution).
+  ruleClass: 'invariant',
   description: 'When tier_calculation.method is "volume" (all-units), exactly one tier is selected using total period quantity and its rate applies to ALL qualifying units — never per-band graduated rating.',
   matches: (input) => input.tierCalculation?.method === 'volume',
   evaluate: (input) => {
@@ -108,7 +118,16 @@ function sameComponentSet(a: string[], b: string[]): boolean {
 const creditBasisNeApplicationScope: VerdixRulebookRule = {
   id: 'credit.basis_ne_application_scope',
   version: 1,
-  category: 'semantic',
+  // Step 6 classification: anti_inference, not semantic_interpretation —
+  // this rule's entire purpose is to state what must NOT be inferred
+  // (calculation basis -> application scope) and catch the specific
+  // shape of a wrongly-inferred value (looks copied from the basis, no
+  // independent grounding). It never determines/confirms meaning for
+  // explicit language on its own — when the field IS independently
+  // grounded, it merely affirms that fact; when the field is genuinely
+  // open, it reports 'remains_unresolved' and supplies nothing. Matches
+  // the existing Step 3 activation (diagnostic only).
+  ruleClass: 'anti_inference',
   description: 'A percentage/amount calculated FROM component X does not, by itself, prove that the resulting credit/rebate may only offset component X — application scope requires its own, independent grounding.',
   matches: (input) => !!input.creditBasis?.componentKeys && !!input.creditApplication,
   evaluate: (input) => {
@@ -151,7 +170,11 @@ const creditBasisNeApplicationScope: VerdixRulebookRule = {
 const nextInvoiceTimingNeCarryForward: VerdixRulebookRule = {
   id: 'credit.next_invoice_timing_ne_carry_forward',
   version: 1,
-  category: 'semantic',
+  // Step 6 classification: anti_inference — same shape as
+  // creditBasisNeApplicationScope: states what must NOT be inferred
+  // (timing -> carry-forward), never itself supplies a value. Matches
+  // the existing Step 3 activation (diagnostic only).
+  ruleClass: 'anti_inference',
   description: 'availability = "next_period" establishes WHEN a credit becomes available to apply — it does not, by itself, establish carry_forward true or false.',
   matches: (input) => input.creditApplication?.availability === 'next_period',
   evaluate: (input) => {
@@ -185,7 +208,11 @@ const nextInvoiceTimingNeCarryForward: VerdixRulebookRule = {
 const futurePayableScopeNeIndefiniteSurvival: VerdixRulebookRule = {
   id: 'credit.future_payable_scope_ne_indefinite_survival',
   version: 1,
-  category: 'semantic',
+  // Step 6 classification: anti_inference — same shape again: states
+  // what must NOT be inferred (broad eligible-component scope ->
+  // indefinite survival). Matches the existing Step 3 activation
+  // (diagnostic only).
+  ruleClass: 'anti_inference',
   description: 'eligible_component_keys = "all" (the full future-amounts-payable pool) establishes broad application SCOPE — it does not, by itself, establish that an unused balance survives indefinitely.',
   matches: (input) => input.creditApplication?.eligibleComponentKeys === 'all',
   evaluate: (input) => {
@@ -221,7 +248,18 @@ const futurePayableScopeNeIndefiniteSurvival: VerdixRulebookRule = {
 const explicitCarryForwardAuthoritative: VerdixRulebookRule = {
   id: 'credit.explicit_carry_forward_authoritative',
   version: 1,
-  category: 'semantic',
+  // Step 6 classification: semantic_interpretation — the one rule in this
+  // registry whose job is to affirm/interpret EXPLICIT contract language
+  // rather than police an inference. Its match guard requires
+  // survivalProvenance === 'contract_derived' already, so it never
+  // determines meaning from scratch — it only ever confirms a grounded
+  // reading is Rulebook-consistent. Its resulting authority stays
+  // contract_derived regardless (see assertAuthorityAllowedForClass in
+  // lib/rulebook/rule-class.ts) — this rule contributes interpretation
+  // METHOD only, never authority. Matches the existing Step 3 activation
+  // (diagnostic only, since no production route consumes Rulebook
+  // findings as authority yet).
+  ruleClass: 'semantic_interpretation',
   description: 'When the normalized, source-derived rule explicitly establishes carry_forward (contract_derived provenance), the Rulebook agrees with that treatment — it never second-guesses a grounded contract reading.',
   matches: (input) => input.creditApplication?.carryForward === true && input.creditApplication?.survivalProvenance === 'contract_derived',
   evaluate: () => [{
@@ -243,7 +281,15 @@ const explicitCarryForwardAuthoritative: VerdixRulebookRule = {
 const silenceCannotBecomeContractDerived: VerdixRulebookRule = {
   id: 'provenance.silence_cannot_become_contract_derived',
   version: 1,
-  category: 'invariant',
+  // Step 6 classification: invariant, not anti_inference — this rule
+  // polices the PROVENANCE MODEL's own integrity (a contract_derived
+  // claim must have real source text behind it), not a specific
+  // commercial inference (e.g. "don't derive carry-forward from timing").
+  // Violating it is always a bug in how provenance was assigned, never a
+  // customer-specific ambiguity — the same structural-guarantee shape as
+  // the two execution invariants above. Matches the existing Step 3
+  // activation (enforce_invariant, target: promotion).
+  ruleClass: 'invariant',
   description: 'A field with no underlying contract source-text evidence must never carry contract_derived provenance — missing contractual evidence cannot become source provenance.',
   matches: (input) => (input.provenancedFields?.length ?? 0) > 0,
   evaluate: (input) => input.provenancedFields!.map((f): RulebookFinding => {
@@ -271,7 +317,15 @@ const silenceCannotBecomeContractDerived: VerdixRulebookRule = {
 const verdixRecommendationCannotClearReadiness: VerdixRulebookRule = {
   id: 'provenance.verdix_recommendation_cannot_clear_readiness',
   version: 1,
-  category: 'invariant',
+  // Step 6 classification: invariant, not anti_inference — this rule is
+  // unconditional (verdix_recommends NEVER clears readiness, full stop;
+  // it does not check whether a specific value was wrongly inferred FROM
+  // some other adjacent fact) and directly mirrors isProvenanceResolved()
+  // (lib/commercial-rule-status.ts), the single canonical readiness gate
+  // — a structural guarantee about the provenance/readiness model itself,
+  // not a substantive commercial inference to police. Matches the
+  // existing Step 3 activation (enforce_invariant, target: promotion).
+  ruleClass: 'invariant',
   description: 'A field graded verdix_recommends is not equivalent to contractual fact or approved reviewer/organization policy — however concrete or well-reasoned the recommended value, it never clears readiness on its own.',
   matches: (input) => (input.provenancedFields ?? []).some(f => f.provenance === 'verdix_recommends'),
   evaluate: (input) => input.provenancedFields!
