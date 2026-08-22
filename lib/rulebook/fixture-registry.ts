@@ -61,6 +61,25 @@ export const VERDIX_FIXTURE_REGISTRY: Record<string, VerdixFixtureDescriptor> = 
     location: 'tests/commercial-semantics/rulebook/ai-guidance.test.ts — "H. explicit cash allowed"',
     description: 'Same application restriction, plus an explicit clause allowing cash payment at Customer\'s election — proves the rule does not over-suppress a genuinely explicit positive answer; cash_redeemable correctly resolves to true, contract_derived.',
   },
+
+  // Step 10 — milestone/project-billing fixture family. Positive/
+  // counterexample evidence for candidate.credit.milestone_delivery_ne_
+  // acceptance (rule-candidates.ts). Sourced from real, live baseline
+  // extraction runs against the current, unmodified production model (see
+  // that candidate's own rationale for the captured results) — not
+  // fabricated expectations.
+  'milestone.deemed_acceptance_window.acceptance_unresolved_structurally': {
+    id: 'milestone.deemed_acceptance_window.acceptance_unresolved_structurally',
+    kind: 'positive',
+    location: 'tests/commercial-semantics/milestone-billing/baseline-extraction.test.ts — "Case C"',
+    description: 'A milestone fee with an explicit 10-business-day deemed-acceptance review window (delivery and acceptance kept distinct) — real baseline extraction preserves the distinction only as free text (no structured acceptance-event field exists yet), never collapsing it into an auto-invoice-on-delivery shape.',
+  },
+  'milestone.delivery_constitutes_acceptance.explicit_collapse': {
+    id: 'milestone.delivery_constitutes_acceptance.explicit_collapse',
+    kind: 'counterexample',
+    location: 'tests/commercial-semantics/milestone-billing/baseline-extraction.test.ts — "Case G"',
+    description: 'A milestone fee where the contract EXPLICITLY states delivery constitutes acceptance with no separate review — proves the principle is "do not infer acceptance from delivery when the contract is silent," never "delivery can never establish acceptance." Real baseline extraction correctly preserves this explicit collapse in free text too (still manual_trigger: true pending delivery confirmation, structurally identical to Case C at the field level — which is itself the semantic-model gap documented in the corresponding candidate record).',
+  },
 }
 
 export function isRegisteredFixtureId(id: string): boolean {
