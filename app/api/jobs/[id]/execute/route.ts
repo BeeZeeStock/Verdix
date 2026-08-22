@@ -8,8 +8,8 @@ import { maskText, restoreTokensInObject } from '@/lib/pii-detector'
 import { computeMonthlyBaseRate, computeEscalatorMultiplier, computeDiscountMultiplier, monthCursor } from '@/lib/billing-writer'
 import { billingInterval } from '@/lib/stripe-meter'
 import { extractDocumentText, isAIInfraError, AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
-import { preserveStableRuleIds } from '@/lib/rule-id-stability'
-import type { Discount, ServiceCredit } from '@/lib/types'
+import { preserveStableRuleIds, preserveOneTimeFeeIdentity } from '@/lib/rule-id-stability'
+import type { Discount, ServiceCredit, OneTimeFee } from '@/lib/types'
 
 
 // Allow up to 5 minutes — PDF extraction + two Anthropic calls can exceed the default 10s limit
@@ -101,7 +101,7 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
   if (existingContractTermsId) {
     const { data: priorTerms } = await supabaseServer
       .from('contract_terms')
-      .select('discounts, service_credits')
+      .select('discounts, service_credits, one_time_fees')
       .eq('id', existingContractTermsId)
       .maybeSingle()
     if (priorTerms) {
@@ -110,6 +110,20 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
       )
       terms.service_credits = preserveStableRuleIds(
         (priorTerms.service_credits ?? []) as ServiceCredit[], terms.service_credits ?? [], 'credit_rule_id',
+      )
+      // Step 13 final amendment — same identity-preservation requirement,
+      // for OneTimeFee.fee_id (see lib/rule-id-stability.ts's own comment
+      // for the full rationale — this is what keeps operational_event_
+      // evidence rows from being silently orphaned by a re-extraction).
+      // Must run BEFORE applyExtractionSafetyNets's own normalization
+      // inside extractContractTerms already ran — it did, above, on the raw
+      // freshly-extracted terms; this preservation pass now retroactively
+      // restores the PRIOR fee_id/reviewed-state onto whichever freshly-
+      // normalized fee matches by description, so a stable identity is
+      // never lost merely because normalizeBillabilityCondition already
+      // assigned a new one moments earlier in this same request.
+      terms.one_time_fees = preserveOneTimeFeeIdentity(
+        (priorTerms.one_time_fees ?? []) as OneTimeFee[], terms.one_time_fees ?? [],
       )
     }
   }

@@ -873,3 +873,44 @@ describe('historical compatibility — genuinely persisted records never touched
     expect(reExtracted.billability_condition).toBeNull() // no longer undefined — genuinely evaluated now
   })
 })
+
+describe('fee_id assignment (Step 13) — stable subject identity for operational_event_evidence', () => {
+  it('a fee entering the Step-12 lifecycle via a valid condition gets a fee_id', () => {
+    const fee = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 100000, billability_condition: { kind: 'event', event_type: 'customer_acceptance' } } as Partial<OneTimeFee>),
+    ] })).one_time_fees[0]
+    expect(typeof fee.fee_id).toBe('string')
+    expect(fee.fee_id!.length).toBeGreaterThan(0)
+  })
+
+  it('a fee canonicalized to null (fresh omission) also gets a fee_id', () => {
+    const fee = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ amount: 100000, due_date: null })] })).one_time_fees[0]
+    expect(typeof fee.fee_id).toBe('string')
+  })
+
+  it('an exempted variable-rate-shaped fee does NOT get a fee_id — it never enters the Step-12 lifecycle at all', () => {
+    const fee = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 0, manual_trigger: true, metric_name: 'hours', rate_per_unit: 150 }),
+    ] })).one_time_fees[0]
+    expect(fee.fee_id).toBeUndefined()
+  })
+
+  it('an already-assigned fee_id is never reassigned across a second normalization pass (stable identity)', () => {
+    const once = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ amount: 100000, billability_condition: { kind: 'immediate' } } as Partial<OneTimeFee>),
+    ] })).one_time_fees[0]
+    const twice = applyExtractionSafetyNets(chunk({ one_time_fees: [once] })).one_time_fees[0]
+    expect(twice.fee_id).toBe(once.fee_id)
+  })
+
+  it('two different fees in the same extraction get two different fee_ids', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ fee_label: 'Fee A', amount: 50000, billability_condition: { kind: 'immediate' } } as Partial<OneTimeFee>),
+      oneTimeFee({ fee_label: 'Fee B', amount: 50000, billability_condition: { kind: 'immediate' } } as Partial<OneTimeFee>),
+    ] }))
+    const [a, b] = terms.one_time_fees
+    expect(a.fee_id).toBeDefined()
+    expect(b.fee_id).toBeDefined()
+    expect(a.fee_id).not.toBe(b.fee_id)
+  })
+})

@@ -203,15 +203,60 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  let org
-  try { org = await requireOrg() } catch (res) { return res as Response }
-
   const { id } = await params
   const body = await req.json()
   const { execute_status } = body
 
+  // Step 13 final amendment, Part B item 9 — the explicit, manual-only
+  // recovery path for a job stuck at execute_status: 'APPROVING' (e.g. the
+  // server process died between claiming APPROVING and reaching a terminal
+  // state — approve/route.ts's own try/catch covers every ordinary failure,
+  // but cannot run at all if the process itself is killed mid-request).
+  // Deliberately NOT automatic — no cron, no timeout-based retry. approve/
+  // route.ts's catch block documents that neither Stripe's nor Remembill's
+  // invoice-write calls are provably safe to blindly retry, so an automatic
+  // transition back to a retryable state could itself cause a duplicate
+  // invoice. A human must explicitly decide "I have checked the billing
+  // platform, this is genuinely stuck, reset it for retry" — admin-gated,
+  // same authorization bar as Approve/Revoke themselves (both
+  // billing-execution-adjacent), unlike the ordinary READY_TO_APPROVE
+  // promotion below which any org member can trigger.
+  if (execute_status === 'FAILED') {
+    let org
+    try { org = await requireOrg('admin') } catch (res) { return res as Response }
+
+    const { data: job } = await supabaseServer
+      .from('jobs').select('org_id, execute_status').eq('id', id).single()
+    if (!job || job.org_id !== org.orgId)
+      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (job.execute_status !== 'APPROVING')
+      return NextResponse.json({ error: 'Cannot manually recover from current status — only a stuck "approving" job can be reset this way.' }, { status: 400 })
+
+    const { data: recovered, error } = await supabaseServer
+      .from('jobs')
+      .update({
+        execute_status: 'FAILED',
+        error_message: 'Manually recovered from a stuck "approving" state — verify against Stripe/Remembill for a partial or duplicate invoice before retrying.',
+      })
+      .eq('id', id)
+      .eq('execute_status', 'APPROVING') // re-assert atomically — no race with a concurrent legitimate completion
+      .select('id')
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!recovered || recovered.length === 0)
+      return NextResponse.json({ error: 'Job is no longer in the "approving" state — it may have just completed or failed on its own.' }, { status: 409 })
+    // From here the job sits at FAILED like any other failed attempt — the
+    // next step, once the admin has actually verified the billing platform,
+    // is POST /api/jobs/[id]/authorize-billing-retry (item 5), not a normal
+    // Approve call — approve/route.ts's claim boundary no longer accepts
+    // FAILED as a source state at all.
+    return NextResponse.json({ ok: true })
+  }
+
   if (execute_status !== 'READY_TO_APPROVE')
     return NextResponse.json({ error: 'Invalid status' }, { status: 400 })
+
+  let org
+  try { org = await requireOrg() } catch (res) { return res as Response }
 
   const { data: job } = await supabaseServer
     .from('jobs').select('org_id, execute_status').eq('id', id).single()

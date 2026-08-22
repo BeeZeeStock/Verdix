@@ -153,6 +153,8 @@ type OneTimeFee = {
     | { kind: 'fixed_date'; date: string }
     | { kind: 'event'; event_type: 'contract_signature' | 'delivery' | 'customer_acceptance' | 'final_acceptance' | 'change_order_signature' }
     | null
+  // Step 13 — stable subject identity for operational_event_evidence.
+  fee_id?: string
 }
 type PeriodProrationRule = {
   reset_anchor: 'contract_start' | 'calendar' | null
@@ -205,6 +207,22 @@ type Job = {
   // deliberately excluded, never guessed).
   billedToDate?: number
   committedContractValue?: number
+  // Step 13 — real operational_event_evidence rows for this job, already
+  // camelCased server-side (app/api/jobs/[id]/route.ts).
+  operational_event_evidence?: OperationalEventEvidence[]
+}
+
+// Step 13 — same local structural-type convention as OneTimeFee.billability_condition
+// above (this page defines its own types, not imported from lib/).
+type OperationalEventEvidence = {
+  id: string
+  subjectId: string
+  eventType: 'contract_signature' | 'delivery' | 'customer_acceptance' | 'final_acceptance' | 'change_order_signature'
+  occurredAt: string
+  source: 'reviewer_attestation' | 'trusted_system_event'
+  recordedAt: string
+  recordedBy: string
+  status: 'active' | 'revoked'
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -3083,6 +3101,7 @@ function ReviewPanel({
   baseFeeProration,
   additionalRecurringFees,
   oneTimeFees,
+  operationalEventEvidence,
   extractionNotes,
   contractStartDate,
   contractEndDate,
@@ -3111,6 +3130,8 @@ function ReviewPanel({
   additionalRecurringFees?: AdditionalRecurringFee[]
   // Step 11B — the minimal OneTimeFee review path.
   oneTimeFees?: OneTimeFee[]
+  // Step 13 — real operational_event_evidence rows for this job.
+  operationalEventEvidence?: OperationalEventEvidence[]
   // Free-text notes the extraction model writes for anything it noticed but
   // couldn't fit into a structured field — e.g. a penalty clause, which
   // is the opposite polarity from service_credits (an additional charge,
@@ -3149,6 +3170,10 @@ function ReviewPanel({
   const [draftPrice, setDraftPrice] = useState<Record<string, string>>({})
   const [draftName,  setDraftName]  = useState<Record<string, string>>({})
   const [saveError,  setSaveError]  = useState<Record<string, string>>({})
+  // Step 13 — the occurredAt draft input per fee, keyed by fee_id. Defaults
+  // lazily (today's date) only when a reviewer actually opens the input,
+  // not eagerly for every fee on render.
+  const [evidenceDateDraft, setEvidenceDateDraft] = useState<Record<string, string>>({})
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   // Meter-mapping suggestions, fetched once so any rule-interpretation card
@@ -3906,6 +3931,72 @@ function ReviewPanel({
               }
             }
 
+            // Step 13 — the browser submits only { subjectId, occurredAt }.
+            // It never sends eventType, source, or any commercial-provenance
+            // value — the server derives eventType from the persisted
+            // billability_condition and always mints source:
+            // 'reviewer_attestation' itself (app/api/jobs/[id]/operational-events/attest).
+            const recordEvidence = async (feeId: string, feeLabel: string, occurredAt: string) => {
+              const savingKey = `one_time_fee:${feeLabel}:evidence`
+              setSaving(savingKey)
+              setSaveError(prev => ({ ...prev, [feeLabel]: '' }))
+              try {
+                const res = await fetch(`/api/jobs/${jobId}/operational-events/attest`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ subjectId: feeId, occurredAt }),
+                })
+                if (res.ok) {
+                  onRefresh()
+                } else {
+                  const data = await res.json().catch(() => null)
+                  setSaveError(prev => ({ ...prev, [feeLabel]: data?.error ?? 'Verdix could not record this.' }))
+                }
+              } catch {
+                setSaveError(prev => ({ ...prev, [feeLabel]: 'Verdix could not record this.' }))
+              } finally {
+                setSaving(null)
+              }
+            }
+
+            const revokeEvidence = async (feeId: string, feeLabel: string) => {
+              const savingKey = `one_time_fee:${feeLabel}:evidence-revoke`
+              setSaving(savingKey)
+              setSaveError(prev => ({ ...prev, [feeLabel]: '' }))
+              try {
+                const res = await fetch(`/api/jobs/${jobId}/operational-events/revoke`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ subjectId: feeId }),
+                })
+                if (res.ok) {
+                  onRefresh()
+                } else {
+                  const data = await res.json().catch(() => null)
+                  setSaveError(prev => ({ ...prev, [feeLabel]: data?.error ?? 'Verdix could not revoke this.' }))
+                }
+              } catch {
+                setSaveError(prev => ({ ...prev, [feeLabel]: 'Verdix could not revoke this.' }))
+              } finally {
+                setSaving(null)
+              }
+            }
+
+            const EVIDENCE_ACTION_LABELS: Record<string, string> = {
+              contract_signature: 'Record signature',
+              delivery: 'Record delivery',
+              customer_acceptance: 'Record acceptance',
+              final_acceptance: 'Record final acceptance',
+              change_order_signature: 'Record change order signature',
+            }
+            const EVIDENCE_RECORDED_LABELS: Record<string, string> = {
+              contract_signature: 'Contract signature recorded',
+              delivery: 'Delivery recorded',
+              customer_acceptance: 'Customer acceptance recorded',
+              final_acceptance: 'Final acceptance recorded',
+              change_order_signature: 'Change order signature recorded',
+            }
+
             return (
               <div>
                 <div className="flex items-center gap-2 mb-3">
@@ -4004,6 +4095,65 @@ function ReviewPanel({
                                       >
                                         {saving === `one_time_fee:${f.fee_label}:billability` ? 'Confirming…' : 'Confirm billing timing'}
                                       </button>
+                                    )}
+                                  </div>
+                                )
+                              })()}
+                              {(() => {
+                                // Step 13 — only ever rendered once billability
+                                // interpretation is itself resolved (item 16: "Extend
+                                // the Step-12 OneTimeFee card only after the billability
+                                // interpretation is resolved"). Language deliberately
+                                // avoids "Confirm" (already means contractual
+                                // interpretation elsewhere on this card) — "Record"/
+                                // "occurred" makes clear the reviewer is attesting a
+                                // real-world fact, not re-confirming the contract.
+                                if (f.billability_condition?.kind !== 'event' || !billabilityResolved || !f.fee_id) return null
+                                const eventType = f.billability_condition.event_type
+                                const activeEvidence = operationalEventEvidence?.find(
+                                  e => e.subjectId === f.fee_id && e.eventType === eventType && e.status === 'active'
+                                )
+                                const dateKey = f.fee_id
+                                const draft = evidenceDateDraft[dateKey] ?? new Date().toISOString().slice(0, 10)
+                                const recording = saving === `one_time_fee:${f.fee_label}:evidence`
+                                const revoking = saving === `one_time_fee:${f.fee_label}:evidence-revoke`
+                                return (
+                                  <div className="pt-2 mt-1" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
+                                    {activeEvidence ? (
+                                      <div className="flex items-start justify-between gap-2">
+                                        <div>
+                                          <p className="text-[11px] font-medium text-ink">{EVIDENCE_RECORDED_LABELS[eventType] ?? 'Event recorded'}</p>
+                                          <p className="text-[11px] text-stone">Occurred: {new Date(activeEvidence.occurredAt).toLocaleDateString()}</p>
+                                          <p className="text-[11px] text-stone">Source: Reviewer attestation</p>
+                                        </div>
+                                        <button
+                                          onClick={() => revokeEvidence(f.fee_id!, f.fee_label)}
+                                          disabled={revoking}
+                                          className="text-[11px] font-medium px-2.5 py-1 rounded-lg border shrink-0"
+                                          style={{ borderColor: 'rgba(220,38,38,0.3)', color: '#DC2626' }}
+                                        >
+                                          {revoking ? 'Revoking…' : 'Revoke'}
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <input
+                                          type="date"
+                                          value={draft}
+                                          max={new Date().toISOString().slice(0, 10)}
+                                          onChange={e => setEvidenceDateDraft(prev => ({ ...prev, [dateKey]: e.target.value }))}
+                                          className="text-[11px] px-2 py-1 rounded-lg border"
+                                          style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                                        />
+                                        <button
+                                          onClick={() => recordEvidence(f.fee_id!, f.fee_label, draft)}
+                                          disabled={recording}
+                                          className="text-[11px] font-medium px-2.5 py-1 rounded-lg border"
+                                          style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                                        >
+                                          {recording ? 'Recording…' : (EVIDENCE_ACTION_LABELS[eventType] ?? 'Record occurrence')}
+                                        </button>
+                                      </div>
                                     )}
                                   </div>
                                 )
@@ -5095,6 +5245,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     // so the readiness count doesn't flash "+1" the instant the page mounts
     // and settles back down a moment later once the real value arrives.
     { configured: vatConfigured !== false },
+    undefined,
+    // Step 13 — real evidence for this job, so the Approve footer/status
+    // banner agree with the server-side approve/route.ts gate exactly.
+    job?.operational_event_evidence,
   )
 
   // ── Unified readiness model ── The single source every readiness
@@ -7118,6 +7272,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           baseFeeProration={terms?.base_fee_proration}
           additionalRecurringFees={terms?.additional_recurring_fees}
           oneTimeFees={terms?.one_time_fees}
+          operationalEventEvidence={job?.operational_event_evidence}
           extractionNotes={terms?.extraction_notes}
           contractStartDate={terms?.contract_start_date}
           contractEndDate={terms?.contract_end_date}

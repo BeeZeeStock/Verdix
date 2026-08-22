@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, requiredServiceCreditFields, isDiscountUnresolved, countSourceConfirmations, isServiceCreditFullySourceResolved, isOneTimeFeeUnresolved, type CommercialRuleTerms, type UnsupportedCommercialSemanticsBlocker } from './commercial-rule-status'
+import type { OperationalEventEvidence } from './operational-event-evidence'
 
 describe('computeCommercialRuleWorkload — "all confirmed" must check every rule type (regression)', () => {
   it('minimum commitment, tier calculation, escalator, and meter mapping all confirmed but a discount is NOT: never all_commercial_rules_confirmed', () => {
@@ -717,5 +718,139 @@ describe('computeCommercialRuleWorkload — Step 12 operational-evidence blocker
     const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
     expect(workload.executionBlockers).toHaveLength(0)
     expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+})
+
+const ASOF = new Date('2026-10-15T00:00:00.000Z')
+function evidence(overrides: Partial<OperationalEventEvidence> = {}): OperationalEventEvidence {
+  return {
+    id: 'ev-1', subjectId: 'fee-1', eventType: 'customer_acceptance',
+    occurredAt: '2026-10-12T14:00:00.000Z', source: 'reviewer_attestation',
+    recordedAt: '2026-10-13T09:20:00.000Z', recordedBy: 'reviewer@example.com', status: 'active',
+    ...overrides,
+  }
+}
+
+describe('computeCommercialRuleWorkload — Step 13 operational evidence clears the blocker', () => {
+  it('satisfied, matching, active evidence clears required_operational_event_missing entirely', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Design Milestone Fee', fee_id: 'fee-1', amount: 100000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [evidence()], ASOF)
+    expect(workload.executionBlockers).toHaveLength(0)
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+
+  it('no evidence at all → blocker remains (unchanged Step 12 behavior)', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Design Milestone Fee', fee_id: 'fee-1', amount: 100000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [], ASOF)
+    expect(workload.executionBlockers).toHaveLength(1)
+    expect(workload.executionBlockers[0].type).toBe('required_operational_event_missing')
+  })
+
+  it('wrong event type on the evidence → blocker remains', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Fee', fee_id: 'fee-1', amount: 100000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [evidence({ eventType: 'delivery' })], ASOF)
+    expect(workload.executionBlockers).toHaveLength(1)
+  })
+
+  it('evidence for a different fee_id (another subject) → blocker remains', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Fee', fee_id: 'fee-1', amount: 100000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [evidence({ subjectId: 'fee-2' })], ASOF)
+    expect(workload.executionBlockers).toHaveLength(1)
+  })
+
+  it('revoked evidence → blocker remains', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Fee', fee_id: 'fee-1', amount: 100000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [evidence({ status: 'revoked' })], ASOF)
+    expect(workload.executionBlockers).toHaveLength(1)
+  })
+
+  it('future-dated evidence (relative to asOf) → blocker remains', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Fee', fee_id: 'fee-1', amount: 100000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [evidence({ occurredAt: '2027-01-01T00:00:00.000Z' })], ASOF)
+    expect(workload.executionBlockers).toHaveLength(1)
+  })
+
+  it('a fee with no fee_id at all can never match any evidence — fails closed', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Fee', amount: 100000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [evidence({ subjectId: '' })], ASOF)
+    expect(workload.executionBlockers).toHaveLength(1)
+  })
+
+  it('evidence satisfaction never mutates billability_condition/billability_provenance — item 10', () => {
+    const fee = {
+      fee_label: 'Fee', fee_id: 'fee-1', amount: 100000, amount_provenance: 'reviewer_policy' as const,
+      billability_condition: { kind: 'event' as const, event_type: 'customer_acceptance' as const },
+      billability_provenance: 'reviewer_policy' as const,
+    }
+    const before = JSON.stringify(fee)
+    computeCommercialRuleWorkload({ one_time_fees: [fee] }, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [evidence()], ASOF)
+    expect(JSON.stringify(fee)).toBe(before)
+  })
+
+  it('amount stays independently counted even once evidence satisfies billability entirely', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Fee', fee_id: 'fee-1', amount: 100000, amount_provenance: null,
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [evidence()], ASOF)
+    expect(workload.executionBlockers).toHaveLength(0) // billability satisfied
+    expect(workload.totalToConfirm).toBe(1) // amount still needs a reviewer decision
+  })
+
+  it('a pre-Step-13 caller passing nothing for evidence/asOf keeps exact Step 12 behavior (defaults to [] — always blocked)', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Fee', fee_id: 'fee-1', amount: 100000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.executionBlockers).toHaveLength(1)
   })
 })

@@ -682,6 +682,12 @@ function normalizeBillabilityCondition(fees: OneTimeFee[]): OneTimeFee[] {
 
     if (parsed) {
       let next: OneTimeFee = { ...fee, billability_condition: parsed }
+      // Step 13 — stable subject identity, assigned once, the moment a fee
+      // genuinely enters the Step-12 lifecycle (never for the exempted
+      // variable-rate shape, never re-assigned once present — see
+      // lib/types.ts's OneTimeFee.fee_id for the full rationale, including
+      // why fee_label alone was rejected as the evidence-table subject key).
+      if (!next.fee_id) next = { ...next, fee_id: crypto.randomUUID() }
       const projection = projectBillabilityConditionToExecutionFields(parsed)
       next = { ...next, due_date: projection.due_date, manual_trigger: projection.manual_trigger }
       if (next.billability_provenance === undefined) next = { ...next, billability_provenance: null }
@@ -722,6 +728,7 @@ function normalizeBillabilityCondition(fees: OneTimeFee[]): OneTimeFee[] {
     // "safe legacy" shaped pair can never survive as competing meaning on
     // a newly-governed record.
     let next: OneTimeFee = { ...fee, billability_condition: null, due_date: null, manual_trigger: true }
+    if (!next.fee_id) next = { ...next, fee_id: crypto.randomUUID() } // Step 13 — see the `parsed` branch's identical comment
     if (next.billability_provenance === undefined) next = { ...next, billability_provenance: null }
     if (next.amount > 0 && !next.requires_confirmation) {
       next = {

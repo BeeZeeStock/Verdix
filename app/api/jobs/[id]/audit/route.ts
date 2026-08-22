@@ -6,8 +6,8 @@ import { parseBillingCSV } from '@/lib/billing-parser'
 import { reconcile } from '@/lib/reconciler'
 import { resolveStorageUrl } from '@/lib/storage'
 import { extractDocumentText } from '@/lib/ai-client'
-import { preserveStableRuleIds } from '@/lib/rule-id-stability'
-import type { Discount, ServiceCredit } from '@/lib/types'
+import { preserveStableRuleIds, preserveOneTimeFeeIdentity } from '@/lib/rule-id-stability'
+import type { Discount, ServiceCredit, OneTimeFee } from '@/lib/types'
 
 // extractContractTerms now routes through the reasoning tier (Opus +
 // adaptive thinking) — see lib/ai-client.ts's AI_REASONING_CLIENT_TIMEOUT_MS
@@ -82,7 +82,7 @@ async function runAuditPipeline(
   if (existingContractTermsId) {
     const { data: priorTerms } = await supabaseServer
       .from('contract_terms')
-      .select('discounts, service_credits')
+      .select('discounts, service_credits, one_time_fees')
       .eq('id', existingContractTermsId)
       .maybeSingle()
     if (priorTerms) {
@@ -91,6 +91,11 @@ async function runAuditPipeline(
       )
       contractTerms.service_credits = preserveStableRuleIds(
         (priorTerms.service_credits ?? []) as ServiceCredit[], contractTerms.service_credits ?? [], 'credit_rule_id',
+      )
+      // Step 13 final amendment — see lib/rule-id-stability.ts's
+      // preserveOneTimeFeeIdentity for the full rationale.
+      contractTerms.one_time_fees = preserveOneTimeFeeIdentity(
+        (priorTerms.one_time_fees ?? []) as OneTimeFee[], contractTerms.one_time_fees ?? [],
       )
     }
   }

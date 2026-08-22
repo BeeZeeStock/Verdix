@@ -1,9 +1,10 @@
-import { ContractTerms, PeriodProrationRule } from './types'
+import { ContractTerms, PeriodProrationRule, type BillabilityCondition } from './types'
 import { billingInterval } from './stripe-meter'
 import { supabaseServer } from './supabase'
 import { monthCursor, enumerateContractWindows, isPartialWindow } from './tariff'
 import { resolveVatTreatment, computeVat, type VatMode, type VatTreatment } from './vat'
 import { getCustomerVatConfig } from './vat-service'
+import { isOneTimeFeeHeldForExecution, type OperationalEventEvidence } from './operational-event-evidence'
 
 // Re-exported so existing importers of monthCursor from this file (e.g.
 // execute/route.ts) don't need to change their import path — the function
@@ -328,11 +329,17 @@ export async function configureBilling(
   jobId?: string,
   orgId?: string,
   existingCustomerId?: string,
+  // Step 13 — real operational_event_evidence rows for this job, when the
+  // caller has them (approve/route.ts loads them via supabaseServer).
+  // Defaults to [] so every pre-existing caller keeps exact Step 12
+  // behavior: an event-conditioned fee with no evidence known to this call
+  // stays held/parked, never auto-invoiced — the safe default.
+  operationalEventEvidence: OperationalEventEvidence[] = [],
 ): Promise<ConfigureResult> {
   const resolved = platform ?? (orgId ? await detectOrgPlatform(orgId) : detectPlatform())
   if (resolved === 'chargebee')  return configureChargebee(terms, lineItems, jobId, orgId)
-  if (resolved === 'remembill')  return configureRememhill(terms, lineItems, jobId, orgId, existingCustomerId)
-  return configureStripe(terms, lineItems, jobId, orgId)
+  if (resolved === 'remembill')  return configureRememhill(terms, lineItems, jobId, orgId, existingCustomerId, operationalEventEvidence)
+  return configureStripe(terms, lineItems, jobId, orgId, operationalEventEvidence)
 }
 
 async function configureStripe(
@@ -340,6 +347,7 @@ async function configureStripe(
   lineItems: LineItemInput[],
   jobId?: string,
   orgId?: string,
+  operationalEventEvidence: OperationalEventEvidence[] = [],
 ): Promise<ConfigureResult> {
   const { default: Stripe } = await import('stripe')
   const orgConfig = orgId ? await getOrgConfig(orgId, 'stripe') : null
@@ -510,11 +518,20 @@ async function configureStripe(
     manual_trigger?: boolean
     metric_name?: string | null
     rate_per_unit?: number | null
+    billability_condition?: BillabilityCondition | null
+    fee_id?: string
   }
   const oneTimeFees = (terms.one_time_fees ?? []) as OneTimeFeeInput[]
+  // Step 13, item 11 — held vs executable is decided fresh, right here, by
+  // isOneTimeFeeHeldForExecution (condition + real evidence), never by
+  // trusting a persisted manual_trigger value for an event-conditioned fee
+  // — see that function's own comment. A genuine manual_trigger fee (no
+  // billability_condition) falls through to the exact Step 11 check.
+  const isHeld = (fee: OneTimeFeeInput) => isOneTimeFeeHeldForExecution(fee, operationalEventEvidence, now)
 
-  // Park manual-trigger service fees — they need human confirmation before invoicing
-  for (const fee of oneTimeFees.filter(f => f.manual_trigger)) {
+  // Park manual-trigger / not-yet-evidenced event fees — they need human
+  // confirmation (or, for event fees, real evidence) before invoicing.
+  for (const fee of oneTimeFees.filter(isHeld)) {
     // Same reasoning as the period loop above: already-sent rows are left
     // untouched rather than reinserted.
     const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
@@ -539,7 +556,7 @@ async function configureStripe(
     })
   }
 
-  for (const fee of oneTimeFees.filter(f => !f.manual_trigger && f.amount > 0)) {
+  for (const fee of oneTimeFees.filter(f => !isHeld(f) && f.amount > 0)) {
     const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
     if (alreadySent) continue
     const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
@@ -693,6 +710,7 @@ async function configureRememhill(
   jobId?: string,
   orgId?: string,
   existingCustomerId?: string,
+  operationalEventEvidence: OperationalEventEvidence[] = [],
 ): Promise<ConfigureResult> {
   const orgConfig = orgId ? await getOrgConfig(orgId, 'remembill') : null
   const apiKey = orgConfig?.api_key ?? process.env.REMEMBILL_API_KEY
@@ -940,10 +958,13 @@ async function configureRememhill(
   type OneTimeFeeInput = {
     fee_label: string; amount: number; due_date?: string | null
     manual_trigger?: boolean; metric_name?: string | null; rate_per_unit?: number | null
+    billability_condition?: BillabilityCondition | null; fee_id?: string
   }
   const oneTimeFees = (terms.one_time_fees ?? []) as OneTimeFeeInput[]
+  // Step 13 — same shared decision as configureStripe; see that call site's comment.
+  const isHeld = (fee: OneTimeFeeInput) => isOneTimeFeeHeldForExecution(fee, operationalEventEvidence, now)
 
-  for (const fee of oneTimeFees.filter(f => f.manual_trigger)) {
+  for (const fee of oneTimeFees.filter(isHeld)) {
     // Same reasoning as the period loop above: already-sent rows are left
     // untouched rather than reinserted.
     const alreadySent = sentRows.find(r => r.invoice_type === 'one_time' && r.fee_label === fee.fee_label)
@@ -961,7 +982,7 @@ async function configureRememhill(
     })
   }
 
-  for (const fee of oneTimeFees.filter(f => !f.manual_trigger && f.amount > 0)) {
+  for (const fee of oneTimeFees.filter(f => !isHeld(f) && f.amount > 0)) {
     const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
     const isDue      = !feeDueDate || feeDueDate <= now
     const dueDateStr = fmtDate(feeDueDate ?? now)

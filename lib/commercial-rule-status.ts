@@ -11,6 +11,7 @@ import { isEscalatorUnresolved, type EscalatorLike } from './escalator-status'
 import { findCadenceWindowContaining, isPartialWindow } from './tariff'
 import type { FieldProvenance, BillabilityCondition, BillabilityEventType } from './types'
 import { getBillabilityExecutionCapability } from './billability-condition'
+import { resolveOperationalEventEvidence, type OperationalEventEvidence } from './operational-event-evidence'
 
 // The single place "is this field actually resolved" is decided, for any
 // field carrying a FieldProvenance. AI confidence is not provenance: a
@@ -264,6 +265,10 @@ type OneTimeFeeLike = {
   // Step 12 — see lib/types.ts's OneTimeFee.billability_condition for the
   // full three-state discriminator this drives below.
   billability_condition?: BillabilityCondition | null
+  // Step 13 — stable subject identity for operational_event_evidence
+  // lookups (lib/types.ts's own comment has the full rationale). Absent
+  // for any fee that never entered the Step-12 lifecycle.
+  fee_id?: string
 }
 
 function isOneTimeFeeAmountUnresolved(fee: OneTimeFeeLike): boolean {
@@ -484,6 +489,20 @@ export function computeCommercialRuleWorkload(
   // blockers below are derived internally from `terms` and merged in,
   // never expected here.
   executionBlockers: CommercialRuleExecutionBlocker[] = [],
+  // Step 13 — real operational_event_evidence rows for this job, when a
+  // caller has them (a route loads them via supabaseServer; a pre-Step-13
+  // caller/fixture passing nothing keeps exact Step 12 behavior — every
+  // resolved event condition shows the operational-evidence blocker,
+  // since no evidence can ever be found in an empty array). Not scoped to
+  // one fee — this function itself matches each fee's own fee_id via
+  // resolveOperationalEventEvidence.
+  operationalEventEvidence: OperationalEventEvidence[] = [],
+  // Step 13 — explicit, caller-supplied "now" for evidence future-dating
+  // checks (never ambient Date.now() inside this function). Defaults to a
+  // fresh Date() only so pre-Step-13 callers/fixtures don't need to know
+  // this concept exists yet; every real production call site and every
+  // Step 13 test passes an explicit value.
+  asOf: Date = new Date(),
 ): CommercialRuleWorkload {
   const tiers = terms?.overage_tiers ?? []
   const groups = groupTiersByUnitType(tiers)
@@ -566,15 +585,19 @@ export function computeCommercialRuleWorkload(
   //     represent what the source describes at all — never counted as a
   //     reviewer decision (nothing to pick between); becomes a capability
   //     blocker instead, merged into executionBlockers below.
-  //   - Step 12: billability_condition.kind === 'event', semantically
+  //   - Step 12/13: billability_condition.kind === 'event', semantically
   //     RESOLVED (billability_provenance already isProvenanceResolved) —
   //     the contractual meaning is understood, so this is never an
-  //     unsupported-semantics capability gap; it becomes a DIFFERENT
-  //     capability blocker instead (RequiredOperationalEventMissingBlocker
-  //     — real-world evidence of the event is missing, not the semantics).
-  //     Amount is still checked and counted independently — resolving
-  //     billability's blocker status must never hide an outstanding amount
-  //     decision (item 5's independence requirement, still true post-Step-12).
+  //     unsupported-semantics capability gap. Whether it still blocks now
+  //     depends on Step 13's operational evidence: satisfied trusted
+  //     evidence for this fee's own fee_id clears the blocker entirely;
+  //     anything else (no evidence, wrong event, wrong subject, revoked,
+  //     future-dated) produces RequiredOperationalEventMissingBlocker —
+  //     real-world evidence of the event is missing, not the semantics.
+  //     Amount is still checked and counted independently either way —
+  //     resolving billability's blocker status must never hide an
+  //     outstanding amount decision (item 5's independence requirement,
+  //     still true post-Step-12/13).
   const oneTimeFeeCapabilityBlockers: Array<UnsupportedCommercialSemanticsBlocker | RequiredOperationalEventMissingBlocker> = []
   for (const fee of terms?.one_time_fees ?? []) {
     if (!fee.fee_label) continue
@@ -590,13 +613,22 @@ export function computeCommercialRuleWorkload(
     }
     const capability = fee.billability_condition ? getBillabilityExecutionCapability(fee.billability_condition) : null
     if (capability && !capability.executable && capability.reason === 'requires_operational_event' && isProvenanceResolved(fee.billability_provenance)) {
-      oneTimeFeeCapabilityBlockers.push({
-        type: 'required_operational_event_missing',
-        rule_family: 'one_time_fee',
-        event_type: capability.event_type,
-        field: `one_time_fee:${fee.fee_label}`,
-        reason: 'Billability is confirmed to depend on an operational event Verdix has not yet observed evidence for.',
-      })
+      // fee.fee_id absent (a Step-12-lifecycle fee predating fee_id, or a
+      // defensive gap) means evidence can never be matched — fails closed
+      // to "still blocked" rather than risk matching against an empty
+      // subjectId.
+      const satisfaction = fee.fee_id
+        ? resolveOperationalEventEvidence({ condition: fee.billability_condition ?? null, subjectId: fee.fee_id, evidence: operationalEventEvidence, asOf })
+        : { required: true as const, satisfied: false as const }
+      if (!satisfaction.satisfied) {
+        oneTimeFeeCapabilityBlockers.push({
+          type: 'required_operational_event_missing',
+          rule_family: 'one_time_fee',
+          event_type: capability.event_type,
+          field: `one_time_fee:${fee.fee_label}`,
+          reason: 'Billability is confirmed to depend on an operational event Verdix has not yet observed evidence for.',
+        })
+      }
       countItem(`one_time_fee:${fee.fee_label}`, isOneTimeFeeAmountUnresolved(fee))
       continue
     }

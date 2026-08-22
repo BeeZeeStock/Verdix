@@ -630,6 +630,29 @@ export interface OneTimeFee {
    *  source of truth only for legacy records where billability_condition is
    *  still undefined. */
   billability_condition?: BillabilityCondition | null
+  /** Step 13 — stable, immutable subject identity for this fee, assigned
+   *  once (lib/contract-extractor.ts's normalizeBillabilityCondition) the
+   *  moment a fee enters the Step-12 lifecycle (billability_condition is
+   *  populated, not left undefined). Exists ONLY so operational_event_
+   *  evidence rows (supabase/migrations/20260824000001_operational_event_
+   *  evidence.sql) have something safer than fee_label to key off —
+   *  fee_label is a display string, extraction-order-dependent and
+   *  documented as collision-prone (lib/rulebook/MILESTONE_BILLING_
+   *  FINDINGS.md); it remains this codebase's addressing key for
+   *  everything else (confirm-rule, billing-writer) — Step 13 does not
+   *  change that, it only avoids compounding the risk for the ONE new
+   *  registry it introduces. Absent for every fee that never entered the
+   *  Step-12 lifecycle (manual_trigger-exempt fees, historical records) —
+   *  those have no operational-event concept to key evidence against
+   *  anyway. Known, documented limitation carried over unfixed from Step
+   *  11/12: this id is NOT preserved across a real re-extraction (one_
+   *  time_fees has no id-preservation mechanism at all, unlike discount_
+   *  rule_id/credit_rule_id) — re-extracting a job assigns fresh fee_ids,
+   *  orphaning any prior evidence rows (they remain in the database,
+   *  intact and auditable, just no longer reachable from the new fee
+   *  object). Fixing that is a separate, pre-existing gap outside Step
+   *  13's scope. */
+  fee_id?: string
 }
 
 // Same structural gap as MinimumCommitment.prorate_partial_periods, now

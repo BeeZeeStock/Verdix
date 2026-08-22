@@ -1,7 +1,10 @@
 // Verdix commercial decision trace — OneTimeFee billability_condition entry
-// point (Step 12, item 20). A thin adapter on top of lib/rulebook/
-// decision-trace.ts's generic composer, same pattern as decision-trace-
-// service-credit.ts — this file adds NO new resolution logic of its own.
+// point (Step 12, item 20; extended Step 13, item 20). A thin adapter on
+// top of lib/rulebook/decision-trace.ts's generic composer, same pattern as
+// decision-trace-service-credit.ts — this file adds NO new resolution
+// logic of its own; the actual evidence-matching logic is
+// lib/operational-event-evidence.ts's resolveOperationalEventEvidence,
+// reused here unmodified.
 //
 // one_time_fee.billability_condition has no Global/Organization Rulebook
 // domain slice (domainContext: {}, organizationMatchContext: {}) — the
@@ -13,12 +16,13 @@
 // second distinction (item 5/20) — "is the contractual meaning understood"
 // (the generic composer's own execution.readinessBlocking, unmodified) is
 // NOT the same question as "has the required real-world event actually
-// happened" (operationalEvidence below, computed from
-// lib/billability-condition.ts's getBillabilityExecutionCapability, which
-// this module also does not modify). Never persists anything, never calls
-// an evidence source — item 26, no event-ingestion system exists yet.
+// happened" (operationalEvidence below, Step 13's
+// resolveOperationalEventEvidence). Never puts raw reviewer notes, source
+// clauses, or event free text into the trace — only the closed event_type
+// enum, a boolean, and an evidence id (an opaque reference, not content).
 import type { BillabilityCondition, BillabilityEventType, FieldProvenance } from '@/lib/types'
 import { getBillabilityExecutionCapability } from '@/lib/billability-condition'
+import { resolveOperationalEventEvidence, type OperationalEventEvidence } from '@/lib/operational-event-evidence'
 import { buildCommercialDecisionTrace, type CommercialDecisionTrace } from './decision-trace'
 import type { OrganizationRuleRecord } from './organization-rules'
 
@@ -33,11 +37,15 @@ export interface OneTimeFeeBillabilityTrace extends CommercialDecisionTrace {
     // readiness gap, already reflected in execution.readinessBlocking).
     required: boolean
     eventType?: BillabilityEventType
-    // Always false in Step 12 — no evidence-ingestion layer exists (item
-    // 26). Kept as an explicit field, not merely the absence of one, so a
-    // future evidence-ingestion step has a real slot to flip rather than
-    // reshaping this trace.
-    present: boolean
+    // True only when a real, active, matching, non-future-dated,
+    // trusted-source evidence record was found (Step 13) — revoked
+    // evidence, wrong event/subject, or a future occurrence all leave this
+    // false, exactly like the execution-readiness gate itself
+    // (lib/commercial-rule-status.ts's computeCommercialRuleWorkload).
+    satisfied: boolean
+    // Opaque reference only — never the evidence's own content beyond the
+    // closed event_type already exposed above.
+    evidenceId?: string
   }
 }
 
@@ -47,6 +55,12 @@ export interface OneTimeFeeBillabilityTraceInput {
   organizationId: string
   organizationRules: OrganizationRuleRecord[]
   asOf: Date
+  // Step 13 — the subject identity (OneTimeFee.fee_id) and the job's real
+  // evidence rows. Both optional so a caller tracing a field that predates
+  // fee_id (or hasn't loaded evidence) still gets a well-formed trace —
+  // satisfied simply stays false, exactly as "no evidence" would.
+  subjectId?: string
+  evidence?: OperationalEventEvidence[]
 }
 
 export function buildOneTimeFeeBillabilityTrace(input: OneTimeFeeBillabilityTraceInput): OneTimeFeeBillabilityTrace {
@@ -64,12 +78,20 @@ export function buildOneTimeFeeBillabilityTrace(input: OneTimeFeeBillabilityTrac
   const capability = getBillabilityExecutionCapability(input.condition)
   const requiresEvent = !capability.executable && capability.reason === 'requires_operational_event'
 
+  const satisfaction = resolveOperationalEventEvidence({
+    condition: input.condition,
+    subjectId: input.subjectId ?? '',
+    evidence: input.evidence ?? [],
+    asOf: input.asOf,
+  })
+
   return {
     ...base,
     operationalEvidence: {
       required: requiresEvent,
       eventType: requiresEvent ? capability.event_type : undefined,
-      present: false,
+      satisfied: satisfaction.satisfied,
+      evidenceId: satisfaction.evidence?.id,
     },
   }
 }
