@@ -15,7 +15,7 @@ import { computeBaseTcv, contractLifecycleStatus } from '@/lib/contract-tcv-calc
 import { ruleCadenceLabel, cadenceNoun, contractMonthLabel } from '@/lib/cadence-labels'
 import { optionsForRuleType, optionsForEdit, deriveSelectedOption, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
-import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations } from '@/lib/commercial-rule-status'
+import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved } from '@/lib/commercial-rule-status'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
 import { getCreditRepresentationCapability } from '@/lib/connectors/billing/types'
 import { FinancialAmount, FinancialMetaTag } from '@/app/_components/FinancialAmount'
@@ -132,7 +132,21 @@ type Tier       = {
   } | null
 }
 
-type OneTimeFee = { fee_label: string; amount: number; due_date?: string | null; description?: string | null; manual_trigger?: boolean; metric_name?: string | null; rate_per_unit?: number | null }
+type OneTimeFee = {
+  fee_label: string; amount: number; due_date?: string | null; description?: string | null
+  manual_trigger?: boolean; metric_name?: string | null; rate_per_unit?: number | null
+  // Step 11 (+ amendments) — see lib/types.ts's OneTimeFee for the full
+  // provenance/readiness discipline these drive. Same inline literal union
+  // this page already uses for every other provenance field (e.g.
+  // ServiceCreditInterpretation.cash_redeemable_provenance above), not an
+  // imported FieldProvenance type — this page defines its own local
+  // structural types throughout rather than importing from lib/types.ts.
+  amount_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null
+  billability_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null
+  requires_confirmation?: boolean
+  confirmation_reason?: string | null
+  unresolved_kind?: 'needs_review' | 'unsupported_semantics'
+}
 type PeriodProrationRule = {
   reset_anchor: 'contract_start' | 'calendar' | null
   prorate_partial_periods: boolean | 'unclear'
@@ -3061,6 +3075,7 @@ function ReviewPanel({
   baseFeeAmount,
   baseFeeProration,
   additionalRecurringFees,
+  oneTimeFees,
   extractionNotes,
   contractStartDate,
   contractEndDate,
@@ -3087,6 +3102,8 @@ function ReviewPanel({
   baseFeeAmount?: number | null
   baseFeeProration?: PeriodProrationRule | null
   additionalRecurringFees?: AdditionalRecurringFee[]
+  // Step 11B — the minimal OneTimeFee review path.
+  oneTimeFees?: OneTimeFee[]
   // Free-text notes the extraction model writes for anything it noticed but
   // couldn't fit into a structured field — e.g. a penalty clause, which
   // is the opposite polarity from service_credits (an additional charge,
@@ -3803,6 +3820,132 @@ function ReviewPanel({
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* One-time fees — Step 11B, the minimal review path for
+              lib/one-time-fee.ts's buildOneTimeFeeConfirmation. No AI
+              proposal, no free-text-to-JSON translation (unlike
+              RuleInterpretationCard's flow) — a one-time fee's amount and
+              billability are each either already resolved, or a direct
+              "confirm what's already there" action, independently
+              (item 4). A capability-blocked fee (unresolved_kind:
+              'unsupported_semantics') shows no action at all — there is
+              nothing a reviewer can confirm their way out of (item 3). */}
+          {(() => {
+            const feesNeedingAttention = (oneTimeFees ?? []).filter(
+              f => isOneTimeFeeUnresolved(f) || f.unresolved_kind === 'unsupported_semantics'
+            )
+            if (feesNeedingAttention.length === 0) return null
+
+            // The client only ever says WHICH dimension it is confirming —
+            // confirmAmount / confirmBillability, plain booleans — never an
+            // asserted provenance value. The server (lib/one-time-fee.ts,
+            // via app/api/jobs/[id]/confirm-rule/route.ts) is solely
+            // responsible for minting 'reviewer_policy' from that signal.
+            const confirmOneTimeFee = async (feeLabel: string, field: 'amount' | 'billability') => {
+              const savingKey = `one_time_fee:${feeLabel}:${field}`
+              setSaving(savingKey)
+              setSaveError(prev => ({ ...prev, [feeLabel]: '' }))
+              try {
+                const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    ruleType: 'one_time_fee',
+                    contractUnitType: feeLabel,
+                    reviewerInput: 'Reviewer confirmed via the one-time fee review card.',
+                    aiProposedInterpretation: null,
+                    approvedInterpretation: field === 'amount' ? { confirmAmount: true } : { confirmBillability: true },
+                  }),
+                })
+                if (res.ok) {
+                  onRefresh()
+                } else {
+                  const data = await res.json().catch(() => null)
+                  setSaveError(prev => ({ ...prev, [feeLabel]: data?.error ?? 'Verdix could not save this confirmation.' }))
+                }
+              } catch {
+                setSaveError(prev => ({ ...prev, [feeLabel]: 'Verdix could not save this confirmation.' }))
+              } finally {
+                setSaving(null)
+              }
+            }
+
+            return (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">One-time fees</p>
+                  <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                </div>
+                <div className="space-y-3">
+                  {feesNeedingAttention.map((f, i) => {
+                    const blocked = f.unresolved_kind === 'unsupported_semantics'
+                    const amountResolved = f.amount_provenance === 'contract_derived' || f.amount_provenance === 'reviewer_policy'
+                    const billabilityResolved = !!f.manual_trigger
+                      || f.billability_provenance === 'contract_derived' || f.billability_provenance === 'reviewer_policy'
+                    return (
+                      <div key={f.fee_label ?? i} className="rounded-2xl border overflow-hidden" style={{ borderColor: blocked ? '#FECACA' : '#FAC775', background: 'white' }}>
+                        <div className="px-4 pt-4 pb-3">
+                          <div className="flex items-center gap-1.5 mb-2.5">
+                            <i className="ti ti-receipt text-stone" style={{ fontSize: 12 }} />
+                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">One-time fee</span>
+                          </div>
+                          <p className="text-sm font-medium text-ink leading-snug mb-1">{f.fee_label} — {fmt(f.amount, cur ?? 'EUR')}</p>
+
+                          {blocked ? (
+                            <p className="text-[11px] leading-relaxed" style={{ color: '#991B1B' }}>
+                              Verdix cannot yet represent this fee&apos;s billability condition (e.g. an acceptance or approval
+                              event) with a confirmable date/trigger — this stays blocked from billing until that capability
+                              exists. There is no confirmation that resolves it.
+                            </p>
+                          ) : (
+                            <div className="space-y-2 mt-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[11px] text-stone">
+                                  Amount — {amountResolved ? `confirmed (${f.amount_provenance === 'contract_derived' ? 'clear from source' : 'reviewer policy'})` : 'needs confirmation'}
+                                </span>
+                                {!amountResolved && (
+                                  <button
+                                    onClick={() => confirmOneTimeFee(f.fee_label, 'amount')}
+                                    disabled={saving === `one_time_fee:${f.fee_label}:amount`}
+                                    className="text-[11px] font-medium px-2.5 py-1 rounded-lg border"
+                                    style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                                  >
+                                    {saving === `one_time_fee:${f.fee_label}:amount` ? 'Confirming…' : 'Confirm amount'}
+                                  </button>
+                                )}
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[11px] text-stone">
+                                  Billing timing — {f.manual_trigger
+                                    ? 'held for manual delivery confirmation'
+                                    : billabilityResolved
+                                      ? `confirmed (${f.billability_provenance === 'contract_derived' ? 'clear from source' : 'reviewer policy'})`
+                                      : 'needs confirmation'}
+                                </span>
+                                {!f.manual_trigger && !billabilityResolved && (
+                                  <button
+                                    onClick={() => confirmOneTimeFee(f.fee_label, 'billability')}
+                                    disabled={saving === `one_time_fee:${f.fee_label}:billability`}
+                                    className="text-[11px] font-medium px-2.5 py-1 rounded-lg border"
+                                    style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                                  >
+                                    {saving === `one_time_fee:${f.fee_label}:billability` ? 'Confirming…' : 'Confirm billing timing'}
+                                  </button>
+                                )}
+                              </div>
+                              {saveError[f.fee_label] && (
+                                <p className="text-[11px]" style={{ color: '#DC2626' }}>{saveError[f.fee_label]}</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             )
@@ -6903,6 +7046,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           baseFeeAmount={terms?.base_monthly_fee ?? terms?.base_annual_fee ?? null}
           baseFeeProration={terms?.base_fee_proration}
           additionalRecurringFees={terms?.additional_recurring_fees}
+          oneTimeFees={terms?.one_time_fees}
           extractionNotes={terms?.extraction_notes}
           contractStartDate={terms?.contract_start_date}
           contractEndDate={terms?.contract_end_date}

@@ -1,5 +1,5 @@
 import { writeFileSync } from 'fs'
-import { ContractTerms, OverageTier, ServiceCredit } from './types'
+import { ContractTerms, OverageTier, ServiceCredit, OneTimeFee } from './types'
 import { buildLearningContext } from './learning-context'
 import { getAIClient, AI_PROVIDER } from './ai-client'
 
@@ -352,6 +352,7 @@ export function applyExtractionSafetyNets(terms: ContractTerms, contractText?: s
   terms.overage_tiers = flagAmbiguousTierCalculation(terms.overage_tiers)
   terms.discounts = assignDiscountRuleIds(terms.discounts)
   terms.service_credits = assignServiceCreditRuleIds(terms.service_credits ?? [])
+  terms.one_time_fees = flagAmbiguousOneTimeFees(terms.one_time_fees ?? [])
   flagAmbiguousBaseFeeProration(terms, contractText)
   if (contractText) preserveExclusionLanguage(terms, contractText)
 
@@ -529,6 +530,75 @@ function flagAmbiguousBaseFeeProration(terms: ContractTerms, contractText?: stri
       }
     }
   }
+}
+
+// Step 11 — a narrow, deterministic safety net for the ONE real risk found
+// by auditing OneTimeFee's actual production lifecycle (lib/rulebook/
+// MILESTONE_BILLING_FINDINGS.md): a fee with manual_trigger falsy, a
+// positive amount, and NO due_date is currently invoiced immediately, with
+// zero fee-level human review, the moment a job is approved — due_date:
+// null is treated as "due now" (lib/billing-writer.ts's `isDue = !feeDueDate
+// || feeDueDate <= now`). This is genuinely ambiguous (unlike manual_trigger:
+// true, which correctly waits for confirmation, or a stated due_date, which
+// correctly bills on schedule) — there is no basis for treating "now" as the
+// right moment. Deliberately does NOT flag every one-time fee — a plain,
+// clearly-scheduled or clearly-manual fee is already handled correctly and
+// must not gain a spurious review requirement (item 5: field-requiredness-
+// aware, never a blanket presence check). Never touches manual_trigger,
+// amount, or due_date themselves — this only ever ADDS confirmation
+// metadata, never changes what would actually get billed.
+//
+// Step 11 amendment — a SEPARATE, independent pass sets billability_
+// provenance explicitly to null (evaluated, genuinely unresolved — see
+// that field's own doc comment in lib/types.ts for the undefined/null/
+// resolved three-state discriminator) for every fee where the automatic-
+// execution timing decision actually matters: manual_trigger falsy, i.e.
+// the exact shape lib/billing-writer.ts will auto-invoice once due,
+// REGARDLESS of whether due_date happens to be set — item 3's core
+// doctrine: "concrete value + missing provenance != source-derived", so a
+// stated due_date alone is never treated as sufficient evidence. Extraction
+// has no per-field source-grounding signal for this yet (unlike, say,
+// isServiceCreditFullySourceResolved's textual-marker heuristic for
+// service credits), so this never auto-assigns 'contract_derived' —
+// resolving billability stays exclusively a reviewer action
+// (lib/one-time-fee.ts's buildOneTimeFeeConfirmation) until a real
+// source-grounding signal exists. manual_trigger: true fees are
+// deliberately left untouched (billability_provenance stays undefined) —
+// item 6: execution is already safely held for that shape (a human must
+// take a deliberate, separate parked-invoice action; there is no automatic
+// timing decision to gate), so this field simply isn't load-bearing there.
+//
+// Final correction — the SAME treatment, symmetrically, for
+// amount_provenance: every fee with a real, positive amount that has never
+// been evaluated (amount_provenance === undefined) gets it explicitly set
+// to null (evaluated, genuinely unresolved) here, REGARDLESS of whether
+// the narrower requires_confirmation ambiguity flag below also fires.
+// requires_confirmation keeps its original, narrower meaning (UI/workflow
+// metadata for the one genuinely-ambiguous shape — item 1: "may remain
+// UI/workflow metadata, but must not substitute for provenance");
+// amount_provenance is what lib/commercial-rule-status.ts's
+// isOneTimeFeeUnresolved actually gates readiness on once a record has
+// entered this lifecycle.
+function flagAmbiguousOneTimeFees(fees: OneTimeFee[]): OneTimeFee[] {
+  return fees.map(fee => {
+    let next = fee
+    if (next.amount > 0 && next.amount_provenance === undefined) {
+      next = { ...next, amount_provenance: null }
+    }
+    if (!next.manual_trigger && next.billability_provenance === undefined) {
+      next = { ...next, billability_provenance: null }
+    }
+    if (next.manual_trigger) return next
+    if (next.due_date) return next
+    if (!(next.amount > 0)) return next
+    if (next.requires_confirmation) return next // already flagged (e.g. re-extraction preserving a prior confirmation state — see mergeExtractions)
+    return {
+      ...next,
+      requires_confirmation: true,
+      unresolved_kind: 'needs_review' as const,
+      confirmation_reason: 'This fee has no stated due date and is not gated on manual delivery confirmation — the contract does not establish when it becomes billable.',
+    }
+  })
 }
 
 // Every discount must be independently addressable (review, interpretation,

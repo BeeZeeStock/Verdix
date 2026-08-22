@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { mergeExtractions, assignServiceCreditRuleIds, applyExtractionSafetyNets } from './contract-extractor'
-import type { ContractTerms } from './types'
+import type { ContractTerms, OneTimeFee } from './types'
 
 // Minimal partial fixtures — mergeExtractions only reads a handful of
 // top-level array fields plus a few scalars for scoreCompleteness/date
@@ -364,5 +364,150 @@ The Growth Credit:
     const clause = terms.service_credits[0].source_clause!
     const occurrences = (clause.match(/may not be applied against platform fees/g) ?? []).length
     expect(occurrences).toBe(1)
+  })
+})
+
+// Step 11, item 2 — regression baseline for OneTimeFee's ACTUAL, current
+// production behavior (real field names: fee_label, amount, due_date,
+// manual_trigger, metric_name, rate_per_unit), captured before any
+// readiness/provenance change. See lib/rulebook/MILESTONE_BILLING_FINDINGS
+// .md for the full lifecycle audit these fixtures are drawn from.
+function oneTimeFee(overrides: Partial<OneTimeFee> = {}): OneTimeFee {
+  return { fee_label: 'Onboarding fee', amount: 5000, due_date: null, description: null, ...overrides }
+}
+
+describe('mergeExtractions — one_time_fees dedupe (item 2 regression baseline)', () => {
+  it('dedupes by fee_label only, across chunks — the actual, current key, not a hypothetical stable id', () => {
+    const merged = mergeExtractions([
+      chunk({ one_time_fees: [oneTimeFee({ fee_label: 'Onboarding fee', amount: 5000 })] }),
+      chunk({ one_time_fees: [
+        oneTimeFee({ fee_label: 'Onboarding fee', amount: 5000 }), // duplicate — same chunk seen from another pass
+        oneTimeFee({ fee_label: 'Implementation fee', amount: 12000 }),
+      ] }),
+    ])
+    expect(merged.one_time_fees.map(f => f.fee_label)).toEqual(['Onboarding fee', 'Implementation fee'])
+  })
+
+  it('documents the known collision risk: two GENUINELY DISTINCT fees sharing a fee_label collapse into one (fee_label is the only dedupe key today)', () => {
+    const merged = mergeExtractions([
+      chunk({ one_time_fees: [oneTimeFee({ fee_label: 'Milestone 1', amount: 100000 })] }),
+      chunk({ one_time_fees: [oneTimeFee({ fee_label: 'Milestone 1', amount: 999999 })] }), // different amount, same label — NOT actually a duplicate
+    ])
+    expect(merged.one_time_fees).toHaveLength(1) // collapsed — the known, documented risk, not asserted as desired doctrine
+  })
+
+  it('handles chunks with no one_time_fees field at all (predates the field)', () => {
+    const merged = mergeExtractions([
+      chunk({ one_time_fees: undefined as unknown as ContractTerms['one_time_fees'] }),
+    ])
+    expect(merged.one_time_fees).toEqual([])
+  })
+
+  it('never assigns a stable rule_id to a one-time fee — unlike discounts/service_credits, no id-stability mechanism exists for this type (documented gap, not fixed in Step 11)', () => {
+    const merged = mergeExtractions([
+      chunk({ one_time_fees: [oneTimeFee()] }),
+    ])
+    expect(merged.one_time_fees[0]).not.toHaveProperty('fee_rule_id')
+  })
+})
+
+describe('applyExtractionSafetyNets — flagAmbiguousOneTimeFees (Step 11, item 1 finding: due_date null + manual_trigger falsy silently means "due now")', () => {
+  it('a fee with no due_date and no manual_trigger — the genuinely ambiguous, auto-invoice-reachable shape — is flagged requires_confirmation', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: null, manual_trigger: undefined, amount: 100000 })] }))
+    expect(terms.one_time_fees[0].requires_confirmation).toBe(true)
+    expect(terms.one_time_fees[0].unresolved_kind).toBe('needs_review')
+    expect(terms.one_time_fees[0].confirmation_reason).toBeTruthy()
+  })
+
+  it('a fee with an explicit due_date is NOT flagged — a clear, stated billing schedule is already correct, current behavior (item 2: explicit fixed amount + explicit due trigger)', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: '2026-02-01', amount: 5000 })] }))
+    expect(terms.one_time_fees[0].requires_confirmation).toBeUndefined()
+  })
+
+  it('a fee with manual_trigger: true is NOT flagged — it already correctly waits for human confirmation via the parked-invoices flow', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: null, manual_trigger: true, amount: 0, metric_name: 'hours', rate_per_unit: 150 })] }))
+    expect(terms.one_time_fees[0].requires_confirmation).toBeUndefined()
+  })
+
+  it('a fee with amount <= 0 is not flagged — nothing would actually bill (item 2: missing amount)', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: null, amount: 0 })] }))
+    expect(terms.one_time_fees[0].requires_confirmation).toBeUndefined()
+  })
+
+  it('multiple one-time fees are each flagged independently (item 2: multiple one-time fees)', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [
+      oneTimeFee({ fee_label: 'Ambiguous fee', due_date: null, amount: 50000 }),
+      oneTimeFee({ fee_label: 'Scheduled fee', due_date: '2026-03-01', amount: 20000 }),
+      oneTimeFee({ fee_label: 'Manual fee', due_date: null, manual_trigger: true, amount: 0 }),
+    ] }))
+    expect(terms.one_time_fees.find(f => f.fee_label === 'Ambiguous fee')?.requires_confirmation).toBe(true)
+    expect(terms.one_time_fees.find(f => f.fee_label === 'Scheduled fee')?.requires_confirmation).toBeUndefined()
+    expect(terms.one_time_fees.find(f => f.fee_label === 'Manual fee')?.requires_confirmation).toBeUndefined()
+  })
+
+  it('is idempotent — re-running safety nets on an already-flagged fee does not stack or overwrite an existing confirmation state', () => {
+    const once = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: null, amount: 100000 })] }))
+    const twice = applyExtractionSafetyNets(chunk({ one_time_fees: once.one_time_fees }))
+    expect(twice.one_time_fees[0].requires_confirmation).toBe(true)
+    expect(twice.one_time_fees[0].confirmation_reason).toBe(once.one_time_fees[0].confirmation_reason)
+  })
+
+  it('never mutates amount, due_date, or manual_trigger themselves — only adds confirmation metadata (item 2: current billing behavior is not changed by this safety net alone)', () => {
+    const input = oneTimeFee({ due_date: null, amount: 100000, manual_trigger: undefined })
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [input] }))
+    expect(terms.one_time_fees[0].amount).toBe(100000)
+    expect(terms.one_time_fees[0].due_date).toBeNull()
+    expect(terms.one_time_fees[0].manual_trigger).toBeUndefined()
+  })
+})
+
+// Step 11 amendment — billability_provenance discriminator. Independent of
+// (and in addition to) the requires_confirmation/amount logic above.
+describe('applyExtractionSafetyNets — billability_provenance discriminator (Step 11 amendment)', () => {
+  it('a non-manual-trigger fee gets billability_provenance explicitly set to null (evaluated, genuinely unresolved) — REGARDLESS of due_date presence (item 3: a concrete date is not evidence)', () => {
+    const withDueDate = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: '2026-02-01', amount: 5000 })] }))
+    expect(withDueDate.one_time_fees[0].billability_provenance).toBeNull()
+    const withoutDueDate = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: null, amount: 100000 })] }))
+    expect(withoutDueDate.one_time_fees[0].billability_provenance).toBeNull()
+  })
+
+  it('a manual_trigger: true fee is left untouched — billability_provenance stays undefined (item 6: execution already safely held, not a load-bearing field for this shape)', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ manual_trigger: true, amount: 0, metric_name: 'hours', rate_per_unit: 150 })] }))
+    expect(terms.one_time_fees[0].billability_provenance).toBeUndefined()
+  })
+
+  it('never overwrites an already-resolved billability_provenance (e.g. preserved across re-extraction after a reviewer confirmed it)', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: '2026-02-01', billability_provenance: 'reviewer_policy' })] }))
+    expect(terms.one_time_fees[0].billability_provenance).toBe('reviewer_policy')
+  })
+
+})
+
+// Final correction — the same treatment, symmetrically, for
+// amount_provenance (item 1: "must become the canonical trust signal").
+describe('applyExtractionSafetyNets — amount_provenance discriminator (Step 11 final correction)', () => {
+  it('a fee with a real, positive amount gets amount_provenance explicitly set to null (evaluated, genuinely unresolved), regardless of due_date/manual_trigger', () => {
+    const clean = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: '2026-02-01', amount: 5000 })] }))
+    expect(clean.one_time_fees[0].amount_provenance).toBeNull()
+    const ambiguous = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: null, amount: 100000 })] }))
+    expect(ambiguous.one_time_fees[0].amount_provenance).toBeNull()
+    const manual = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ manual_trigger: true, amount: 50000 })] }))
+    expect(manual.one_time_fees[0].amount_provenance).toBeNull()
+  })
+
+  it('a fee with amount 0 (variable, unknown at contract time — manual_trigger rate-based fees) is left untouched — nothing to grade provenance on yet', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ manual_trigger: true, amount: 0, metric_name: 'hours', rate_per_unit: 150 })] }))
+    expect(terms.one_time_fees[0].amount_provenance).toBeUndefined()
+  })
+
+  it('never overwrites an already-resolved amount_provenance (e.g. preserved across re-extraction after a reviewer confirmed it)', () => {
+    const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ amount: 100000, amount_provenance: 'reviewer_policy' })] }))
+    expect(terms.one_time_fees[0].amount_provenance).toBe('reviewer_policy')
+  })
+
+  it('requires_confirmation keeps its original, narrower meaning — set only for the genuinely-ambiguous shape, independent of the now-universal amount_provenance: null default', () => {
+    const clean = applyExtractionSafetyNets(chunk({ one_time_fees: [oneTimeFee({ due_date: '2026-02-01', amount: 5000 })] }))
+    expect(clean.one_time_fees[0].amount_provenance).toBeNull() // evaluated...
+    expect(clean.one_time_fees[0].requires_confirmation).toBeUndefined() // ...but not flagged as urgently ambiguous
   })
 })

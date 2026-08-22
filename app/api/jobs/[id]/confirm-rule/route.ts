@@ -24,8 +24,9 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
 import type { RuleType } from '@/lib/rule-interpretation'
-import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation, CreditEarnRule, PeriodProrationRule, AdditionalRecurringFee, FieldProvenance } from '@/lib/types'
+import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation, CreditEarnRule, PeriodProrationRule, AdditionalRecurringFee, FieldProvenance, OneTimeFee } from '@/lib/types'
 import { buildCreditApplicationRule, sanitizeAssertedProvenance } from '@/lib/credit-application-rule'
+import { buildOneTimeFeeConfirmation, OneTimeFeeCapabilityBlockedError, OneTimeFeeValueMutationRejectedError } from '@/lib/one-time-fee'
 import { listMatchableOrganizationRules } from '@/lib/rulebook/organization-rules-service'
 import { resolveProductionOrganizationField, isOrganizationPolicyStale, type ProductionOrganizationResolution, type SeenOrganizationPolicy } from '@/lib/rulebook/organization-rulebook-production'
 
@@ -235,6 +236,11 @@ export async function POST(
   if (ruleType === 'rule_interaction' && !interactionKey) {
     return NextResponse.json({ error: 'interactionKey is required for rule_interaction interpretation' }, { status: 400 })
   }
+  if (ruleType === 'one_time_fee' && !contractUnitType) {
+    // contractUnitType is repurposed to carry fee_label — same addressing
+    // reuse recurring_fee_proration already does, no new column/migration.
+    return NextResponse.json({ error: 'contractUnitType (the fee_label) is required for one_time_fee confirmation' }, { status: 400 })
+  }
 
   // The audit table's contract_unit_type column doubles as the addressing
   // key for job-level rules (null for a singular escalator). Discounts,
@@ -297,7 +303,7 @@ export async function POST(
   const { data: termsRow } = ownedJob.contract_terms_id
     ? await supabaseServer
         .from('contract_terms')
-        .select('id, overage_tiers, escalators, discounts, service_credits, ai_proposal_cache, base_fee_proration, additional_recurring_fees')
+        .select('id, overage_tiers, escalators, discounts, service_credits, ai_proposal_cache, base_fee_proration, additional_recurring_fees, one_time_fees')
         .eq('id', ownedJob.contract_terms_id)
         .maybeSingle()
     : { data: null }
@@ -325,8 +331,18 @@ export async function POST(
   // only recommended or couldn't determine at all required the reviewer's
   // own judgment to resolve, so it's reviewer_policy even though a human
   // clicked confirm on both.
+  // one_time_fee joins partial_period/base_fee_proration/recurring_fee_
+  // proration here — there is no propose-rule/AI-proposal pipeline for it
+  // (lib/rulebook/MILESTONE_BILLING_FINDINGS.md), so every confirmation is,
+  // by definition, the reviewer's own decision, never "the contract said
+  // so" via an AI proposal this route can independently verify. This is
+  // the audit row's own decision_provenance column only — the ACTUAL
+  // per-field amount_provenance/billability_provenance written into
+  // one_time_fees below are computed independently by
+  // buildOneTimeFeeConfirmation from what the client explicitly asserts,
+  // not derived from this value.
   const decisionProvenance: 'reviewer_policy' | 'contract_derived' =
-    ruleType === 'partial_period' || ruleType === 'base_fee_proration' || ruleType === 'recurring_fee_proration' ? 'reviewer_policy'
+    ruleType === 'partial_period' || ruleType === 'base_fee_proration' || ruleType === 'recurring_fee_proration' || ruleType === 'one_time_fee' ? 'reviewer_policy'
       : cachedProposal?.state === 'clear_from_source' ? 'contract_derived'
       : 'reviewer_policy'
 
@@ -337,6 +353,8 @@ export async function POST(
       ? (termsRow.overage_tiers as Array<{ unit_type?: string }> ?? []).find(t => t.unit_type === contractUnitType) ?? null
     : ruleType === 'discount'
       ? (termsRow.discounts as Array<{ discount_rule_id?: string }> ?? []).find(d => d.discount_rule_id === discountId) ?? null
+    : ruleType === 'one_time_fee'
+      ? (termsRow as unknown as { one_time_fees?: OneTimeFee[] }).one_time_fees?.find(f => f.fee_label === contractUnitType) ?? null
     : ruleType === 'service_credit'
       ? (termsRow.service_credits as Array<{ credit_rule_id?: string }> ?? []).find(c => c.credit_rule_id === creditId) ?? null
     : ruleType === 'rule_interaction'
@@ -442,6 +460,62 @@ export async function POST(
       )
       const { error } = await supabaseServer.from('contract_terms').update({ additional_recurring_fees: newFees }).eq('id', termsRow.id)
       propagation['contract_terms'] = error ? 'failed' : 'applied'
+    }
+  } else if (ruleType === 'one_time_fee') {
+    // Step 11B, final security correction — the minimal review path
+    // lib/one-time-fee.ts's buildOneTimeFeeConfirmation exists for.
+    // contractUnitType carries fee_label (validated required, above), same
+    // addressing reuse as recurring_fee_proration.
+    //
+    // approvedInterpretation carries ONLY which action(s) the reviewer took
+    // — confirmAmount / confirmBillability, plain booleans — never a
+    // provenance value. The client has no authority to assert 'contract_
+    // derived'/'organization_rulebook'/'verdix_rulebook'/'verdix_recommends'
+    // (or anything else); buildOneTimeFeeConfirmation itself only ever
+    // mints 'reviewer_policy' for a confirmed dimension (or preserves an
+    // existing 'contract_derived', never downgrading it) — see that
+    // module's header for why. This route no longer accepts or forwards
+    // any client-supplied FieldProvenance for this rule type.
+    const fees = ((termsRow as { one_time_fees?: OneTimeFee[] | null }).one_time_fees ?? []) as OneTimeFee[]
+    const targetIndex = fees.findIndex(f => f.fee_label === contractUnitType)
+    if (targetIndex === -1) {
+      propagation['contract_terms'] = 'failed'
+    } else {
+      const amount = typeof approvedInterpretation.amount === 'number' ? approvedInterpretation.amount : undefined
+      const confirmAmount = approvedInterpretation.confirmAmount === true
+      const confirmBillability = approvedInterpretation.confirmBillability === true
+      try {
+        const newFees = fees.map((f, i) =>
+          i === targetIndex ? buildOneTimeFeeConfirmation(f, { amount, confirmAmount, confirmBillability }) : f
+        )
+        const { error } = await supabaseServer.from('contract_terms').update({ one_time_fees: newFees }).eq('id', termsRow.id)
+        propagation['contract_terms'] = error ? 'failed' : 'applied'
+      } catch (err) {
+        // unresolved_kind: 'unsupported_semantics' is an expected
+        // commercial state — Verdix cannot yet represent this fee's
+        // billability condition, not an internal failure — so it's caught
+        // here and returned as a structured, fail-closed 409, never an
+        // uncaught 500. No raw source text is included.
+        if (err instanceof OneTimeFeeCapabilityBlockedError) {
+          return NextResponse.json({
+            error: 'This fee cannot be confirmed with the current billing model.',
+            code: 'unsupported_commercial_semantics',
+          }, { status: 409 })
+        }
+        // Final adversarial check — a crafted (or genuinely mistaken)
+        // request trying to change a contract_derived amount's VALUE. No
+        // reviewer-override-of-a-contract-value workflow exists yet, so
+        // this is also an expected, structured, fail-closed rejection —
+        // never an uncaught 500 — rather than silently letting the new
+        // number inherit the old, trusted contract_derived authority.
+        if (err instanceof OneTimeFeeValueMutationRejectedError) {
+          return NextResponse.json({
+            error: 'This amount was derived from the contract and cannot be changed via reviewer confirmation.',
+            code: 'contract_derived_value_immutable',
+          }, { status: 409 })
+        }
+        throw err
+      }
     }
   } else if (ruleType === 'escalator') {
     type Esc = { interpretation?: EscalatorInterpretation | null; [k: string]: unknown }

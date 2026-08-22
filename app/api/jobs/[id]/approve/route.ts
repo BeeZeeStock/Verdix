@@ -102,6 +102,23 @@ export async function POST(
   const workload = computeCommercialRuleWorkload(
     terms, meterMappingWorkload, unresolvedInteractions.length, undefined, { configured: vatConfigured },
   )
+  // Step 11 final correction, item 5 — execution_blocked (Rulebook
+  // invariant violations, and now real OneTimeFee capability blockers —
+  // lib/commercial-rule-status.ts's UnsupportedCommercialSemanticsBlocker)
+  // must be checked EXPLICITLY and FIRST. It is NOT implied by
+  // totalToConfirm > 0: a capability-blocked one-time fee (unresolved_kind:
+  // 'unsupported_semantics') is deliberately never counted as an ordinary,
+  // reviewer-resolvable item (see isOneTimeFeeUnresolved's own comment —
+  // there is nothing for a reviewer to pick between), so without this
+  // check a capability-blocked fee could silently reach configureBilling
+  // below. A genuine engine contradiction or modeling-capability gap fails
+  // closed regardless of how resolved every other item is.
+  if (workload.executionBlockers.length > 0) {
+    return NextResponse.json(
+      { error: `Billing blocked: Verdix cannot safely determine a billing instruction for ${workload.executionBlockers.length} item(s) — see execution blockers.`, executionBlockers: workload.executionBlockers },
+      { status: 400 },
+    )
+  }
   if (workload.totalToConfirm > 0 || workload.interactionsToConfirm > 0) {
     return NextResponse.json(
       { error: `Confirm all commercial rules before approving — ${workload.totalToConfirm + workload.interactionsToConfirm} decision(s) outstanding.` },

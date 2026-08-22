@@ -15,7 +15,7 @@ import { cadenceNoun, contractMonthLabel } from './cadence-labels'
 // ai-guidance.ts itself has no database import at all).
 import { renderRulebookAIGuidance } from './rulebook/ai-guidance'
 
-export type RuleType = 'minimum_commitment' | 'escalator' | 'partial_period' | 'discount' | 'tier_calculation' | 'service_credit' | 'rule_interaction' | 'base_fee_proration' | 'recurring_fee_proration'
+export type RuleType = 'minimum_commitment' | 'escalator' | 'partial_period' | 'discount' | 'tier_calculation' | 'service_credit' | 'rule_interaction' | 'base_fee_proration' | 'recurring_fee_proration' | 'one_time_fee'
 
 export type StructuredOption = {
   id: string
@@ -190,6 +190,11 @@ export function optionsForRuleType(ruleType: RuleType, cadenceLabel?: string, co
     case 'tier_calculation': return TIER_CALCULATION_OPTIONS
     case 'service_credit': return SERVICE_CREDIT_OPTIONS
     case 'rule_interaction': return RULE_INTERACTION_OPTIONS
+    // one_time_fee (Step 11B) has no structured-option picker — it's a
+    // direct amount/billability provenance confirmation (see lib/one-
+    // time-fee.ts's buildOneTimeFeeConfirmation), not a "choose one of
+    // these treatments" question.
+    case 'one_time_fee': return []
   }
 }
 
@@ -658,6 +663,11 @@ const REQUIRED_FIELDS: Record<RuleType, string[]> = {
   rule_interaction: ['resolution', 'note'],
   base_fee_proration: ['reset_anchor'],
   recurring_fee_proration: ['reset_anchor'],
+  // one_time_fee (Step 11B) has no AI-proposal-parsing flow at all (no
+  // propose-rule/interpret-rule pipeline — lib/rulebook/MILESTONE_BILLING_
+  // FINDINGS.md), so this map is never actually consulted for it; empty
+  // only to satisfy Record<RuleType, string[]>'s exhaustiveness.
+  one_time_fee: [],
 }
 
 // Only a tiered/volume discount needs its tier structure spelled out — a

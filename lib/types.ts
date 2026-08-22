@@ -453,6 +453,83 @@ export interface OneTimeFee {
   metric_name?: string | null
   /** Rate per metric unit — used to calculate the invoice amount at trigger time */
   rate_per_unit?: number | null
+  /** Step 11 — provenance for `amount`, the one execution-relevant fact this
+   *  shape can actually resolve today. Reuses the canonical FieldProvenance
+   *  discipline (see lib/commercial-rule-status.ts's isProvenanceResolved)
+   *  rather than a bespoke notion of confidence/approval. Absent/null means
+   *  never graded — including every record persisted before this field
+   *  existed — and is NOT, by itself, treated as unresolved/blocking; only
+   *  requires_confirmation being explicitly true blocks readiness (see that
+   *  field's own comment for why, and lib/rulebook/MILESTONE_BILLING_
+   *  FINDINGS.md's backward-compatibility discussion). 'organization_
+   *  rulebook' is never valid here — PRODUCTION_ORGANIZATION_RULEBOOK_
+   *  ALLOWLIST has no one_time_fee entry (Step 11 does not add one). */
+  amount_provenance?: FieldProvenance | null
+  /** Step 11 — an explicit, narrow safety net (lib/contract-extractor.ts's
+   *  flagAmbiguousOneTimeFees), set true only for the one real risk found by
+   *  auditing this type's actual production lifecycle: a fee that would
+   *  auto-invoice with zero further human review (manual_trigger falsy,
+   *  amount > 0, due_date null — genuinely ambiguous whether "now" is the
+   *  right billing moment, unlike a fee with either a clear due_date or
+   *  manual_trigger: true, both of which already have a real, correct
+   *  billing timing today). Absent/false for every historical record and
+   *  for every fee outside that one ambiguous shape — never a blanket
+   *  "every one-time fee needs review" gate (lib/commercial-rule-status.ts's
+   *  isOneTimeFeeUnresolved is field-requiredness-aware, not presence-aware). */
+  requires_confirmation?: boolean
+  confirmation_reason?: string | null
+  /** Step 11 — distinguishes ordinary, reviewer-resolvable ambiguity from a
+   *  genuine Verdix modeling-capability gap. 'needs_review' (the default
+   *  when requires_confirmation is true) means a reviewer CAN resolve this
+   *  by confirming/correcting the amount — see lib/one-time-fee.ts's
+   *  buildOneTimeFeeConfirmation. 'unsupported_semantics' means the SOURCE
+   *  describes a billability condition this shape cannot represent at all
+   *  (e.g. "billable upon customer acceptance") — no reviewer confirmation
+   *  can fix that, since there is nothing to confirm; it becomes an
+   *  execution-capability blocker instead (lib/commercial-rule-status.ts's
+   *  UnsupportedCommercialSemanticsBlocker), never a fabricated
+   *  reviewer_policy/contract_derived value. Nothing in production sets this
+   *  yet — no extraction/interpretation call site can currently DETECT this
+   *  distinction; see lib/rulebook/MILESTONE_BILLING_FINDINGS.md. Present
+   *  here, and handled correctly by readiness, so a future step can start
+   *  setting it without another type/readiness change. */
+  unresolved_kind?: 'needs_review' | 'unsupported_semantics'
+  /** Step 11 amendment — provenance for the SINGLE semantic decision the
+   *  existing `manual_trigger` + `due_date` pair together express: what
+   *  authority establishes the current executable timing/gating treatment.
+   *  One field, not two (per manual_trigger/due_date), because nothing in
+   *  the current implementation gives them independent authorities — they
+   *  are two facets of one decision ("when/how does this become billable"),
+   *  not two separate contractual questions.
+   *
+   *  Deliberately INDEPENDENT of amount_provenance (item 2) — a fee can be
+   *  fully resolved on amount (contract_derived) while its billability
+   *  stays unresolved, and vice versa; nothing here or in
+   *  isOneTimeFeeUnresolved ever lets confirming one resolve the other.
+   *
+   *  Never auto-derived from a field simply being present — a concrete
+   *  due_date, or manual_trigger: true "safely holding" execution, is NOT
+   *  evidence of resolved billability semantics on its own (items 3, 6):
+   *  the same "concrete value + missing provenance != source-derived"
+   *  doctrine used everywhere else in this codebase. Only ever
+   *  'contract_derived' when the extraction/interpretation path genuinely
+   *  has source evidence for that specific conclusion (item 4), or
+   *  'reviewer_policy' once a human explicitly confirms it via
+   *  lib/one-time-fee.ts's buildOneTimeFeeConfirmation. Never
+   *  'organization_rulebook' — same reasoning as amount_provenance above.
+   *
+   *  THREE distinct states, not two — this is the backward-compatibility
+   *  discriminator lib/commercial-rule-status.ts's isOneTimeFeeUnresolved
+   *  relies on (item 8): `undefined` means this record predates the
+   *  billability-provenance model entirely (every historical record, and
+   *  every record only ever touched by original Step 11's amount-only
+   *  safety net) — never retroactively treated as unresolved. `null` means
+   *  a fee HAS been evaluated under this model and is genuinely,
+   *  explicitly unresolved — a real blocker (unless manual_trigger is
+   *  true — see isOneTimeFeeUnresolved's own comment for why that shape is
+   *  "safely held" rather than blocking). A real FieldProvenance value
+   *  means resolved. */
+  billability_provenance?: FieldProvenance | null
 }
 
 // Same structural gap as MinimumCommitment.prorate_partial_periods, now

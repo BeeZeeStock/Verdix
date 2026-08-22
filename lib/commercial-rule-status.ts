@@ -215,6 +215,73 @@ export function isDiscountUnresolved(discount: DiscountLike): boolean {
   return !discount.interpretation || !!discount.interpretation.requires_confirmation
 }
 
+// Step 11 (+ amendments) — OneTimeFee brought into the same readiness
+// discipline every sibling commercial-rule type already has, as TWO
+// independent questions (item 2/7), never conflated, BOTH now governed by
+// the SAME canonical isProvenanceResolved() (no bespoke predicate) and the
+// SAME three-state backward-compatibility discriminator:
+//   `undefined` — never evaluated under the Step 11(+) lifecycle at all
+//                 (every historical record, and any record only ever
+//                 touched by an older safety-net revision that predates
+//                 this specific field) — NOT reopened; falls back to
+//                 requires_confirmation for amount (the original, narrower
+//                 Step 11 signal) and is simply not load-bearing for
+//                 billability (see below).
+//   `null`      — evaluated, genuinely unresolved — a real blocker (unless
+//                 manual_trigger is true, for billability specifically —
+//                 see below).
+//   concrete    — evaluated via isProvenanceResolved(), exactly like any
+//                 other FieldProvenance field in this codebase.
+//
+//   - amount: amount_provenance is now the CANONICAL trust signal (this
+//     correction). requires_confirmation remains real UI/workflow
+//     metadata (lib/contract-extractor.ts's flagAmbiguousOneTimeFees still
+//     sets it for the one genuinely-ambiguous shape, and a route/UI may
+//     still read it to decide what to show) but never SUBSTITUTES for
+//     provenance once amount_provenance has actually been evaluated
+//     (!== undefined) for this record.
+//   - billability (the manual_trigger + due_date timing/gating decision):
+//     governed by billability_provenance. A concrete due_date is NEVER
+//     itself treated as evidence (item 3) — only a real, explicit
+//     FieldProvenance value resolves it. manual_trigger: true fees never
+//     need this resolved at all (item 6: execution is already safely held
+//     by the parked-invoice mechanism — there is no automatic timing
+//     decision being made for this shape to gate in the first place).
+// A fee flagged unresolved_kind: 'unsupported_semantics' is NOT counted by
+// this function at all, regardless of either field above — that case is a
+// capability blocker (see oneTimeFeeCapabilityBlockers below), structurally
+// separate from an ordinary, reviewer-resolvable ambiguity.
+type OneTimeFeeLike = {
+  fee_label?: string
+  amount?: number
+  amount_provenance?: FieldProvenance | null
+  manual_trigger?: boolean
+  due_date?: string | null
+  requires_confirmation?: boolean
+  unresolved_kind?: 'needs_review' | 'unsupported_semantics'
+  billability_provenance?: FieldProvenance | null
+}
+
+export function isOneTimeFeeUnresolved(fee: OneTimeFeeLike): boolean {
+  if (fee.unresolved_kind === 'unsupported_semantics') return false
+
+  // Amount — canonically provenance-driven once evaluated; legacy
+  // requires_confirmation fallback only for records amount_provenance
+  // never touched at all (backward compatibility, item 1).
+  if (fee.amount_provenance !== undefined) {
+    if (!isProvenanceResolved(fee.amount_provenance)) return true
+  } else if (fee.requires_confirmation) {
+    return true
+  }
+
+  // Billability — unchanged from the prior amendment.
+  if (!fee.manual_trigger && fee.billability_provenance !== undefined && !isProvenanceResolved(fee.billability_provenance)) {
+    return true
+  }
+
+  return false
+}
+
 type ProrationLike = { requires_confirmation: boolean } | null | undefined
 
 export type CommercialRuleTerms = {
@@ -228,6 +295,10 @@ export type CommercialRuleTerms = {
   // to a contract with no usage-based tiers at all, a flat-fee-only deal).
   base_fee_proration?: ProrationLike
   additional_recurring_fees?: Array<{ fee_label?: string; amount?: number; proration?: ProrationLike }> | null
+  // Step 11 — optional so every existing caller/fixture that predates
+  // OneTimeFee-awareness keeps behaving identically (absent/empty means
+  // zero one-time-fee items counted, exactly like today).
+  one_time_fees?: OneTimeFeeLike[] | null
   // Only needed for isMinimumCommitmentProrationUnresolved's date-aware
   // window check — optional so every existing caller/fixture that predates
   // this field keeps working unchanged (missing dates just fail toward
@@ -290,15 +361,22 @@ export type CommercialRuleWorkload = {
   // can see precisely WHICH items make up the count instead of only its
   // size. Does not include meterMapping/vat, which are separate buckets.
   blockers: string[]
-  // Step 3 — a rulebook-detected engine contradiction (see
-  // lib/rulebook/activation.ts's RulebookInvariantExecutionBlocker), kept
-  // structurally separate from `blockers`/`totalToConfirm` on purpose:
-  // those are reviewer-facing commercial ambiguities a human resolves by
-  // picking an option; this is an execution contradiction no reviewer
-  // confirmation can fix. Always [] unless a caller explicitly passes real
-  // violations via computeCommercialRuleWorkload's executionBlockers
-  // parameter — nothing in production does yet.
-  executionBlockers: RulebookInvariantViolationLike[]
+  // Step 3 (RulebookInvariantViolationLike) + Step 11
+  // (UnsupportedCommercialSemanticsBlocker) — two kinds of "no reviewer
+  // confirmation can fix this," kept structurally separate from
+  // `blockers`/`totalToConfirm` on purpose: those are reviewer-facing
+  // commercial ambiguities a human resolves by picking an option; both
+  // items here are cases where picking an option isn't available. A
+  // rulebook violation is an engine CONTRADICTION (something computed
+  // wrong); an unsupported-semantics blocker is a modeling CAPABILITY GAP
+  // (nothing computed wrong — Verdix's schema just can't represent what
+  // the source describes yet). Rulebook violations are always [] unless a
+  // caller explicitly passes them; unsupported-semantics blockers ARE
+  // derived internally, from terms.one_time_fees, by this function itself
+  // (see below) — but nothing in production sets unresolved_kind:
+  // 'unsupported_semantics' on a real OneTimeFee yet (lib/rulebook/
+  // MILESTONE_BILLING_FINDINGS.md), so this is currently always [] too.
+  executionBlockers: CommercialRuleExecutionBlocker[]
 }
 
 // A rulebook-detected engine contradiction, structurally compatible with
@@ -315,6 +393,25 @@ export type RulebookInvariantViolationLike = {
   field: string
   reason: string
 }
+
+// Step 11, item 7 — "prefer an execution-capability blocker analogous to
+// other unsupported billing capabilities" (see lib/connectors/billing/
+// types.ts's CreditRepresentationCapability for the existing small,
+// explicit-lookup convention this mirrors) rather than inventing a new
+// generic blocker framework, and rather than reusing RulebookInvariantViolationLike
+// (a genuinely different kind of "unfixable" — see executionBlockers' own
+// comment above). `reason` is always a short, generic, structural
+// description — never raw source text (item 7: "do not store raw source
+// text in the blocker").
+export type UnsupportedCommercialSemanticsBlocker = {
+  type: 'unsupported_commercial_semantics'
+  rule_family: string
+  missing_capability: string
+  field: string
+  reason: string
+}
+
+export type CommercialRuleExecutionBlocker = RulebookInvariantViolationLike | UnsupportedCommercialSemanticsBlocker
 
 function groupTiersByUnitType(tiers: TierLike[]): Map<string, TierLike[]> {
   const groups = new Map<string, TierLike[]>()
@@ -349,7 +446,12 @@ export function computeCommercialRuleWorkload(
   // 'execution_blocked' regardless of how resolved every other item is
   // (see the status computation below) — a genuine engine contradiction
   // fails closed even when every reviewer-facing decision is confirmed.
-  executionBlockers: RulebookInvariantViolationLike[] = [],
+  // Step 11 widened the element type to also accept
+  // UnsupportedCommercialSemanticsBlocker — this parameter is still purely
+  // caller-supplied Rulebook-side input; the ONE-TIME-FEE capability
+  // blockers below are derived internally from `terms` and merged in,
+  // never expected here.
+  executionBlockers: CommercialRuleExecutionBlocker[] = [],
 ): CommercialRuleWorkload {
   const tiers = terms?.overage_tiers ?? []
   const groups = groupTiersByUnitType(tiers)
@@ -419,6 +521,36 @@ export function computeCommercialRuleWorkload(
     countItem(`service_credit:${c.credit_rule_id}`, isServiceCreditUnresolved(c))
   }
 
+  // Step 11 — OneTimeFee readiness. Addressed by fee_label, the same
+  // (documented, imperfect) key lib/billing-writer.ts already uses to
+  // identify a specific fee — not a new id scheme; see this codebase's own
+  // audit in lib/rulebook/MILESTONE_BILLING_FINDINGS.md for why that's a
+  // real, known limitation, not something this step introduces or fixes.
+  // Two structurally different outcomes, deliberately not conflated:
+  //   - unresolved_kind !== 'unsupported_semantics': an ordinary,
+  //     reviewer-resolvable ambiguity — counted exactly like every other
+  //     item above (totalToConfirm/blockers/readyToConfirm/decisionRequired).
+  //   - unresolved_kind === 'unsupported_semantics': Verdix cannot
+  //     represent what the source describes at all — never counted as a
+  //     reviewer decision (nothing to pick between); becomes a capability
+  //     blocker instead, merged into executionBlockers below.
+  const oneTimeFeeCapabilityBlockers: UnsupportedCommercialSemanticsBlocker[] = []
+  for (const fee of terms?.one_time_fees ?? []) {
+    if (!fee.fee_label) continue
+    if (fee.unresolved_kind === 'unsupported_semantics') {
+      oneTimeFeeCapabilityBlockers.push({
+        type: 'unsupported_commercial_semantics',
+        rule_family: 'one_time_fee',
+        missing_capability: 'event_based_billability',
+        field: `one_time_fee:${fee.fee_label}`,
+        reason: 'The source describes a billability condition this fee shape cannot yet represent.',
+      })
+      continue
+    }
+    countItem(`one_time_fee:${fee.fee_label}`, isOneTimeFeeUnresolved(fee))
+  }
+  const allExecutionBlockers = [...executionBlockers, ...oneTimeFeeCapabilityBlockers]
+
   const meterMappingOk = meterMapping.total === 0 || meterMapping.confirmed >= meterMapping.total
   const commercialRulesConfirmed = totalToConfirm === 0 && interactionsToConfirm === 0
 
@@ -429,11 +561,16 @@ export function computeCommercialRuleWorkload(
   // "has anyone opened the review panel yet" signal may downgrade
   // 'review_required' to it for copy purposes.
   //
-  // executionBlocked (Step 3) is checked FIRST and short-circuits every
-  // other branch, including an otherwise-fully-confirmed contract — fail
-  // closed, per lib/rulebook/activation.ts's enforce_invariant contract.
-  // Always false unless a caller explicitly passes real executionBlockers.
-  const executionBlocked = executionBlockers.length > 0
+  // executionBlocked (Step 3, widened Step 11) is checked FIRST and
+  // short-circuits every other branch, including an otherwise-fully-
+  // confirmed contract — fail closed, per lib/rulebook/activation.ts's
+  // enforce_invariant contract, and per the same reasoning for a
+  // capability gap: no amount of reviewer confirmation elsewhere can make
+  // an unsupported-semantics fee safe to bill. Always false unless a
+  // caller passes real Rulebook violations OR terms.one_time_fees
+  // contains a real unresolved_kind: 'unsupported_semantics' entry —
+  // nothing in production sets the latter yet.
+  const executionBlocked = allExecutionBlockers.length > 0
   let status: CommercialRuleStatus
   if (executionBlocked) status = 'execution_blocked'
   else if (commercialRulesConfirmed && meterMappingOk && vat.configured) status = 'all_commercial_rules_confirmed'
@@ -450,7 +587,7 @@ export function computeCommercialRuleWorkload(
     meterMapping,
     vat,
     blockers,
-    executionBlockers,
+    executionBlockers: allExecutionBlockers,
   }
 }
 

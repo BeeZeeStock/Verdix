@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, requiredServiceCreditFields, isDiscountUnresolved, countSourceConfirmations, isServiceCreditFullySourceResolved, type CommercialRuleTerms } from './commercial-rule-status'
+import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, requiredServiceCreditFields, isDiscountUnresolved, countSourceConfirmations, isServiceCreditFullySourceResolved, isOneTimeFeeUnresolved, type CommercialRuleTerms, type UnsupportedCommercialSemanticsBlocker } from './commercial-rule-status'
 
 describe('computeCommercialRuleWorkload — "all confirmed" must check every rule type (regression)', () => {
   it('minimum commitment, tier calculation, escalator, and meter mapping all confirmed but a discount is NOT: never all_commercial_rules_confirmed', () => {
@@ -471,5 +471,131 @@ describe('countSourceConfirmations — presentational split, never changes the u
     const afterEveryCardOpened = countSourceConfirmations(blockers, serviceCredits) // same persisted input — nothing about "opening a card" is representable here
     expect(afterEveryCardOpened).toBe(beforeAnyCardOpened)
     expect(beforeAnyCardOpened).toBe(1)
+  })
+})
+
+// Step 11 — OneTimeFee brought into the same readiness/provenance
+// architecture every other commercial-rule type already has. See
+// lib/rulebook/MILESTONE_BILLING_FINDINGS.md for the full lifecycle audit
+// motivating these specific cases.
+describe('isOneTimeFeeUnresolved', () => {
+  it('a fee with no requires_confirmation flag at all (the historical shape — Step 11 item 10) is resolved, not blocking', () => {
+    expect(isOneTimeFeeUnresolved({ fee_label: 'Onboarding fee', amount: 5000 })).toBe(false)
+  })
+  it('requires_confirmation: true blocks', () => {
+    expect(isOneTimeFeeUnresolved({ fee_label: 'Ambiguous fee', amount: 100000, requires_confirmation: true })).toBe(true)
+  })
+  it('requires_confirmation: true but unresolved_kind "unsupported_semantics" does NOT block via this function — it is a capability blocker instead, handled separately', () => {
+    expect(isOneTimeFeeUnresolved({ fee_label: 'Acceptance-gated fee', amount: 100000, requires_confirmation: true, unresolved_kind: 'unsupported_semantics' })).toBe(false)
+  })
+})
+
+describe('computeCommercialRuleWorkload — OneTimeFee readiness integration (Step 11, item 2/5/10 fixtures)', () => {
+  it('item 2: explicit fixed amount, no confirmation needed — does not block (backward compat, and the plain common case)', () => {
+    const terms: CommercialRuleTerms = { one_time_fees: [{ fee_label: 'Onboarding fee', amount: 5000 }] }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.totalToConfirm).toBe(0)
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+
+  it('item 2: a fee explicitly flagged requires_confirmation (the ambiguous due_date/manual_trigger shape) blocks readiness', () => {
+    const terms: CommercialRuleTerms = { one_time_fees: [{ fee_label: 'Ambiguous fee', amount: 100000, requires_confirmation: true }] }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.totalToConfirm).toBe(1)
+    expect(workload.blockers).toContain('one_time_fee:Ambiguous fee')
+    expect(workload.status).not.toBe('all_commercial_rules_confirmed')
+  })
+
+  it('item 2: multiple one-time fees are tracked independently', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [
+        { fee_label: 'Resolved fee', amount: 5000 },
+        { fee_label: 'Needs review 1', amount: 10000, requires_confirmation: true },
+        { fee_label: 'Needs review 2', amount: 20000, requires_confirmation: true },
+      ],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.totalToConfirm).toBe(2)
+    expect(workload.blockers.sort()).toEqual(['one_time_fee:Needs review 1', 'one_time_fee:Needs review 2'])
+  })
+
+  it('item 2: a one-time fee alongside recurring/usage components does not perturb the existing counts for those other types', () => {
+    const terms: CommercialRuleTerms = {
+      overage_tiers: [
+        { unit_type: 'api_call', rate_per_unit: 1, minimum_commitment: { mode: 'floor', requires_confirmation: false }, tier_calculation: { requires_confirmation: false } },
+      ],
+      discounts: [{ discount_rule_id: 'd1', interpretation: { requires_confirmation: false } }],
+      one_time_fees: [{ fee_label: 'Setup fee', amount: 5000, requires_confirmation: true }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.blockers).toContain('one_time_fee:Setup fee')
+    expect(workload.blockers).not.toContain('minimum_commitment:api_call')
+    expect(workload.blockers).not.toContain('discount:d1')
+    expect(workload.totalToConfirm).toBe(1)
+  })
+
+  it('item 10: absent one_time_fees field entirely (every pre-existing caller/fixture) behaves exactly as before this step', () => {
+    const terms: CommercialRuleTerms = { discounts: [{ discount_rule_id: 'd1', interpretation: { requires_confirmation: false } }] }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+
+  it('item 10: a historical fee with fields the new safety net never ran on (no requires_confirmation, regardless of amount/due_date shape) is never retroactively reopened', () => {
+    const terms: CommercialRuleTerms = { one_time_fees: [{ fee_label: 'Pre-Step-11 fee', amount: 250000 }] }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.totalToConfirm).toBe(0)
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+
+  it('item 6/7: an unresolved_kind "unsupported_semantics" fee becomes a capability blocker (execution_blocked), never an ordinary reviewer-resolvable item, and never silently invents a resolved value', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{ fee_label: 'Acceptance-gated milestone', amount: 100000, requires_confirmation: true, unresolved_kind: 'unsupported_semantics' }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).toBe('execution_blocked')
+    expect(workload.totalToConfirm).toBe(0) // never counted as an ordinary, reviewer-resolvable item
+    expect(workload.blockers).not.toContain('one_time_fee:Acceptance-gated milestone')
+    expect(workload.executionBlockers).toContainEqual<UnsupportedCommercialSemanticsBlocker>({
+      type: 'unsupported_commercial_semantics',
+      rule_family: 'one_time_fee',
+      missing_capability: 'event_based_billability',
+      field: 'one_time_fee:Acceptance-gated milestone',
+      reason: 'The source describes a billability condition this fee shape cannot yet represent.',
+    })
+  })
+
+  it('a capability blocker fails closed even when every other commercial rule is fully confirmed — no amount of unrelated confirmation clears it', () => {
+    const terms: CommercialRuleTerms = {
+      discounts: [{ discount_rule_id: 'd1', interpretation: { requires_confirmation: false } }],
+      one_time_fees: [{ fee_label: 'Blocked fee', amount: 100000, requires_confirmation: true, unresolved_kind: 'unsupported_semantics' }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).toBe('execution_blocked')
+  })
+
+  it('the capability-blocker reason never contains raw source text — only the generic, structural description (item 7)', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{ fee_label: 'Milestone 1', amount: 100000, requires_confirmation: true, unresolved_kind: 'unsupported_semantics' }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    const blocker = workload.executionBlockers[0] as UnsupportedCommercialSemanticsBlocker
+    expect(blocker.reason).not.toMatch(/SEK|customer acceptance|Milestone/i)
+  })
+
+  it('caller-supplied Rulebook violations and internally-derived one-time-fee capability blockers coexist in the same executionBlockers array', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{ fee_label: 'Blocked fee', amount: 100000, requires_confirmation: true, unresolved_kind: 'unsupported_semantics' }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, [
+      { type: 'rulebook_invariant_violation', rule_id: 'minimum.floor.non_additive', field: 'minimumCommitment.observed.payableMinor', reason: 'test' },
+    ])
+    expect(workload.executionBlockers).toHaveLength(2)
+    expect(workload.executionBlockers.map(b => b.type).sort()).toEqual(['rulebook_invariant_violation', 'unsupported_commercial_semantics'])
+  })
+
+  it('a fee with no fee_label is silently skipped, not counted and not blocking — same defensive discipline as discounts/credits with no rule_id', () => {
+    const terms: CommercialRuleTerms = { one_time_fees: [{ amount: 100000, requires_confirmation: true }] }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.totalToConfirm).toBe(0)
   })
 })
