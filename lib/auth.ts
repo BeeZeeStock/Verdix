@@ -22,8 +22,25 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null
 
-        const { supabaseServer } = await import('./supabase')
-        const { data, error } = await supabaseServer.auth.signInWithPassword({
+        // Never call .auth.signInWithPassword on the shared `supabaseServer`
+        // singleton (lib/supabase.ts) — supabase-js attaches whichever
+        // session currently exists on a client instance to the
+        // Authorization header of every subsequent request from THAT
+        // instance, regardless of `persistSession: false` (which only
+        // controls storage persistence, not in-memory session state). Since
+        // `supabaseServer` is a module-level singleton reused by every
+        // server-side query in this app, signing in on it here would
+        // silently downgrade every later query in this process from
+        // service_role to this end-user's own `authenticated` role —
+        // process-order-dependent authorization, and a real, confirmed
+        // production bug (see lib/auth-client-isolation.test.ts). A fresh,
+        // disposable client — used once for this password check, then
+        // discarded — is the fix; `createServerClient()` already exists in
+        // lib/supabase.ts for exactly this (it returns a brand-new client
+        // per call, never the shared singleton).
+        const { createServerClient } = await import('./supabase')
+        const authClient = createServerClient()
+        const { data, error } = await authClient.auth.signInWithPassword({
           email: credentials.email as string,
           password: credentials.password as string,
         })
