@@ -32,7 +32,7 @@ A rule is one of four classes (`rule-class.ts`'s `VerdixRuleClass`):
   `RuleResolutionCandidate` or mint `authority: 'verdix_rulebook'`. An
   Organization Rulebook policy always outranks it.
 
-As of Step 6, **zero** of the eight current rules are classified
+As of Step 7, **zero** of the nine current rules are classified
 `default_policy` — see `tests/commercial-semantics/rulebook/rule-class
 .test.ts`. This is the expected, audited state, not an oversight: no
 current rule was ever meant to fill customer silence, and none was
@@ -77,6 +77,87 @@ the Organization Rulebook is tenant-private configuration. Conflating the
 two would mean one customer's operating convention silently becoming
 every customer's default, which is exactly what this separation exists
 to prevent.
+
+## Candidate lifecycle (Step 9)
+
+New Global Rulebook rules do not appear because "we found a weird clause,
+so we added a rule." They go through an explicit, code-defined,
+version-controlled lifecycle (`candidate.ts`'s `VerdixCandidateStatus`):
+
+1. **OBSERVED** — a Verdix-controlled test (synthetic corpus, internal
+   test, or a controlled live-model comparison) exposes a pattern that
+   *might* be reusable beyond the one fixture that surfaced it. Nothing
+   is generalized yet; no evidence is required at this stage.
+2. **CANDIDATE** — the underlying principle is generalized beyond the
+   individual fixture into a `proposedRuleId`/`proposedClass`/`principle`
+   — a real, reviewable proposal, even if its evidence is still thin.
+3. **VALIDATED** — positive **and** counterexample/negative fixtures
+   demonstrate the principle holds *and* knows its own boundaries. The
+   exact evidence shape is **class-aware** (`candidate-validation.ts`):
+   - `invariant` — a positive fixture, an adversarial fixture, and **no**
+     legitimate counterexample (a real counterexample would disprove it).
+   - `anti_inference` / `semantic_interpretation` — at least one positive
+     fixture and at least one counterexample (prefer 2+2 where
+     practical — never a rigid quantity rule for every class).
+   - `default_policy` — a materially higher bar: multiple (≥ 2)
+     Verdix-controlled fixtures, a counterexample, **and** explicit
+     `defaultPolicyApproval` metadata (organization overrideability +
+     acknowledgement that production activation is a separate decision).
+4. **APPROVED** — a human product/engineering review accepts the
+   candidate as Verdix commercial doctrine. This is a decision *about*
+   the candidate record — it is still not the same as being an active
+   Rulebook rule.
+5. **ACTIVE** — a human has actually added the corresponding entry to
+   `rules.ts` (and, separately, wired activation/AI-guidance if
+   applicable) through a normal, reviewed commit. The candidate's
+   `activeRuleId` is then set to record that the promotion happened.
+
+`lib/rulebook/rule-candidates.ts` holds the real registry —
+`CASH_REDEEMABILITY_CANDIDATE` is the first worked example, a
+*retrospective* record for `credit.application_scope_ne_cash_
+redeemability` (the Step 7 amendment), walking through all five stages in
+its own comment. It does not change that already-active rule; it exists
+to document why the rule exists.
+
+**Promotion is always a human/code-review action** (`candidate-
+validation.ts`'s own header comment). There is no function anywhere in
+this codebase that reads `candidate.status === 'approved'` and writes an
+entry into `verdixCommercialRulebook` — `validateVerdixRuleCandidate` can
+only reject a candidate; it can never promote one. A real promotion
+means a developer: reviews the candidate's evidence, hand-writes the
+`rules.ts` entry (and its tests), bumps whichever version(s) below are
+affected, and ships it through the normal PR/code-review path — exactly
+how Steps 6 and 7 themselves shipped.
+
+### Version-bump discipline
+
+Three independent version constants exist; a change to Rulebook behavior
+should bump exactly the ones it actually affects, never all three
+reflexively and never none:
+
+| Constant | Location | Bump when… |
+|---|---|---|
+| `VERDIX_RULEBOOK_VERSION` | `rules.ts` | A rule is added, removed, or its `matches()`/`evaluate()` semantics change — i.e. what the Rulebook *concludes* changes. |
+| `RULEBOOK_AI_GUIDANCE_VERSION` | `ai-guidance.ts` | An `aiGuidance.instruction` wording changes, a new guidance entry is added, or an `appliesTo` context list changes — i.e. what the AI *sees* changes. Embedded directly in the rendered prompt header, so this also drives `propose-rule`'s existing prompt-fingerprint cache invalidation automatically. |
+| `VERDIX_RULEBOOK_ACTIVATION_VERSION` | `activation.ts` | A rule's production authority/enforcement target changes (e.g. `diagnostic` → `enforce_invariant`) — i.e. what production *does* with a finding changes. |
+
+A single change can affect more than one axis (e.g. promoting a new
+`anti_inference` rule with guidance bumps both `VERDIX_RULEBOOK_VERSION`
+and `RULEBOOK_AI_GUIDANCE_VERSION`, but not `VERDIX_RULEBOOK_ACTIVATION_
+VERSION` unless its production authority also changes) — bump each
+applicable constant independently, never as a bundle.
+
+### Registry integrity audit
+
+`rulebook-audit.ts`'s `auditVerdixRulebook()` is a pure, read-only
+cross-check between the real, active Rulebook and the candidate registry
+that's supposed to explain it: rule ids unique, every `approved` +
+`activeRuleId` candidate corresponds to a real rule at the class it was
+approved for, every rule has an activation entry, AI-guidance eligibility
+matches each rule's class, no `default_policy` rule is active without
+`defaultPolicyApproval`, and no candidate has a customer-derived origin.
+Run in tests (`tests/commercial-semantics/rulebook/rulebook-audit
+.test.ts`) — never in a production billing path.
 
 ## No customer data, no global learning
 
