@@ -2711,6 +2711,21 @@ function OrganizationPolicyControls({
   // up front" requirement.
   const [slotState, setSlotState] = useState<PromoteSlotState | null>(null)
   const [slotExistingRule, setSlotExistingRule] = useState<SlotRuleSummary | null>(null)
+  // Final read-model amendment — the rule that is CURRENTLY APPLICABLE
+  // (temporally in effect right now) for this slot, independent of
+  // slotState/slotExistingRule above (which prioritize a draft successor
+  // when one exists, correct for THEIR original dedup purpose but wrong
+  // for "what would Use organization policy revert me to" — see the
+  // /api/org/rulebook/promote route's own comment). Deliberately sourced
+  // from the route's `currentlyApplicableRule` field, NOT `activeRule` —
+  // `activeRule` is status='active' only, which a future-dated row can
+  // also satisfy (see organization-rulebook-display.ts's 'future' display
+  // group); `currentlyApplicableRule` re-runs it through the production
+  // temporal matcher (effectiveFrom/effectiveTo vs now) server-side. null
+  // = no rule is currently applicable to this scope; undefined-vs-null is
+  // not distinguished here since "not yet loaded" is already covered by
+  // slotState === null in the render guard below.
+  const [currentlyApplicableRule, setCurrentlyApplicableRule] = useState<SlotRuleSummary | null>(null)
   // Starts genuinely unselected (never pre-filled from the organization
   // policy's current value) — "Save override" stays disabled until the
   // reviewer has explicitly clicked one of the two options below, even if
@@ -2755,7 +2770,7 @@ function OrganizationPolicyControls({
       body: JSON.stringify({ jobId, creditId }),
     }).then(r => r.json()).then(data => {
       if (cancelled) return
-      if (data.eligible) { setSlotState(data.state); setSlotExistingRule(data.existingRule ?? null) }
+      if (data.eligible) { setSlotState(data.state); setSlotExistingRule(data.existingRule ?? null); setCurrentlyApplicableRule(data.currentlyApplicableRule ?? null) }
       else setSlotState('ineligible')
     }).catch(() => { if (!cancelled) setSlotState('ineligible') })
     return () => { cancelled = true }
@@ -2774,6 +2789,7 @@ function OrganizationPolicyControls({
     // fetch could be stale by the time the reviewer actually clicks.
     setSlotState(data.state)
     setSlotExistingRule(data.existingRule ?? null)
+    setCurrentlyApplicableRule(data.currentlyApplicableRule ?? null)
     if (data.state !== 'no_existing' && data.state !== 'proposed_policy_change') {
       // Something now exists that makes a NEW draft/successor pointless —
       // stay on the idle branch so the up-to-date state (already_covered/
@@ -2895,13 +2911,39 @@ function OrganizationPolicyControls({
     // 207 (Multi-Status) is still res.ok (2xx) — a real write happened but a
     // downstream mirror (e.g. contract_meter_mappings) failed; distinct from
     // the two reject cases above, which never write anything at all.
+    // setMode('idle') in both success branches — harmless when this was
+    // reached via the "Use organization policy" button directly (mode is
+    // already idle), necessary when reached via saveOverrideOrRevert's
+    // same-value normalization from the "Change override" picker (mode
+    // would otherwise stay stuck on 'override' after a successful revert).
     if (data.propagation && data.ok === false) {
+      setMode('idle')
       setMsg({ ok: false, text: 'Reverted, but a downstream update failed — check Confirmed billing rules.' })
       onChanged()
       return
     }
+    setMode('idle')
     setMsg({ ok: true, text: 'Reverted to the organization policy for this agreement.' })
     onChanged()
+  }
+
+  // Item 6 — dispatch, not a third write path. If the reviewer's chosen
+  // override value happens to equal the currently active organization
+  // policy's own value, submitting it as a fresh reviewer_policy would
+  // create a redundant, same-value override that only obscures the real
+  // provenance (it IS the organization default, just mislabeled as an
+  // agreement-specific exception). Normalize that one case to the real
+  // revert action instead — still the same hardened, server-authoritative
+  // revertSurvivalToOrganizationPolicy path, never a value/rule/version
+  // asserted by the client. Every other chosen value still goes through
+  // submitOverride exactly as before.
+  async function saveOverrideOrRevert() {
+    if (overrideValue === null) return
+    if (currentlyApplicableRule && overrideValue === currentlyApplicableRule.value) {
+      await revertToOrganizationPolicy()
+      return
+    }
+    await submitOverride()
   }
 
   // Every app/api/org/rulebook/* route is requireOrg('admin') — a
@@ -2922,53 +2964,116 @@ function OrganizationPolicyControls({
     const proposingChange = slotState === 'proposed_policy_change'
     return (
       <div className="mt-2">
-        {mode !== 'promote-preview' && mode !== 'view-policy' && (
-          <>
+        {/* Post-override read model fix — this block used to be driven
+            entirely by slotState (the PROMOTION dedup classifier, which
+            checks a draft successor BEFORE an active rule — correct for
+            ITS job of never creating a second competing draft). Reused
+            unmodified here, that meant a never-activated draft successor
+            (e.g. v2) silently hid the fact that a DIFFERENT rule (v1) is
+            actually active/applicable and governing this agreement right
+            now — the card showed "View draft" / a policy detail panel as
+            if it were the current default, with no way to change the
+            override or revert to what's actually applicable. Now driven
+            primarily by currentlyApplicableRule (a separate,
+            always-independent, TEMPORALLY-GATED lookup — see the promote
+            route's own comment: status='active' alone is not enough, a
+            row can be active but future-dated) — a draft successor is
+            still shown, but only ever as an explicitly-labeled "Draft
+            policy change · Not active", never as the current default. */}
+        {mode !== 'promote-preview' && mode !== 'view-policy' && mode !== 'override' && (
+          <div className="rounded-xl p-3" style={{ background: '#FFFDF5', border: '1px solid rgba(217,167,90,0.35)' }}>
+            <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: '#92400E' }}>Reviewer policy</p>
+            <p className="text-[11px] text-stone mb-2">Agreement-specific override</p>
+            {currentlyApplicableRule ? (
+              <p className="text-[11px] text-stone">
+                Organization default: <span className="font-medium text-ink">{currentlyApplicableRule.value ? 'Carry forward until fully used' : 'Expires after next invoice'}</span>
+                {' '}<span className="text-stone/70">· Active · v{currentlyApplicableRule.version}</span>
+              </p>
+            ) : (
+              // Item 7, scenario E — no policy is currently applicable to
+              // this scope (either none exists, or it exists but is
+              // future-dated and not yet in effect); "Use organization
+              // policy" is deliberately absent below, not merely
+              // disabled, so there is nothing misleading to click.
+              <p className="text-[11px] text-stone">No active organization policy currently applies to this scope.</p>
+            )}
+            {/* slotExistingRule here is always a status='draft' row (see
+                findOrganizationRulesForSlot/classifyOrganizationPolicySlotOutcome
+                — draftRule is by definition status='draft', effective_from
+                null) — it has never been activated and therefore has no
+                future effective time. "Scheduled change" is reserved for a
+                genuinely future-dated ACTIVE row (organization-rulebook-
+                display.ts's 'future' group), a state this branch cannot
+                reach — so this is always a draft, labeled as such. */}
+            {slotState === 'existing_draft' && slotExistingRule && (
+              <p className="text-[10px] text-stone/70 mt-1">
+                Draft policy change · v{slotExistingRule.version} · <span className="italic">Not active</span> —{' '}
+                <button onClick={() => viewRule(slotExistingRule?.id)} disabled={busy} className="underline hover:text-ink">view draft</button>
+              </p>
+            )}
+            {slotState === 'draft_conflict' && (
+              <p className="text-[10px] text-stone/70 mt-1">
+                A conflicting draft also exists for this policy —{' '}
+                <Link href="/settings/rulebook" className="underline hover:text-ink">resolve it in Settings → Organization Rulebook</Link>.
+              </p>
+            )}
+            <div className="flex gap-2 mt-2">
+              {/* Reopens the same picker/mechanism "Override for this
+                  agreement" already uses (submitOverride) — a different
+                  entry point into an unchanged action, not a new one. */}
+              <button onClick={() => { setOverrideValue(null); setMode('override') }} disabled={busy} className="text-[11px] font-medium px-2.5 py-1 rounded-lg border" style={{ borderColor: 'rgba(26,61,43,0.15)' }}>
+                Change override
+              </button>
+              {currentlyApplicableRule && (
+                <button onClick={revertToOrganizationPolicy} disabled={busy} className="text-[11px] font-medium px-2.5 py-1 rounded-lg border" style={{ borderColor: 'rgba(26,61,43,0.15)' }}>
+                  Use organization policy
+                </button>
+              )}
+            </div>
+            {/* Secondary, unrelated to reverting — promoting THIS
+                agreement's own override UP into becoming/updating the org
+                default. Unchanged mechanism (openPromotePreview/
+                confirmPromote), kept but visually de-emphasized below the
+                two primary controls above. */}
             {(slotState === 'no_existing' || slotState === 'ineligible') && (
-              <button onClick={openPromotePreview} disabled={busy} className="text-[11px] font-medium text-forest hover:underline flex items-center gap-1 disabled:opacity-50">
-                <i className="ti ti-gavel" style={{ fontSize: 12 }} /> Use as organization default
+              <button onClick={openPromotePreview} disabled={busy} className="text-[10px] font-medium text-forest hover:underline mt-2 flex items-center gap-1">
+                <i className="ti ti-gavel" style={{ fontSize: 11 }} /> Use as organization default
               </button>
             )}
             {slotState === 'already_covered' && (
-              <div className="flex items-center gap-3">
-                <span className="text-[11px] text-stone flex items-center gap-1">
-                  <i className="ti ti-circle-check-filled" style={{ fontSize: 12, color: '#0B5C36' }} /> Covered by organization policy
-                </span>
-                <button onClick={() => viewRule(slotExistingRule?.id)} disabled={busy} className="text-[11px] font-medium text-forest hover:underline">View policy</button>
-                {/* Value already matches — reverting only changes provenance
-                    (reviewer_policy -> organization_rulebook), removing a
-                    redundant contract-specific override that duplicates the
-                    org default. */}
-                <button onClick={revertToOrganizationPolicy} disabled={busy} className="text-[11px] font-medium text-stone hover:text-ink">Use organization policy</button>
-              </div>
-            )}
-            {slotState === 'existing_draft' && (
-              <div className="flex items-center gap-3">
-                <span className="text-[11px] text-stone flex items-center gap-1">
-                  <i className="ti ti-file-description" style={{ fontSize: 12 }} /> Organization policy draft created
-                </span>
-                <button onClick={() => viewRule(slotExistingRule?.id)} disabled={busy} className="text-[11px] font-medium text-forest hover:underline">View draft</button>
-              </div>
-            )}
-            {slotState === 'draft_conflict' && (
-              <p className="text-[11px] text-stone leading-relaxed">
-                A draft with a different value already exists for this policy —{' '}
-                <Link href="/settings/rulebook" className="font-medium text-forest hover:underline">resolve it in Settings → Organization Rulebook</Link>.
-              </p>
+              <button onClick={() => viewRule(slotExistingRule?.id)} disabled={busy} className="text-[10px] font-medium text-forest hover:underline mt-2">View policy</button>
             )}
             {slotState === 'proposed_policy_change' && (
-              <div className="flex items-center gap-3">
-                <span className="text-[11px] text-stone">This decision differs from your organization policy</span>
-                <button onClick={openPromotePreview} disabled={busy} className="text-[11px] font-medium text-forest hover:underline">Propose policy change</button>
-                {/* Item 7 — the other direction: abandon THIS agreement's
-                    own override and go back to following the active
-                    organization default, rather than proposing the org
-                    policy itself change. Never mutates the organization
-                    rule — see revertToOrganizationPolicy's own comment. */}
-                <button onClick={revertToOrganizationPolicy} disabled={busy} className="text-[11px] font-medium text-stone hover:text-ink">Use organization policy</button>
-              </div>
+              <button onClick={openPromotePreview} disabled={busy} className="text-[10px] font-medium text-forest hover:underline mt-2">
+                Propose this as the new organization policy instead
+              </button>
             )}
-          </>
+          </div>
+        )}
+        {mode === 'override' && (
+          <div className="mt-2 rounded-xl p-3" style={{ background: '#FAFAF9', border: '1px solid rgba(26,61,43,0.1)' }}>
+            <p className="text-[11px] font-medium text-ink mb-2">This changes this agreement only — the organization policy itself is not affected.</p>
+            <div className="flex flex-col gap-1.5 mb-2">
+              <label className="flex items-center gap-2 text-[11px] text-ink">
+                <input type="radio" checked={overrideValue === true} onChange={() => setOverrideValue(true)} />
+                Carry forward until fully used{currentlyApplicableRule?.value === true ? ' (current organization policy)' : ''}
+              </label>
+              <label className="flex items-center gap-2 text-[11px] text-ink">
+                <input type="radio" checked={overrideValue === false} onChange={() => setOverrideValue(false)} />
+                Expires after next invoice{currentlyApplicableRule?.value === false ? ' (current organization policy)' : ''}
+              </label>
+            </div>
+            {/* Item 6 — choosing the value that already matches the
+                current organization default saves via revertToOrganizationPolicy
+                instead (organization_rulebook provenance), not a redundant
+                same-value reviewer_policy row. See saveOverrideOrRevert. */}
+            <div className="flex gap-2">
+              <button onClick={saveOverrideOrRevert} disabled={busy || overrideValue === null} className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-forest text-white disabled:opacity-50">
+                {busy ? 'Saving…' : 'Save override'}
+              </button>
+              <button onClick={() => { setOverrideValue(null); setMode('idle') }} className="text-[11px] px-3 py-1.5 rounded-lg border border-forest/20 text-stone">Cancel</button>
+            </div>
+          </div>
         )}
         {mode === 'promote-preview' && preview && (
           <div className="mt-2 rounded-xl p-3" style={{ background: '#EFF6FF', border: '1px solid rgba(30,64,175,0.2)' }}>

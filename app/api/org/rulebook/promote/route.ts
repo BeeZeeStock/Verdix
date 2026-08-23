@@ -62,7 +62,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { findOrganizationRulesForSlot, resolveOrganizationPolicySlotForWrite } from '@/lib/rulebook/organization-rules-service'
 import { evaluateReviewerDecisionForPromotion, type PromotableFieldState } from '@/lib/rulebook/organization-rulebook-promotion'
 import { classifyOrganizationPolicySlotOutcome } from '@/lib/rulebook/organization-policy-slot'
-import type { OrganizationRuleRecord } from '@/lib/rulebook/organization-rules'
+import { matchOrganizationRules, type OrganizationRuleRecord, type MatchCondition } from '@/lib/rulebook/organization-rules'
 import type { ServiceCreditInterpretation } from '@/lib/types'
 
 type Credit = { credit_rule_id?: string; credit_type?: string | null; description?: string | null; interpretation?: ServiceCreditInterpretation | null }
@@ -130,6 +130,46 @@ export async function POST(req: NextRequest) {
       state: outcome.state,
       preview,
       existingRule: outcome.state === 'no_existing' ? undefined : toClientRule(outcome.rule),
+      // Final read-model amendment — the currently ACTIVE rule for this
+      // slot, independent of `state`/`existingRule` above. classify()
+      // deliberately checks draftRule BEFORE activeRule (correct for ITS
+      // job: never create a second competing draft) — but that means
+      // `existingRule` becomes the DRAFT whenever one exists, even if a
+      // DIFFERENT rule is currently active and governing real matching.
+      // A reviewer-override card asking "what would Use organization
+      // policy revert me to" needs the active rule specifically,
+      // regardless of whether an unrelated draft also exists at the same
+      // slot (Contract B acceptance issue: a scheduled, not-yet-effective
+      // v2 draft was being shown as if it were the current default).
+      // Read-only, additive — never itself used to select what a revert
+      // applies; resolveOrganizationPolicyRevert always re-resolves fresh.
+      // NOTE: status='active' alone does NOT mean temporally in effect —
+      // see currentlyApplicableRule below, which is what the client
+      // should actually use to decide what to display/revert to.
+      activeRule: activeRule ? toClientRule(activeRule) : undefined,
+      // Read-model tightening — `activeRule` above is status-gated only
+      // (organization_rulebook_rules.status = 'active'), which is NOT the
+      // same thing as "in effect right now": a row can be status='active'
+      // with a future effective_from (see groupForDisplay's 'future'
+      // bucket in organization-rulebook-display.ts — this state is real
+      // and reachable, e.g. a promoted rule scheduled ahead of time).
+      // currentlyApplicableRule re-runs activeRule through the SAME
+      // temporal matcher (lib/rulebook/organization-rules.ts's
+      // matchOrganizationRules) production resolution itself uses —
+      // effectiveFrom <= asOf < effectiveTo — rather than reimplementing
+      // that boundary math here. asOf is `now`, matching what "the
+      // currently applicable default" means for a live reviewer card.
+      // This is the field OrganizationPolicyControls must use for
+      // "Organization default" / gating "Use organization policy" — never
+      // `activeRule` directly, which can be future-dated.
+      currentlyApplicableRule: activeRule
+        ? (matchOrganizationRules(
+            org.orgId,
+            { context: matchConditionsToContext(evaluation.matchConditions), contractResolvedFields: new Set() },
+            [activeRule],
+            new Date(),
+          )[0] ? toClientRule(activeRule) : undefined)
+        : undefined,
     })
   }
 
@@ -163,4 +203,17 @@ export async function POST(req: NextRequest) {
 // through, without shipping every internal field in every promote response.
 function toClientRule(rule: OrganizationRuleRecord) {
   return { id: rule.id, name: rule.name, status: rule.status, value: rule.value, version: rule.version }
+}
+
+// Folds a canonical slot's match conditions into a matchOrganizationRules
+// context object — valid here specifically because these conditions are
+// the SAME ones that defined the slot activeRule was looked up by (every
+// condition in this codebase's promote flow is 'eq'), so the row is
+// already known to satisfy them; this call exists only to run activeRule
+// through the matcher's temporal (effectiveFrom/effectiveTo vs asOf) gate,
+// not to re-derive whether it matches the slot's scope.
+function matchConditionsToContext(conditions: MatchCondition[]): Record<string, unknown> {
+  const context: Record<string, unknown> = {}
+  for (const c of conditions) context[c.field] = c.value
+  return context
 }
