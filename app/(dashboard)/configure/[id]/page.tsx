@@ -1294,8 +1294,23 @@ function SubStateBadge({ label, state, decisionRequiredText, resolvedText, nonBl
 // policy summary section can describe the SAME persisted application_rule
 // the same way the review card itself did while resolving it — one
 // implementation, not two independently-worded copies that could drift.
+//
+// carry_forward: false semantics (regression fix) — every CreditApplicationRule's
+// availability is hardcoded to 'next_period' (see lib/types.ts; there is no
+// same-period execution path anywhere in this codebase), meaning a credit is
+// ALWAYS deferred to and applied against the invoice immediately following
+// the one it was earned in — never the same period. carry_forward therefore
+// only ever answers whether an unused REMAINDER survives PAST that first
+// next-period application, not whether the credit is applied at all.
+// carry_forward: false structurally means "applied against the next
+// invoice only; any remainder then expires" (state B in the product
+// discussion that found this bug) — it can NEVER mean "does not survive to
+// be applied past the period it was earned in" (state C), because that
+// same-period state is unreachable given the fixed availability. The
+// previous wording here described state C, which this model cannot even
+// represent, instead of state B, which is exactly what false means.
 function describeSurvivalResolution(r: { carry_forward: boolean; expiry_periods?: number | null; expiry_date?: string | null }): string {
-  if (!r.carry_forward) return 'Unused balance does not carry forward past the period it was earned/credited in.'
+  if (!r.carry_forward) return 'Unused balance is applied against the next invoice only; any remainder then expires.'
   if (r.expiry_date) return `Unused balance carries forward until ${r.expiry_date}, after which any remainder expires.`
   if (r.expiry_periods === 1) return 'Unused balance applies to the next billing period only; any remainder then expires.'
   if (r.expiry_periods && r.expiry_periods > 1) return `Unused balance carries forward for ${r.expiry_periods} billing periods.`
@@ -2083,7 +2098,13 @@ function RuleInterpretationCard({
                 {survivalLabel} · Organization policy
               </p>
               <p className="text-sm font-medium text-ink">
-                {aiProposal.survival_organization_policy.value ? 'Carry forward until fully used' : 'Does not carry forward'}
+                {/* false regression fix — availability is always
+                    'next_period' (no same-period execution path exists),
+                    so false structurally means "applied against the next
+                    invoice only, then any remainder expires" — never "does
+                    not carry forward at all". See describeSurvivalResolution's
+                    own comment for the full explanation. */}
+                {aiProposal.survival_organization_policy.value ? 'Carry forward until fully used' : 'Expires after next invoice'}
               </p>
               <p className="text-[11px]" style={{ color: '#1E3A5F' }}>
                 Applied automatically because the agreement is silent.
@@ -7480,7 +7501,14 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 if (appRule.excluded_component_keys?.length) params.push({ label: 'Excluded', value: formatEligibleComponentsFact(appRule.excluded_component_keys) })
                 params.push({ label: 'Repeatable', value: appRule.one_time === true ? 'No — one-time' : appRule.one_time === false ? 'Yes' : 'Decision required' })
                 if (typeof appRule.carry_forward === 'boolean') {
-                  params.push({ label: 'Unused balance', value: describeSurvivalResolution({ carry_forward: appRule.carry_forward, expiry_periods: appRule.expiry_periods, expiry_date: appRule.expiry_date }) })
+                  // Short-form (matches every other param row on this card,
+                  // and is what this exact regression was found against) —
+                  // formatCarryForwardFact, not describeSurvivalResolution's
+                  // full-sentence prose. Both were corrected for the same
+                  // false-case semantic bug; this switch is a legitimate
+                  // consistency fix (short values throughout this list), not
+                  // an unrelated change.
+                  params.push({ label: 'Unused balance', value: formatCarryForwardFact(appRule.carry_forward, appRule.expiry_periods, appRule.expiry_date) })
                   // Step 5C/5D — plain informational id/version text here
                   // (a real, clickable "View policy" action now lives in
                   // OrganizationPolicyControls, this card's footer — see
@@ -7493,26 +7521,30 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     })
                   }
                 }
-                // Application timing — derived ONLY from application_rule's
-                // own fields (availability, carry_forward), never from cash
-                // settlement. availability is currently a fixed 'next_period'
-                // literal (see lib/types.ts — there's no same-period execution
-                // path at all yet); whether the credit can still be pending
-                // against invoices AFTER the immediate next one is a carry-
-                // forward question, not a cash one — carry_forward: true means
-                // an unused remainder keeps applying to further future
-                // invoices, not just the next.
-                params.push({
-                  label: 'Application timing',
-                  value: appRule.availability === 'next_period'
-                    ? (appRule.carry_forward === true ? 'Future invoices' : appRule.carry_forward === false ? 'Next invoice' : 'Not specified')
-                    : 'Not specified',
-                })
+                // Application timing — REMOVED (Contract B acceptance
+                // blocker). This row used to derive its value directly from
+                // carry_forward (true -> "Future invoices", false -> "Next
+                // invoice") — the exact bilateral violation the Global
+                // Rulebook's credit.next_invoice_timing_ne_carry_forward
+                // anti-inference rule already guards the OTHER direction of
+                // (timing must never establish carry_forward): a survival
+                // override silently rewrote what looked like an independent
+                // "when does this apply" fact. Audited and confirmed there is
+                // currently no independently extracted/persisted application-
+                // timing fact anywhere in this codebase — availability
+                // (lib/types.ts) is a hardcoded 'next_period' execution-
+                // scheduling constant, identical for every credit on every
+                // contract, never contract-derived, never variable. "Future
+                // invoices" was never a real stored fact; it was purely this
+                // buggy derivation's output. Rather than manufacture a
+                // constant/generic value with no real data behind it, this
+                // row is removed entirely until a genuine, independently
+                // sourced/provenanced timing field exists — do not
+                // reintroduce a carry_forward-derived (or any other
+                // survival-derived) value here.
                 // Cash settlement (Step 1.5, corrected) — a standalone fact
                 // about the credit itself, never blended with invoice
-                // application timing/scope (that's Application timing, above,
-                // and Eligible components/Unused balance elsewhere on this
-                // card — each sourced from its own field). A resolved boolean
+                // application timing/scope. A resolved boolean
                 // shows its real answer; 'unclear' (contract silent) no
                 // longer keeps the credit off this card at all — cash isn't
                 // required to apply the credit against future invoices (see

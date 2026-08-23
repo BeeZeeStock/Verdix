@@ -31,16 +31,30 @@ export function formatEligibleComponentsFact(keys: string[] | 'all' | null | und
 }
 
 // Short label version of the same carry_forward/expiry_periods/expiry_date
-// triple describeSurvivalResolution (configure/[id]/page.tsx) already
-// renders as a full sentence elsewhere (e.g. the Confirmed billing rules
-// summary) — that function is left untouched; this is a separate, terser
-// rendering for the review card's structured-fact row, not a replacement.
+// triple describeSurvivalResolution (configure/[id]/page.tsx) also renders,
+// as a full sentence, elsewhere (e.g. confirmation/preview messages) — that
+// function is a separate implementation for that separate context, not
+// replaced by this one; both were corrected together for the same
+// underlying semantic bug (see either one's own comment for the full
+// explanation): every credit's availability is fixed to 'next_period' (no
+// same-period execution path exists anywhere in this codebase), so
+// carry_forward: false structurally means "applied against the next
+// invoice only, then any remainder expires" — it can never mean "does not
+// survive to be applied at all" (a same-period-only state this model
+// cannot represent). 'unclear'/undefined get their own distinct "Not
+// specified" branch — collapsing them into the false branch would have
+// been an equally real, separate error (this function was previously only
+// ever called with a real boolean, but the type signature always allowed
+// 'unclear'/undefined, so this closes that latent gap too).
 export function formatCarryForwardFact(carryForward: boolean | 'unclear' | undefined, expiryPeriods?: number | null, expiryDate?: string | null): string {
-  if (carryForward !== true) return 'Does not carry forward'
-  if (expiryDate) return `Until ${expiryDate}`
-  if (expiryPeriods === 1) return 'Next period only'
-  if (expiryPeriods && expiryPeriods > 1) return `${expiryPeriods} periods`
-  return 'Until fully used'
+  if (carryForward === true) {
+    if (expiryDate) return `Until ${expiryDate}`
+    if (expiryPeriods === 1) return 'Next period only'
+    if (expiryPeriods && expiryPeriods > 1) return `${expiryPeriods} periods`
+    return 'Until fully used'
+  }
+  if (carryForward === false) return 'Expires after next invoice'
+  return 'Not specified'
 }
 
 export function formatCashRedeemableFact(cashRedeemable: boolean | 'unclear' | undefined): string {

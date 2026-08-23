@@ -5,6 +5,7 @@ import type { FieldProvenance } from './types'
 import type { ProductionOrganizationResolution } from './rulebook/organization-rulebook-production'
 import { resolveVerdixRulebookActivation, toRulebookExecutionBlockers } from './rulebook/activation'
 import { creditApplicationContext } from './rulebook/context'
+import { formatCarryForwardFact } from './review-card-format'
 
 // Regression coverage for the core safety fix: a live A/B test (Opus vs
 // Sonnet, TEST-PAY-002, 2026-08-20/21) showed a reasoning-tier model return
@@ -447,6 +448,187 @@ describe('buildCreditApplicationRule — client cannot mint organization_ruleboo
     // WORSE than before Step 5C.
     expect(result?.carry_forward).toBe(false)
     expect(result?.survival_provenance).toBeNull()
+  })
+})
+
+// Contract B acceptance bug — "Expires after next invoice" survival
+// semantics were not round-tripping correctly. Full trace, end to end,
+// through the REAL exported functions each stage actually uses (never a
+// re-derived approximation):
+//   UI input semantic ("Expires after next invoice", the OrganizationPolicyControls
+//   override radio) -> exact request payload that control sends -> canonical
+//   CreditApplicationRule (buildCreditApplicationRule) -> confirmed-card
+//   display semantic (formatCarryForwardFact, the function the "Unused
+//   balance" param row now calls).
+//
+// Root cause found: carry_forward: false was being described as "does not
+// carry forward past the period it was earned/credited in" — a same-period
+// state this model cannot even represent, since CreditApplicationRule.
+// availability is hardcoded to 'next_period' everywhere (see
+// buildCreditApplicationRule's own return value below — availability is
+// never a function of any input). false structurally means "applied
+// against the next invoice only, then any remainder expires" — this is a
+// narrow formatter fix (lib/review-card-format.ts's formatCarryForwardFact
+// and configure/[id]/page.tsx's describeSurvivalResolution), NOT a
+// canonical-model change — the model already represents this state
+// correctly; only the TEXT describing it was wrong.
+describe('Contract B round trip — "Expires after next invoice" survives UI input -> canonical rule -> confirmed display semantic', () => {
+  it('the exact payload OrganizationPolicyControls.submitOverride sends for the "Expires after next invoice" radio produces the correct canonical rule', () => {
+    // Mirrors an org-policy-resolved existing state (what Contract B's
+    // rebate had before the override) — organization rules never carry
+    // expiry_periods/expiry_date, only a plain boolean value, so this is
+    // realistic prior state, not a simplification.
+    const orgResolvedExisting = buildCreditApplicationRule(
+      baseApprovedFixture({ eligible_component_keys: 'all', one_time: false, carry_forward: 'unclear' }),
+      null,
+      { eligibility: 'contract_derived', survival: undefined },
+      { status: 'resolved', value: true, ruleId: 'org-rule-1', ruleVersion: 1, reason: 'matched' },
+    )
+    expect(orgResolvedExisting?.survival_provenance).toBe('organization_rulebook')
+
+    // The exact request OrganizationPolicyControls.submitOverride sends
+    // when the reviewer picks the false radio ("Expires after next
+    // invoice"): { application_rule: { carry_forward: false } } +
+    // { survival: 'reviewer_policy' } — no expiry_periods/expiry_date at
+    // all (that picker is a plain boolean, not the 5-option structured
+    // picker).
+    const persisted = buildCreditApplicationRule(
+      baseApprovedFixture({ eligible_component_keys: 'all', one_time: false, carry_forward: false }),
+      orgResolvedExisting,
+      { eligibility: undefined, survival: 'reviewer_policy' },
+      undefined,
+    )
+
+    // Canonical rule / "persistence" — this exact object is what gets
+    // written into contract_terms.service_credits[].interpretation.application_rule.
+    expect(persisted?.carry_forward).toBe(false)
+    expect(persisted?.expiry_periods).toBeNull()
+    expect(persisted?.expiry_date).toBeNull()
+    expect(persisted?.survival_provenance).toBe('reviewer_policy')
+    expect(persisted?.availability).toBe('next_period')
+    expect(persisted?.requires_confirmation).toBe(false)
+    // The stale organization_rulebook rule id/version must not survive the
+    // override (same invariant the pre-existing item-12 tests cover).
+    expect(persisted?.survival_organization_rule_id).toBeNull()
+
+    // Confirmed display semantic — the ConfirmedRuleCard "Unused balance"
+    // param row calls exactly this function with exactly these persisted
+    // fields. Must read the real selected meaning, never the old,
+    // structurally-unreachable "does not carry forward at all" text.
+    const displayed = formatCarryForwardFact(persisted!.carry_forward, persisted!.expiry_periods, persisted!.expiry_date)
+    expect(displayed).toBe('Expires after next invoice')
+    expect(displayed).not.toMatch(/does not carry forward/i)
+  })
+
+  it('availability is a fixed execution-scheduling constant — never derived from or written back to any input, and never itself a source of a "timing" value', () => {
+    // Every combination below asserts the SAME availability regardless of
+    // what carry_forward/eligibility/provenance/organizationResolution the
+    // call supplies — there is no "timing" input parameter anywhere in
+    // buildCreditApplicationRule's signature for a caller to even attempt
+    // to influence survival through, and availability itself never varies
+    // (confirmed: it is a hardcoded 'next_period' literal in this
+    // function's own return value, not read from `approved` at all).
+    // Correction (Contract B acceptance blocker, second round): a PREVIOUS
+    // version of this comment claimed the confirmed card derived
+    // "Application timing" (Next invoice/Future invoices) FROM carry_forward
+    // as a deliberate, correct design — that derivation was itself the bug
+    // (configure/[id]/page.tsx's now-removed Application timing param row)
+    // and has been deleted, not merely reinterpreted. See the bilateral-
+    // independence describe block below for the corrected invariant.
+    const silent = buildCreditApplicationRule(baseApprovedFixture({ eligible_component_keys: 'all', one_time: false, carry_forward: 'unclear' }), null, { eligibility: 'contract_derived', survival: undefined }, undefined)
+    const expires = buildCreditApplicationRule(baseApprovedFixture({ eligible_component_keys: 'all', one_time: false, carry_forward: false }), null, { eligibility: 'contract_derived', survival: 'reviewer_policy' }, undefined)
+    const carries = buildCreditApplicationRule(baseApprovedFixture({ eligible_component_keys: 'all', one_time: false, carry_forward: true }), null, { eligibility: 'contract_derived', survival: 'reviewer_policy' }, undefined)
+    expect(silent?.availability).toBe('next_period')
+    expect(expires?.availability).toBe('next_period')
+    expect(carries?.availability).toBe('next_period')
+    // And, going the other direction: two rules with the IDENTICAL
+    // availability but opposite carry_forward produce different survival
+    // meanings — proving availability alone (constant across both) cannot
+    // be what determines survival; only carry_forward does.
+    expect(expires?.carry_forward).toBe(false)
+    expect(carries?.carry_forward).toBe(true)
+  })
+})
+
+// Contract B acceptance blocker, second round — the confirmed card's
+// "Application timing" row was itself deriving its value from carry_forward
+// (true -> "Future invoices", false -> "Next invoice"), so a survival-only
+// override silently rewrote what looked like an independent timing fact.
+// Audited: no independent, contract-derived/persisted "application timing"
+// field exists anywhere in this codebase today — availability is a
+// hardcoded execution-scheduling constant, not a customer-facing timing
+// fact. Fix: the derivation (and the row itself) was deleted rather than
+// fed a fabricated constant value, since nothing here should ever display a
+// fact this model doesn't actually hold. These tests prove the bilateral
+// independence the Global Rulebook's credit.next_invoice_timing_ne_carry_forward
+// anti-inference rule already enforces in ONE direction (timing must never
+// establish carry_forward) also holds in the OTHER direction this bug
+// violated (carry_forward must never establish/alter a timing-labeled
+// value) — at the only layer that currently has real data to test:
+// buildCreditApplicationRule's actual field set.
+describe('Bilateral independence — survival changes never alter unrelated application_rule fields, and there is no input channel for "timing" to reach survival', () => {
+  const eligibility = ['transaction_processing']
+
+  it('A/B/C — repeatedly changing ONLY survival (carry_until_used -> expires_after_next_invoice -> carry_until_used) never alters eligibility, repeatability, or availability', () => {
+    const v1 = buildCreditApplicationRule(
+      baseApprovedFixture({ eligible_component_keys: eligibility, one_time: false, carry_forward: true }),
+      null, { eligibility: 'contract_derived', survival: 'reviewer_policy' }, undefined,
+    )
+    const v2 = buildCreditApplicationRule(
+      baseApprovedFixture({ eligible_component_keys: eligibility, one_time: false, carry_forward: false }),
+      v1, { eligibility: undefined, survival: 'reviewer_policy' }, undefined,
+    )
+    const v3 = buildCreditApplicationRule(
+      baseApprovedFixture({ eligible_component_keys: eligibility, one_time: false, carry_forward: true }),
+      v2, { eligibility: undefined, survival: 'reviewer_policy' }, undefined,
+    )
+    for (const v of [v1, v2, v3]) {
+      expect(v?.eligible_component_keys).toEqual(eligibility)
+      expect(v?.eligibility_provenance).toBe('contract_derived')
+      expect(v?.one_time).toBe(false)
+      expect(v?.availability).toBe('next_period')
+    }
+    // Survival itself DID change across the three edits, as intended —
+    // confirms the test fixture is actually exercising the field, not
+    // trivially passing because nothing changed at all.
+    expect(v1?.carry_forward).toBe(true)
+    expect(v2?.carry_forward).toBe(false)
+    expect(v3?.carry_forward).toBe(true)
+  })
+
+  it('D/E — there is no "timing" input field for a caller to set at all; an attempted one is silently ignored and never reaches carry_forward/survival_provenance', () => {
+    const result = buildCreditApplicationRule(
+      baseApprovedFixture({
+        eligible_component_keys: eligibility, one_time: false, carry_forward: 'unclear',
+        // Simulates a crafted/misguided attempt to submit a "timing" fact —
+        // buildCreditApplicationRule has no such parameter; this must be
+        // silently dropped, never interpreted as evidence for carry_forward.
+        application_timing: 'next_invoice',
+        timing: 'future_invoices',
+      }),
+      null,
+      { eligibility: 'contract_derived', survival: undefined },
+      undefined,
+    )
+    expect(result?.carry_forward).toBe('unclear')
+    expect(result?.survival_provenance).toBeNull()
+    expect(result?.requires_confirmation).toBe(true)
+  })
+
+  it('F — changing eligibility/scope alone never alters survival value or provenance', () => {
+    const original = buildCreditApplicationRule(
+      baseApprovedFixture({ eligible_component_keys: ['transaction_processing'], one_time: false, carry_forward: false }),
+      null, { eligibility: 'contract_derived', survival: 'reviewer_policy' }, undefined,
+    )
+    const scopeChanged = buildCreditApplicationRule(
+      baseApprovedFixture({ eligible_component_keys: ['transaction_processing', 'platform_fee'], one_time: false }),
+      original, { eligibility: 'reviewer_policy', survival: undefined }, undefined,
+    )
+    expect(scopeChanged?.eligible_component_keys).toEqual(['transaction_processing', 'platform_fee'])
+    expect(scopeChanged?.eligibility_provenance).toBe('reviewer_policy')
+    // Survival untouched by the scope-only edit.
+    expect(scopeChanged?.carry_forward).toBe(false)
+    expect(scopeChanged?.survival_provenance).toBe('reviewer_policy')
   })
 })
 

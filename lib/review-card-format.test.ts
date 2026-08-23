@@ -20,10 +20,23 @@ describe('formatEligibleComponentsFact', () => {
 })
 
 describe('formatCarryForwardFact', () => {
-  it('false/unclear/undefined all render as does-not-carry-forward', () => {
-    expect(formatCarryForwardFact(false)).toBe('Does not carry forward')
-    expect(formatCarryForwardFact('unclear')).toBe('Does not carry forward')
-    expect(formatCarryForwardFact(undefined)).toBe('Does not carry forward')
+  // Regression — carry_forward: false does NOT mean "never applied at
+  // all" (that same-period state is structurally unreachable, since
+  // CreditApplicationRule.availability is fixed to 'next_period'
+  // everywhere in this codebase — see this function's own comment). It
+  // structurally means "applied against the next invoice only, then any
+  // remainder expires". Found via a real Contract B "Expires after next
+  // invoice" reviewer override rendering as the wrong, unreachable state.
+  it('false renders the real semantic — applied to next invoice only, then expires', () => {
+    expect(formatCarryForwardFact(false)).toBe('Expires after next invoice')
+  })
+  // 'unclear'/undefined get their OWN distinct branch now — previously
+  // collapsed into the same (wrong) text as false, a latent bug this
+  // function's real call sites never happened to trigger (always called
+  // with a genuine boolean today), but incorrect on its own terms.
+  it('unclear/undefined render as Not specified, distinct from false', () => {
+    expect(formatCarryForwardFact('unclear')).toBe('Not specified')
+    expect(formatCarryForwardFact(undefined)).toBe('Not specified')
   })
   it('true with no expiry renders as until fully used', () => {
     expect(formatCarryForwardFact(true)).toBe('Until fully used')
