@@ -2982,8 +2982,12 @@ function ConfirmedRuleCard({
           {(auditReviewer || auditDate) && <>Confirmed{auditReviewer ? ` by ${auditReviewer}` : ''}{auditDate ? ` · ${auditDate}` : ''}</>}
         </p>
         <div className="flex items-center gap-4 flex-shrink-0">
-          {onViewSource && !!sourceClause && (
-            <button onClick={onViewSource} className="flex items-center gap-1 text-[12px] font-medium text-forest hover:underline">
+          {onViewSource && (
+            <button
+              onClick={onViewSource}
+              title={sourceClause ?? undefined}
+              className="flex items-center gap-1 text-[12px] font-medium text-forest hover:underline"
+            >
               <i className="ti ti-external-link" style={{ fontSize: 13 }} /> View source clause
             </button>
           )}
