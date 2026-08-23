@@ -6485,7 +6485,15 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               (terms?.ramp_schedule?.length ?? 0) > 0 ||
               unconditionalOneTimeFeeTotal > 0 || conditionalOneTimeFeeTotal > 0) && (
               <div className="bg-white rounded-2xl border border-forest/10 p-6">
-                <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-5">Pricing</h2>
+                {/* Was a plain, unlinked h2 — field_sources.base_monthly_fee/
+                    base_annual_fee has a real, matchable section reference
+                    (e.g. "3.1 Platform fee") but nothing here ever surfaced
+                    it, unlike every subsection of the Commercial Terms card
+                    above. Same SectionChip/openPDF wiring as those. */}
+                <div className="flex items-center justify-between mb-5">
+                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Pricing</h2>
+                  <SectionChip heading={src.base_monthly_fee ?? src.base_annual_fee} onClick={() => openPDF(src.base_monthly_fee ?? src.base_annual_fee)} />
+                </div>
                 <div className="grid grid-cols-3 gap-8">
                   {terms?.base_monthly_fee && (
                     <BigValue label="Monthly fee"
@@ -6603,7 +6611,17 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     <tbody>
                       {terms?.base_monthly_fee && (
                         <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                          <td className="py-2.5 pr-4 text-[12px] text-ink">{src.base_monthly_fee ?? 'Platform subscription'}</td>
+                          {/* Was printing the raw section citation itself
+                              (e.g. "3.1 Platform fee") as if it were the
+                              product description, with no way to click
+                              through to it. Real product name + a real,
+                              clickable source chip instead. */}
+                          <td className="py-2.5 pr-4 text-[12px] text-ink">
+                            <span className="flex items-center gap-1.5">
+                              Platform subscription
+                              <SectionChip heading={src.base_monthly_fee ?? src.base_annual_fee} onClick={() => openPDF(src.base_monthly_fee ?? src.base_annual_fee)} />
+                            </span>
+                          </td>
                           <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
                             {fmt(terms.base_monthly_fee, cur)}<span className="text-stone text-[10px] font-normal">/mo</span>
                           </td>
