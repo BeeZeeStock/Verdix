@@ -121,9 +121,13 @@ async function withOrganizationPolicyAvailability(
   // metadata, not a boolean: the review panel shows the reviewer WHAT
   // policy is being applied, and confirm-rule uses it as staleness
   // evidence (never as authority — it re-resolves independently).
+  // rule_name is looked up from orgRules (already loaded for matching, no
+  // extra query) purely for display — never part of the staleness
+  // comparison, which stays scoped to rule_id/version/value.
+  const matchedRule = orgRules.find(r => r.id === resolution.ruleId)
   return {
     ...proposal,
-    survival_organization_policy: { rule_id: resolution.ruleId!, version: resolution.ruleVersion!, value: resolution.value as boolean },
+    survival_organization_policy: { rule_id: resolution.ruleId!, version: resolution.ruleVersion!, value: resolution.value as boolean, rule_name: matchedRule?.name ?? null },
   }
 }
 

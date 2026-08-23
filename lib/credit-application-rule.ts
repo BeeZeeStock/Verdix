@@ -53,7 +53,16 @@ export function sanitizeAssertedProvenance(p: FieldProvenance | null | undefined
 export function buildCreditApplicationRule(
   approved: Record<string, unknown>,
   existing: CreditApplicationRule | null | undefined,
-  provenance?: { eligibility?: FieldProvenance; survival?: FieldProvenance },
+  // survival: null (as opposed to undefined) is a distinct, explicit
+  // signal — "revert to organization policy" (see confirm-rule/route.ts's
+  // requestsReResolution) — meaning "treat this sub-field as genuinely
+  // unresolved for this submission, do NOT fall back to whatever was
+  // already persisted." undefined keeps its existing meaning ("this
+  // submission doesn't assert anything about survival, preserve whatever
+  // was already resolved") — every pre-existing caller only ever passes a
+  // concrete FieldProvenance or leaves the key undefined, never null, so
+  // this is purely additive and changes no existing behavior.
+  provenance?: { eligibility?: FieldProvenance; survival?: FieldProvenance | null },
   // Step 5C — only ever consulted for carry_forward specifically (the sole
   // field in PRODUCTION_ORGANIZATION_RULEBOOK_ALLOWLIST today), and only
   // as a FALLBACK once contract/reviewer-derived data has already been
@@ -94,7 +103,17 @@ export function buildCreditApplicationRule(
   // writes *_provenance — protects every current and future caller
   // structurally, rather than relying on each call site to remember.
   const eligibility_provenance = sanitizeAssertedProvenance(provenance?.eligibility) ?? existing?.eligibility_provenance ?? null
-  let survival_provenance = sanitizeAssertedProvenance(provenance?.survival) ?? existing?.survival_provenance ?? null
+  // survival: null is checked BEFORE the sanitize/??-fallback chain,
+  // specifically so it can force null even when existing?.survival_provenance
+  // is already something (e.g. 'reviewer_policy') — ?? alone can't express
+  // this, since it treats an explicit null exactly like undefined and would
+  // fall through to existing either way. survival: undefined (every
+  // pre-existing caller's actual shape — always includes the key, value is
+  // simply whatever stateToProvenance graded) still takes the unchanged
+  // sanitize-then-existing-fallback path below.
+  let survival_provenance = provenance?.survival === null
+    ? null
+    : sanitizeAssertedProvenance(provenance?.survival) ?? existing?.survival_provenance ?? null
 
   // Step 5C — organization resolution as a fallback for genuine silence
   // ONLY. Both halves of this condition matter: carry_forward === 'unclear'

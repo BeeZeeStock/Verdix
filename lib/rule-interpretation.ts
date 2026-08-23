@@ -921,7 +921,12 @@ export type RuleProposal = {
   // mints organization_rulebook. Undefined for every other rule type, and
   // undefined whenever survival_state isn't 'decision_required' or no
   // policy applies.
-  survival_organization_policy?: { rule_id: string; version: number; value: boolean }
+  // rule_name — Step 5C UX amendment: the matched rule's own display name
+  // (e.g. "Rebate carry-forward default"), so the review panel can show
+  // "Policy: Rebate carry-forward default" instead of only a raw rule id.
+  // Purely cosmetic — never used for matching/staleness (isOrganizationPolicyStale
+  // still compares only rule_id/version/value).
+  survival_organization_policy?: { rule_id: string; version: number; value: boolean; rule_name: string | null }
 }
 
 // extraStateFields lets a specific rule type ask for additional,

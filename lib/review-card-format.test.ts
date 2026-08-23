@@ -5,9 +5,12 @@ describe('formatEligibleComponentsFact', () => {
   it('renders "all" as the full-payable-pool phrase', () => {
     expect(formatEligibleComponentsFact('all')).toBe('Future amounts payable')
   })
-  it('renders a component list as a readable, comma-joined phrase', () => {
-    expect(formatEligibleComponentsFact(['transaction_processing'])).toBe('transaction processing')
-    expect(formatEligibleComponentsFact(['transaction_processing', 'platform_fee'])).toBe('transaction processing, platform fee')
+  it('renders a component list as a readable, comma-joined, sentence-cased phrase', () => {
+    expect(formatEligibleComponentsFact(['transaction_processing'])).toBe('Transaction-processing')
+    expect(formatEligibleComponentsFact(['transaction_processing', 'platform_fee'])).toBe('Transaction-processing, platform fee')
+  })
+  it('hyphenates "X processing" compounds per the established house style, without a fixed key lookup table', () => {
+    expect(formatEligibleComponentsFact(['transaction_processing_fees', 'platform_subscription_fees'])).toBe('Transaction-processing fees, platform subscription fees')
   })
   it('renders null/empty/undefined as Not specified', () => {
     expect(formatEligibleComponentsFact(null)).toBe('Not specified')

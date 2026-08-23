@@ -29,6 +29,7 @@ import { buildCreditApplicationRule, sanitizeAssertedProvenance } from '@/lib/cr
 import { buildOneTimeFeeConfirmation, OneTimeFeeCapabilityBlockedError, OneTimeFeeValueMutationRejectedError } from '@/lib/one-time-fee'
 import { listMatchableOrganizationRules } from '@/lib/rulebook/organization-rules-service'
 import { resolveProductionOrganizationField, isOrganizationPolicyStale, type ProductionOrganizationResolution, type SeenOrganizationPolicy } from '@/lib/rulebook/organization-rulebook-production'
+import { resolveOrganizationPolicyRevert } from '@/lib/organization-policy-revert'
 
 // Several sequential writes (audit row, contract_terms, sometimes
 // contract_meter_mappings) — same defensive reasoning as propose-rule/
@@ -55,7 +56,24 @@ type Body = {
   // proposal as given) or explicitly set to 'reviewer_policy' when the
   // reviewer used free-text Override or clicked "Confirm recommendation"
   // on a specific verdix_recommends sub-field. See buildCreditApplicationRule.
+  // Deliberately NEVER legitimately carries survival: null on the wire —
+  // null is a distinct, trusted signal buildCreditApplicationRule uses to
+  // mean "revert this sub-field to genuinely unresolved," and the only
+  // place that signal may originate is this route's own server-side
+  // revertSurvivalToOrganizationPolicy branch below, never a client-
+  // supplied value. A crafted request setting survival: null directly is
+  // sanitized back to undefined before use (see sanitizeClientApplicationRuleProvenance).
   applicationRuleProvenance?: { eligibility?: FieldProvenance; survival?: FieldProvenance }
+  // Final safety-check amendment — the ONLY legitimate way survival may
+  // move from reviewer_policy back to organization_rulebook. A dedicated,
+  // narrow, explicit action rather than overloading approvedInterpretation/
+  // applicationRuleProvenance with a "carry_forward: unclear + survival:
+  // null" combination a crafted request could otherwise trigger regardless
+  // of the field's CURRENT authority. Triggers the eligibility + TOCTOU
+  // checks right after termsRow is loaded, below — every value persisted
+  // afterward (value/rule id/version/provenance) is computed server-side,
+  // never accepted from the request body.
+  revertSurvivalToOrganizationPolicy?: boolean
   // service_credit only (Step 1.5) — same discipline as applicationRuleProvenance,
   // sourced from aiProposal.cash_redeemable_state or explicitly
   // 'reviewer_policy' on Override/"Confirm recommendation". See
@@ -222,7 +240,17 @@ export async function POST(
   if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   const body = await req.json() as Body
-  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey, applicationRuleProvenance, cashRedeemableProvenance, survivalOrganizationPolicySeen } = body
+  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey, applicationRuleProvenance: rawApplicationRuleProvenance, cashRedeemableProvenance, survivalOrganizationPolicySeen, revertSurvivalToOrganizationPolicy } = body
+  // Defense in depth beyond the Body type itself (which a crafted raw JSON
+  // payload can bypass) — survival: null is never a legitimate CLIENT
+  // input; coerce it to undefined ("not asserted, preserve existing") so
+  // the generic merge path can never be tricked into clearing a field's
+  // provenance this way. The one place null is genuinely used is
+  // constructed entirely in server code, below, after the dedicated
+  // revert branch's own eligibility check has already passed.
+  const applicationRuleProvenance = rawApplicationRuleProvenance
+    ? { eligibility: rawApplicationRuleProvenance.eligibility, survival: rawApplicationRuleProvenance.survival === null ? undefined : rawApplicationRuleProvenance.survival }
+    : undefined
 
   if (!ruleType || !approvedInterpretation) {
     return NextResponse.json({ error: 'ruleType and approvedInterpretation are required' }, { status: 400 })
@@ -307,6 +335,51 @@ export async function POST(
         .eq('id', ownedJob.contract_terms_id)
         .maybeSingle()
     : { data: null }
+
+  // ── Revert-to-organization-policy: eligibility + TOCTOU checks ──────────
+  // Runs BEFORE the audit-row insert below, so a rejected revert attempt
+  // never creates a phantom "is_current" audit revision for a write that
+  // didn't actually happen to the real interpretation.
+  //
+  // Server-authoritative by construction: creditId is the only client
+  // input consulted here (to find the row); the field's CURRENT authority
+  // (existingAppRule?.survival_provenance) and the active organization
+  // policy (freshResolution) are both read/computed from trusted server-
+  // side state, never from the request body. If this succeeds,
+  // organizationRevertResolution is the ONLY source the service_credit
+  // branch below uses to build the reverted application_rule — the
+  // client's approvedInterpretation/applicationRuleProvenance are never
+  // consulted for this specific action.
+  let organizationRevertResolution: ProductionOrganizationResolution | undefined
+  if (revertSurvivalToOrganizationPolicy) {
+    if (ruleType !== 'service_credit' || !creditId) {
+      return NextResponse.json({ error: 'invalid_request', message: 'revertSurvivalToOrganizationPolicy requires ruleType "service_credit" and a creditId.' }, { status: 400 })
+    }
+    const revertCredits = (termsRow?.service_credits ?? []) as Array<{ credit_rule_id?: string; credit_type?: string; interpretation?: ServiceCreditInterpretation | null }>
+    const revertCurrentCredit = revertCredits.find(c => c.credit_rule_id === creditId)
+    const revertExistingAppRule = revertCurrentCredit?.interpretation?.application_rule
+
+    const revertOrganizationRules = await listMatchableOrganizationRules(org.orgId)
+    const revertResult = resolveOrganizationPolicyRevert({
+      organizationId: org.orgId,
+      ruleType: revertCurrentCredit?.credit_type ?? 'other',
+      existingSurvivalProvenance: revertExistingAppRule?.survival_provenance,
+      organizationRules: revertOrganizationRules,
+      asOf: new Date(),
+    })
+    if (!revertResult.eligible) {
+      // Fails closed in both cases — no write of any kind happens on this
+      // path; the existing reviewer_policy override (or contract_derived
+      // value) is left completely untouched.
+      return NextResponse.json({
+        error: revertResult.reason,
+        message: revertResult.reason === 'not_eligible_for_revert'
+          ? 'Only a contract-specific reviewer override can be reverted to the organization policy.'
+          : 'No active organization policy currently applies to this agreement — your existing choice for this agreement is unchanged.',
+      }, { status: revertResult.reason === 'not_eligible_for_revert' ? 400 : 409 })
+    }
+    organizationRevertResolution = revertResult.resolution
+  }
 
   // Server-side lookup of what the AI actually showed the reviewer at
   // proposal time — never trusted from a client-supplied value, so the audit
@@ -627,18 +700,21 @@ export async function POST(
     // independently re-checks this before ever applying the result, so
     // this early-out is a cheap optimization (skip the DB lookup
     // entirely when there's nothing to fill), not the enforcement point.
+    //
+    // Deliberately narrow again (final safety-check amendment) — this no
+    // longer widens on a client-submitted carry_forward: 'unclear', which
+    // would have let a crafted request re-trigger resolution regardless of
+    // the field's CURRENT authority (including contract_derived). The
+    // revert case is now handled entirely by organizationRevertResolution
+    // (computed above, gated by its own eligibility + TOCTOU checks)
+    // before this branch is ever reached.
     let organizationResolution: ProductionOrganizationResolution | undefined
     if (!existingAppRule || existingAppRule.carry_forward === 'unclear') {
       const organizationRules = await listMatchableOrganizationRules(org.orgId)
       const freshResolution = resolveProductionOrganizationField('survival.carry_forward', {
         organizationId: org.orgId,
         commercialContext: {
-          current: {
-            'survival.carry_forward': {
-              value: existingAppRule?.carry_forward ?? null,
-              provenance: existingAppRule?.survival_provenance ?? null,
-            },
-          },
+          current: { 'survival.carry_forward': { value: existingAppRule?.carry_forward ?? null, provenance: existingAppRule?.survival_provenance ?? null } },
           // Every current credit's availability is 'next_period' (the only
           // value CreditApplicationRule.availability implements today —
           // lib/types.ts) — 'next_invoice' is the real, accurate semantic
@@ -677,7 +753,24 @@ export async function POST(
       }
     }
 
-    const interpretation = buildServiceCreditInterpretation(approvedInterpretation, currentCredit?.interpretation, applicationRuleProvenance, cashRedeemableProvenance, organizationResolution)
+    // Server-authorized revert (final safety-check amendment) — takes
+    // priority over the generic client-driven merge entirely. Every value
+    // below traces back to organizationRevertResolution, computed above
+    // BEFORE the audit-row insert, from trusted server state only — the
+    // client's approvedInterpretation/applicationRuleProvenance are never
+    // consulted for this specific action, closing the crafted-payload
+    // vector this amendment exists to fix.
+    const interpretation = organizationRevertResolution
+      ? {
+          ...currentCredit!.interpretation!,
+          application_rule: buildCreditApplicationRule(
+            { application_rule: { carry_forward: 'unclear' } },
+            existingAppRule,
+            { eligibility: undefined, survival: null },
+            organizationRevertResolution,
+          ),
+        }
+      : buildServiceCreditInterpretation(approvedInterpretation, currentCredit?.interpretation, applicationRuleProvenance, cashRedeemableProvenance, organizationResolution)
     const targetIndex = credits.findIndex(c => c.credit_rule_id === creditId)
     const fallbackIndex = targetIndex === -1 && Number.isInteger(Number(creditId)) ? Number(creditId) : -1
     let newCredits: Credit[]

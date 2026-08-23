@@ -619,6 +619,40 @@ function BillingModelBadge({ model }: { model: 'fixed' | 'hybrid' | 'consumption
   )
 }
 
+// Shared structured-fact row — used everywhere a card shows a label/value
+// pair (Applies to, Carry-forward, Cash, Trigger, Rebate, Basis, Timing,
+// Cap, Value, and every other calculation_preview/params row across the
+// review UI). Fixes a real wrapping/alignment defect the previous
+// `flex justify-between` + `text-right` pattern had everywhere it was used:
+// a right-aligned value wraps from its RIGHT edge, which orphans the final
+// word of a long value on its own line with a huge gap in front of it (e.g.
+// "Applies to: transaction processing fees, platform subscription\nfees").
+// A CSS grid with a fixed label column and a LEFT-aligned value column
+// wraps naturally from the value's own left edge instead. `grid-cols-1` by
+// default stacks label above value (mobile); `sm:grid-cols-[label_1fr]`
+// switches to a side-by-side row once there's enough width. One shared
+// component, not re-implemented per card, so this fix can never be applied
+// to only one card and missed on the others.
+function FactRow({ label, value, icon, dense }: { label: string; value: React.ReactNode; icon?: string; dense?: boolean }) {
+  return (
+    <div className={`grid grid-cols-1 sm:grid-cols-[9rem_1fr] gap-x-3 gap-y-0.5 ${dense ? 'text-[12.5px]' : 'text-xs'}`}>
+      <dt className="flex items-center gap-1.5 text-stone">
+        {icon && <i className={`ti ${icon} text-forest flex-shrink-0`} style={{ fontSize: 13 }} />}
+        <span>{label}</span>
+      </dt>
+      <dd className={`${dense ? 'font-semibold' : 'font-medium'} text-ink text-left`}>{value}</dd>
+    </div>
+  )
+}
+function FactList({ rows, dense, className }: { rows: { label: string; value: React.ReactNode; icon?: string }[]; dense?: boolean; className?: string }) {
+  if (!rows.length) return null
+  return (
+    <dl className={`space-y-1.5 ${className ?? ''}`}>
+      {rows.map((row, i) => <FactRow key={i} label={row.label} value={row.value} icon={row.icon} dense={dense} />)}
+    </dl>
+  )
+}
+
 function Stat({ label, value, sub }: { label: string; value?: string | null; sub?: string }) {
   return (
     <div>
@@ -1199,7 +1233,7 @@ function stateToProvenance(state: 'clear_from_source' | 'verdix_recommends' | 'd
 // visual language (green/amber/red) already used for the main trigger/rate/
 // cap proposal card above, just parameterized so the two sub-badges don't
 // duplicate this styling block twice.
-function SubStateBadge({ label, state, decisionRequiredText, resolvedText, nonBlocking, organizationPolicyAvailable }: {
+function SubStateBadge({ label, state, decisionRequiredText, resolvedText, nonBlocking }: {
   label: string
   state: 'clear_from_source' | 'verdix_recommends' | 'decision_required'
   decisionRequiredText: string
@@ -1216,37 +1250,33 @@ function SubStateBadge({ label, state, decisionRequiredText, resolvedText, nonBl
   // nonBlocking={false} (or omit it) and the normal blocking treatment
   // applies unchanged.
   nonBlocking?: boolean
-  // Step 5C — true when state is 'decision_required' (the CONTRACT is
-  // genuinely silent) but an active, applicable Organization Rulebook
-  // policy already covers this field (see propose-rule/route.ts's
-  // survival_organization_policy). Renders the same blue "Organization
-  // policy" treatment ConfirmedRuleCard uses post-confirmation, rather
-  // than the alarming red "Decision required" — nothing here is actually
-  // blocking the reviewer, an organization default already resolved it.
-  organizationPolicyAvailable?: boolean
+  // Note: an active Organization Policy covering genuine contract silence
+  // (Step 5C) no longer renders through this badge at all — it gets its
+  // own dedicated "applied automatically" informational card (see
+  // RuleInterpretationCard's survivalOrgPolicyApplied branch), which unlike
+  // this generic badge can offer a real "Override for this agreement"
+  // action. This badge only ever renders decision_required (no policy, or
+  // the reviewer's own active override) / verdix_recommends now.
 }) {
   const isInformationalGap = state === 'decision_required' && nonBlocking
-  const isOrgPolicyCovered = state === 'decision_required' && organizationPolicyAvailable
   return (
     <div className="rounded-xl p-3" style={{
-      background: state === 'clear_from_source' ? '#F0FDF4' : isOrgPolicyCovered ? '#EFF6FF' : isInformationalGap ? '#F5F5F4' : state === 'decision_required' ? '#FEF2F2' : '#FFFDF5',
-      border: `1px solid ${state === 'clear_from_source' ? 'rgba(11,92,54,0.2)' : isOrgPolicyCovered ? 'rgba(30,64,175,0.25)' : isInformationalGap ? 'rgba(120,113,108,0.25)' : state === 'decision_required' ? '#FECACA' : 'rgba(217,167,90,0.35)'}`,
+      background: state === 'clear_from_source' ? '#F0FDF4' : isInformationalGap ? '#F5F5F4' : state === 'decision_required' ? '#FEF2F2' : '#FFFDF5',
+      border: `1px solid ${state === 'clear_from_source' ? 'rgba(11,92,54,0.2)' : isInformationalGap ? 'rgba(120,113,108,0.25)' : state === 'decision_required' ? '#FECACA' : 'rgba(217,167,90,0.35)'}`,
     }}>
       <span
         className="inline-block text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full mb-1.5"
         style={state === 'clear_from_source'
           ? { background: 'rgba(11,92,54,0.12)', color: '#0B5C36' }
-          : isOrgPolicyCovered
-            ? { background: 'rgba(30,64,175,0.12)', color: '#1E40AF' }
-            : isInformationalGap
-              ? { background: 'rgba(120,113,108,0.14)', color: '#57534E' }
-              : state === 'decision_required'
-                ? { background: 'rgba(153,27,27,0.1)', color: '#991B1B' }
-                : { background: 'rgba(180,83,9,0.12)', color: '#92400E' }}
+          : isInformationalGap
+            ? { background: 'rgba(120,113,108,0.14)', color: '#57534E' }
+            : state === 'decision_required'
+              ? { background: 'rgba(153,27,27,0.1)', color: '#991B1B' }
+              : { background: 'rgba(180,83,9,0.12)', color: '#92400E' }}
       >
-        {label} · {state === 'clear_from_source' ? 'Clear from source' : state === 'decision_required' ? (isOrgPolicyCovered ? 'Organization policy' : isInformationalGap ? 'Not specified' : 'Decision required') : 'Verdix recommendation'}
+        {label} · {state === 'clear_from_source' ? 'Clear from source' : state === 'decision_required' ? (isInformationalGap ? 'Not specified' : 'Decision required') : 'Verdix recommendation'}
       </span>
-      <p className="text-[11px] leading-relaxed" style={{ color: isOrgPolicyCovered ? '#1E3A5F' : isInformationalGap ? '#57534E' : state === 'decision_required' ? '#7F1D1D' : '#4A5D50' }}>
+      <p className="text-[11px] leading-relaxed" style={{ color: isInformationalGap ? '#57534E' : state === 'decision_required' ? '#7F1D1D' : '#4A5D50' }}>
         {state === 'decision_required' ? decisionRequiredText : resolvedText}
       </p>
     </div>
@@ -1345,6 +1375,14 @@ function RuleInterpretationCard({
   // BEFORE the main Confirm action becomes available; Override remains a
   // separate, unrelated escape hatch for "the extracted interpretation
   // itself is wrong", not "let me see my choices".
+  // Contract B UX amendment — when an active Organization Policy already
+  // covers genuine contract silence (aiProposal.survival_organization_policy
+  // present), the default view is an informational "applied automatically"
+  // card, not a picker the reviewer must act on. Clicking "Override for
+  // this agreement" reveals the SAME inline picker used for the no-policy
+  // case (unchanged mechanism/provenance) — this flag only ever toggles
+  // which UI shows; it never itself resolves or submits anything.
+  const [showSurvivalOverridePicker, setShowSurvivalOverridePicker] = useState(false)
   const [selectedSurvivalOption, setSelectedSurvivalOption] = useState<string | null>(null)
   const [survivalLimitedPeriods, setSurvivalLimitedPeriods] = useState('')
   const [survivalExpiryDate, setSurvivalExpiryDate] = useState('')
@@ -1729,13 +1767,28 @@ function RuleInterpretationCard({
   // organization_rulebook provenance from that, with the real matching
   // rule's id/version — this flag only ever suppresses a redundant prompt,
   // it never itself decides or submits a value.
-  const survivalNeedsInlinePicker = !aiProposal?.survival_organization_policy && (
+  // True when an active Organization Policy is available AND the reviewer
+  // hasn't asked to override it for this agreement — the default state for
+  // Contract B's rebate. showSurvivalOverridePicker is the reviewer's own
+  // explicit "Override for this agreement" click, never auto-set.
+  const survivalOrgPolicyApplied = !!aiProposal?.survival_organization_policy && !showSurvivalOverridePicker
+  const survivalNeedsInlinePicker = !survivalOrgPolicyApplied && (
     (aiProposal?.survival_state === 'decision_required' && survivalCarryForwardOpen && !survivalOneTimeOpen) ||
-    (aiProposal?.survival_state === 'verdix_recommends' && appRule?.carry_forward === true)
+    (aiProposal?.survival_state === 'verdix_recommends' && appRule?.carry_forward === true) ||
+    // The org-policy path itself, once the reviewer has explicitly clicked
+    // Override — same picker, same mechanism, just reached a different way
+    // than the no-policy decision_required case above.
+    (!!aiProposal?.survival_organization_policy && showSurvivalOverridePicker)
   )
   const survivalIsRecommendation = aiProposal?.survival_state === 'verdix_recommends'
   const survivalRecommendedOptionId = survivalIsRecommendation ? deriveSurvivalOptionId(appRule) : null
   const survivalSelectionPending = survivalNeedsInlinePicker && !survivalResolution
+  // Shared between the applied-policy card and the SubStateBadge fallback
+  // below, so the two branches never disagree on what to call this
+  // sub-field.
+  const survivalLabel = survivalCarryForwardOpen && !survivalOneTimeOpen ? `Unused ${creditType === 'rebate' ? 'rebate' : 'balance'} survival`
+    : survivalOneTimeOpen && !survivalCarryForwardOpen ? 'Repeatability'
+    : 'Survival & expiry'
 
   if (phase === 'applied' && (eligibilityOpenAfterConfirm || survivalOpenAfterConfirm)) {
     // Two independent open items, each rendered with the action that
@@ -1886,16 +1939,7 @@ function RuleInterpretationCard({
               if (ruleType === 'service_credit' && aiProposal.cash_redeemable_state === 'clear_from_source') {
                 factRows.push({ label: 'Cash', value: formatCashRedeemableFact(cashRedeemable) })
               }
-              return !!factRows.length && (
-                <dl className="space-y-1">
-                  {factRows.map((row, i) => (
-                    <div key={i} className="flex justify-between gap-3 text-xs">
-                      <dt className="text-stone">{row.label}</dt>
-                      <dd className="font-medium text-ink text-right">{row.value}</dd>
-                    </div>
-                  ))}
-                </dl>
-              )
+              return <FactList rows={factRows} />
             })()}
             {!!aiProposal.reasoning && (
               <div className="mt-2 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
@@ -2002,10 +2046,37 @@ function RuleInterpretationCard({
               names whichever ONE of the two is actually still open, rather
               than always claiming both are unresolved regardless of what
               the underlying fields actually say. */}
-          {aiProposal.survival_state && aiProposal.survival_state !== 'clear_from_source' && (() => {
-            const label = survivalCarryForwardOpen && !survivalOneTimeOpen ? `Unused ${creditType === 'rebate' ? 'rebate' : 'balance'} survival`
-              : survivalOneTimeOpen && !survivalCarryForwardOpen ? 'Repeatability'
-              : 'Survival & expiry'
+          {/* Contract B UX amendment — an active, applicable Organization
+              Policy is an already-approved organizational default, not an
+              open decision the reviewer must act on. Default view is a
+              plain informational "applied automatically" fact, matching
+              every other resolved fact on this card, with its own explicit
+              "Override for this agreement" escape hatch — never the
+              DECISION REQUIRED-style callout below, which is reserved for
+              genuinely unresolved fields (no policy at all) or the
+              reviewer's own active override-in-progress. */}
+          {survivalOrgPolicyApplied && aiProposal.survival_organization_policy && (
+            <div className="rounded-xl p-3 space-y-1" style={{ background: '#EFF6FF', border: '1px solid rgba(30,64,175,0.25)' }}>
+              <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: '#1E40AF' }}>
+                {survivalLabel} · Organization policy
+              </p>
+              <p className="text-sm font-medium text-ink">
+                {aiProposal.survival_organization_policy.value ? 'Carry forward until fully used' : 'Does not carry forward'}
+              </p>
+              <p className="text-[11px]" style={{ color: '#1E3A5F' }}>
+                Applied automatically because the agreement is silent.
+                {aiProposal.survival_organization_policy.rule_name && ` Policy: ${aiProposal.survival_organization_policy.rule_name}.`}
+              </p>
+              <button
+                onClick={() => setShowSurvivalOverridePicker(true)}
+                className="text-[11px] font-medium hover:underline"
+                style={{ color: '#1E40AF' }}
+              >
+                Override for this agreement
+              </button>
+            </div>
+          )}
+          {!survivalOrgPolicyApplied && aiProposal.survival_state && aiProposal.survival_state !== 'clear_from_source' && (() => {
             // Item 5/6 — heading + one short fact, never restating what the
             // heading (DECISION REQUIRED/badge) or the picker immediately
             // below it already communicate ("Choose the treatment" was
@@ -2013,7 +2084,11 @@ function RuleInterpretationCard({
             // stay available via View source clause/More details above,
             // never restated here.
             const decisionRequiredText = aiProposal.survival_organization_policy
-              ? `Contract is silent. Organization policy applies: ${describeSurvivalResolution({ carry_forward: aiProposal.survival_organization_policy.value }).charAt(0).toLowerCase()}${describeSurvivalResolution({ carry_forward: aiProposal.survival_organization_policy.value }).slice(1)}`
+              // Reached only via the reviewer's own "Override for this
+              // agreement" click (survivalOrgPolicyApplied is false) — the
+              // organization default itself is already shown/available via
+              // the applied-policy card above whenever they back out.
+              ? 'Choose a treatment for this agreement only — the organization policy itself is unchanged.'
               : survivalCarryForwardOpen && !survivalOneTimeOpen
                 ? 'Contract is silent on unused-balance treatment.'
                 : survivalOneTimeOpen && !survivalCarryForwardOpen
@@ -2024,11 +2099,10 @@ function RuleInterpretationCard({
               : 'Verdix recommends a treatment based on the source language.'
             return (
               <SubStateBadge
-                label={label}
+                label={survivalLabel}
                 state={aiProposal.survival_state}
                 decisionRequiredText={decisionRequiredText}
                 resolvedText={resolvedText}
-                organizationPolicyAvailable={!!aiProposal.survival_organization_policy}
               />
             )
           })()}
@@ -2062,7 +2136,21 @@ function RuleInterpretationCard({
               survivalNeedsInlinePicker's own comment above. */}
           {survivalNeedsInlinePicker && (
             <div className="rounded-xl p-3 space-y-2" style={{ background: survivalIsRecommendation ? '#FFFDF5' : '#FEF2F2', border: `1px solid ${survivalIsRecommendation ? 'rgba(217,167,90,0.35)' : '#FECACA'}` }}>
-              <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: survivalIsRecommendation ? '#92400E' : '#7F1D1D' }}>How should the unused balance be treated?</p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: survivalIsRecommendation ? '#92400E' : '#7F1D1D' }}>How should the unused balance be treated?</p>
+                {/* Escape hatch back to the organization default — only
+                    reachable via the reviewer's own Override click, never
+                    shown for the ordinary no-policy decision_required case. */}
+                {aiProposal?.survival_organization_policy && showSurvivalOverridePicker && (
+                  <button
+                    onClick={() => { setShowSurvivalOverridePicker(false); setSelectedSurvivalOption(null); setSurvivalResolution(null) }}
+                    className="text-[10px] font-medium hover:underline flex-shrink-0"
+                    style={{ color: '#7F1D1D' }}
+                  >
+                    Use organization policy
+                  </button>
+                )}
+              </div>
               <div className="space-y-1.5">
                 {CREDIT_SURVIVAL_OPTIONS.map(opt => {
                   const isRecommended = survivalIsRecommendation && opt.id === survivalRecommendedOptionId
@@ -2326,16 +2414,10 @@ function RuleInterpretationCard({
         <>
           <div className="rounded-xl p-3" style={{ background: '#F0FDF4', border: '1px solid rgba(11,92,54,0.2)' }}>
             <p className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: '#0B5C36' }}>Proposed interpretation</p>
-            <dl className="space-y-1.5">
-              {Object.entries(proposal).map(([field, value]) => (
-                <div key={field} className="flex justify-between gap-3 text-xs">
-                  <dt className="text-stone capitalize flex-shrink-0">{field.replace(/_/g, ' ')}</dt>
-                  <dd className="font-medium text-ink text-right">
-                    {field === 'amount' && typeof value === 'number' ? fmt(value, currency) : String(value)}
-                  </dd>
-                </div>
-              ))}
-            </dl>
+            <FactList rows={Object.entries(proposal).map(([field, value]) => ({
+              label: field.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()),
+              value: field === 'amount' && typeof value === 'number' ? fmt(value, currency) : String(value),
+            }))} />
           </div>
 
           <div className="rounded-xl p-3" style={{ background: '#FFFDF5', border: '1px solid rgba(217,167,90,0.35)' }}>
@@ -2721,6 +2803,61 @@ function OrganizationPolicyControls({
     onChanged()
   }
 
+  // The counterpart to submitOverride/Override for this agreement —
+  // returns a contract-specific reviewer_policy override back to whatever
+  // the currently active organization policy says. Deliberately does NOT
+  // hard-code slotExistingRule's value into this request (that would be
+  // exactly the "cache the previous policy value client-side" anti-pattern
+  // item 7 rules out) — carry_forward: 'unclear' + survival: null (the
+  // explicit revert signal buildCreditApplicationRule checks for) asks
+  // confirm-rule to re-resolve fresh, server-side, against whatever is
+  // active as of right now (see confirm-rule/route.ts's requestsReResolution).
+  // Only ever reachable from a state where an active organization rule for
+  // this exact slot is already confirmed to exist (proposed_policy_change/
+  // already_covered — both require activeRule to be present; see
+  // classifyOrganizationPolicySlotOutcome), so this can never silently
+  // "revert" to a draft/disabled/scheduled-but-not-yet-effective policy.
+  async function revertToOrganizationPolicy() {
+    setBusy(true); setMsg(null)
+    const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ruleType: 'service_credit', creditId,
+        reviewerInput: 'Revert to organization policy for this agreement',
+        aiProposedInterpretation: null,
+        // approvedInterpretation is still required by the route's generic
+        // validation but is never consulted for this action — the server
+        // decides the value, rule id/version, and provenance entirely on
+        // its own (see confirm-rule/route.ts's revertSurvivalToOrganizationPolicy
+        // branch). This client never claims a value, a rule, or a
+        // provenance for this action — only the intent.
+        approvedInterpretation: {},
+        revertSurvivalToOrganizationPolicy: true,
+      }),
+    })
+    const data = await res.json().catch(() => ({ error: `Unexpected response from server (${res.status})` }))
+    setBusy(false)
+    if (!res.ok) {
+      const text = data.error === 'policy_no_longer_applicable'
+        ? 'No active organization policy currently applies anymore — your existing choice for this agreement is unchanged. Refresh to see the latest state.'
+        : data.error === 'not_eligible_for_revert'
+          ? 'This field is not currently a contract-specific override, so there is nothing to revert.'
+          : data.message ?? data.error ?? 'Failed to revert to organization policy.'
+      setMsg({ ok: false, text })
+      return
+    }
+    // 207 (Multi-Status) is still res.ok (2xx) — a real write happened but a
+    // downstream mirror (e.g. contract_meter_mappings) failed; distinct from
+    // the two reject cases above, which never write anything at all.
+    if (data.propagation && data.ok === false) {
+      setMsg({ ok: false, text: 'Reverted, but a downstream update failed — check Confirmed billing rules.' })
+      onChanged()
+      return
+    }
+    setMsg({ ok: true, text: 'Reverted to the organization policy for this agreement.' })
+    onChanged()
+  }
+
   // Every app/api/org/rulebook/* route is requireOrg('admin') — a
   // 'member'-role reviewer would only ever see these controls fail with a
   // 403. isOrgAdmin === null means "still loading"; treated the same as
@@ -2752,6 +2889,11 @@ function OrganizationPolicyControls({
                   <i className="ti ti-circle-check-filled" style={{ fontSize: 12, color: '#0B5C36' }} /> Covered by organization policy
                 </span>
                 <button onClick={() => viewRule(slotExistingRule?.id)} disabled={busy} className="text-[11px] font-medium text-forest hover:underline">View policy</button>
+                {/* Value already matches — reverting only changes provenance
+                    (reviewer_policy -> organization_rulebook), removing a
+                    redundant contract-specific override that duplicates the
+                    org default. */}
+                <button onClick={revertToOrganizationPolicy} disabled={busy} className="text-[11px] font-medium text-stone hover:text-ink">Use organization policy</button>
               </div>
             )}
             {slotState === 'existing_draft' && (
@@ -2772,6 +2914,12 @@ function OrganizationPolicyControls({
               <div className="flex items-center gap-3">
                 <span className="text-[11px] text-stone">This decision differs from your organization policy</span>
                 <button onClick={openPromotePreview} disabled={busy} className="text-[11px] font-medium text-forest hover:underline">Propose policy change</button>
+                {/* Item 7 — the other direction: abandon THIS agreement's
+                    own override and go back to following the active
+                    organization default, rather than proposing the org
+                    policy itself change. Never mutates the organization
+                    rule — see revertToOrganizationPolicy's own comment. */}
+                <button onClick={revertToOrganizationPolicy} disabled={busy} className="text-[11px] font-medium text-stone hover:text-ink">Use organization policy</button>
               </div>
             )}
           </>
@@ -2945,17 +3093,9 @@ function ConfirmedRuleCard({
           a prop (some callers pass it) but only ever used to decide whether
           this card has a source to show at all — never rendered directly. */}
       {params.length > 0 && (
-        <dl className="space-y-2.5 pt-4 mb-4" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
-          {params.map((p, i) => (
-            <div key={i} className="flex items-center justify-between gap-3 text-[12.5px]">
-              <dt className="flex items-center gap-1.5 text-stone flex-shrink-0">
-                <i className={`ti ${paramIcon(p.label)} text-forest`} style={{ fontSize: 13 }} />
-                {p.label}
-              </dt>
-              <dd className="font-semibold text-ink text-right">{p.value}</dd>
-            </div>
-          ))}
-        </dl>
+        <div className="pt-4 mb-4" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
+          <FactList dense rows={params.map(p => ({ label: p.label, value: p.value, icon: paramIcon(p.label) }))} />
+        </div>
       )}
       {resolvedProvenance.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 mb-1">
@@ -3122,16 +3262,13 @@ function EditCommercialRuleDrawer({
                 <p className="text-[10px] font-bold uppercase tracking-widest text-stone/60">Current interpretation</p>
                 <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ background: '#D4EAD9', color: '#1A3D2B' }}>Confirmed</span>
               </div>
-              <dl className="space-y-1">
-                {Object.entries(currentRecord.approved_interpretation)
-                  .filter(([f]) => !NARRATIVE_FIELDS.includes(f) && f !== 'requires_confirmation' && f !== 'confirmation_reason')
-                  .map(([field, value]) => (
-                    <div key={field} className="flex justify-between gap-3 text-xs">
-                      <dt className="text-stone flex-shrink-0">{FIELD_LABELS[field] ?? field.replace(/_/g, ' ')}</dt>
-                      <dd className="font-medium text-ink text-right">{formatFieldValue(field, value, currency)}</dd>
-                    </div>
-                  ))}
-              </dl>
+              <FactList rows={Object.entries(currentRecord.approved_interpretation)
+                .filter(([f]) => !NARRATIVE_FIELDS.includes(f) && f !== 'requires_confirmation' && f !== 'confirmation_reason')
+                .map(([field, value]) => ({
+                  label: FIELD_LABELS[field] ?? field.replace(/_/g, ' '),
+                  value: formatFieldValue(field, value, currency),
+                }))}
+              />
               <p className="text-[10px] text-stone/60 mt-2">
                 Confirmed by {currentRecord.reviewer_name ?? currentRecord.reviewer_email} · {fmtDate(currentRecord.created_at)}
                 {currentRecord.revision_number > 1 && <> · Version {currentRecord.revision_number}</>}
@@ -3227,23 +3364,21 @@ function EditCommercialRuleDrawer({
             <>
               <div className="rounded-xl p-3" style={{ background: '#F0FDF4', border: '1px solid rgba(11,92,54,0.2)' }}>
                 <p className="text-[10px] font-bold uppercase tracking-widest mb-2" style={{ color: '#0B5C36' }}>Proposed interpretation</p>
-                <dl className="space-y-1.5">
-                  {Object.entries(proposal).filter(([f]) => !NARRATIVE_FIELDS.includes(f)).map(([field, value]) => {
-                    const oldValue = currentRecord?.approved_interpretation?.[field]
-                    const changed = changedFields.includes(field)
-                    return (
-                      <div key={field} className="flex justify-between gap-3 text-xs">
-                        <dt className="text-stone flex-shrink-0">{FIELD_LABELS[field] ?? field.replace(/_/g, ' ')}</dt>
-                        <dd className="font-medium text-ink text-right">
-                          {changed && currentRecord ? (
-                            <span className="text-stone/50">{formatFieldValue(field, oldValue, currency)} → </span>
-                          ) : null}
-                          <span className={changed ? 'text-ink' : ''}>{formatFieldValue(field, value, currency)}</span>
-                        </dd>
-                      </div>
-                    )
-                  })}
-                </dl>
+                <FactList rows={Object.entries(proposal).filter(([f]) => !NARRATIVE_FIELDS.includes(f)).map(([field, value]) => {
+                  const oldValue = currentRecord?.approved_interpretation?.[field]
+                  const changed = changedFields.includes(field)
+                  return {
+                    label: FIELD_LABELS[field] ?? field.replace(/_/g, ' '),
+                    value: (
+                      <>
+                        {changed && currentRecord ? (
+                          <span className="text-stone/50">{formatFieldValue(field, oldValue, currency)} → </span>
+                        ) : null}
+                        <span className={changed ? 'text-ink' : ''}>{formatFieldValue(field, value, currency)}</span>
+                      </>
+                    ),
+                  }
+                })} />
                 {meaningSentence && (
                   <p className="text-xs text-stone leading-relaxed mt-3 pt-3" style={{ borderTop: '1px solid rgba(74,124,89,0.15)' }}>
                     <span className="font-semibold text-ink">What this means: </span>{meaningSentence}
@@ -7267,9 +7402,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 params.push({
                   label: 'Eligible components',
                   value: appRule.eligible_component_keys === 'all' ? 'All future amounts payable'
-                    : Array.isArray(appRule.eligible_component_keys) ? appRule.eligible_component_keys.map(k => k.replace(/_/g, ' ')).join(', ') : 'Decision required',
+                    : Array.isArray(appRule.eligible_component_keys) ? formatEligibleComponentsFact(appRule.eligible_component_keys) : 'Decision required',
                 })
-                if (appRule.excluded_component_keys?.length) params.push({ label: 'Excluded', value: appRule.excluded_component_keys.map(k => k.replace(/_/g, ' ')).join(', ') })
+                if (appRule.excluded_component_keys?.length) params.push({ label: 'Excluded', value: formatEligibleComponentsFact(appRule.excluded_component_keys) })
                 params.push({ label: 'Repeatable', value: appRule.one_time === true ? 'No — one-time' : appRule.one_time === false ? 'Yes' : 'Decision required' })
                 if (typeof appRule.carry_forward === 'boolean') {
                   params.push({ label: 'Unused balance', value: describeSurvivalResolution({ carry_forward: appRule.carry_forward, expiry_periods: appRule.expiry_periods, expiry_date: appRule.expiry_date }) })

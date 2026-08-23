@@ -8,9 +8,25 @@
 // produced upstream. Zero React, zero server import — same discipline as
 // lib/rule-interpretation.ts.
 
+// eligible_component_keys/excluded_component_keys are freeform strings the
+// extraction model derives from each contract's own wording (no fixed
+// enum) — e.g. "transaction_processing_fees", "platform_subscription_fees".
+// A blind `.replace(/_/g, ' ')` produces a readable-enough phrase already,
+// but this codebase's own established house style hyphenates "X
+// processing" as a single compound term (see the extraction prompt's own
+// "transaction-processing fees" phrasing) — kept here so a raw internal key
+// never appears unhyphenated/uncapitalized in customer-facing UI, without
+// hardcoding a fixed lookup table for a genuinely open-ended vocabulary.
+function formatComponentKeyLabel(key: string): string {
+  return key.replace(/_/g, ' ').trim().replace(/(\S+) processing\b/gi, '$1-processing')
+}
+
 export function formatEligibleComponentsFact(keys: string[] | 'all' | null | undefined): string {
   if (keys === 'all') return 'Future amounts payable'
-  if (Array.isArray(keys) && keys.length > 0) return keys.map(k => k.replace(/_/g, ' ')).join(', ')
+  if (Array.isArray(keys) && keys.length > 0) {
+    const joined = keys.map(formatComponentKeyLabel).join(', ')
+    return joined.charAt(0).toUpperCase() + joined.slice(1)
+  }
   return 'Not specified'
 }
 
