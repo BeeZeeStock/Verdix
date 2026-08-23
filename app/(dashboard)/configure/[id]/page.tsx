@@ -3711,18 +3711,19 @@ function ReviewPanel({
             if (unresolvedDiscounts.length === 0) return null
             return (
               <div>
-                {/* Item 5 — a shared local heading, not a detached block: every
-                    discount in this group traces back to the SAME extracted
-                    field_sources.discounts section (extraction records one
-                    section per FIELD, not per discount item) — acceptable per
-                    "if several cards share a clause group, a shared local
-                    heading is acceptable but must not be detached", since
-                    this link sits directly in the group's own header, not in
-                    a separate far-away block. */}
+                {/* Item 5 follow-up — every discount in this group traces
+                    back to the SAME extracted field_sources.discounts
+                    section (extraction records one section per FIELD, not
+                    per discount item), so the link is placed on EACH card
+                    below rather than only on this shared group title —
+                    with more than one discount, a title-only link is only
+                    ever adjacent to the first card and requires scrolling
+                    back up for every card after it, which reads as
+                    "detached" in practice even though it technically
+                    precedes the group. */}
                 <div className="flex items-center gap-2 mb-3">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Discounts</p>
                   <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
-                  <SourceClauseLink section={fieldSources?.discounts} onViewSource={onViewSource} />
                 </div>
                 <div className="space-y-3">
                   {unresolvedDiscounts.map((d, i) => {
@@ -3733,7 +3734,8 @@ function ReviewPanel({
                         <div className="px-4 pt-4 pb-3">
                           <div className="flex items-center gap-1.5 mb-2.5">
                             <i className="ti ti-discount-2 text-stone" style={{ fontSize: 12 }} />
-                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Discount structure</span>
+                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">Discount structure</span>
+                            <SourceClauseLink section={fieldSources?.discounts} onViewSource={onViewSource} />
                           </div>
                           <p className="text-sm font-medium text-ink leading-snug mb-3">{label}</p>
                           {/* No separate static "why review" blurb here — it
@@ -3780,13 +3782,17 @@ function ReviewPanel({
             if (unresolvedCredits.length === 0) return null
             return (
               <div>
-                {/* Item 5 — shared local heading, same rationale as the
-                    Discounts group above (field_sources.service_credits is
-                    one section per FIELD, not per credit item). */}
+                {/* Item 5 follow-up — same rationale as the Discounts group
+                    above: field_sources.service_credits is one section per
+                    FIELD, not per credit item, and this group can hold
+                    several credits (e.g. Annual Rebate / Growth Credit /
+                    SLA Service Credit) — the link is placed on EACH card,
+                    not just this shared group title, so it's visible
+                    without scrolling back up regardless of which card is
+                    in view. */}
                 <div className="flex items-center gap-2 mb-3">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Service credits</p>
                   <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
-                  <SourceClauseLink section={fieldSources?.service_credits} onViewSource={onViewSource} />
                 </div>
                 <div className="space-y-3">
                   {unresolvedCredits.map((c, i) => {
@@ -3797,7 +3803,8 @@ function ReviewPanel({
                         <div className="px-4 pt-4 pb-3">
                           <div className="flex items-center gap-1.5 mb-2.5">
                             <i className="ti ti-receipt-refund text-stone" style={{ fontSize: 12 }} />
-                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">{CREDIT_BASIS_LABEL[c.credit_type ?? 'other'] ?? 'Credit basis'}</span>
+                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">{CREDIT_BASIS_LABEL[c.credit_type ?? 'other'] ?? 'Credit basis'}</span>
+                            <SourceClauseLink section={fieldSources?.service_credits} onViewSource={onViewSource} />
                           </div>
                           <p className="text-sm font-medium text-ink leading-snug mb-3">{label}</p>
                           {/* Same as the Discounts section above — no separate
@@ -3836,17 +3843,17 @@ function ReviewPanel({
             if (candidates.length === 0) return null
             return (
               <div>
-                {/* Item 5 — a rule interaction is a DERIVED comparison
-                    between an already-sourced service credit and an
-                    already-sourced discount/escalator, not its own
+                {/* Item 5 follow-up — a rule interaction is a DERIVED
+                    comparison between an already-sourced service credit and
+                    an already-sourced discount/escalator, not its own
                     extracted field — links to the credit's own group source
                     (its own card, addressed via creditId, is the anchor this
                     card resolves) rather than inventing a second combined
-                    reference. */}
+                    reference. Placed on each card (this group can hold more
+                    than one candidate), not just the shared group title. */}
                 <div className="flex items-center gap-2 mb-3">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Rule interactions</p>
                   <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
-                  <SourceClauseLink section={fieldSources?.service_credits} onViewSource={onViewSource} />
                 </div>
                 <div className="space-y-3">
                   {candidates.map(cand => (
@@ -3854,7 +3861,8 @@ function ReviewPanel({
                       <div className="px-4 pt-4 pb-3">
                         <div className="flex items-center gap-1.5 mb-2.5">
                           <i className="ti ti-arrows-cross text-stone" style={{ fontSize: 12 }} />
-                          <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Interaction to confirm</span>
+                          <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">Interaction to confirm</span>
+                          <SourceClauseLink section={fieldSources?.service_credits} onViewSource={onViewSource} />
                         </div>
                         <p className="text-sm font-medium text-ink leading-snug mb-3">{cand.creditLabel} × {cand.otherRule.label}</p>
                         <p className="text-[11px] text-stone leading-relaxed mb-3">
@@ -4378,7 +4386,31 @@ function ReviewPanel({
             </div>
           )}
 
-          {Object.entries(groups).map(([section, groupItems]) => (
+          {/* Item 5 follow-up — a group whose every item is either a
+              duplicate metric-row (not the anchor) or already above the
+              confidence threshold renders NO cards at all below its own
+              loop (see the two early `return null`s inside groupItems.map
+              below) — but the section header + "View source clause" link
+              above used to render unconditionally regardless, producing
+              exactly the bug this exists to prevent: a header/link with
+              nothing under it, real content having already been resolved
+              elsewhere (the billability-condition review cards for
+              one-time fees, whose combined field_sources.one_time_fees
+              string is what produces the "§4.1 Account Setup Fee; 4.2...;
+              4.3...; 4.4..." heading seen here). willRenderCard mirrors the
+              exact two gates inside the loop below byte-for-byte, so a
+              group is skipped here if and only if its own loop would
+              render nothing. */}
+          {(() => {
+            const willRenderCard = (item: LineItem): boolean => {
+              const metricUnitType = findTierForItem(item, overageTiers ?? [])?.unit_type
+              if (metricUnitType && metricNeededKinds.has(metricUnitType)) {
+                return metricAnchorItemId.get(metricUnitType) === item.id
+              }
+              return item.confidence_score < 0.95
+            }
+            return Object.entries(groups).filter(([, groupItems]) => groupItems.some(willRenderCard))
+          })().map(([section, groupItems]) => (
             <div key={section}>
               {/* Section header from contract */}
               <div className="flex items-center gap-2 mb-3">
