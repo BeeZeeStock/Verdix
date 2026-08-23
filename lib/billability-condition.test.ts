@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   parseBillabilityCondition, getBillabilityExecutionCapability, projectBillabilityConditionToExecutionFields,
-  describeBillabilityCondition, isChangeOrderConditional,
+  describeBillabilityCondition, isChangeOrderConditional, resolveOneTimeFeeTypeLabel,
 } from './billability-condition'
 
 describe('parseBillabilityCondition — closed-union enforcement (item 2)', () => {
@@ -141,5 +141,38 @@ describe('isChangeOrderConditional — the structural signal for "may never beco
   it('is false for null/undefined — an unresolved condition is not treated as conditional-on-a-change-order', () => {
     expect(isChangeOrderConditional(null)).toBe(false)
     expect(isChangeOrderConditional(undefined)).toBe(false)
+  })
+})
+
+// Final amendment — never let "On delivery" stand in for an evaluated-but-
+// unresolved condition. undefined (never entered Step 12) and null
+// (Step 12 evaluated it and found nothing determinable) must resolve to
+// genuinely different UI states.
+describe('resolveOneTimeFeeTypeLabel — Step 12 undefined/null discriminator (final amendment)', () => {
+  it('a real condition resolves to its canonical label, regardless of what a caller might otherwise show for manual_trigger', () => {
+    expect(resolveOneTimeFeeTypeLabel({ kind: 'immediate' })).toEqual({ kind: 'condition', label: 'Immediate' })
+    expect(resolveOneTimeFeeTypeLabel({ kind: 'fixed_date', date: '2026-10-15' })).toEqual({ kind: 'condition', label: 'Fixed date — 2026-10-15' })
+    expect(resolveOneTimeFeeTypeLabel({ kind: 'event', event_type: 'contract_signature' })).toEqual({ kind: 'condition', label: 'Contract signature' })
+    expect(resolveOneTimeFeeTypeLabel({ kind: 'event', event_type: 'delivery' })).toEqual({ kind: 'condition', label: 'Delivery' })
+    expect(resolveOneTimeFeeTypeLabel({ kind: 'event', event_type: 'customer_acceptance' })).toEqual({ kind: 'condition', label: 'Customer acceptance' })
+    expect(resolveOneTimeFeeTypeLabel({ kind: 'event', event_type: 'final_acceptance' })).toEqual({ kind: 'condition', label: 'Final acceptance' })
+    expect(resolveOneTimeFeeTypeLabel({ kind: 'event', event_type: 'change_order_signature' })).toEqual({ kind: 'condition', label: 'Signed change order' })
+  })
+
+  it('only a real event_type: "delivery" produces the "Delivery" label — never used as a generic fallback', () => {
+    const result = resolveOneTimeFeeTypeLabel({ kind: 'event', event_type: 'delivery' })
+    expect(result).toEqual({ kind: 'condition', label: 'Delivery' })
+    // No other condition or the unresolved/legacy states ever produce this label.
+    expect(resolveOneTimeFeeTypeLabel(null)).not.toEqual({ kind: 'condition', label: 'Delivery' })
+    expect(resolveOneTimeFeeTypeLabel(undefined)).not.toEqual({ kind: 'condition', label: 'Delivery' })
+  })
+
+  it('billability_condition === null (Step 12 evaluated, unresolved) resolves to needs_review — never legacy_undefined, never a condition label', () => {
+    expect(resolveOneTimeFeeTypeLabel(null)).toEqual({ kind: 'needs_review' })
+  })
+
+  it('billability_condition === undefined (never entered the Step 12 lifecycle — the true legacy shape) resolves to legacy_undefined, distinct from needs_review', () => {
+    expect(resolveOneTimeFeeTypeLabel(undefined)).toEqual({ kind: 'legacy_undefined' })
+    expect(resolveOneTimeFeeTypeLabel(undefined)).not.toEqual(resolveOneTimeFeeTypeLabel(null))
   })
 })

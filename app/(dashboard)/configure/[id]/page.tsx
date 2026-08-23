@@ -17,7 +17,7 @@ import { optionsForRuleType, optionsForEdit, deriveSelectedOption, CREDIT_SURVIV
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
-import { describeBillabilityCondition, isChangeOrderConditional } from '@/lib/billability-condition'
+import { describeBillabilityCondition, isChangeOrderConditional, resolveOneTimeFeeTypeLabel } from '@/lib/billability-condition'
 import { getCreditRepresentationCapability } from '@/lib/connectors/billing/types'
 import { FinancialAmount, FinancialMetaTag } from '@/app/_components/FinancialAmount'
 import { FinancialKPICard } from '@/app/_components/FinancialKPICard'
@@ -476,6 +476,19 @@ function billabilityConditionLabel(c: OneTimeFee['billability_condition']): stri
 }
 function isChangeOrderConditionalFee(f: OneTimeFee): boolean {
   return isChangeOrderConditional(f.billability_condition ?? null)
+}
+
+// Item 10 final amendment — thin JSX wrapper around
+// lib/billability-condition.ts's resolveOneTimeFeeTypeLabel (the tested,
+// pure undefined/null discriminator — see its own doc comment). Only the
+// presentational bits (styling, this table's own generic fallback string)
+// live here; the governing logic is the same one every future one-time-fee
+// consumer should reuse, not re-derived per call site.
+function oneTimeFeeTypeLabel(f: OneTimeFee, genericFallback: string) {
+  const result = resolveOneTimeFeeTypeLabel(f.billability_condition)
+  if (result.kind === 'condition') return result.label
+  if (result.kind === 'needs_review') return 'Needs review'
+  return f.manual_trigger ? <span className="text-amber-600">On delivery</span> : genericFallback
 }
 
 // Exports billing line items as a Stripe-compatible CSV
@@ -3261,12 +3274,11 @@ function ReviewPanel({
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   // Item 6 — every LineItem already carries its own source_section (the
-  // SAME field the line-items table's "Contract §X" grouping already
-  // reads — see the groups.reduce below). Reused here, never hardcoded,
-  // so a review card's source link is driven by the actual extracted
-  // provenance for THAT fee, not a section number typed into the JSX.
-  // Matched by product_name, mirroring how buildLineItems itself
-  // addresses a one-time fee's own generated row.
+  // same field buildLineItems stamps on every generated row). Reused
+  // here, never hardcoded, so a review card's source link is driven by
+  // the actual extracted provenance for THAT fee, not a section number
+  // typed into the JSX. Matched by product_name, mirroring how
+  // buildLineItems itself addresses a one-time fee's own generated row.
   const findSourceSection = (feeLabel: string): string | undefined =>
     items.find(i => i.product_name === feeLabel)?.source_section ?? undefined
 
@@ -3356,13 +3368,6 @@ function ReviewPanel({
     }
   }
 
-  // Group by source_section so the same section header doesn't repeat per card
-  const groups = items.reduce<Record<string, LineItem[]>>((acc, item) => {
-    const key = item.source_section ?? 'Other'
-    acc[key] = acc[key] ?? []
-    acc[key].push(item)
-    return acc
-  }, {})
 
   // Determine, per metric (unit_type), which of the 3 metric-scoped rule
   // kinds are still unresolved — computed directly from the metric's own
@@ -4386,50 +4391,25 @@ function ReviewPanel({
             </div>
           )}
 
-          {/* Item 5 follow-up — a group whose every item is either a
-              duplicate metric-row (not the anchor) or already above the
-              confidence threshold renders NO cards at all below its own
-              loop (see the two early `return null`s inside groupItems.map
-              below) — but the section header + "View source clause" link
-              above used to render unconditionally regardless, producing
-              exactly the bug this exists to prevent: a header/link with
-              nothing under it, real content having already been resolved
-              elsewhere (the billability-condition review cards for
-              one-time fees, whose combined field_sources.one_time_fees
-              string is what produces the "§4.1 Account Setup Fee; 4.2...;
-              4.3...; 4.4..." heading seen here). willRenderCard mirrors the
-              exact two gates inside the loop below byte-for-byte, so a
-              group is skipped here if and only if its own loop would
-              render nothing. */}
-          {(() => {
-            const willRenderCard = (item: LineItem): boolean => {
-              const metricUnitType = findTierForItem(item, overageTiers ?? [])?.unit_type
-              if (metricUnitType && metricNeededKinds.has(metricUnitType)) {
-                return metricAnchorItemId.get(metricUnitType) === item.id
-              }
-              return item.confidence_score < 0.95
-            }
-            return Object.entries(groups).filter(([, groupItems]) => groupItems.some(willRenderCard))
-          })().map(([section, groupItems]) => (
-            <div key={section}>
-              {/* Section header from contract */}
-              <div className="flex items-center gap-2 mb-3">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-stone">
-                  Contract §{section}
-                </p>
-                <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
-                {onViewSource && (
-                  <button
-                    onClick={() => onViewSource(section)}
-                    className="flex-shrink-0 text-[10px] font-medium text-forest hover:underline whitespace-nowrap"
-                  >
-                    View source clause ↗
-                  </button>
-                )}
-              </div>
-
-              <div className="space-y-3">
-                {groupItems.map(item => {
+          {/* Item 2 (final amendment) — this used to be grouped under a
+              "Contract §X — View source clause" header per source_section,
+              e.g. one shared header covering all of §4.1-4.4's one-time
+              fees at once (every one-time-fee row shares the SAME
+              field_sources.one_time_fees string — see buildLineItems).
+              That header/link is now a genuine duplicate of the local
+              SourceClauseLink already attached to each item's own
+              specialized review card elsewhere on this page (billability
+              cards for one-time fees, proration cards for base/recurring
+              fees, metric rule cards for tiers) — removed entirely rather
+              than suppressed-when-empty (the prior fix), since every
+              relevant review family now carries its own local source
+              reference and a second, less precise, combined-section link
+              serves no distinct purpose. The per-item cards themselves
+              (confidence-gated plain "confirm this value" cards, and the
+              metric-scoped rule-card stack) are unchanged — only the
+              grouping/header wrapper is gone; items render as one flat list. */}
+          <div className="space-y-3">
+            {items.map(item => {
                   // Metric-scoped rules (minimum commitment, partial-period
                   // treatment, tier calculation) are handled entirely outside
                   // classifyItem now — see metricNeededKinds/renderMetricRuleCard
@@ -4789,9 +4769,7 @@ function ReviewPanel({
                     </div>
                   )
                 })}
-              </div>
-            </div>
-          ))}
+          </div>
         </div>
 
         {/* Footer */}
@@ -5831,7 +5809,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   sub={terms?.renewal_notice_days ? `${terms.renewal_notice_days} days notice required` : undefined}
                   onSave={v => saveField('auto_renews', v)}
                 />
-                <Stat label="Fixed fees" value={tcv > 0 ? fmt(tcv, cur) : billingModel === 'consumption' ? 'Usage-based' : '—'} />
+                {/* Item 3 (final amendment) — committedFixedFeeTotal, not
+                    tcv (the potential total, which can include a
+                    Change-Order-conditional fee) — the same TCV
+                    commitment-model figure Card A/the Billing Configuration
+                    footer show, never re-derived independently here. */}
+                <Stat
+                  label="Committed fixed fees"
+                  value={committedFixedFeeTotal > 0 ? fmt(committedFixedFeeTotal, cur) : billingModel === 'consumption' ? 'Usage-based' : '—'}
+                  sub={conditionalFixedFeeTotal > 0 ? `+ ${fmt(conditionalFixedFeeTotal, cur)} conditional (Change Order)` : undefined}
+                />
               </div>
             </div>
 
@@ -6264,19 +6251,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                               : fmt(f.amount, cur)}
                           </td>
                           <td className="py-2.5 text-[11px] text-stone text-right">
-                            {/* Item 10 — canonical billability semantics,
-                                never a generic fee-type label that could
-                                contradict the detailed review card for the
-                                same fee. manual_trigger fees keep "On
-                                delivery" (a genuinely different concept —
-                                variable-quantity work invoiced once
-                                confirmed, not a billability_condition);
-                                everything else falls back to the fee-type
-                                label only when no condition has been
-                                extracted/resolved at all yet. */}
-                            {f.manual_trigger
-                              ? <span className="text-amber-600">On delivery</span>
-                              : billabilityConditionLabel(f.billability_condition) ?? 'Services'}
+                            {oneTimeFeeTypeLabel(f, 'Services')}
                           </td>
                         </tr>
                       ))}
@@ -6292,9 +6267,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                               : fmt(f.amount, cur)}
                           </td>
                           <td className="py-2.5 text-[11px] text-stone text-right">
-                            {f.manual_trigger
-                              ? <span className="text-amber-600">On delivery</span>
-                              : billabilityConditionLabel(f.billability_condition) ?? 'Hardware'}
+                            {oneTimeFeeTypeLabel(f, 'Hardware')}
                           </td>
                         </tr>
                       ))}
@@ -6310,9 +6283,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                               : fmt(f.amount, cur)}
                           </td>
                           <td className="py-2.5 text-[11px] text-stone text-right">
-                            {f.manual_trigger
-                              ? <span className="text-amber-600">On delivery</span>
-                              : billabilityConditionLabel(f.billability_condition) ?? 'One-time'}
+                            {oneTimeFeeTypeLabel(f, 'One-time')}
                           </td>
                         </tr>
                       ))}
@@ -6566,15 +6537,43 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           </Fragment>
                         )})}
                       </tbody>
-                      {/* Fixed fees footer */}
+                      {/* Item 3 (final amendment) — this footer previously
+                          summed `tcv` (the potential total, including any
+                          Change-Order-conditional fee — the table above
+                          lists that fee as its own row) under the bare
+                          label "Fixed fees", which is exactly the
+                          unqualified 1,258,000-as-"Fixed fees" claim this
+                          fix removes. Uses the SAME committedFixedFeeTotal/
+                          conditionalFixedFeeTotal already computed once
+                          near the top of this component via the TCV
+                          commitment model (lib/contract-tcv-calc.ts) —
+                          never re-summed independently here. */}
                       <tfoot>
                         <tr style={{ borderTop: '2px solid rgba(26,61,43,0.10)' }}>
-                          <td colSpan={3} className="pt-3 text-[10px] font-bold text-stone uppercase tracking-[0.1em]">Fixed fees</td>
+                          <td colSpan={3} className="pt-3 text-[10px] font-bold text-stone uppercase tracking-[0.1em]">Committed fixed fees</td>
                           <td className="pt-3 text-[13px] font-semibold text-ink text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            {fmt(tcv, cur)}
+                            {fmt(committedFixedFeeTotal, cur)}
                           </td>
                           <td />
                         </tr>
+                        {conditionalFixedFeeTotal > 0 && (
+                          <tr>
+                            <td colSpan={3} className="pt-1.5 text-[10px] font-semibold text-stone uppercase tracking-[0.1em]">Conditional — pending signed Change Order</td>
+                            <td className="pt-1.5 text-[12px] font-medium text-stone text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                              {fmt(conditionalFixedFeeTotal, cur)}
+                            </td>
+                            <td />
+                          </tr>
+                        )}
+                        {conditionalFixedFeeTotal > 0 && (
+                          <tr>
+                            <td colSpan={3} className="pt-1.5 text-[10px] font-semibold text-stone uppercase tracking-[0.1em]">Potential total</td>
+                            <td className="pt-1.5 text-[12px] font-medium text-stone text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                              {fmt(committedFixedFeeTotal + conditionalFixedFeeTotal, cur)}
+                            </td>
+                            <td />
+                          </tr>
+                        )}
                       </tfoot>
                     </table>
                   </div>

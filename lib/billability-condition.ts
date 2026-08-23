@@ -149,3 +149,33 @@ export function describeBillabilityCondition(condition: BillabilityCondition | n
 export function isChangeOrderConditional(condition: BillabilityCondition | null | undefined): boolean {
   return condition?.kind === 'event' && condition.event_type === 'change_order_signature'
 }
+
+// Final amendment — the Step 12 lifecycle's undefined/null discriminator,
+// extracted here so it has real test coverage rather than living only as
+// inline JSX logic on the Configure page. `undefined` and `null` are NOT
+// interchangeable (see lib/contract-extractor.ts's normalizeBillabilityCondition
+// doc comment for the full rationale):
+//   - undefined: a genuine legacy record that has never passed through the
+//     Step 12 lifecycle at all — the only shape where a bare manual_trigger
+//     flag still carries its pre-Step-12 meaning ("professional-services
+//     fee, billed once delivered/confirmed").
+//   - null: Step 12 HAS evaluated this fee and found no determinable
+//     condition — an ordinary, governed "needs review" state. manual_trigger
+//     is ALSO true here (see normalizeBillabilityCondition's safe-hold
+//     projection), but it means something completely different now — a
+//     structural hold, not "genuinely variable/on-delivery work" — so it
+//     must never be read as delivery-billed.
+// A UI must never collapse these into the same fallback ("On delivery" is
+// only correct for the true legacy/undefined case).
+export type OneTimeFeeTypeLabelResult =
+  | { kind: 'condition'; label: string }
+  | { kind: 'needs_review' }
+  | { kind: 'legacy_undefined' }
+
+export function resolveOneTimeFeeTypeLabel(condition: BillabilityCondition | null | undefined): OneTimeFeeTypeLabelResult {
+  if (condition !== undefined) {
+    const label = describeBillabilityCondition(condition)
+    return label ? { kind: 'condition', label } : { kind: 'needs_review' }
+  }
+  return { kind: 'legacy_undefined' }
+}
