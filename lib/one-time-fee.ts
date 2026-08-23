@@ -38,6 +38,20 @@
 // for a OneTimeFee field, THAT would be a separate, new server-side path
 // minting 'contract_derived' from real evidence — never this button,
 // merely because a reviewer agrees the extraction looks right.
+//
+// Contract B acceptance amendment — this materialized for `amount`:
+// lib/contract-extractor.ts's flagAmbiguousOneTimeFees now calls lib/
+// one-time-fee-provenance.ts's deriveOneTimeFeeAmountProvenance at
+// EXTRACTION time (a separate lifecycle stage from this confirmation
+// route entirely), which can mint 'contract_derived' when the fee's own
+// source_clause deterministically, unambiguously states the exact amount.
+// This function's own behavior is unchanged by that: it still never mints
+// 'contract_derived' itself — confirmedProvenance below only ever
+// preserves an already-contract_derived value or falls through to
+// 'reviewer_policy', exactly as before. Billability has no equivalent
+// grounding path yet — billability_provenance still only ever reaches
+// 'contract_derived' if some future, separate mechanism sets it, same as
+// this whole comment originally described for both dimensions.
 import type { OneTimeFee, FieldProvenance } from './types'
 
 // Distinct from a plain Error specifically so route handlers can catch

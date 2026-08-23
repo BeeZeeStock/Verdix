@@ -4,6 +4,7 @@ import { buildLearningContext } from './learning-context'
 import { getAIClient, AI_PROVIDER } from './ai-client'
 import { parseBillabilityCondition, projectBillabilityConditionToExecutionFields } from './billability-condition'
 import { isProvenanceResolved } from './commercial-rule-status'
+import { deriveOneTimeFeeAmountProvenance } from './one-time-fee-provenance'
 
 // Stays on the standard (Sonnet) client — a live A/B against TEST-PAY-002
 // (2026-08-20/21) found extraction quality/source-completeness EQUIVALENT
@@ -84,7 +85,7 @@ Rules:
   - Only extract clauses that actually reduce a charge. A clause that merely describes a service-level TARGET with no stated financial consequence (no credit, no refund, no reduction) is not a service credit — do not invent one.
   - Actively search for this clause type — it is frequently located in an "SLA", "Service Levels", or "Availability" section physically separate from the pricing/fees section, not necessarily adjacent to the discount or escalator clauses. Do not skip it just because it isn't near the other commercial terms.
   - PENALTY CLAUSES (opposite polarity — do NOT put these in service_credits): a clause that imposes an ADDITIONAL charge on a condition (e.g. a late-payment penalty, a breach penalty, an early-termination fee) is not a service credit — service_credits only ever represents a reduction. There is no structured field for a conditional additional charge yet. Never drop it silently: write a plain-English sentence describing it (trigger condition, amount/percentage, what it applies to) into extraction_notes so a human reviewer still sees it, e.g. "Penalty clause detected but not structured: a 1.5% monthly interest penalty applies to invoices unpaid after 30 days (§7.2) — needs manual review." If extraction_notes already has content, append this as a new sentence rather than replacing it.
-- one_time_fees: non-recurring charges paid once (e.g. onboarding, implementation, setup, migration, professional services). Each entry: fee_label (short name), amount (number), due_date (ISO date or null), description (brief note or null), manual_trigger (boolean), metric_name (string or null), rate_per_unit (number or null), billability_condition (structured object, see below).
+- one_time_fees: non-recurring charges paid once (e.g. onboarding, implementation, setup, migration, professional services). Each entry: fee_label (short name), amount (number), due_date (ISO date or null), description (brief note or null), source_clause (the sentence(s) stating THIS fee's own amount, verbatim or lightly paraphrased, or null if the amount is not stated explicitly in the text — used to verify the extracted amount against the contract, never invent or summarize a number that isn't there), manual_trigger (boolean), metric_name (string or null), rate_per_unit (number or null), billability_condition (structured object, see below).
   - Set manual_trigger=true when the fee is priced per unit of variable work and cannot be invoiced until that work is delivered and confirmed (e.g. "professional services at €150/hour", "training sessions" — genuinely variable-quantity work, not a fixed one-time amount). These fees need human confirmation and a metric entry (hours, days, sessions) before the invoice is issued. Do NOT set manual_trigger=true merely because a FIXED-amount fee's billing timing depends on an event (e.g. "SEK 100,000 upon customer acceptance") — that is a billability_condition (event), not a manual_trigger fee; see below.
   - When manual_trigger=true, set metric_name to the unit of work (e.g. "hours", "days", "sessions", "units") and rate_per_unit to the per-unit rate. Set amount=0 when the total is variable/unknown at contract time.
   - Set manual_trigger=false (or omit it) for fixed-amount fees — this includes fees gated on a contractual event (billability_condition.kind = "event"), not just fees with a clear calendar due date.
@@ -155,7 +156,7 @@ Output:
     {"tier_label": "Calls 100,001+", "from_unit": 100001, "to_unit": null, "rate_per_unit": 0.01, "unit_type": "API call", "measurement_period": "monthly", "minimum_period_amount": null, "tier_calculation": {"method": "graduated", "source_clause": null, "requires_confirmation": true, "confirmation_reason": "Contract states per-call rates for each tier but does not specify whether crossing a threshold re-rates all calls or only the calls above it."}}
   ],
   "additional_recurring_fees": [],
-  "one_time_fees": [{"fee_label": "Onboarding fee", "amount": 5000, "due_date": "2024-02-01", "description": "One-time onboarding and implementation fee due at contract start", "billability_condition": {"kind": "fixed_date", "date": "2024-02-01"}}],
+  "one_time_fees": [{"fee_label": "Onboarding fee", "amount": 5000, "due_date": "2024-02-01", "description": "One-time onboarding and implementation fee due at contract start", "source_clause": null, "billability_condition": {"kind": "fixed_date", "date": "2024-02-01"}}],
   "field_sources": {
     "base_monthly_fee": "1.1 Base Platform Fee",
     "year_pricing": "1.1 Base Platform Fee",
@@ -366,7 +367,7 @@ export function applyExtractionSafetyNets(terms: ContractTerms, contractText?: s
   terms.overage_tiers = flagAmbiguousTierCalculation(terms.overage_tiers)
   terms.discounts = assignDiscountRuleIds(terms.discounts)
   terms.service_credits = assignServiceCreditRuleIds(terms.service_credits ?? [])
-  terms.one_time_fees = flagAmbiguousOneTimeFees(terms.one_time_fees ?? [])
+  terms.one_time_fees = flagAmbiguousOneTimeFees(terms.one_time_fees ?? [], terms.currency)
   terms.one_time_fees = normalizeBillabilityCondition(terms.one_time_fees ?? [])
   flagAmbiguousBaseFeeProration(terms, contractText)
   if (contractText) preserveExclusionLanguage(terms, contractText)
@@ -585,20 +586,36 @@ function flagAmbiguousBaseFeeProration(terms: ContractTerms, contractText?: stri
 //
 // Final correction — the SAME treatment, symmetrically, for
 // amount_provenance: every fee with a real, positive amount that has never
-// been evaluated (amount_provenance === undefined) gets it explicitly set
-// to null (evaluated, genuinely unresolved) here, REGARDLESS of whether
-// the narrower requires_confirmation ambiguity flag below also fires.
-// requires_confirmation keeps its original, narrower meaning (UI/workflow
-// metadata for the one genuinely-ambiguous shape — item 1: "may remain
-// UI/workflow metadata, but must not substitute for provenance");
-// amount_provenance is what lib/commercial-rule-status.ts's
-// isOneTimeFeeUnresolved actually gates readiness on once a record has
-// entered this lifecycle.
-function flagAmbiguousOneTimeFees(fees: OneTimeFee[]): OneTimeFee[] {
+// been evaluated (amount_provenance === undefined) gets it explicitly
+// evaluated here, REGARDLESS of whether the narrower requires_confirmation
+// ambiguity flag below also fires. requires_confirmation keeps its
+// original, narrower meaning (UI/workflow metadata for the one
+// genuinely-ambiguous shape — item 1: "may remain UI/workflow metadata,
+// but must not substitute for provenance"); amount_provenance is what
+// lib/commercial-rule-status.ts's isOneTimeFeeUnresolved actually gates
+// readiness on once a record has entered this lifecycle.
+//
+// Contract B acceptance amendment — "evaluated" for amount_provenance is
+// no longer unconditionally null. lib/one-time-fee-provenance.ts's
+// deriveOneTimeFeeAmountProvenance runs a small, deterministic check
+// against THIS fee's own source_clause (never AI confidence, never model
+// reasoning, never the whole contract) and mints 'contract_derived' when
+// the contract explicitly, unambiguously states this exact amount in the
+// agreement's own currency — e.g. "Customer will pay a one-time launch fee
+// of SEK 20,000" grounds amount 20000 when currency is SEK. Any
+// incomplete/ambiguous case (no stated amount, a range, a currency
+// mismatch, a stated figure that disagrees with the extracted value) falls
+// back to null exactly as before — this never guesses. Billability is
+// deliberately NOT touched by this amendment: it still always evaluates to
+// null here, unchanged, pending a separate, later audit of billability
+// source-grounding (fixed_date/contract_signature/customer_acceptance/
+// delivery/final_acceptance/change_order_signature each need their own
+// grounding argument, not a mechanical copy of the amount heuristic).
+function flagAmbiguousOneTimeFees(fees: OneTimeFee[], agreementCurrency: string | null | undefined): OneTimeFee[] {
   return fees.map(fee => {
     let next = fee
     if (next.amount > 0 && next.amount_provenance === undefined) {
-      next = { ...next, amount_provenance: null }
+      next = { ...next, amount_provenance: deriveOneTimeFeeAmountProvenance(next, agreementCurrency) }
     }
     if (!next.manual_trigger && next.billability_provenance === undefined) {
       next = { ...next, billability_provenance: null }

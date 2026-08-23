@@ -512,6 +512,13 @@ export interface OneTimeFee {
   amount: number
   due_date: string | null
   description: string | null
+  /** Literal (or lightly paraphrased) source text for THIS fee's own
+   *  clause, mirroring ServiceCredit/Discount's own source_clause field.
+   *  Populated by extraction. The ONLY thing this field is read for today
+   *  is deterministic amount-provenance grounding
+   *  (lib/one-time-fee-provenance.ts's deriveOneTimeFeeAmountProvenance) —
+   *  never used as display copy or for any other purpose in this pass. */
+  source_clause?: string | null
   /** True when the fee requires manual delivery confirmation before invoicing (e.g. professional services charged per hour) */
   manual_trigger?: boolean
   /** Unit of the delivery metric, e.g. "hours", "days", "sessions" */
@@ -521,14 +528,27 @@ export interface OneTimeFee {
   /** Step 11 — provenance for `amount`, the one execution-relevant fact this
    *  shape can actually resolve today. Reuses the canonical FieldProvenance
    *  discipline (see lib/commercial-rule-status.ts's isProvenanceResolved)
-   *  rather than a bespoke notion of confidence/approval. Absent/null means
-   *  never graded — including every record persisted before this field
-   *  existed — and is NOT, by itself, treated as unresolved/blocking; only
-   *  requires_confirmation being explicitly true blocks readiness (see that
-   *  field's own comment for why, and lib/rulebook/MILESTONE_BILLING_
-   *  FINDINGS.md's backward-compatibility discussion). 'organization_
-   *  rulebook' is never valid here — PRODUCTION_ORGANIZATION_RULEBOOK_
-   *  ALLOWLIST has no one_time_fee entry (Step 11 does not add one). */
+   *  rather than a bespoke notion of confidence/approval.
+   *
+   *  THREE distinct states, same discriminator as billability_provenance
+   *  below: `undefined` means never graded at all — every record persisted
+   *  before this field existed — and is NOT, by itself, treated as
+   *  unresolved/blocking (only requires_confirmation being explicitly true
+   *  blocks readiness; see that field's own comment). `null` means
+   *  genuinely evaluated and unresolved — extraction could not
+   *  deterministically ground this amount in the fee's own source_clause
+   *  (lib/one-time-fee-provenance.ts's deriveOneTimeFeeAmountProvenance:
+   *  no explicit in-currency amount stated, or a stated amount that
+   *  disagrees with the extracted value — a range or correction, never
+   *  guessed). A real FieldProvenance value means resolved: 'contract_
+   *  derived' when that same deterministic grounding succeeded (the
+   *  contract explicitly states this exact amount, unambiguously, in this
+   *  fee's own clause), 'reviewer_policy' once a human explicitly confirms
+   *  or supplies it via lib/one-time-fee.ts's buildOneTimeFeeConfirmation.
+   *  Confirming an already contract_derived amount never downgrades it —
+   *  see that function's confirmedProvenance. 'organization_rulebook' is
+   *  never valid here — PRODUCTION_ORGANIZATION_RULEBOOK_ALLOWLIST has no
+   *  one_time_fee entry (Step 11 does not add one). */
   amount_provenance?: FieldProvenance | null
   /** Step 11 — an explicit, narrow safety net (lib/contract-extractor.ts's
    *  flagAmbiguousOneTimeFees), set true only for the one real risk found by

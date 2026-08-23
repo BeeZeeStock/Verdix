@@ -532,6 +532,56 @@ describe('applyExtractionSafetyNets — amount_provenance discriminator (Step 11
   })
 })
 
+// Contract B acceptance amendment — wiring-level coverage for lib/one-time-
+// fee-provenance.ts's deriveOneTimeFeeAmountProvenance, threaded through
+// applyExtractionSafetyNets/flagAmbiguousOneTimeFees via terms.currency.
+// The grounding LOGIC itself (currency matching, range/conflict handling,
+// normalization) is unit-tested in lib/one-time-fee-provenance.test.ts —
+// this only proves the wiring: the right currency reaches the helper, and
+// the undefined-only gate still means a fee already evaluated (by an
+// earlier extraction pass) is never re-graded.
+describe('applyExtractionSafetyNets — amount_provenance grounding wiring (Contract B acceptance amendment)', () => {
+  it('the exact Contract B launch-fee case: explicit source_clause + matching agreement currency -> contract_derived, not null', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      currency: 'SEK',
+      one_time_fees: [oneTimeFee({
+        fee_label: 'Launch Fee', amount: 20000, due_date: '2026-10-01',
+        source_clause: 'Customer will pay a one-time launch fee of SEK 20,000, billable on the Effective Date.',
+      } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].amount_provenance).toBe('contract_derived')
+  })
+
+  it('an ungrounded fee on the same contract still falls back to null (grounding is per-fee, not contract-wide)', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      currency: 'SEK',
+      one_time_fees: [oneTimeFee({ fee_label: 'Migration fee', amount: 10000, due_date: '2026-10-01' } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].amount_provenance).toBeNull()
+  })
+
+  it('no terms.currency at all -> falls back to null, never guesses a currency', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      one_time_fees: [oneTimeFee({
+        amount: 20000, due_date: '2026-10-01',
+        source_clause: 'Customer will pay a one-time launch fee of SEK 20,000.',
+      } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].amount_provenance).toBeNull()
+  })
+
+  it('re-extraction never re-grades an already-evaluated fee, even if a source_clause is newly present', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      currency: 'SEK',
+      one_time_fees: [oneTimeFee({
+        amount: 20000, amount_provenance: null, // already evaluated by a prior pass
+        source_clause: 'Customer will pay a one-time launch fee of SEK 20,000.',
+      } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].amount_provenance).toBeNull() // NOT re-graded to contract_derived
+  })
+})
+
 describe('applyExtractionSafetyNets — normalizeBillabilityCondition (Step 12)', () => {
   it('a valid immediate condition from the model is preserved and projected to due_date null / manual_trigger false', () => {
     const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [

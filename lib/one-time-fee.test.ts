@@ -147,9 +147,12 @@ describe('buildOneTimeFeeConfirmation — cannot mint any authority other than r
 })
 
 // Item 5 — a reviewer confirmation must never downgrade an already-valid
-// higher-authority resolved value. Nothing in this lifecycle currently
-// produces contract_derived, but this must hold by construction for the day
-// a separate source-confirmation path does, and as defense in depth today.
+// higher-authority resolved value. This function itself still never mints
+// contract_derived (see its own module header) — but extraction now can,
+// for `amount`, via lib/one-time-fee-provenance.ts (Contract B acceptance
+// amendment) — so this guard is no longer purely defense-in-depth for a
+// hypothetical future path; it is load-bearing today. See lib/one-time-
+// fee-provenance.test.ts for the extraction-grounding tests themselves.
 describe('buildOneTimeFeeConfirmation — does not downgrade an existing contract_derived value (item 5)', () => {
   it('amount: existing contract_derived amount stays contract_derived after a reviewer-confirm request', () => {
     const existing = fee({ amount: 100000, amount_provenance: 'contract_derived', requires_confirmation: false })
