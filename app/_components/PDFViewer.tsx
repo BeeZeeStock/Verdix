@@ -3,10 +3,33 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 
+// Regression fix — these must stay two SEPARATE regex objects, not one
+// shared constant. STRIP_RE is used with `.test()` on a single character at
+// a time in normWithMap's loop below, which must stay non-global (a global
+// regex's `.test()` is stateful via `lastIndex`; called repeatedly across
+// different one-character strings in a loop, a leftover non-zero
+// `lastIndex` from a previous match would make the next call start
+// searching past the end of the new 1-char string and silently fail to
+// match — a classic "global regex + .test() in a loop" bug). STRIP_RE_G is
+// the same character class WITH the `g` flag, used only with `.replace()`
+// in norm() below, which needs `g` to strip every matching character, not
+// just the first — `s.replace(STRIP_RE, '')` (no `g`) only ever removed the
+// FIRST whitespace/currency/hyphen in the whole string, leaving every
+// subsequent space intact (e.g. norm("4.1 Account Setup Fee") produced
+// "4.1account setup fee", spaces still embedded after the first word) —
+// which meant the STRICT match pass in paintSection could never actually
+// match any heading of more than two or three words against the window
+// text (correctly fully-stripped via normWithMap), silently falling
+// through to the loose fallback pass on every multi-word heading. Found
+// while writing the regression test for the compound-heading fix below —
+// a genuine, independent bug from the same normalization mismatch.
 const STRIP_RE = /[€$£¥,\s\-–—]/
+const STRIP_RE_G = /[€$£¥,\s\-–—]/g
 
-function norm(s: string) {
-  return s.replace(STRIP_RE, '').toLowerCase()
+// Exported for testing — this is the same normalization pickMatch's own
+// `c.includes(needle)` check runs against real PDF text.
+export function norm(s: string) {
+  return s.replace(STRIP_RE_G, '').toLowerCase()
 }
 
 // Like norm(), but also returns a map from each normalized-string index back to
@@ -57,6 +80,26 @@ function normWithMapLoose(raw: string): { normalized: string; rawIndex: number[]
     }
   }
   return { normalized, rawIndex }
+}
+
+// Regression fix — a `section`/field_sources value is documented as "the
+// section heading" a field was extracted from (singular), but for an
+// array-shaped field whose items span more than one clause (discounts,
+// service_credits, one_time_fees), extraction records ONE shared value per
+// FIELD, not per array item — and when that happens, the model has been
+// observed writing a single, semicolon-joined compound string covering
+// every heading at once, e.g. "4.1 Account Setup Fee; 4.2 Security
+// Onboarding Fee; 4.3 Implementation Fee; 4.4 Optional Custom Connector".
+// Passing that whole compound string to the matcher below as ONE search
+// needle can never match real PDF text — the document has four separate
+// headings, not one heading containing semicolons — so no marker was ever
+// drawn and the click silently did nothing. Exported for unit testing
+// (this component's DOM/canvas/pdfjs matching itself has no test harness,
+// but this pure split is a real, independently-verifiable regression
+// guard). A plain single heading with no semicolon is unaffected — it
+// splits into exactly one segment and behaves exactly as before.
+export function splitCompoundHeading(heading: string): string[] {
+  return heading.split(';').map(s => s.trim()).filter(Boolean)
 }
 
 // Returns true if the match looks like a Table of Contents entry:
@@ -258,8 +301,15 @@ export default function PDFViewer({ url, section }: Props) {
       return false
     }
 
-    const found = attemptMatch(normWithMap, norm(heading)) || attemptMatch(normWithMapLoose, normLoose(heading))
-    if (!found) console.warn('[PDFViewer] could not locate heading in PDF text:', heading)
+    // Try each candidate heading in order (see splitCompoundHeading's own
+    // doc comment) — stops at the first one that matches, so a plain
+    // single heading (the common case, one element after splitting)
+    // behaves identically to before.
+    const candidates = splitCompoundHeading(heading)
+    const found = candidates.some(candidate =>
+      attemptMatch(normWithMap, norm(candidate)) || attemptMatch(normWithMapLoose, normLoose(candidate)),
+    )
+    if (!found) console.warn('[PDFViewer] could not locate heading in PDF text:', heading, candidates)
   }, [])
 
   useEffect(() => {
