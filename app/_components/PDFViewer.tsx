@@ -87,19 +87,27 @@ function normWithMapLoose(raw: string): { normalized: string; rawIndex: number[]
 // array-shaped field whose items span more than one clause (discounts,
 // service_credits, one_time_fees), extraction records ONE shared value per
 // FIELD, not per array item — and when that happens, the model has been
-// observed writing a single, semicolon-joined compound string covering
-// every heading at once, e.g. "4.1 Account Setup Fee; 4.2 Security
-// Onboarding Fee; 4.3 Implementation Fee; 4.4 Optional Custom Connector".
-// Passing that whole compound string to the matcher below as ONE search
-// needle can never match real PDF text — the document has four separate
-// headings, not one heading containing semicolons — so no marker was ever
-// drawn and the click silently did nothing. Exported for unit testing
-// (this component's DOM/canvas/pdfjs matching itself has no test harness,
-// but this pure split is a real, independently-verifiable regression
-// guard). A plain single heading with no semicolon is unaffected — it
-// splits into exactly one segment and behaves exactly as before.
+// observed writing a single compound string covering every heading at once,
+// joined with EITHER a semicolon (e.g. "4.1 Account Setup Fee; 4.2 Security
+// Onboarding Fee; 4.3 Implementation Fee; 4.4 Optional Custom Connector")
+// OR a forward slash (e.g. real Agreement A data: "6.1 Annual volume
+// rebate / 6.2 Growth Credit / 6.3 SLA Service Credit") — extraction's own
+// prompt never standardizes which one the model uses, and the "/" case was
+// found only after the semicolon-only version of this fix still produced no
+// marker for every service-credit card, because a heading with no semicolon
+// at all splits into exactly one (still-compound, still-unmatchable)
+// segment. Passing that whole compound string to the matcher below as ONE
+// search needle can never match real PDF text — the document has separate
+// headings, not one heading containing semicolons or slashes — so no marker
+// was ever drawn and the click silently did nothing. Exported for unit
+// testing (this component's DOM/canvas/pdfjs matching itself has no test
+// harness, but this pure split is a real, independently-verifiable
+// regression guard). A plain single heading with neither separator is
+// unaffected — it splits into exactly one segment and behaves exactly as
+// before. A heading number written as "6.1" is never itself split by this —
+// only ";" and "/" are treated as item separators, never ".".
 export function splitCompoundHeading(heading: string): string[] {
-  return heading.split(';').map(s => s.trim()).filter(Boolean)
+  return heading.split(/[;/]/).map(s => s.trim()).filter(Boolean)
 }
 
 // Returns true if the match looks like a Table of Contents entry:
