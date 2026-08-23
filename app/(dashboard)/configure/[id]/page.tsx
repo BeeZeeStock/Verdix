@@ -1295,6 +1295,21 @@ function describeSurvivalResolution(r: { carry_forward: boolean; expiry_periods?
   return 'Unused balance carries forward until fully used.'
 }
 
+// Review-card action-label cleanup — a service-credit card's card-level
+// primary action confirms the credit's OWN terms (trigger/rate/basis/cap),
+// never the Organization Policy that may separately, silently be applying
+// to its survival sub-field (that's its own "applied automatically" card,
+// with its own "Override for this agreement" action — a different button
+// entirely, never renamed by this). Plain "Confirm & apply" reads as if
+// SOMETHING about organization policy still needs confirming; naming what
+// is actually being confirmed removes that ambiguity regardless of
+// whether an organization policy happens to be involved on this credit.
+function serviceCreditConfirmLabel(creditType?: string): string {
+  if (creditType === 'rebate') return 'Confirm rebate terms'
+  if (creditType === 'service_credit') return 'Confirm service-credit terms'
+  return 'Confirm credit terms'
+}
+
 function RuleInterpretationCard({
   jobId, kind, contractUnitType, discountId, creditId, creditType, interactionKey, cadenceLabel, contractPeriodLabel, sourceClause, currency, meterMappingConfirmed, meterSuggestion, showMeterDependencyNotice, onApplied,
   initialSelectedOption, initialFreeText,
@@ -2285,7 +2300,8 @@ function RuleInterpretationCard({
                 ? 'Confirm selected treatment'
                 : survivalResolution
                   ? (survivalIsRecommendation && selectedSurvivalOption === survivalRecommendedOptionId ? 'Confirm recommendation' : 'Confirm selected treatment')
-                  : aiProposal.state === 'verdix_recommends' ? 'Confirm recommendation' : 'Confirm & apply'
+                  : aiProposal.state === 'verdix_recommends' ? 'Confirm recommendation'
+                    : ruleType === 'service_credit' ? serviceCreditConfirmLabel(creditType) : 'Confirm & apply'
               const handleClick = () => { if (topLevelChanged) generate(); else confirmProposal() }
               return (
                 <button
@@ -2305,7 +2321,7 @@ function RuleInterpretationCard({
               className="px-4 py-2 rounded-xl text-sm text-stone hover:text-ink border transition-colors disabled:opacity-40"
               style={{ borderColor: 'rgba(26,61,43,0.15)' }}
             >
-              Override
+              Edit interpretation
             </button>
           </div>
         </>
@@ -2439,7 +2455,9 @@ function RuleInterpretationCard({
               className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
               style={{ background: '#1A3D2B', color: 'white' }}
             >
-              {phase === 'confirming' ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : 'Confirm & apply'}
+              {phase === 'confirming'
+                ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} />
+                : ruleType === 'service_credit' ? serviceCreditConfirmLabel(creditType) : 'Confirm & apply'}
             </button>
             <button
               onClick={() => setPhase('input')}
