@@ -582,6 +582,87 @@ describe('applyExtractionSafetyNets — amount_provenance grounding wiring (Cont
   })
 })
 
+// Billability provenance amendment — wiring-level coverage for lib/one-time-
+// fee-billability-provenance.ts's deriveOneTimeFeeBillabilityProvenance,
+// threaded through normalizeBillabilityCondition via terms.contract_start_date.
+// The grounding LOGIC itself is unit-tested in lib/one-time-fee-billability-
+// provenance.test.ts — this proves the wiring: (a) flagAmbiguousOneTimeFees
+// no longer writes billability_provenance at all — normalizeBillabilityCondition
+// is the sole fresh finalizer — and (b) the right contract_start_date reaches
+// the helper.
+describe('applyExtractionSafetyNets — billability_provenance grounding wiring (billability audit amendment)', () => {
+  it('the exact Contract B launch-fee case: Effective Date anchor + matching contract_start_date -> contract_derived, not null', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      contract_start_date: '2026-10-01',
+      one_time_fees: [oneTimeFee({
+        fee_label: 'Launch Fee', amount: 20000, due_date: '2026-10-01',
+        source_clause: 'Customer will pay a one-time launch fee of SEK 20,000, billable on the Effective Date.',
+        billability_condition: { kind: 'fixed_date', date: '2026-10-01' },
+      } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].billability_provenance).toBe('contract_derived')
+  })
+
+  it('condition date differs from contract_start_date -> null, even with an explicit Effective Date anchor', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      contract_start_date: '2026-10-01',
+      one_time_fees: [oneTimeFee({
+        amount: 20000, due_date: '2026-10-02',
+        source_clause: 'Customer will pay a one-time launch fee of SEK 20,000, billable on the Effective Date.',
+        billability_condition: { kind: 'fixed_date', date: '2026-10-02' },
+      } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].billability_provenance).toBeNull()
+  })
+
+  it('no terms.contract_start_date at all -> falls back to null', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      one_time_fees: [oneTimeFee({
+        amount: 20000, due_date: '2026-10-01',
+        source_clause: 'Customer will pay a one-time launch fee of SEK 20,000, billable on the Effective Date.',
+        billability_condition: { kind: 'fixed_date', date: '2026-10-01' },
+      } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].billability_provenance).toBeNull()
+  })
+
+  it('an event condition (e.g. Customer Acceptance) never grounds, regardless of contract_start_date being known', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      contract_start_date: '2026-10-01',
+      one_time_fees: [oneTimeFee({
+        amount: 90000, due_date: null,
+        source_clause: 'Customer will pay a one-time integration fee of SEK 90,000, billable only upon Customer Acceptance.',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+      } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].billability_provenance).toBeNull()
+  })
+
+  it('already-present reviewer_policy is preserved, never re-evaluated', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      contract_start_date: '2026-10-01',
+      one_time_fees: [oneTimeFee({
+        amount: 20000, due_date: '2026-10-01', billability_provenance: 'reviewer_policy',
+        source_clause: 'Customer will pay a one-time launch fee of SEK 20,000, billable on the Effective Date.',
+        billability_condition: { kind: 'fixed_date', date: '2026-10-01' },
+      } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].billability_provenance).toBe('reviewer_policy')
+  })
+
+  it('already-present contract_derived is preserved, never re-evaluated', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      contract_start_date: '2026-10-01',
+      one_time_fees: [oneTimeFee({
+        amount: 20000, due_date: '2026-10-01', billability_provenance: 'contract_derived',
+        source_clause: 'Launch fee to be agreed.', // deliberately would NOT ground if re-evaluated
+        billability_condition: { kind: 'fixed_date', date: '2026-10-01' },
+      } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].billability_provenance).toBe('contract_derived')
+  })
+})
+
 describe('applyExtractionSafetyNets — normalizeBillabilityCondition (Step 12)', () => {
   it('a valid immediate condition from the model is preserved and projected to due_date null / manual_trigger false', () => {
     const terms = applyExtractionSafetyNets(chunk({ one_time_fees: [

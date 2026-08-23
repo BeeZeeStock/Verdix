@@ -5,6 +5,7 @@ import { getAIClient, AI_PROVIDER } from './ai-client'
 import { parseBillabilityCondition, projectBillabilityConditionToExecutionFields } from './billability-condition'
 import { isProvenanceResolved } from './commercial-rule-status'
 import { deriveOneTimeFeeAmountProvenance } from './one-time-fee-provenance'
+import { deriveOneTimeFeeBillabilityProvenance } from './one-time-fee-billability-provenance'
 
 // Stays on the standard (Sonnet) client — a live A/B against TEST-PAY-002
 // (2026-08-20/21) found extraction quality/source-completeness EQUIVALENT
@@ -368,7 +369,7 @@ export function applyExtractionSafetyNets(terms: ContractTerms, contractText?: s
   terms.discounts = assignDiscountRuleIds(terms.discounts)
   terms.service_credits = assignServiceCreditRuleIds(terms.service_credits ?? [])
   terms.one_time_fees = flagAmbiguousOneTimeFees(terms.one_time_fees ?? [], terms.currency)
-  terms.one_time_fees = normalizeBillabilityCondition(terms.one_time_fees ?? [])
+  terms.one_time_fees = normalizeBillabilityCondition(terms.one_time_fees ?? [], terms.contract_start_date)
   flagAmbiguousBaseFeeProration(terms, contractText)
   if (contractText) preserveExclusionLanguage(terms, contractText)
 
@@ -605,20 +606,25 @@ function flagAmbiguousBaseFeeProration(terms: ContractTerms, contractText?: stri
 // of SEK 20,000" grounds amount 20000 when currency is SEK. Any
 // incomplete/ambiguous case (no stated amount, a range, a currency
 // mismatch, a stated figure that disagrees with the extracted value) falls
-// back to null exactly as before — this never guesses. Billability is
-// deliberately NOT touched by this amendment: it still always evaluates to
-// null here, unchanged, pending a separate, later audit of billability
-// source-grounding (fixed_date/contract_signature/customer_acceptance/
-// delivery/final_acceptance/change_order_signature each need their own
-// grounding argument, not a mechanical copy of the amount heuristic).
+// back to null exactly as before — this never guesses.
+//
+// Billability provenance ordering amendment — this function no longer
+// writes billability_provenance at all (it used to stamp undefined -> null
+// here, gated on the model's RAW, not-yet-validated manual_trigger). Two
+// writers of a "fresh" field is exactly the bug class this whole module
+// exists to prevent: normalizeBillabilityCondition (below, which runs
+// immediately after this function — see applyExtractionSafetyNets) is now
+// the SOLE authority for finalizing a fresh billability_provenance, because
+// it is the only place that has the VALIDATED canonical BillabilityCondition
+// (via parseBillabilityCondition) to ground against — this function only
+// ever sees the model's raw, unvalidated JSON. Billability grounding itself
+// (lib/one-time-fee-billability-provenance.ts) is scoped narrowly today —
+// see normalizeBillabilityCondition's own comment for exactly which class.
 function flagAmbiguousOneTimeFees(fees: OneTimeFee[], agreementCurrency: string | null | undefined): OneTimeFee[] {
   return fees.map(fee => {
     let next = fee
     if (next.amount > 0 && next.amount_provenance === undefined) {
       next = { ...next, amount_provenance: deriveOneTimeFeeAmountProvenance(next, agreementCurrency) }
-    }
-    if (!next.manual_trigger && next.billability_provenance === undefined) {
-      next = { ...next, billability_provenance: null }
     }
     if (next.manual_trigger) return next
     if (next.due_date) return next
@@ -718,7 +724,26 @@ export function isExistingVariableRateFeeShape(fee: OneTimeFee): boolean {
 // from a field this function cannot ground in source text is worse than the
 // residual risk it would have closed — the correct fix is upstream, in what
 // the model is told to extract, not a downstream structural guess.
-function normalizeBillabilityCondition(fees: OneTimeFee[]): OneTimeFee[] {
+//
+// Billability provenance amendment — this IS now the sole authority that
+// finalizes a fresh billability_provenance (flagAmbiguousOneTimeFees no
+// longer writes it at all — see that function's own comment for why two
+// writers of the same fresh field was the actual bug). It's the right,
+// and only, place this can safely happen: it's the one point in the
+// pipeline holding a VALIDATED canonical BillabilityCondition (via
+// parseBillabilityCondition just above) to ground against — grounding off
+// the model's raw, unvalidated JSON would be exactly the kind of trust
+// this module exists to refuse. lib/one-time-fee-billability-provenance.ts's
+// deriveOneTimeFeeBillabilityProvenance runs a small, deterministic check
+// — never AI confidence — and mints 'contract_derived' ONLY for the single
+// narrowest, safest class: a fixed_date condition whose date equals the
+// agreement's own contract_start_date, where the fee's own source_clause
+// explicitly names the Effective Date/commencement as the anchor and
+// states no competing trigger. Every other class (event conditions, a
+// literal non-Effective-Date calendar date, 'immediate') still always
+// evaluates to null here, unchanged — a separate, later, per-class audit,
+// not a mechanical extension of this one.
+function normalizeBillabilityCondition(fees: OneTimeFee[], contractStartDate: string | null | undefined): OneTimeFee[] {
   return fees.map(fee => {
     if (isProvenanceResolved(fee.billability_provenance)) return fee
 
@@ -735,7 +760,9 @@ function normalizeBillabilityCondition(fees: OneTimeFee[]): OneTimeFee[] {
       if (!next.fee_id) next = { ...next, fee_id: crypto.randomUUID() }
       const projection = projectBillabilityConditionToExecutionFields(parsed)
       next = { ...next, due_date: projection.due_date, manual_trigger: projection.manual_trigger }
-      if (next.billability_provenance === undefined) next = { ...next, billability_provenance: null }
+      if (next.billability_provenance === undefined) {
+        next = { ...next, billability_provenance: deriveOneTimeFeeBillabilityProvenance(next, parsed, contractStartDate) }
+      }
       // flagAmbiguousOneTimeFees (which already ran) stamps a generic "no
       // stated due date" confirmation_reason for any due_date:null fee,
       // including 'immediate'/'event' conditions whose due_date is
