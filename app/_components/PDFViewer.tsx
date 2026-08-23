@@ -166,7 +166,12 @@ function locateInWindow(
 // allow idx<5, then fall back to idx<20. This prevents false-positives such
 // as addresses containing "2.2" (e.g. norm("Strandvägen 2.2") = "strandvägen2.2",
 // idx≈10) from shadowing the real heading whose window starts with "2.2".
-function pickMatch<T extends { normalized: string }>(
+// Exported for testing — the digit-adjacency guard inside this function is
+// where the Contract B "no marker for clause 3" regression actually lived
+// (see its own inline comment); `norm`/`splitCompoundHeading` alone can't
+// reproduce that bug, since the string-level `.includes()` check they cover
+// was never the problem.
+export function pickMatch<T extends { normalized: string }>(
   windows: T[],
   needle: string,
 ): { matchWindow: T; tier: number } | null {
@@ -183,8 +188,23 @@ function pickMatch<T extends { normalized: string }>(
       // otherwise shadow the real "5.2" heading.
       const charBefore = idx > 0 ? c[idx - 1] : undefined
       if (charBefore !== undefined && /\d/.test(charBefore)) return false
-      const charAfter = c[idx + needle.length]
-      if (charAfter !== undefined && /[\d%]/.test(charAfter)) return false
+      // Regression fix — this guard must only fire for needles that are
+      // themselves purely numeric (end in a digit), never for a full
+      // "N. Heading text" needle. Found via a real Contract B marker
+      // miss: needle "3.transactionprocessingfees" legitimately matched
+      // at idx=0 of a window, but the very next clause's own number
+      // ("3.1", concatenated with no separating space once whitespace is
+      // stripped) put a digit immediately after "fees" — the unqualified
+      // check treated that as "this must be the tail of a bigger number
+      // like ...fees3.1" and silently rejected a correct match, so no
+      // marker was ever drawn. A needle ending in letters can never
+      // legitimately be "the tail of a longer number" — only a needle
+      // that itself ends in a digit (e.g. a bare "5.2" source_section)
+      // can be, so the check is scoped to that case only.
+      if (/\d$/.test(needle)) {
+        const charAfter = c[idx + needle.length]
+        if (charAfter !== undefined && /[\d%]/.test(charAfter)) return false
+      }
     }
     return true
   }

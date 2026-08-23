@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { splitCompoundHeading, norm } from './PDFViewer'
+import { splitCompoundHeading, norm, pickMatch } from './PDFViewer'
 
 // Regression, found while writing the compound-heading test below — a
 // SEPARATE, independent bug in norm() itself: STRIP_RE previously had no
@@ -174,5 +174,59 @@ describe('slash-separated compound heading vs. real PDF text — Agreement A ser
     for (const c of candidates) {
       expect(realizedPdfText.includes(norm(c))).toBe(true)
     }
+  })
+})
+
+// Regression — found in a real Contract B PDF: pickMatch's own
+// "tail of a longer number" digit-adjacency guard (meant to stop a bare
+// numeric needle like "5.2" from matching inside "45.2" or "5.20") was
+// applied unconditionally to EVERY needle starting with a digit, including
+// a full "N. Heading text" needle whose needle ends in words, not digits.
+// Section 3's heading ("3. Transaction-processing fees") is immediately
+// followed in the PDF's own text layer by the next clause's own number
+// ("3.1", concatenated with no separating whitespace once the normalizer
+// strips spaces) — the character right after "fees" is a digit, which the
+// unqualified guard misread as "this must be the tail of a bigger number",
+// silently rejecting an otherwise-correct idx=0 match and leaving the
+// clause 3 review cards with no Verdix marker at all. The fix scopes the
+// charAfter check to needles that themselves end in a digit — a heading
+// ending in words can never legitimately be "the tail of a longer number".
+describe('pickMatch — digit-adjacency guard regression (real Contract B clause 3 marker miss)', () => {
+  // Approximates pdfjs's own getTextContent() item boundaries for this
+  // exact real PDF page — "3. Transaction-processing fees" is one item,
+  // immediately followed (with an empty-string item in between, as pdfjs
+  // actually produces at a line break) by the next clause's own "3.1".
+  const realItems = [
+    '3. Transaction-processing fees', '',
+    '3.1', ' ',
+    'For each Calendar Month, the applicable per-transaction rate is determined by the total number of Processed', '',
+  ]
+  function buildWindows(items: string[]): { normalized: string }[] {
+    const windows: { normalized: string }[] = []
+    for (let i = 0; i < items.length; i++) {
+      let combined = ''
+      for (let j = i; j < items.length && combined.length < 120; j++) combined += items[j]
+      windows.push({ normalized: norm(combined) })
+    }
+    return windows
+  }
+
+  it('a heading needle ending in words matches even when immediately followed by a digit from the next clause number (the bug)', () => {
+    const needle = norm('3. Transaction-Processing Fees')
+    const result = pickMatch(buildWindows(realItems), needle)
+    expect(result).not.toBeNull()
+    expect(result?.tier).toBe(0)
+  })
+
+  it('still rejects a bare numeric needle that really is the tail of a longer number (guard is preserved for its original purpose)', () => {
+    const items = ['Total due: SEK 1,245.20 per month, see clause below.']
+    const needle = norm('5.2')
+    expect(pickMatch(buildWindows(items), needle)).toBeNull()
+  })
+
+  it('still rejects a bare numeric needle immediately followed by an extending digit (needle itself ends in a digit, so the guard still applies)', () => {
+    const items = ['5.2', ' ', '5.20 is not what this clause is about, but shares a prefix.']
+    const needle = norm('5.2')
+    expect(pickMatch(buildWindows(items), needle)).toBeNull()
   })
 })
