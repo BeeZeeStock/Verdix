@@ -20,7 +20,7 @@
 // production authority would create a rule that could only ever
 // participate in shadow diagnostics — confusing, and explicitly out of
 // scope ("Do not generalize other reviewer decisions yet").
-import { isProductionActivatedOrganizationField } from './organization-rulebook-production'
+import { isProductionActivatedOrganizationField, ORGANIZATION_POLICY_SCOPE_DIMENSIONS, type ProductionActivatedOrganizationField } from './organization-rulebook-production'
 import type { MatchCondition } from './organization-rules'
 import type { FieldProvenance } from '@/lib/types'
 
@@ -55,11 +55,18 @@ export interface PromotableFieldState {
   targetField: string
   provenance: FieldProvenance | null | undefined
   value: boolean | 'unclear' | null | undefined
-  // The semantic facts that will become this policy's match conditions —
-  // e.g. { rule_type: 'service_credit', application: { timing: 'next_invoice' } },
-  // the SAME shape organization-rulebook-production.ts's callers already
-  // build for resolveProductionOrganizationField. Never invented here —
-  // always the real facts about the specific commercial item being promoted.
+  // Final amendment — the FULL set of semantic facts known about the
+  // specific commercial item being promoted, never invented here, always
+  // the real facts about that item. Only the subset named in
+  // organization-rulebook-production.ts's ORGANIZATION_POLICY_SCOPE_
+  // DIMENSIONS for this state's targetField actually becomes a
+  // match_conditions entry (see below) — the rest is retained purely for
+  // scopeSummary's display purposes. For survival.carry_forward, that
+  // scope is rule_type ONLY: unused-balance survival is a different
+  // commercial dimension from WHEN a credit first becomes applicable
+  // (applicationTiming), and conflating the two would make a rebate
+  // carry-forward default fail to generalize across rebates that differ
+  // only in application timing.
   matchFacts: { ruleType: string; applicationTiming: string }
 }
 
@@ -120,10 +127,19 @@ export function evaluateReviewerDecisionForPromotion(state: PromotableFieldState
     return { eligible: false, reason: 'no_concrete_value', message: 'No concrete value is on file for this field yet.' }
   }
 
-  const matchConditions: MatchCondition[] = [
-    { field: 'rule_type', operator: 'eq', value: state.matchFacts.ruleType },
-    { field: 'application.timing', operator: 'eq', value: state.matchFacts.applicationTiming },
-  ]
+  // Final amendment — match_conditions is derived from this field's own
+  // allowed scope dimensions (ORGANIZATION_POLICY_SCOPE_DIMENSIONS), never
+  // a single universal recipe applied to every promotable field. The
+  // targetField check above already guarantees state.targetField is a
+  // ProductionActivatedOrganizationField by this point.
+  const factsByDimension: Record<string, unknown> = {
+    rule_type: state.matchFacts.ruleType,
+    'application.timing': state.matchFacts.applicationTiming,
+  }
+  const scopeDimensions = ORGANIZATION_POLICY_SCOPE_DIMENSIONS[state.targetField as ProductionActivatedOrganizationField]
+  const matchConditions: MatchCondition[] = scopeDimensions.map(field => ({
+    field, operator: 'eq', value: factsByDimension[field],
+  }))
 
   return {
     eligible: true,

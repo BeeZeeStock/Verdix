@@ -2509,19 +2509,41 @@ function paramIcon(label: string): string {
   return 'ti-point-filled'
 }
 
+// Final amendment — the outcome states app/api/org/rulebook/promote
+// returns from its server-side canonical-slot dedup check (see that
+// route's own header comment). 'ineligible' is a client-only sentinel —
+// the server actually returns eligible:false, never a state string, for
+// that case; the component folds it in here so a single slotState variable
+// covers "still loading" (null) vs. every other outcome.
+type PromoteSlotState = 'no_existing' | 'already_covered' | 'existing_draft' | 'draft_conflict' | 'proposed_policy_change' | 'ineligible'
+type SlotRuleSummary = { id: string; name: string; status: string; value: unknown; version: number }
+
 // Step 5D — Organization Rulebook controls attached to a service credit's
 // "Unused-balance policy" line on the confirmed card. Renders one of two
 // mutually-exclusive states, matching survival_provenance exactly (never
 // both, never neither — a field is either a reviewer's own contract-local
 // decision or an organization default, per the Step 4 precedence this whole
 // subsystem is built on):
-//   'reviewer_policy'      -> "Use as organization default" (item 2) with a
-//                              preview-before-create flow (items 5, 6).
+//   'reviewer_policy'      -> one of five states depending on what already
+//                              occupies this decision's canonical policy
+//                              slot (final amendment, item 7) — never just
+//                              "Use as organization default" unconditionally:
+//                                no_existing            -> "Use as organization default"
+//                                already_covered         -> "Covered by organization policy" + View policy
+//                                existing_draft           -> "Organization policy draft created" + View draft
+//                                draft_conflict            -> points at Settings -> Organization Rulebook
+//                                proposed_policy_change    -> "This decision differs from your organization
+//                                                              policy" + Propose policy change
 //   'organization_rulebook' -> "View policy" (item 11) + "Override for this
 //                              agreement" (item 12).
 // Any other provenance (contract_derived, verdix_recommends, or unresolved)
 // renders nothing — promotion only makes sense for an explicit reviewer
 // decision, and there is no organization policy to view/override otherwise.
+//
+// The server remains the authoritative dedup boundary (see the promote
+// route) — slotState here is only ever what the server most recently
+// reported, re-fetched fresh at both mount and every click, never
+// something this component decides on its own.
 function OrganizationPolicyControls({
   jobId, creditId, carryForward, survivalProvenance, ruleId, ruleVersion, onChanged,
 }: {
@@ -2538,6 +2560,15 @@ function OrganizationPolicyControls({
   const [policyDetail, setPolicyDetail] = useState<OrganizationRuleRecord | null>(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  // null = not yet known (still loading, or not applicable — see the
+  // fetch effect's own guard). Populated by the SAME promote dry-run call
+  // the preview step already made — this just moves that call earlier
+  // (mount time, not click time) so the right button/state renders before
+  // the reviewer does anything, per item 7's "client state must not be the
+  // dedup boundary, but the client must still SHOW the server's boundary
+  // up front" requirement.
+  const [slotState, setSlotState] = useState<PromoteSlotState | null>(null)
+  const [slotExistingRule, setSlotExistingRule] = useState<SlotRuleSummary | null>(null)
   // Starts genuinely unselected (never pre-filled from the organization
   // policy's current value) — "Save override" stays disabled until the
   // reviewer has explicitly clicked one of the two options below, even if
@@ -2564,6 +2595,30 @@ function OrganizationPolicyControls({
     return () => { cancelled = true }
   }, [])
 
+  // Final amendment, item 7 — fetches the canonical-slot dedup state
+  // EAGERLY (mount time), not only when the reviewer clicks a button, so
+  // the correct state (already_covered/existing_draft/draft_conflict/
+  // proposed_policy_change/no_existing) can be rendered from the start
+  // instead of always defaulting to "Use as organization default" and
+  // only discovering an existing draft/policy after the click. Only runs
+  // for the branch this actually applies to (reviewer_policy + a concrete
+  // boolean value — the same gate the render logic below uses) and only
+  // once the reviewer's role is known, since the route is admin-only.
+  useEffect(() => {
+    if (survivalProvenance !== 'reviewer_policy' || typeof carryForward !== 'boolean') return
+    if (isOrgAdmin !== true) return
+    let cancelled = false
+    fetch('/api/org/rulebook/promote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId, creditId }),
+    }).then(r => r.json()).then(data => {
+      if (cancelled) return
+      if (data.eligible) { setSlotState(data.state); setSlotExistingRule(data.existingRule ?? null) }
+      else setSlotState('ineligible')
+    }).catch(() => { if (!cancelled) setSlotState('ineligible') })
+    return () => { cancelled = true }
+  }, [jobId, creditId, survivalProvenance, carryForward, isOrgAdmin])
+
   async function openPromotePreview() {
     setBusy(true); setMsg(null)
     const res = await fetch('/api/org/rulebook/promote', {
@@ -2573,6 +2628,16 @@ function OrganizationPolicyControls({
     const data = await res.json().catch(() => ({}))
     setBusy(false)
     if (!res.ok || !data.eligible) { setMsg({ ok: false, text: data.message ?? data.error ?? 'Not eligible to promote.' }); return }
+    // Always re-sync slotState from this fresh call too — the mount-time
+    // fetch could be stale by the time the reviewer actually clicks.
+    setSlotState(data.state)
+    setSlotExistingRule(data.existingRule ?? null)
+    if (data.state !== 'no_existing' && data.state !== 'proposed_policy_change') {
+      // Something now exists that makes a NEW draft/successor pointless —
+      // stay on the idle branch so the up-to-date state (already_covered/
+      // existing_draft/draft_conflict) renders instead of a stale preview.
+      return
+    }
     setPreview(data.preview)
     setMode('promote-preview')
   }
@@ -2587,19 +2652,29 @@ function OrganizationPolicyControls({
     setBusy(false)
     if (!res.ok || !data.eligible) { setMsg({ ok: false, text: data.error ?? data.message ?? 'Failed to create draft.' }); return }
     setMode('idle')
-    setMsg({ ok: true, text: 'Created as a draft organization policy — nothing changes until it is approved in Settings → Organization Rulebook.' })
+    setSlotState(data.state)
+    setSlotExistingRule(data.existingRule ?? (data.rule ? { id: data.rule.id, name: data.rule.name, status: data.rule.status, value: data.rule.value, version: data.rule.version } : null))
+    setMsg({
+      ok: true,
+      text: data.state === 'proposed_policy_change'
+        ? 'Created as a draft successor to the current policy — nothing changes until it is approved in Settings → Organization Rulebook.'
+        : 'Created as a draft organization policy — nothing changes until it is approved in Settings → Organization Rulebook.',
+    })
   }
 
-  async function openViewPolicy() {
-    if (!ruleId) return
+  async function viewRule(id: string | null | undefined) {
+    if (!id) return
     setBusy(true); setMsg(null)
-    const res = await fetch(`/api/org/rulebook/${ruleId}`)
+    const res = await fetch(`/api/org/rulebook/${id}`)
     const data = await res.json().catch(() => ({}))
     setBusy(false)
     if (!res.ok) { setMsg({ ok: false, text: 'Could not load policy details.' }); return }
     setPolicyDetail(data.rule)
     setMode('view-policy')
   }
+  // Kept as a thin wrapper — the organization_rulebook branch below still
+  // calls this by its original name.
+  const openViewPolicy = () => viewRule(ruleId)
 
   // Submits directly to confirm-rule with the minimal payload needed —
   // bypasses propose-rule entirely (the current value/provenance is
@@ -2641,33 +2716,89 @@ function OrganizationPolicyControls({
 
   if (survivalProvenance === 'reviewer_policy' && typeof carryForward === 'boolean') {
     if (!canManageRulebook) return null
+    // Still loading the slot state — render nothing rather than flash
+    // "Use as organization default" and then swap to a different state a
+    // moment later (the same discipline canManageRulebook's own null-case
+    // comment above already applies to role loading).
+    if (slotState === null) return null
+
+    const proposingChange = slotState === 'proposed_policy_change'
     return (
       <div className="mt-2">
-        {mode !== 'promote-preview' && (
-          <button onClick={openPromotePreview} disabled={busy} className="text-[11px] font-medium text-forest hover:underline flex items-center gap-1 disabled:opacity-50">
-            <i className="ti ti-gavel" style={{ fontSize: 12 }} /> Use as organization default
-          </button>
+        {mode !== 'promote-preview' && mode !== 'view-policy' && (
+          <>
+            {(slotState === 'no_existing' || slotState === 'ineligible') && (
+              <button onClick={openPromotePreview} disabled={busy} className="text-[11px] font-medium text-forest hover:underline flex items-center gap-1 disabled:opacity-50">
+                <i className="ti ti-gavel" style={{ fontSize: 12 }} /> Use as organization default
+              </button>
+            )}
+            {slotState === 'already_covered' && (
+              <div className="flex items-center gap-3">
+                <span className="text-[11px] text-stone flex items-center gap-1">
+                  <i className="ti ti-circle-check-filled" style={{ fontSize: 12, color: '#0B5C36' }} /> Covered by organization policy
+                </span>
+                <button onClick={() => viewRule(slotExistingRule?.id)} disabled={busy} className="text-[11px] font-medium text-forest hover:underline">View policy</button>
+              </div>
+            )}
+            {slotState === 'existing_draft' && (
+              <div className="flex items-center gap-3">
+                <span className="text-[11px] text-stone flex items-center gap-1">
+                  <i className="ti ti-file-description" style={{ fontSize: 12 }} /> Organization policy draft created
+                </span>
+                <button onClick={() => viewRule(slotExistingRule?.id)} disabled={busy} className="text-[11px] font-medium text-forest hover:underline">View draft</button>
+              </div>
+            )}
+            {slotState === 'draft_conflict' && (
+              <p className="text-[11px] text-stone leading-relaxed">
+                A draft with a different value already exists for this policy —{' '}
+                <Link href="/settings/rulebook" className="font-medium text-forest hover:underline">resolve it in Settings → Organization Rulebook</Link>.
+              </p>
+            )}
+            {slotState === 'proposed_policy_change' && (
+              <div className="flex items-center gap-3">
+                <span className="text-[11px] text-stone">This decision differs from your organization policy</span>
+                <button onClick={openPromotePreview} disabled={busy} className="text-[11px] font-medium text-forest hover:underline">Propose policy change</button>
+              </div>
+            )}
+          </>
         )}
         {mode === 'promote-preview' && preview && (
           <div className="mt-2 rounded-xl p-3" style={{ background: '#EFF6FF', border: '1px solid rgba(30,64,175,0.2)' }}>
-            <p className="text-[11px] font-semibold mb-2" style={{ color: '#1E40AF' }}>New organization policy — preview</p>
+            <p className="text-[11px] font-semibold mb-2" style={{ color: '#1E40AF' }}>
+              {proposingChange ? 'Proposed organization policy change — preview' : 'New organization policy — preview'}
+            </p>
             <div className="text-[11px] mb-1.5">
               <span className="text-stone">Where it applies</span>
-              <div className="text-ink font-medium">{preview.scopeSummary.ruleTypeLabel} · Application timing: {preview.scopeSummary.applicationTimingLabel}</div>
+              <div className="text-ink font-medium">{preview.scopeSummary.ruleTypeLabel}</div>
             </div>
             <div className="text-[11px] mb-2">
               <span className="text-stone">What Verdix will do</span>
               <div className="text-ink font-medium">{preview.scopeSummary.treatmentLabel}</div>
             </div>
+            {/* Context only — never part of match scope (item 3). This
+                credit's own application timing has no bearing on whether
+                this policy applies; only rule_type does (see
+                ORGANIZATION_POLICY_SCOPE_DIMENSIONS). */}
+            <p className="text-[10px] text-stone/60 mb-2">
+              This credit&apos;s own application timing: {preview.scopeSummary.applicationTimingLabel} (not part of this policy&apos;s scope)
+            </p>
             <p className="text-[10px] text-stone/80 mb-2 leading-relaxed">
               Explicit contract language always overrides this policy. A reviewer can override it for an individual agreement.
             </p>
             <div className="flex gap-2">
               <button onClick={confirmPromote} disabled={busy} className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-forest text-white disabled:opacity-50">
-                {busy ? 'Creating…' : 'Create as draft'}
+                {busy ? 'Saving…' : proposingChange ? 'Propose change' : 'Create as draft'}
               </button>
               <button onClick={() => setMode('idle')} className="text-[11px] px-3 py-1.5 rounded-lg border border-forest/20 text-stone">Cancel</button>
             </div>
+          </div>
+        )}
+        {mode === 'view-policy' && policyDetail && (
+          <div className="mt-2 rounded-xl p-3" style={{ background: '#EFF6FF', border: '1px solid rgba(30,64,175,0.2)' }}>
+            <p className="text-[11px] font-semibold mb-1" style={{ color: '#1E40AF' }}>{policyDetail.name} · v{policyDetail.version}</p>
+            <p className="text-[11px] text-ink mb-1">{describeMatchConditions(policyDetail.matchConditions).join(' · ')}</p>
+            <p className="text-[11px] text-stone mb-2">{describeEffectivePeriod(policyDetail.effectiveFrom, policyDetail.effectiveTo)}</p>
+            <button onClick={() => setMode('idle')} className="text-[11px] text-stone underline">Close</button>
           </div>
         )}
         {msg && <p className={`text-[11px] mt-1 ${msg.ok ? 'text-forest' : 'text-red-600'}`}>{msg.text}</p>}

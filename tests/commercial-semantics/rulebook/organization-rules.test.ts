@@ -278,6 +278,35 @@ describe('composing matched organization rules with Step 4 field resolution (sha
   })
 })
 
+// Final amendment (item 11, tests 2-4) — the corrected canonical scope for
+// survival.carry_forward's rebate promotion: rule_type=rebate ONLY, no
+// application.timing condition at all. Proves a rebate-scoped org policy
+// generalizes across every application timing a future rebate might have,
+// and still correctly excludes a non-rebate credit.
+describe('matchOrganizationRules — corrected survival.carry_forward/rebate scope has no application.timing condition (item 11)', () => {
+  const rebateCarryForwardPolicy = orgRule({
+    id: 'rule-rebate', matchConditions: [{ field: 'rule_type', operator: 'eq', value: 'rebate' }],
+  })
+
+  it('a future rebate timed next_invoice matches the active rebate carry-forward org policy', () => {
+    const context: OrganizationRuleMatchContext = { rule_type: 'rebate', application: { timing: 'next_invoice' } }
+    const matched = matchOrganizationRules('org-a', { context, contractResolvedFields: NO_RESOLVED_FIELDS }, [rebateCarryForwardPolicy], AS_OF)
+    expect(matched).toEqual([rebateCarryForwardPolicy])
+  })
+
+  it('a future rebate timed future_invoices ALSO matches the SAME org policy — the contract being silent on survival does not depend on application timing', () => {
+    const context: OrganizationRuleMatchContext = { rule_type: 'rebate', application: { timing: 'future_invoices' } }
+    const matched = matchOrganizationRules('org-a', { context, contractResolvedFields: NO_RESOLVED_FIELDS }, [rebateCarryForwardPolicy], AS_OF)
+    expect(matched).toEqual([rebateCarryForwardPolicy])
+  })
+
+  it('a service_credit never matches a rebate-scoped policy', () => {
+    const context: OrganizationRuleMatchContext = { rule_type: 'service_credit', application: { timing: 'next_invoice' } }
+    const matched = matchOrganizationRules('org-a', { context, contractResolvedFields: NO_RESOLVED_FIELDS }, [rebateCarryForwardPolicy], AS_OF)
+    expect(matched).toEqual([])
+  })
+})
+
 // Item 10: no automatic learning. Confirmed structurally -- this module
 // exports exactly the matching/validation/adapter surface documented
 // above, nothing that takes reviewer history or an AI-detected pattern and

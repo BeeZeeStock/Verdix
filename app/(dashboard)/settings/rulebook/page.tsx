@@ -46,11 +46,31 @@ function RuleDetails({ rule }: { rule: OrganizationRuleRecord }) {
 {JSON.stringify({
   id: rule.id, target_field: rule.targetField, value: rule.value, match_conditions: rule.matchConditions,
   lineage_id: rule.lineageId, supersedes_rule_id: rule.supersedesRuleId, effective_from: rule.effectiveFrom, effective_to: rule.effectiveTo,
+  // Final amendment, item 9 — the raw provenance description (e.g.
+  // "Promoted from a reviewer decision on job <UUID>") moved here from
+  // the card's primary text (see primaryProvenanceText below). Persisted
+  // storage is unchanged; only where this string is DISPLAYED moved.
+  description: rule.description,
 }, null, 2)}
         </pre>
       )}
     </div>
   )
+}
+
+// Final amendment, item 9 — the card's primary, always-visible text must
+// read as a customer-facing summary, not the raw audit-trail string
+// createOrganizationRule/promote route wrote (e.g. "Promoted from a
+// reviewer decision on job <UUID>") — a bare UUID in the main card body
+// reads as an internal/debug artifact. The raw description (job id and
+// all) is never discarded — it still renders in full inside RuleDetails'
+// "Technical details" disclosure above. Only reviewer_promotion gets this
+// treatment: that's the one source_kind whose description is always this
+// same generated audit sentence; a manually-authored rule's description
+// is whatever the admin who created it actually wrote, and stays as-is.
+function primaryProvenanceText(rule: OrganizationRuleRecord): string | null {
+  if (rule.sourceKind === 'reviewer_promotion') return 'Created from an approved contract review.'
+  return rule.description
 }
 
 // One organization rule's detail + management actions. Rendered inside a
@@ -112,7 +132,7 @@ function RuleRow({ rule, onChanged }: { rule: OrganizationRuleRecord; onChanged:
         </div>
       </div>
 
-      {rule.description && <p className="text-xs text-stone/80 mb-2 italic">{rule.description}</p>}
+      {primaryProvenanceText(rule) && <p className="text-xs text-stone/80 mb-2 italic">{primaryProvenanceText(rule)}</p>}
 
       <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs mb-2">
         <div>
@@ -359,6 +379,17 @@ export default function OrganizationRulebookPage() {
   // function of its own state (item 8).
   const configuredTypes = model.policyTypes.filter(p => p.state !== 'not_configured')
   const unconfiguredTypes = model.policyTypes.filter(p => p.state === 'not_configured')
+  // Final amendment, item 8 — model.summary.configuredPolicies deliberately
+  // excludes bare drafts (no production effect yet — see
+  // buildOrganizationPolicySettingsModel's own comment); that semantic is
+  // correct and untouched. The bug was only ever the header LABEL: showing
+  // "0 configured" directly above a visibly-rendered draft card read as
+  // self-contradictory. activeCount/scheduledCount are derived here, not
+  // in the read model, from data the model already exposes per policyType
+  // (model.summary itself has no separate active-only/scheduled-only
+  // counts — deliberately not adding one for a single header line).
+  const activeCount = model.policyTypes.filter(p => p.state === 'active' || p.state === 'active_with_scheduled_change').length
+  const scheduledCount = model.policyTypes.filter(p => p.state === 'scheduled' || p.state === 'active_with_scheduled_change').length
 
   return (
     <div className="p-4 md:p-8 max-w-4xl">
@@ -380,7 +411,11 @@ export default function OrganizationRulebookPage() {
           <div className="mb-8">
             <div className="flex items-baseline gap-2 mb-1">
               <h2 className="text-sm font-semibold text-ink">Your organization policies</h2>
-              <span className="text-xs text-stone/60">{model.summary.configuredPolicies} configured</span>
+              <span className="text-xs text-stone/60">
+                {activeCount} active
+                {scheduledCount > 0 ? ` · ${scheduledCount} scheduled` : ''}
+                {model.summary.drafts > 0 ? ` · ${model.summary.drafts} draft${model.summary.drafts > 1 ? 's' : ''}` : ''}
+              </span>
             </div>
             {configuredTypes.length === 0 ? (
               <div className="bg-white border border-forest/10 rounded-2xl px-6 py-10 text-center mt-3">

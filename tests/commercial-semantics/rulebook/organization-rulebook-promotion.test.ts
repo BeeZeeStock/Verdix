@@ -23,15 +23,52 @@ describe('evaluateReviewerDecisionForPromotion — eligibility gates', () => {
     if (!result.eligible) return
     expect(result.targetField).toBe('survival.carry_forward')
     expect(result.value).toBe(true)
+    // Final amendment — survival.carry_forward's canonical scope is
+    // rule_type ONLY (ORGANIZATION_POLICY_SCOPE_DIMENSIONS). application.
+    // timing must never appear in match_conditions for this field: it
+    // concerns WHEN a credit first becomes applicable, a different
+    // commercial dimension from unused-balance SURVIVAL, and including it
+    // would make a carry-forward default fail to generalize across
+    // credits that differ only in timing.
     expect(result.matchConditions).toEqual([
       { field: 'rule_type', operator: 'eq', value: 'service_credit' },
-      { field: 'application.timing', operator: 'eq', value: 'next_invoice' },
     ])
+    // scopeSummary still carries applicationTimingLabel — display CONTEXT
+    // about the specific credit being promoted, never applicability.
     expect(result.scopeSummary).toEqual({
       ruleTypeLabel: 'Service Credit',
       applicationTimingLabel: 'Next invoice',
       treatmentLabel: 'Carry forward until fully used',
     })
+  })
+
+  it('the annual-rebate reviewer decision promotes with match_conditions containing rule_type=rebate ONLY (item 11, test 1)', () => {
+    const result = evaluateReviewerDecisionForPromotion({
+      ...eligibleServiceCreditState,
+      matchFacts: { ruleType: 'rebate', applicationTiming: 'next_invoice' },
+    })
+    expect(result.eligible).toBe(true)
+    if (!result.eligible) return
+    expect(result.matchConditions).toEqual([
+      { field: 'rule_type', operator: 'eq', value: 'rebate' },
+    ])
+    expect(result.matchConditions.some(c => c.field === 'application.timing')).toBe(false)
+  })
+
+  it('application.timing never enters match_conditions regardless of what value the credit itself has', () => {
+    const withFutureInvoices = evaluateReviewerDecisionForPromotion({
+      ...eligibleServiceCreditState,
+      matchFacts: { ruleType: 'rebate', applicationTiming: 'future_invoices' },
+    })
+    expect(withFutureInvoices.eligible).toBe(true)
+    if (!withFutureInvoices.eligible) return
+    // Identical match_conditions regardless of applicationTiming's value —
+    // proves the dimension genuinely isn't part of the scope, not merely
+    // that this one example happened to omit it.
+    expect(withFutureInvoices.matchConditions).toEqual([
+      { field: 'rule_type', operator: 'eq', value: 'rebate' },
+    ])
+    expect(withFutureInvoices.scopeSummary.applicationTimingLabel).toBe('Future Invoices')
   })
 
   it('a false value produces the correct "does not carry forward" treatment label', () => {
@@ -94,7 +131,7 @@ describe('evaluateReviewerDecisionForPromotion — eligibility gates', () => {
     expect(first).toEqual(second)
   })
 
-  it('a different rule_type/application timing produces a correspondingly different structured scope, never a generic/global one', () => {
+  it('a different rule_type produces a correspondingly different structured scope, never a generic/global one', () => {
     const result = evaluateReviewerDecisionForPromotion({
       ...eligibleServiceCreditState,
       matchFacts: { ruleType: 'rebate', applicationTiming: 'next_invoice' },
@@ -103,7 +140,6 @@ describe('evaluateReviewerDecisionForPromotion — eligibility gates', () => {
     if (!result.eligible) return
     expect(result.matchConditions).toEqual([
       { field: 'rule_type', operator: 'eq', value: 'rebate' },
-      { field: 'application.timing', operator: 'eq', value: 'next_invoice' },
     ])
     expect(result.scopeSummary.ruleTypeLabel).toBe('Rebate')
   })

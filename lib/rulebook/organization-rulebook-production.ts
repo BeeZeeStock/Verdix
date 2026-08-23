@@ -37,6 +37,32 @@ export function isProductionActivatedOrganizationField(field: string): field is 
   return (PRODUCTION_ORGANIZATION_RULEBOOK_ALLOWLIST as readonly string[]).includes(field)
 }
 
+// Step 5D final amendment — the allowed match-condition SCOPE DIMENSIONS
+// for each production-activated field's canonical organization-policy
+// slot (organization + target_field + these dimensions only). Deliberately
+// per-field, not a single universal match_conditions recipe applied to
+// every promotable field — a future field may legitimately need different
+// or additional dimensions.
+//
+// survival.carry_forward concerns UNUSED-BALANCE SURVIVAL — a genuinely
+// different commercial dimension from WHEN a credit first becomes
+// applicable (application.timing). The Verdix Global Rulebook already
+// keeps these distinct (credit.next_invoice_timing_ne_carry_forward), and
+// this Organization Rulebook field must too: a rebate carry-forward
+// default should apply the same way whether the specific rebate is timed
+// next_invoice or future_invoices, since the contract being silent on
+// survival doesn't depend on that. application.timing may still be shown
+// to a reviewer as CONTEXT about the specific credit being promoted (see
+// organization-rulebook-promotion.ts's scopeSummary), but it must never be
+// written into match_conditions for this field.
+//
+// Add an entry here — never expand an existing one speculatively — only
+// when a concrete, reviewed scenario needs a field with different scope
+// dimensions than what's already defined.
+export const ORGANIZATION_POLICY_SCOPE_DIMENSIONS: Record<ProductionActivatedOrganizationField, readonly string[]> = {
+  'survival.carry_forward': ['rule_type'],
+}
+
 export type ProductionOrganizationResolutionStatus = 'resolved' | 'not_applicable' | 'conflict'
 
 export interface ProductionOrganizationResolution {

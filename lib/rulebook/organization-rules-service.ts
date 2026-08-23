@@ -32,7 +32,42 @@
 import { randomUUID } from 'node:crypto'
 import { supabaseServer } from '@/lib/supabase'
 import { validateOrganizationRuleShape } from './organization-rules'
+import { organizationRuleOccupiesSlot, organizationPolicySlotKey, classifyOrganizationPolicySlotOutcome } from './organization-policy-slot'
 import type { OrganizationRuleRecord, OrganizationRuleStatus, OrganizationRuleSourceKind, MatchCondition } from './organization-rules'
+
+// Final amendment (concurrency-safety pass) — thrown when the database's
+// org_rulebook_one_draft_per_slot partial unique index
+// (20260826000001_organization_policy_slot_uniqueness.sql) rejects an
+// insert because another request won a race for the identical canonical
+// slot between this request's own findOrganizationRulesForSlot read and
+// its write. A distinguishable error type (never a bare Error, never the
+// raw Postgres error) so a caller can tell "expected concurrency, re-query
+// and respond normally" apart from every other failure mode, which should
+// still surface as a real error.
+export class OrganizationPolicySlotRaceError extends Error {
+  constructor(
+    public readonly organizationId: string,
+    public readonly targetField: string,
+    public readonly matchConditions: MatchCondition[],
+  ) {
+    super(`organization-rules-service: lost the race to create a draft for organization ${organizationId}, target_field ${targetField} — another request already claimed this policy slot`)
+    this.name = 'OrganizationPolicySlotRaceError'
+  }
+}
+
+// Exported for unit testing in isolation from any real Postgres call —
+// this is the ONE place that interprets a raw database error as "this was
+// the expected one-draft-per-slot race," so its detection logic is a pure
+// function of the error shape, never re-derived at each call site.
+// Postgres reports a unique-violation as SQLSTATE 23505; the constraint
+// name is included in the message/details supabase-js surfaces, which is
+// what distinguishes THIS specific constraint from any other unique
+// violation this table might ever gain in the future.
+export function isOrganizationPolicySlotRaceViolation(error: { code?: string; message?: string; details?: string } | null | undefined): boolean {
+  if (!error || error.code !== '23505') return false
+  const text = `${error.message ?? ''} ${error.details ?? ''}`
+  return text.includes('org_rulebook_one_draft_per_slot')
+}
 
 interface OrganizationRuleRow {
   id: string
@@ -119,6 +154,16 @@ export async function createOrganizationRule(input: CreateOrganizationRuleInput)
   // so lineage_id can be set to the row's OWN id in the same insert — a
   // fresh rule is the root of its own lineage (Step 5B.5).
   const id = randomUUID()
+  // Final amendment — the SAME canonical slot identity
+  // findOrganizationRulesForSlot's application-level dedup already uses,
+  // written explicitly at insert time so the database's own
+  // org_rulebook_one_draft_per_slot partial unique index
+  // (20260826000001_organization_policy_slot_uniqueness.sql) can enforce
+  // "at most one draft per slot" atomically — the application-level
+  // preflight check alone cannot close the race between its own read and
+  // this write. Set unconditionally (draft or not); only the INDEX itself
+  // is scoped to status = 'draft'.
+  const slotKey = organizationPolicySlotKey({ organizationId: input.organizationId, targetField: input.targetField, matchConditions: input.matchConditions })
 
   const { data, error } = await supabaseServer
     .from('organization_rulebook_rules')
@@ -138,11 +183,18 @@ export async function createOrganizationRule(input: CreateOrganizationRuleInput)
       created_by: input.createdBy,
       approved_by: input.approvedBy ?? null,
       effective_from: input.effectiveFrom ?? null,
+      slot_key: slotKey,
     })
     .select('*')
     .single()
 
-  if (error || !data) throw new Error(`organization-rules-service: failed to create rule: ${error?.message}`)
+  if (error) {
+    if (isOrganizationPolicySlotRaceViolation(error)) {
+      throw new OrganizationPolicySlotRaceError(input.organizationId, input.targetField, input.matchConditions)
+    }
+    throw new Error(`organization-rules-service: failed to create rule: ${error.message}`)
+  }
+  if (!data) throw new Error('organization-rules-service: failed to create rule: no row returned')
   return rowToRecord(data as OrganizationRuleRow)
 }
 
@@ -190,6 +242,12 @@ export async function supersedeOrganizationRule(input: SupersedeOrganizationRule
   }
 
   const id = randomUUID()
+  // Computed from THIS version's own targetField/matchConditions, never
+  // the predecessor's — supersedeOrganizationRule permits a new version to
+  // change scope from its predecessor (a pre-existing, unchanged Step 5A
+  // looseness), so the new draft's slot identity must reflect what IT
+  // actually declares, exactly like createOrganizationRule does.
+  const slotKey = organizationPolicySlotKey({ organizationId: input.organizationId, targetField: input.targetField, matchConditions: input.matchConditions })
   const { data: inserted, error: insertError } = await supabaseServer
     .from('organization_rulebook_rules')
     .insert({
@@ -208,11 +266,18 @@ export async function supersedeOrganizationRule(input: SupersedeOrganizationRule
       source_kind: previous.sourceKind,
       created_by: input.createdBy,
       effective_from: null,
+      slot_key: slotKey,
     })
     .select('*')
     .single()
 
-  if (insertError || !inserted) throw new Error(`organization-rules-service: failed to create new version: ${insertError?.message}`)
+  if (insertError) {
+    if (isOrganizationPolicySlotRaceViolation(insertError)) {
+      throw new OrganizationPolicySlotRaceError(input.organizationId, input.targetField, input.matchConditions)
+    }
+    throw new Error(`organization-rules-service: failed to create new version: ${insertError.message}`)
+  }
+  if (!inserted) throw new Error('organization-rules-service: failed to create new version: no row returned')
   return rowToRecord(inserted as OrganizationRuleRow)
 }
 
@@ -366,6 +431,148 @@ export async function findActiveRuleForSameSlot(
   const candidateJson = JSON.stringify(matchConditions)
   const match = (data as OrganizationRuleRow[]).find(row => JSON.stringify(row.match_conditions_json ?? []) === candidateJson)
   return match ? rowToRecord(match) : null
+}
+
+// Step 5D final amendment — promotion-time dedup (distinct from
+// findActiveRuleForSameSlot above, which only ever looks at ACTIVE rows
+// and only runs before activation). This runs BEFORE a new draft is ever
+// created, and looks at both active AND draft rows, since a duplicate
+// DRAFT is exactly the gap the database's own exclusion constraints leave
+// open — org_rulebook_no_overlapping_validity/org_rulebook_no_overlapping_
+// scope are both scoped to `status in ('active', 'superseded')` (see
+// 20260823000001_organization_rulebook_temporal_validity.sql); a 'draft'
+// row has no effective_from/effective_to window and is entirely outside
+// either constraint's WHERE clause, so nothing at the database layer stops
+// two, ten, or a hundred identical drafts from being inserted. Uses the
+// same canonical slot comparison (organizationPolicySlotKey) the rest of
+// this pass is built on, not an ad hoc JSON.stringify equality — order-
+// insensitive, so a match_conditions array written in a different order
+// for the same semantic scope is still recognized as the same slot.
+//
+// Superseded/disabled rows are deliberately excluded — a superseded row
+// has already been replaced by whatever now IS active/draft for this
+// slot, and a disabled row was explicitly discarded; neither should block
+// a fresh promotion attempt.
+//
+// Returns at most one of each status — if more than one already exists
+// for the same slot (a pre-existing data anomaly this pass is specifically
+// closing off going forward, not something normal operation can produce
+// once this function is wired in), the most recently created row of that
+// status is returned, so behavior is deterministic rather than depending
+// on whatever order Postgres happens to return rows in.
+export async function findOrganizationRulesForSlot(
+  organizationId: string, targetField: string, matchConditions: MatchCondition[],
+): Promise<{ activeRule: OrganizationRuleRecord | null; draftRule: OrganizationRuleRecord | null }> {
+  const { data, error } = await supabaseServer
+    .from('organization_rulebook_rules')
+    .select('*')
+    .eq('organization_id', organizationId)
+    .eq('target_field', targetField)
+    .in('status', ['active', 'draft'])
+    .order('created_at', { ascending: false })
+
+  if (error || !data) return { activeRule: null, draftRule: null }
+  const rows = (data as OrganizationRuleRow[]).map(rowToRecord)
+  const slot = { organizationId, targetField, matchConditions }
+  const sameSlot = rows.filter(r => organizationRuleOccupiesSlot(r, slot))
+  return {
+    activeRule: sameSlot.find(r => r.status === 'active') ?? null,
+    draftRule: sameSlot.find(r => r.status === 'draft') ?? null,
+  }
+}
+
+// The result of resolveOrganizationPolicySlotForWrite below — a write
+// actually happened only for 'no_existing' (a fresh draft was created) and
+// 'proposed_policy_change' (a draft successor was created); the other
+// three states never write anything and instead return the rule that
+// already occupies the slot.
+export type OrganizationPolicySlotWriteOutcome =
+  | { state: 'no_existing'; rule: OrganizationRuleRecord }
+  | { state: 'proposed_policy_change'; rule: OrganizationRuleRecord; existingRule: OrganizationRuleRecord }
+  | { state: 'already_covered'; existingRule: OrganizationRuleRecord }
+  | { state: 'existing_draft'; existingRule: OrganizationRuleRecord }
+  | { state: 'draft_conflict'; existingRule: OrganizationRuleRecord }
+
+export interface ResolveOrganizationPolicySlotForWriteInput {
+  organizationId: string
+  targetField: string
+  matchConditions: MatchCondition[]
+  value: unknown
+  name: string
+  description?: string | null
+  sourceKind: OrganizationRuleSourceKind
+  createdBy: string
+}
+
+// Final amendment (concurrency-safety pass) — THE single shared write-path
+// boundary for "create or reconcile an organization rule for this
+// canonical slot," combining the application-level preflight
+// classification (findOrganizationRulesForSlot + classify
+// OrganizationPolicySlotOutcome — good product responses, no DB write
+// needed for 4 of the 5 outcomes) with the database's atomic
+// org_rulebook_one_draft_per_slot guarantee as the actual concurrency
+// boundary (never a DB error surfaced as normal control flow — see the
+// race-loss handling below).
+//
+// Deliberately lives HERE, in the DB-touching service module, rather than
+// inside app/api/org/rulebook/promote/route.ts — that route is today's
+// ONLY caller, but this function is the shared boundary a future
+// Settings -> Configure policy manual-creation flow (not built in this
+// pass) must ALSO go through, so the two paths can never race each other
+// into creating competing drafts for the same slot either. Nothing about
+// this function is promotion-specific beyond the sourceKind/createdBy
+// values a caller supplies.
+export async function resolveOrganizationPolicySlotForWrite(
+  input: ResolveOrganizationPolicySlotForWriteInput,
+  // Bounded, not unbounded — only re-attempts the pathological case where
+  // the row that caused OUR insert to fail is no longer there by the time
+  // we re-query (e.g. concurrently discarded) — see below. A real,
+  // sustained race between many concurrent callers still resolves
+  // correctly without retrying: each loser's single re-query finds the
+  // winner's now-committed row and returns the correct outcome directly.
+  retriesLeft = 1,
+): Promise<OrganizationPolicySlotWriteOutcome> {
+  const { activeRule, draftRule } = await findOrganizationRulesForSlot(input.organizationId, input.targetField, input.matchConditions)
+  const outcome = classifyOrganizationPolicySlotOutcome(input.value, activeRule, draftRule)
+
+  if (outcome.state === 'already_covered' || outcome.state === 'existing_draft' || outcome.state === 'draft_conflict') {
+    return { state: outcome.state, existingRule: outcome.rule }
+  }
+
+  try {
+    if (outcome.state === 'proposed_policy_change') {
+      const rule = await supersedeOrganizationRule({
+        organizationId: input.organizationId, previousRuleId: outcome.rule.id,
+        name: input.name, description: input.description, targetField: input.targetField,
+        value: input.value, matchConditions: input.matchConditions, createdBy: input.createdBy,
+      })
+      return { state: 'proposed_policy_change', rule, existingRule: outcome.rule }
+    }
+    // outcome.state === 'no_existing'
+    const rule = await createOrganizationRule({
+      organizationId: input.organizationId, name: input.name, description: input.description,
+      targetField: input.targetField, value: input.value, matchConditions: input.matchConditions,
+      sourceKind: input.sourceKind, createdBy: input.createdBy,
+    })
+    return { state: 'no_existing', rule }
+  } catch (err) {
+    if (!(err instanceof OrganizationPolicySlotRaceError)) throw err
+    // Lost the race — re-query and return the SAME semantic outcome a
+    // request that ran strictly AFTER the winner would have gotten. Never
+    // surfaces the raw database error to the caller; concurrent promotion
+    // is an expected, normal product state, not a failure.
+    const after = await findOrganizationRulesForSlot(input.organizationId, input.targetField, input.matchConditions)
+    const afterOutcome = classifyOrganizationPolicySlotOutcome(input.value, after.activeRule, after.draftRule)
+    if (afterOutcome.state === 'no_existing') {
+      // Pathological: the winner's row is already gone again (e.g.
+      // concurrently discarded) by the time we re-queried. Retry the whole
+      // resolution once rather than either looping unboundedly or
+      // reporting "no_existing" despite a write having just failed here.
+      if (retriesLeft <= 0) throw err
+      return resolveOrganizationPolicySlotForWrite(input, retriesLeft - 1)
+    }
+    return { state: afterOutcome.state, existingRule: afterOutcome.rule } as OrganizationPolicySlotWriteOutcome
+  }
 }
 
 // Step 5D — discards a never-activated draft (e.g. a promoted draft the

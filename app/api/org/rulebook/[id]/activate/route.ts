@@ -17,14 +17,29 @@
  *     safe actions are: "Replace from effective date" (resubmit with
  *     confirmReplace: true) or "Cancel" (do nothing — the draft, being a
  *     draft, still has zero production effect either way).
- *   - confirmReplace: true -> re-derive a properly-linked new draft via
- *     supersedeOrganizationRule (previousRuleId = the conflicting active
- *     rule), activate THAT, then discard the original standalone draft
- *     (discardDraftOrganizationRule) so it doesn't linger as a confusing
- *     orphan. "Replacement must use the existing version/cutover path" —
- *     both the version creation (supersedeOrganizationRule) and the cutover
- *     (activateOrganizationRule) are the exact same, unmodified Step
- *     5A/5B.5 functions used everywhere else in this codebase.
+ *   - confirmReplace: true -> discard the original standalone draft FIRST
+ *     (discardDraftOrganizationRule), THEN re-derive a properly-linked new
+ *     draft via supersedeOrganizationRule (previousRuleId = the conflicting
+ *     active rule) and activate THAT. "Replacement must use the existing
+ *     version/cutover path" — both the version creation
+ *     (supersedeOrganizationRule) and the cutover (activateOrganizationRule)
+ *     are the exact same, unmodified Step 5A/5B.5 functions used everywhere
+ *     else in this codebase.
+ *
+ *     Order matters, and was corrected in the final concurrency-safety
+ *     pass: discard MUST happen before supersede, not after. The standalone
+ *     draft and the properly-linked successor occupy the IDENTICAL
+ *     canonical slot (same organization_id/target_field/match_conditions),
+ *     and the database now enforces at most one 'draft' row per slot
+ *     (org_rulebook_one_draft_per_slot,
+ *     20260826000001_organization_policy_slot_uniqueness.sql). Discarding
+ *     the standalone draft first (flips it to 'disabled', which the
+ *     uniqueness index doesn't cover) frees the slot so
+ *     supersedeOrganizationRule's insert succeeds; attempting it in the
+ *     other order — as an earlier version of this route did, before that
+ *     invariant existed — deterministically fails every time with an
+ *     OrganizationPolicySlotRaceError, since the standalone draft is still
+ *     sitting on the exact slot the new linked draft needs.
  *
  * Security (item 13): the [id] path segment and any client-supplied
  * effectiveFrom are never trusted as authority on their own —
@@ -80,8 +95,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     // confirmReplace: true, and the draft is a STANDALONE rule (not yet
-    // linked to the conflicting active rule) — re-derive a properly-linked
-    // successor version, activate that, then discard the orphaned original.
+    // linked to the conflicting active rule) — discard the orphaned
+    // original FIRST (frees the canonical slot), THEN re-derive a
+    // properly-linked successor version and activate it. See this route's
+    // own header comment for why the order is load-bearing, not cosmetic.
+    await discardDraftOrganizationRule(org.orgId, draft.id)
     const linkedVersion = await supersedeOrganizationRule({
       organizationId: org.orgId,
       previousRuleId: conflict.id,
@@ -93,7 +111,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       createdBy: draft.createdBy,
     })
     const activated = await activateOrganizationRule(org.orgId, linkedVersion.id, org.userEmail, effectiveAt)
-    await discardDraftOrganizationRule(org.orgId, draft.id)
     return NextResponse.json({ rule: activated, replacedDraftId: draft.id })
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Failed to activate rule' }, { status: 400 })
