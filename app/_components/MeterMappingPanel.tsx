@@ -255,9 +255,19 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
                 · <i className="ti ti-check" style={{ fontSize: 10 }} /> All confirmed
               </span>
             )}
+            {/* Status made visually secondary to the section title —
+                a compact badge/pill (matching the established treatment
+                the VAT section already uses for the identical "Required
+                before approval" state) rather than plain inline text
+                sitting at the same visual weight as "Usage mappings"
+                itself. "approve" -> "approval" also corrected for
+                consistency with that same VAT wording. */}
             {!allConfirmed && (
-              <span className="text-[10px] font-semibold" style={{ color: '#B45309' }}>
-                {isConfigured ? 'Unconfirmed — usage-based billing will skip these meters' : 'Required before approve'}
+              <span
+                className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full"
+                style={isConfigured ? { background: 'rgba(180,83,9,0.1)', color: '#B45309' } : { background: 'rgba(153,27,27,0.1)', color: '#991B1B' }}
+              >
+                {isConfigured ? 'Unconfirmed — usage-based billing will skip these meters' : 'Required before approval'}
               </span>
             )}
           </div>

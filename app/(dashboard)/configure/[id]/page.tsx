@@ -633,22 +633,29 @@ function BillingModelBadge({ model }: { model: 'fixed' | 'hybrid' | 'consumption
 // switches to a side-by-side row once there's enough width. One shared
 // component, not re-implemented per card, so this fix can never be applied
 // to only one card and missed on the others.
-function FactRow({ label, value, icon, dense }: { label: string; value: React.ReactNode; icon?: string; dense?: boolean }) {
+// action — optional per-row confirm button/status chip (e.g. one-time-fee
+// cards' Amount/Billing condition rows). A 3rd desktop column
+// (label | value | action) that becomes its own stacked block on mobile —
+// label / value / action each on their own line — rather than an action
+// squeezed onto the same line as a long value, which is what "reuse the
+// same responsive fact-row approach" specifically means to avoid.
+function FactRow({ label, value, icon, dense, action }: { label: string; value: React.ReactNode; icon?: string; dense?: boolean; action?: React.ReactNode }) {
   return (
-    <div className={`grid grid-cols-1 sm:grid-cols-[9rem_1fr] gap-x-3 gap-y-0.5 ${dense ? 'text-[12.5px]' : 'text-xs'}`}>
+    <div className={`grid grid-cols-1 ${action ? 'sm:grid-cols-[9rem_1fr_auto]' : 'sm:grid-cols-[9rem_1fr]'} gap-x-3 gap-y-1 sm:items-center ${dense ? 'text-[12.5px]' : 'text-xs'}`}>
       <dt className="flex items-center gap-1.5 text-stone">
         {icon && <i className={`ti ${icon} text-forest flex-shrink-0`} style={{ fontSize: 13 }} />}
         <span>{label}</span>
       </dt>
       <dd className={`${dense ? 'font-semibold' : 'font-medium'} text-ink text-left`}>{value}</dd>
+      {action && <div className="sm:flex-shrink-0">{action}</div>}
     </div>
   )
 }
-function FactList({ rows, dense, className }: { rows: { label: string; value: React.ReactNode; icon?: string }[]; dense?: boolean; className?: string }) {
+function FactList({ rows, dense, className }: { rows: { label: string; value: React.ReactNode; icon?: string; action?: React.ReactNode }[]; dense?: boolean; className?: string }) {
   if (!rows.length) return null
   return (
     <dl className={`space-y-1.5 ${className ?? ''}`}>
-      {rows.map((row, i) => <FactRow key={i} label={row.label} value={row.value} icon={row.icon} dense={dense} />)}
+      {rows.map((row, i) => <FactRow key={i} label={row.label} value={row.value} icon={row.icon} dense={dense} action={row.action} />)}
     </dl>
   )
 }
@@ -4103,7 +4110,13 @@ function ReviewPanel({
                     without scrolling back up regardless of which card is
                     in view. */}
                 <div className="flex items-center gap-2 mb-3">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Service credits</p>
+                  {/* "Service credits" undersold what this section actually
+                      holds — rebates and other non-SLA credit types too
+                      (e.g. Annual Rebate, Growth/Expansion Credit), not just
+                      service-availability credits. Display label only —
+                      credit_type/ServiceCredit/service_credits (the field,
+                      variable, and API names) are all unchanged. */}
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Credits &amp; rebates</p>
                   <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
                 </div>
                 <div className="space-y-3">
@@ -4435,10 +4448,10 @@ function ReviewPanel({
                         <div className="px-4 pt-4 pb-3">
                           <div className="flex items-center gap-1.5 mb-2.5">
                             <i className="ti ti-receipt text-stone" style={{ fontSize: 12 }} />
-                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">One-time fee</span>
-                            <SourceClauseLink section={findSourceSection(f.fee_label)} onViewSource={onViewSource} />
+                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">One-time fee</span>
                           </div>
-                          <p className="text-sm font-medium text-ink leading-snug mb-1">{f.fee_label} — {fmt(f.amount, cur ?? 'EUR')}</p>
+                          <p className="text-sm font-medium text-ink leading-snug">{f.fee_label}</p>
+                          <p className="text-base font-semibold text-ink mb-3">{fmt(f.amount, cur ?? 'EUR')}</p>
 
                           {blocked ? (
                             <p className="text-[11px] leading-relaxed" style={{ color: '#991B1B' }}>
@@ -4448,23 +4461,36 @@ function ReviewPanel({
                               that resolves it.
                             </p>
                           ) : (
-                            <div className="space-y-2 mt-2">
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-[11px] text-stone">
-                                  Amount — {amountResolved ? `confirmed (${f.amount_provenance === 'contract_derived' ? 'clear from source' : 'reviewer policy'})` : 'needs confirmation'}
-                                </span>
-                                {!amountResolved && (
-                                  <button
-                                    onClick={() => confirmOneTimeFee(f.fee_label, 'amount')}
-                                    disabled={saving === `one_time_fee:${f.fee_label}:amount`}
-                                    className="text-[11px] font-medium px-2.5 py-1 rounded-lg border"
-                                    style={{ borderColor: 'rgba(26,61,43,0.15)' }}
-                                  >
-                                    {saving === `one_time_fee:${f.fee_label}:amount` ? 'Confirming…' : 'Confirm amount'}
-                                  </button>
-                                )}
-                              </div>
-                              {(() => {
+                            <div className="space-y-2">
+                              {/* Amount/Billing condition rows — compact
+                                  label/value/action layout (shared FactRow,
+                                  same responsive behavior as the review
+                                  cards). The action slot alone communicates
+                                  open-vs-resolved state — a resolved row
+                                  gets a small provenance chip instead of a
+                                  button; there is no separate "needs
+                                  confirmation"/"confirmed (...)" prose
+                                  duplicating what the action already says. */}
+                              <FactList rows={[
+                                {
+                                  label: 'Amount',
+                                  value: fmt(f.amount, cur ?? 'EUR'),
+                                  action: amountResolved ? (
+                                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full inline-flex items-center gap-1 whitespace-nowrap" style={{ background: 'rgba(11,92,54,0.1)', color: '#0B5C36' }}>
+                                      <i className="ti ti-check" style={{ fontSize: 10 }} />
+                                      {f.amount_provenance === 'contract_derived' ? 'Clear from source' : 'Reviewer policy'}
+                                    </span>
+                                  ) : (
+                                    <button
+                                      onClick={() => confirmOneTimeFee(f.fee_label, 'amount')}
+                                      disabled={saving === `one_time_fee:${f.fee_label}:amount`}
+                                      className="text-[11px] font-medium px-2.5 py-1 rounded-lg border whitespace-nowrap"
+                                      style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                                    >
+                                      {saving === `one_time_fee:${f.fee_label}:amount` ? 'Confirming…' : 'Confirm'}
+                                    </button>
+                                  ),
+                                },
                                 // Step 12 — three distinct billability states, never
                                 // conflated: manual_trigger (professional-services,
                                 // unrelated to billability_condition); an event
@@ -4474,39 +4500,62 @@ function ReviewPanel({
                                 // for this state); and the ordinary needs-confirmation
                                 // / confirmed case for immediate/fixed_date/unconfirmed
                                 // conditions.
-                                const conditionLabel = billabilityConditionLabel(f.billability_condition)
-                                const eventAwaitingEvidence = f.billability_condition?.kind === 'event' && billabilityResolved
-                                return (
-                                  <div className="flex items-start justify-between gap-2">
-                                    <div>
-                                      {conditionLabel && (
-                                        <p className="text-[11px] text-stone">
-                                          Billing condition — <span className="font-medium text-ink">{conditionLabel}</span>
-                                        </p>
-                                      )}
-                                      <span className="text-[11px] text-stone">
-                                        {genuineManualHold
-                                          ? 'held for manual delivery confirmation'
-                                          : eventAwaitingEvidence
-                                            ? 'Interpretation confirmed — waiting for required operational event'
-                                            : billabilityResolved
-                                              ? `confirmed (${f.billability_provenance === 'contract_derived' ? 'clear from source' : 'reviewer policy'})`
-                                              : 'needs confirmation'}
-                                      </span>
-                                    </div>
-                                    {!genuineManualHold && !billabilityResolved && (
-                                      <button
-                                        onClick={() => confirmOneTimeFee(f.fee_label, 'billability')}
-                                        disabled={saving === `one_time_fee:${f.fee_label}:billability`}
-                                        className="text-[11px] font-medium px-2.5 py-1 rounded-lg border shrink-0"
-                                        style={{ borderColor: 'rgba(26,61,43,0.15)' }}
-                                      >
-                                        {saving === `one_time_fee:${f.fee_label}:billability` ? 'Confirming…' : 'Confirm billing timing'}
-                                      </button>
-                                    )}
-                                  </div>
-                                )
-                              })()}
+                                (() => {
+                                  const conditionLabel = billabilityConditionLabel(f.billability_condition)
+                                  const eventAwaitingEvidence = f.billability_condition?.kind === 'event' && billabilityResolved
+                                  const statusNote = genuineManualHold
+                                    ? 'Held for manual delivery confirmation'
+                                    : eventAwaitingEvidence
+                                      ? 'Interpretation confirmed — waiting for required operational event'
+                                      : null
+                                  // Preserves the existing null vs undefined
+                                  // distinction (lib/billability-condition.ts's
+                                  // resolveOneTimeFeeTypeLabel): a genuine
+                                  // legacy record (billability_condition
+                                  // undefined, isStep12Condition false) reads
+                                  // "Manual billing" here — never "On
+                                  // delivery" (the old generic fallback),
+                                  // and deliberately not "Manual delivery"
+                                  // either, since "delivery" is already a
+                                  // distinct, canonical contractual
+                                  // billability event elsewhere on this same
+                                  // card — reusing the word here could
+                                  // wrongly imply billing is triggered by
+                                  // delivery. Never conflated with "Needs
+                                  // review" either — that label is reserved
+                                  // for a condition Step 12 actually
+                                  // evaluated and found the contract
+                                  // genuinely silent on
+                                  // (describeBillabilityCondition returned
+                                  // null for a defined condition).
+                                  const conditionValue = genuineManualHold ? 'Manual billing' : (conditionLabel ?? 'Needs review')
+                                  return {
+                                    label: 'Billing condition',
+                                    value: (
+                                      <>
+                                        <span>{conditionValue}</span>
+                                        {statusNote && <span className="block text-[10px] text-stone mt-0.5 font-normal">{statusNote}</span>}
+                                      </>
+                                    ),
+                                    action: (genuineManualHold || eventAwaitingEvidence) ? undefined
+                                      : billabilityResolved ? (
+                                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full inline-flex items-center gap-1 whitespace-nowrap" style={{ background: 'rgba(11,92,54,0.1)', color: '#0B5C36' }}>
+                                          <i className="ti ti-check" style={{ fontSize: 10 }} />
+                                          {f.billability_provenance === 'contract_derived' ? 'Clear from source' : 'Reviewer policy'}
+                                        </span>
+                                      ) : (
+                                        <button
+                                          onClick={() => confirmOneTimeFee(f.fee_label, 'billability')}
+                                          disabled={saving === `one_time_fee:${f.fee_label}:billability`}
+                                          className="text-[11px] font-medium px-2.5 py-1 rounded-lg border whitespace-nowrap"
+                                          style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+                                        >
+                                          {saving === `one_time_fee:${f.fee_label}:billability` ? 'Confirming…' : 'Confirm'}
+                                        </button>
+                                      ),
+                                  }
+                                })(),
+                              ]} />
                               {(() => {
                                 // Step 13 — only ever rendered once billability
                                 // interpretation is itself resolved (item 16: "Extend
@@ -4571,6 +4620,12 @@ function ReviewPanel({
                               )}
                             </div>
                           )}
+                          {/* Local per-card source link (item 6) — never a
+                              detached aggregate block covering several
+                              fees at once. */}
+                          <div className="mt-3 pt-3" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
+                            <SourceClauseLink section={findSourceSection(f.fee_label)} onViewSource={onViewSource} />
+                          </div>
                         </div>
                       </div>
                     )
