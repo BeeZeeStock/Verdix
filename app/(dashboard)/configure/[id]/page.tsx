@@ -18,6 +18,7 @@ import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
 import { describeBillabilityCondition, isChangeOrderConditional, resolveOneTimeFeeTypeLabel } from '@/lib/billability-condition'
+import { formatEligibleComponentsFact, formatCarryForwardFact, formatCashRedeemableFact } from '@/lib/review-card-format'
 import { getCreditRepresentationCapability } from '@/lib/connectors/billing/types'
 import { FinancialAmount, FinancialMetaTag } from '@/app/_components/FinancialAmount'
 import { FinancialKPICard } from '@/app/_components/FinancialKPICard'
@@ -1862,39 +1863,50 @@ function RuleInterpretationCard({
             >
               {aiProposal.state === 'clear_from_source' ? 'Clear from source' : 'Verdix recommendation'}
             </span>
-            {/* SOURCE — the immutable clause itself, kept visually distinct
-                from Verdix's own interpretation of it below, so a reviewer
-                can check the two against each other at a glance. */}
-            {!!sourceClause && (
-              <p className="text-[11px] text-stone italic leading-relaxed mb-1.5 pl-2" style={{ borderLeft: '2px solid rgba(26,61,43,0.15)' }}>
-                &ldquo;{sourceClause}&rdquo;
-              </p>
-            )}
+            {/* Structured facts, default/scan-first view — leads with what
+                the model already computed (calculation_preview) plus,
+                service_credit only, whichever of application scope/carry-
+                forward/cash is ITSELF clear_from_source (an open sub-field
+                still gets its own callout further below, unchanged). The
+                verbatim clause and the model's prose reasoning are both
+                available on demand (View source clause / More details,
+                immediately below this block) — never inline here by
+                default, so the default card is facts-first, not
+                paragraph-first. */}
             {(() => {
-              const { short, truncated } = truncateSentences(aiProposal.reasoning)
-              return (
-                <>
-                  <p className="text-xs text-ink leading-relaxed">{showFullReasoning ? aiProposal.reasoning : short}</p>
-                  {truncated && (
-                    <button
-                      onClick={() => setShowFullReasoning(v => !v)}
-                      className="text-[11px] font-medium text-forest hover:underline mt-1"
-                    >
-                      {showFullReasoning ? 'Show less' : 'More details'}
-                    </button>
-                  )}
-                </>
+              const appRule = (aiProposal.proposed_interpretation as Record<string, unknown> | null)?.application_rule as Record<string, unknown> | undefined
+              const cashRedeemable = (aiProposal.proposed_interpretation as Record<string, unknown> | null)?.cash_redeemable as boolean | 'unclear' | undefined
+              const factRows: { label: string; value: string }[] = [...(aiProposal.calculation_preview ?? [])]
+              if (ruleType === 'service_credit' && aiProposal.application_state === 'clear_from_source') {
+                factRows.push({ label: 'Applies to', value: formatEligibleComponentsFact(appRule?.eligible_component_keys as string[] | 'all' | null | undefined) })
+              }
+              if (ruleType === 'service_credit' && aiProposal.survival_state === 'clear_from_source' && typeof appRule?.carry_forward === 'boolean') {
+                factRows.push({ label: 'Carry-forward', value: formatCarryForwardFact(appRule.carry_forward as boolean, appRule.expiry_periods as number | null, appRule.expiry_date as string | null) })
+              }
+              if (ruleType === 'service_credit' && aiProposal.cash_redeemable_state === 'clear_from_source') {
+                factRows.push({ label: 'Cash', value: formatCashRedeemableFact(cashRedeemable) })
+              }
+              return !!factRows.length && (
+                <dl className="space-y-1">
+                  {factRows.map((row, i) => (
+                    <div key={i} className="flex justify-between gap-3 text-xs">
+                      <dt className="text-stone">{row.label}</dt>
+                      <dd className="font-medium text-ink text-right">{row.value}</dd>
+                    </div>
+                  ))}
+                </dl>
               )
             })()}
-            {!!aiProposal.calculation_preview?.length && (
-              <dl className="mt-2 space-y-1 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
-                {aiProposal.calculation_preview.map((row, i) => (
-                  <div key={i} className="flex justify-between gap-3 text-xs">
-                    <dt className="text-stone">{row.label}</dt>
-                    <dd className="font-medium text-ink text-right">{row.value}</dd>
-                  </div>
-                ))}
-              </dl>
+            {!!aiProposal.reasoning && (
+              <div className="mt-2 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
+                <button
+                  onClick={() => setShowFullReasoning(v => !v)}
+                  className="text-[11px] font-medium text-forest hover:underline"
+                >
+                  {showFullReasoning ? 'Hide details' : 'More details'}
+                </button>
+                {showFullReasoning && <p className="text-xs text-ink leading-relaxed mt-1.5">{aiProposal.reasoning}</p>}
+              </div>
             )}
           </div>
           {/* Inline alternatives for a whole-card "Verdix recommendation" —
@@ -1960,12 +1972,16 @@ function RuleInterpretationCard({
               read as "Verdix recommendation" the moment EITHER question was
               less than fully explicit — even for a credit like Growth
               Credit, whose application scope is itself stated verbatim. */}
-          {aiProposal.application_state && (
+          {/* clear_from_source is handled above as an "Applies to" fact row
+              — this badge only ever appears for the two states that need an
+              actual callout: a genuine open decision, or a recommendation
+              worth flagging as not-yet-certain. */}
+          {aiProposal.application_state && aiProposal.application_state !== 'clear_from_source' && (
             <SubStateBadge
               label="Application scope"
               state={aiProposal.application_state}
-              decisionRequiredText="The contract states this credit's size but not what future charges it may reduce — resolve this before it can be applied against an invoice."
-              resolvedText="What this credit may reduce is covered in the reasoning above."
+              decisionRequiredText="Contract is silent on what this credit may reduce."
+              resolvedText="Verdix recommends a scope based on the source language."
             />
           )}
           {/* Survival & expiry — deliberately a SEPARATE badge from
@@ -1986,38 +2002,31 @@ function RuleInterpretationCard({
               names whichever ONE of the two is actually still open, rather
               than always claiming both are unresolved regardless of what
               the underlying fields actually say. */}
-          {aiProposal.survival_state && (() => {
+          {aiProposal.survival_state && aiProposal.survival_state !== 'clear_from_source' && (() => {
             const label = survivalCarryForwardOpen && !survivalOneTimeOpen ? `Unused ${creditType === 'rebate' ? 'rebate' : 'balance'} survival`
               : survivalOneTimeOpen && !survivalCarryForwardOpen ? 'Repeatability'
               : 'Survival & expiry'
-            // Shows the ACTUAL policy value (via describeSurvivalResolution
-            // — the same phrasing used everywhere else a resolved
-            // carry_forward is described), not merely "some policy exists"
-            // — so the reviewer sees exactly what Verdix intends to apply
-            // and why they're not being asked a question. This is the
-            // proposal's own advisory metadata; the value confirm-rule
-            // actually applies is independently re-resolved server-side.
-            // Item 7 — tightened to "source fact -> short explanation",
-            // never restating the card title or the full clause prose here
-            // (the clause itself stays available via the card's own More
-            // details/source disclosure). Material facts (which dimension
-            // is open, what an organization policy would apply) are kept —
-            // concise is not the same as incomplete (item 9).
+            // Item 5/6 — heading + one short fact, never restating what the
+            // heading (DECISION REQUIRED/badge) or the picker immediately
+            // below it already communicate ("Choose the treatment" was
+            // redundant with the picker itself). The clause/full reasoning
+            // stay available via View source clause/More details above,
+            // never restated here.
             const decisionRequiredText = aiProposal.survival_organization_policy
-              ? `Not stated in the contract. Your organization's policy applies: ${describeSurvivalResolution({ carry_forward: aiProposal.survival_organization_policy.value }).charAt(0).toLowerCase()}${describeSurvivalResolution({ carry_forward: aiProposal.survival_organization_policy.value }).slice(1)}`
+              ? `Contract is silent. Organization policy applies: ${describeSurvivalResolution({ carry_forward: aiProposal.survival_organization_policy.value }).charAt(0).toLowerCase()}${describeSurvivalResolution({ carry_forward: aiProposal.survival_organization_policy.value }).slice(1)}`
               : survivalCarryForwardOpen && !survivalOneTimeOpen
-                ? 'The contract does not say what happens to an unused balance.'
+                ? 'Contract is silent on unused-balance treatment.'
                 : survivalOneTimeOpen && !survivalCarryForwardOpen
-                  ? 'The contract does not say whether this credit can be earned more than once.'
-                  : 'The contract does not say how long an earned credit stays available, or whether it can be earned more than once.'
+                  ? 'Contract is silent on whether this credit can be earned more than once.'
+                  : 'Contract is silent on survival and repeatability.'
             const resolvedText = survivalNeedsInlinePicker
-              ? 'Verdix recommends a treatment below — confirm it or choose a different one.'
-              : 'Covered in the reasoning above.'
+              ? 'Verdix recommends a treatment below.'
+              : 'Verdix recommends a treatment based on the source language.'
             return (
               <SubStateBadge
                 label={label}
                 state={aiProposal.survival_state}
-                decisionRequiredText={survivalNeedsInlinePicker ? `${decisionRequiredText} Choose the treatment.` : decisionRequiredText}
+                decisionRequiredText={decisionRequiredText}
                 resolvedText={resolvedText}
                 organizationPolicyAvailable={!!aiProposal.survival_organization_policy}
               />
@@ -2035,13 +2044,13 @@ function RuleInterpretationCard({
               requiredServiceCreditFields (cash is only required for a
               'cash_settlement' execution context, which doesn't exist yet;
               today's only real path, invoice_credit, never needs it). */}
-          {aiProposal.cash_redeemable_state && (
+          {aiProposal.cash_redeemable_state && aiProposal.cash_redeemable_state !== 'clear_from_source' && (
             <SubStateBadge
-              label="Cash redeemability"
+              label="Cash"
               state={aiProposal.cash_redeemable_state}
               nonBlocking
-              decisionRequiredText="Cash redemption is not specified. This does not block invoice-credit use."
-              resolvedText="Covered in the reasoning above."
+              decisionRequiredText="Not specified · does not block invoice-credit use."
+              resolvedText="Verdix recommends this based on the source language."
             />
           )}
           {/* Inline decision-required/recommendation picker — neither state
@@ -2228,17 +2237,22 @@ function RuleInterpretationCard({
           {aiProposal?.state === 'decision_required' && (
             <div className="rounded-xl p-3 mb-1" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
               <p className="text-[9px] font-bold uppercase tracking-widest mb-1" style={{ color: '#991B1B' }}>Decision required</p>
+              {/* Item 5 — heading + one short fact, then choices immediately
+                  below (unchanged). A single short sentence, not the AI's
+                  full reasoning paragraph — that stays available under
+                  More details, never inline here by default. */}
               {(() => {
-                const text = aiProposal.reasoning || 'The agreement does not specify how this should be handled — nothing is preselected.'
-                const { short, truncated } = truncateSentences(text)
+                const text = aiProposal.reasoning || 'Contract does not specify how this should be handled — nothing is preselected.'
+                const { short, truncated } = truncateSentences(text, 1, 140)
                 return (
                   <>
-                    <p className="text-xs" style={{ color: '#7F1D1D' }}>{showFullReasoning ? text : short}</p>
+                    <p className="text-xs" style={{ color: '#7F1D1D' }}>{short}</p>
                     {truncated && (
                       <button onClick={() => setShowFullReasoning(v => !v)} className="text-[11px] font-medium mt-1 hover:underline" style={{ color: '#991B1B' }}>
-                        {showFullReasoning ? 'Show less' : 'More details'}
+                        {showFullReasoning ? 'Hide details' : 'More details'}
                       </button>
                     )}
+                    {truncated && showFullReasoning && <p className="text-xs mt-1.5" style={{ color: '#7F1D1D' }}>{text}</p>}
                   </>
                 )
               })()}
@@ -2925,12 +2939,11 @@ function ConfirmedRuleCard({
           {interpretation && <p className="text-[13px] text-stone leading-relaxed">{interpretation}</p>}
         </div>
       </div>
-      {sourceClause && (
-        <div className="rounded-xl p-4 mb-4 flex gap-2.5" style={{ background: '#FAFAF9' }}>
-          <i className="ti ti-quote text-stone-light" style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }} />
-          <p className="text-[12.5px] text-stone italic leading-relaxed">{sourceClause}</p>
-        </div>
-      )}
+      {/* No inline verbatim quote by default (concision pass) — "View
+          source" below is the sole source affordance, avoiding a duplicate
+          of the same clause on one card. sourceClause is still accepted as
+          a prop (some callers pass it) but only ever used to decide whether
+          this card has a source to show at all — never rendered directly. */}
       {params.length > 0 && (
         <dl className="space-y-2.5 pt-4 mb-4" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
           {params.map((p, i) => (
@@ -2969,9 +2982,9 @@ function ConfirmedRuleCard({
           {(auditReviewer || auditDate) && <>Confirmed{auditReviewer ? ` by ${auditReviewer}` : ''}{auditDate ? ` · ${auditDate}` : ''}</>}
         </p>
         <div className="flex items-center gap-4 flex-shrink-0">
-          {onViewSource && (
+          {onViewSource && !!sourceClause && (
             <button onClick={onViewSource} className="flex items-center gap-1 text-[12px] font-medium text-forest hover:underline">
-              <i className="ti ti-external-link" style={{ fontSize: 13 }} /> View source
+              <i className="ti ti-external-link" style={{ fontSize: 13 }} /> View source clause
             </button>
           )}
           <button onClick={onEdit} className="flex items-center gap-1 text-[12px] font-medium text-stone hover:text-ink">
@@ -3402,6 +3415,11 @@ function ReviewPanel({
   // lazily (today's date) only when a reviewer actually opens the input,
   // not eagerly for every fee on render.
   const [evidenceDateDraft, setEvidenceDateDraft] = useState<Record<string, string>>({})
+  // Concision pass — Extraction notes is secondary diagnostic text (a
+  // point-in-time extraction snapshot, not a live outstanding-decision
+  // list, per its own existing comment below), collapsed by default so it
+  // doesn't compete with the actual review cards for attention.
+  const [extractionNotesOpen, setExtractionNotesOpen] = useState(false)
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   // Item 6 — every LineItem already carries its own source_section (the
@@ -3586,7 +3604,8 @@ function ReviewPanel({
         <div className="px-4 pt-4 pb-3">
           <div className="flex items-center gap-1.5 mb-2.5">
             <i className={`ti ${typeIcon} text-stone`} style={{ fontSize: 12 }} />
-            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">{typeLabel}</span>
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">{typeLabel}</span>
+            <SourceClauseLink section={fieldSources?.overage_tiers} onViewSource={onViewSource} />
           </div>
           {/* Metric-scoped title — never one specific tariff tier's own name
               (e.g. "AI processing 100,001-250,000"). The rule applies to the
@@ -4502,22 +4521,32 @@ function ReviewPanel({
           {extractionNotes && (
             <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: '#FAFAF9' }}>
               <div className="px-4 pt-4 pb-3">
-                <div className="flex items-center gap-1.5 mb-2">
+                <button
+                  onClick={() => setExtractionNotesOpen(v => !v)}
+                  className="flex items-center gap-1.5 w-full text-left"
+                >
                   <i className="ti ti-note text-stone" style={{ fontSize: 12 }} />
-                  <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Extraction notes</span>
-                </div>
-                <p className="text-xs text-stone leading-relaxed whitespace-pre-line">{extractionNotes}</p>
-                {/* This text is written once, at extraction time, and never
-                    rewritten afterward — a policy it flags as unresolved
-                    here may since have been confirmed via its own review
-                    card above (or may have none at all if it doesn't map to
-                    a structured rule type). It is a point-in-time snapshot,
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">Extraction notes</span>
+                  <span className="text-[11px] font-medium text-forest">{extractionNotesOpen ? 'Hide' : 'View notes'}</span>
+                </button>
+                {/* Secondary diagnostic information, not primary review
+                    content (item 10) — collapsed by default. This text is
+                    written once, at extraction time, and never rewritten
+                    afterward — a policy it flags as unresolved here may
+                    since have been confirmed via its own review card above
+                    (or may have none at all if it doesn't map to a
+                    structured rule type). It is a point-in-time snapshot,
                     not a live list of outstanding decisions — the review
                     cards above and the "items to review" count are the
                     live signal for what's actually still open. */}
-                <p className="text-[10px] text-stone/70 italic mt-2">
-                  Reflects the original extraction — a decision mentioned here may already be resolved by a review card above; it is not itself a live outstanding-decision indicator.
-                </p>
+                {extractionNotesOpen && (
+                  <>
+                    <p className="text-xs text-stone leading-relaxed whitespace-pre-line mt-2">{extractionNotes}</p>
+                    <p className="text-[10px] text-stone/70 italic mt-2">
+                      Reflects the original extraction — a decision mentioned here may already be resolved by a review card above; it is not itself a live outstanding-decision indicator.
+                    </p>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -4623,6 +4652,7 @@ function ReviewPanel({
                               second, unconditional "Needs confirmation" pill
                               sitting right next to it just contradicted
                               whatever the AI card said underneath. */}
+                          {isRuleInterpretation && <SourceClauseLink section={fieldSources?.escalators} onViewSource={onViewSource} />}
                           {!isRuleInterpretation && (
                             <div className="flex items-center gap-1.5">
                               {/* "Clear from source" and "Needs confirmation"
@@ -7062,24 +7092,22 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 minimum_quantity: 'A minimum unit quantity is committed (take-or-pay), independent of usage.',
               }
 
+              // Short VALUE-only string for the "Value" params row below —
+              // concision pass: this used to build a full "Worth X% of Y."
+              // sentence for a redundant prose line under the card title;
+              // that prose is gone (everything it said is now a params row),
+              // so this only needs the value itself.
               const describeCreditValue = (interp: ServiceCreditInterp, stated_pct: number | null | undefined, stated_amount: number | null | undefined): string | null => {
                 const v = interp.credit_value
                 if (interp.credit_basis === 'pct_of_affected_component' && (v != null || stated_pct != null)) {
-                  return `Worth ${v ?? stated_pct}% of ${interp.basis_component ?? 'the affected component'}.`
+                  return `${v ?? stated_pct}% of ${interp.basis_component ?? 'the affected component'}`
                 }
-                if (interp.credit_basis === 'pct_of_period_fee' && (v != null || stated_pct != null)) return `Worth ${v ?? stated_pct}% of the period fee.`
-                if (interp.credit_basis === 'fixed_amount_per_unit' && v != null) return `Worth ${fmt(v, cur)} per unit.`
-                if (interp.credit_basis === 'usage_units' && v != null) return `Worth ${v} units.`
-                if (v != null) return `Worth ${fmt(v, cur)}.`
-                if (stated_amount != null) return `Worth ${fmt(stated_amount, cur)}.`
+                if (interp.credit_basis === 'pct_of_period_fee' && (v != null || stated_pct != null)) return `${v ?? stated_pct}% of the period fee`
+                if (interp.credit_basis === 'fixed_amount_per_unit' && v != null) return `${fmt(v, cur)} per unit`
+                if (interp.credit_basis === 'usage_units' && v != null) return `${v} units`
+                if (v != null) return fmt(v, cur)
+                if (stated_amount != null) return fmt(stated_amount, cur)
                 return null
-              }
-              const describeCreditEligibility = (appRule: NonNullable<ServiceCreditInterp['application_rule']>): string => {
-                if (appRule.eligible_component_keys === 'all') return 'Applies against the full remaining amount payable on future invoices.'
-                if (Array.isArray(appRule.eligible_component_keys) && appRule.eligible_component_keys.length > 0) {
-                  return `Applies only against future ${appRule.eligible_component_keys.join(', ').replace(/_/g, ' ')} charges.`
-                }
-                return 'Application scope: decision required.'
               }
 
               type Card = {
@@ -7228,6 +7256,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 const audit = findAudit('service_credit', `credit:${c.credit_rule_id}`)
                 const params: { label: string; value: string }[] = []
                 if (interp.trigger_description) params.push({ label: 'Trigger', value: interp.trigger_description })
+                const value = describeCreditValue(interp, c.stated_pct, c.stated_amount)
+                if (value) params.push({ label: 'Value', value })
                 const cap = interp.cap_amount != null ? fmt(interp.cap_amount, cur) : interp.cap_pct != null ? `${interp.cap_pct}%` : null
                 if (cap) params.push({ label: `Cap${interp.settlement_period ? ` (${interp.settlement_period})` : ''}`, value: cap })
                 params.push({
@@ -7283,19 +7313,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     : interp.cash_redeemable === false ? 'No'
                       : 'Not specified',
                 })
-                const interpretationParts = [
-                  interp.trigger_description ? `Earned when ${interp.trigger_description.replace(/^when\s+/i, '')}.` : null,
-                  describeCreditValue(interp, c.stated_pct, c.stated_amount),
-                  describeCreditEligibility(appRule),
-                  typeof appRule.carry_forward === 'boolean' ? describeSurvivalResolution({ carry_forward: appRule.carry_forward, expiry_periods: appRule.expiry_periods, expiry_date: appRule.expiry_date }) : null,
-                ].filter(Boolean)
                 cards.push({
                   key: `credit:${c.credit_rule_id}`,
                   icon: CREDIT_TYPE_ICON[c.credit_type ?? ''] ?? 'ti-receipt-refund',
                   typeLabel: CREDIT_TYPE_LABEL[c.credit_type ?? ''] ?? CREDIT_BASIS_LABEL[c.credit_type ?? 'other'] ?? 'Service credit',
                   title: c.description || CREDIT_TYPE_LABEL[c.credit_type ?? ''] || 'Service credit',
                   sourceClause: c.source_clause,
-                  interpretation: interpretationParts.join(' '),
+                  // No lead prose sentence — every fact it used to restate
+                  // (trigger, value, eligibility, survival) is already a
+                  // params row above (concision pass).
+                  interpretation: '',
                   params,
                   provenance: [
                     { label: 'Eligibility', value: appRule.eligibility_provenance },

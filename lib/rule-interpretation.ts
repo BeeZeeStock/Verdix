@@ -158,11 +158,11 @@ export const SERVICE_CREDIT_OPTIONS: StructuredOption[] = [
 // doesn't cover — translated to a PROPOSED structured rule the reviewer
 // must still explicitly confirm before it applies (never auto-applied).
 export const CREDIT_SURVIVAL_OPTIONS: StructuredOption[] = [
-  { id: 'carry_forward_until_used', label: 'Carry forward until fully used', description: 'Any unused balance rolls forward and is applied against future charges until fully consumed, with no fixed expiry.' },
-  { id: 'next_period_only', label: 'Apply to the next billing period only; unused remainder then expires', description: 'An unused balance survives exactly one additional billing period, then any remainder is forfeited.' },
-  { id: 'carry_forward_limited', label: 'Carry forward for a defined number of billing periods', description: 'Specify how many billing periods an unused balance remains available before it expires.' },
-  { id: 'expire_on_date', label: 'Expire on a specified date', description: 'Specify a fixed calendar date after which any remaining unused balance is forfeited.' },
-  { id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' },
+  { id: 'carry_forward_until_used', label: 'Carry forward until fully used', description: 'Remaining balance stays available with no expiry.' },
+  { id: 'next_period_only', label: 'Next billing period only', description: 'Remaining balance expires after one additional billing period.' },
+  { id: 'carry_forward_limited', label: 'Carry forward for N periods', description: 'Set the number of billing periods.' },
+  { id: 'expire_on_date', label: 'Expire on date', description: 'Set a fixed expiry date.' },
+  { id: 'other', label: 'Other', description: 'Define a custom treatment.' },
 ]
 
 // What the two overlapping rules should actually do about the fee component
