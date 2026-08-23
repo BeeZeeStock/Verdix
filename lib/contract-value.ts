@@ -17,7 +17,7 @@
 //
 // Client-safe: no supabaseServer import, same discipline as contract-tcv-calc.ts.
 
-import { computeBaseTcv, type BaseTcvItem } from './contract-tcv-calc'
+import { computeCommittedFixedFees, computeConditionalFixedFees, type BaseTcvItem } from './contract-tcv-calc'
 import { computeMinimumCommitmentSchedule, type CadenceAnchorMode } from './tariff'
 import type { MinimumCommitment } from './types'
 
@@ -44,8 +44,23 @@ export type ContractValueInputs = {
 
 export type ContractValueModel = {
   fixedRecurringValue: number
+  /** Committed one-time fees only — excludes any fee still conditional on
+   *  an unsigned future Change Order (see conditionalFixedFees below). */
   oneTimeFees: number
+  /** "Committed fixed fees" — see computeCommittedFixedFees. Never includes
+   *  a fee whose existence depends on an unsigned, optional future Change
+   *  Order; committedContractValue below is built from this, not from the
+   *  all-inclusive potential total. */
   fixedFees: number
+  /** Sum of fees still conditional on an unsigned future Change Order —
+   *  shown separately, never folded into fixedFees/committedContractValue.
+   *  Agreement A final amendment, item 2. */
+  conditionalFixedFees: number
+  /** fixedFees + conditionalFixedFees — the all-inclusive "if every
+   *  currently-optional Change Order were signed" figure. Equivalent to
+   *  computeBaseTcv(items); provided so a caller never has to re-derive it
+   *  or risk the parts not summing to a whole it also displays. */
+  potentialFixedFees: number
   /** Null when any confirmed-mode commitment's partial-period treatment is
    *  still unresolved — never a guessed number, per "don't present an
    *  authoritative minimum commitment until required rules are resolved." */
@@ -66,10 +81,18 @@ function parseLocalDate(s: string): Date {
 }
 
 export function computeContractValueModel(inputs: ContractValueInputs): ContractValueModel {
+  // Excludes conditional_future_agreement items — must stay in lockstep
+  // with fixedFees below (computeCommittedFixedFees), since
+  // fixedRecurringValue is derived as fixedFees - oneTimeFees; if oneTimeFees
+  // still included a Change-Order-conditional fee while fixedFees had
+  // already excluded it, fixedRecurringValue would go negative by that
+  // fee's amount instead of correctly reflecting only recurring value.
   const oneTimeFees = inputs.items
-    .filter(i => /one.?time/i.test(i.billing_period ?? ''))
+    .filter(i => /one.?time/i.test(i.billing_period ?? '') && i.commitmentStatus !== 'conditional_future_agreement')
     .reduce((s, i) => s + (i.total_amount ?? 0), 0)
-  const fixedFees = computeBaseTcv(inputs.items)
+  const fixedFees = computeCommittedFixedFees(inputs.items)
+  const conditionalFixedFees = computeConditionalFixedFees(inputs.items)
+  const potentialFixedFees = fixedFees + conditionalFixedFees
   const fixedRecurringValue = fixedFees - oneTimeFees
 
   let minimumCommitments: number | null = null
@@ -106,6 +129,8 @@ export function computeContractValueModel(inputs: ContractValueInputs): Contract
     fixedRecurringValue,
     oneTimeFees,
     fixedFees,
+    conditionalFixedFees,
+    potentialFixedFees,
     minimumCommitments,
     committedContractValue,
     billedToDate: inputs.billedToDate,

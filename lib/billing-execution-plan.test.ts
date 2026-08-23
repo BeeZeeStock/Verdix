@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildBillingPlanSnapshot, fingerprintBillingPlan, planComponentKey, type BillingPlanSnapshot } from './billing-execution-plan'
+import { applyExtractionSafetyNets } from './contract-extractor'
 import type { ContractTerms } from './types'
 
 const schedule = [{ yearNum: 1, periodIndex: 0, periodStart: new Date('2026-01-01'), periodEnd: new Date('2026-12-31'), baseAmount: 10000 }]
@@ -104,5 +105,120 @@ describe('buildBillingPlanSnapshot + fingerprintBillingPlan (Step 14, items 3/4)
     expect(before.lines).toHaveLength(0)
     expect(after.lines).toHaveLength(1)
     expect(fingerprintBillingPlan(before)).not.toBe(fingerprintBillingPlan(after))
+  })
+})
+
+// Acceptance-test fix round, final amendment (Agreement A, item 1) — proves
+// the actual end-to-end execution-safety consequence of the fix in
+// lib/contract-extractor.ts's normalizeBillabilityCondition: a fee described
+// as "immediate" (kind: 'immediate' projects to due_date: null, which this
+// module's own isDue check — `!feeDueDate || feeDueDate <= now` — treats as
+// due unconditionally, with NO awareness of the agreement's Effective Date)
+// must never be able to bill before the contract's own stated Effective
+// Date, even when Verdix processes the contract well ahead of that date —
+// a normal, expected sequence, not an edge case.
+// Agreement A final amendment (post-review correction) — the ORIGINAL fix
+// for this bug (immediate -> due_date null -> always due now, regardless of
+// the agreement's own Effective Date) rewrote every extracted `immediate`
+// condition to fixed_date(contract_start_date) whenever a start date was
+// known. That was too broad: this normalization function has no access to
+// the source clause text, only the model's already-chosen `kind` — it
+// cannot tell a genuinely Effective-Date-tied clause ("billable immediately
+// on the Effective Date") apart from a genuinely signing-tied one
+// ("Customer shall pay the onboarding fee immediately [upon execution]")
+// misclassified as immediate, or a genuinely untethered one ("payable
+// immediately", no anchor named at all). Rewriting based on contractStartDate
+// alone would have silently moved a signing-anchored fee to the Effective
+// Date whenever the two differ (e.g. signed 1 September, Effective Date 1
+// October) — changing contract meaning from a field with no source
+// grounding to justify it. The fix now lives entirely in the extraction
+// PROMPT (lib/contract-extractor.ts's billability_condition guidance): the
+// model reads the actual clause and must emit fixed_date(contract_start_date)
+// directly whenever the clause names the Effective Date/commencement,
+// event/contract_signature whenever it names signing/execution (even when
+// "immediately" modifies that), and immediate only when the clause names
+// neither anchor. normalizeBillabilityCondition no longer reinterprets any
+// of this after the fact — these tests prove each already-correctly-classified
+// raw condition survives normalization unchanged, and that a genuine
+// `immediate` condition is never silently moved just because a start date
+// happens to be known.
+describe('billability_condition kinds survive normalization unchanged — no post-hoc reinterpretation from contractStartDate (Agreement A final amendment, item 1 correction)', () => {
+  it('a correctly-extracted Effective-Date fee (fixed_date) cannot execute before that date, and becomes due once it arrives', () => {
+    const effectiveDate = '2026-09-17'
+    const uploadDay = new Date('2026-08-01T00:00:00') // extraction happens well before the Effective Date
+    const rawTerms = {
+      customer_name: 'Acme Co', currency: 'SEK', contract_start_date: effectiveDate,
+      overage_tiers: [], discounts: [], service_credits: [],
+      one_time_fees: [{
+        fee_label: 'Account setup fee', amount: 15000, due_date: null, description: null,
+        // Simulates a correctly-prompted extraction for "billable
+        // immediately on the Effective Date" — the model, not this
+        // function, is responsible for choosing fixed_date here.
+        billability_condition: { kind: 'fixed_date', date: effectiveDate },
+      }],
+    } as unknown as ContractTerms
+
+    const terms = applyExtractionSafetyNets(rawTerms)
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'fixed_date', date: effectiveDate })
+    expect(fee.due_date).toBe(effectiveDate)
+
+    // Extracted a month and a half before the Effective Date -> must NOT be
+    // part of what's due now.
+    const beforeEffectiveDate = buildBillingPlanSnapshot({
+      terms, lineItems: [], evidence: [], alreadySentKeys: new Set(), provider: 'stripe', vat, now: uploadDay, computeBillingSchedule: noSchedule,
+    })
+    expect(beforeEffectiveDate.lines).toHaveLength(0)
+
+    // Once the Effective Date has actually arrived, the same fee becomes due.
+    const onEffectiveDate = buildBillingPlanSnapshot({
+      terms, lineItems: [], evidence: [], alreadySentKeys: new Set(), provider: 'stripe', vat, now: new Date(effectiveDate + 'T00:00:00'), computeBillingSchedule: noSchedule,
+    })
+    expect(onEffectiveDate.lines).toHaveLength(1)
+  })
+
+  it('an "upon signing" fee (event/contract_signature) is never moved to the Effective Date, even when contract_start_date is known and later than signing', () => {
+    const rawTerms = {
+      customer_name: 'Acme Co', currency: 'SEK', contract_start_date: '2026-10-01', // signed 1 Sept, effective 1 Oct
+      overage_tiers: [], discounts: [], service_credits: [],
+      one_time_fees: [{
+        fee_label: 'Onboarding fee', amount: 15000, due_date: null, description: null,
+        billability_condition: { kind: 'event', event_type: 'contract_signature' },
+      }],
+    } as unknown as ContractTerms
+    const terms = applyExtractionSafetyNets(rawTerms)
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'event', event_type: 'contract_signature' })
+    expect(fee.due_date).toBeNull() // never fixed_date('2026-10-01') — that would be a silent meaning change
+  })
+
+  it('a genuinely immediate fee is NOT rewritten to fixed_date merely because contract_start_date exists — the core regression from the prior, too-broad fix', () => {
+    const rawTerms = {
+      customer_name: 'Acme Co', currency: 'SEK', contract_start_date: '2026-10-01',
+      overage_tiers: [], discounts: [], service_credits: [],
+      one_time_fees: [{
+        fee_label: 'Onboarding fee', amount: 15000, due_date: null, description: null,
+        // "Customer shall pay the onboarding fee immediately" — no
+        // Effective Date or signing wording named at all.
+        billability_condition: { kind: 'immediate' },
+      }],
+    } as unknown as ContractTerms
+    const terms = applyExtractionSafetyNets(rawTerms)
+    const fee = terms.one_time_fees[0]
+    expect(fee.billability_condition).toEqual({ kind: 'immediate' })
+    expect(fee.due_date).toBeNull()
+  })
+
+  it('without a known contract_start_date, "immediate" is preserved as-is', () => {
+    const rawTerms = {
+      customer_name: 'Acme Co', currency: 'SEK',
+      overage_tiers: [], discounts: [], service_credits: [],
+      one_time_fees: [{
+        fee_label: 'Account setup fee', amount: 15000, due_date: null, description: null,
+        billability_condition: { kind: 'immediate' },
+      }],
+    } as unknown as ContractTerms
+    const terms = applyExtractionSafetyNets(rawTerms)
+    expect(terms.one_time_fees[0].billability_condition).toEqual({ kind: 'immediate' })
   })
 })

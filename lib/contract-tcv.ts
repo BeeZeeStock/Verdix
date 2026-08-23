@@ -20,19 +20,39 @@
 // — this is billed_to_date under a different label once nothing further
 // will ever be invoiced against it; see contractLifecycleStatus.
 import { supabaseServer } from '@/lib/supabase'
-import { computeBaseTcv } from '@/lib/contract-tcv-calc'
+import { computeBaseTcv, type BaseTcvItem } from '@/lib/contract-tcv-calc'
 import { computeContractValueModel, type ContractValueTier } from '@/lib/contract-value'
+import { isChangeOrderConditional } from '@/lib/billability-condition'
+import type { BillabilityCondition } from '@/lib/types'
 export { computeBaseTcv, computeCommittedContractValue, contractLifecycleStatus, isEscalatorItem } from '@/lib/contract-tcv-calc'
 export type { BaseTcvItem, ContractLifecycleStatus } from '@/lib/contract-tcv-calc'
 
 export type ContractSummary = {
   customer_name: string | null
-  /** Fixed fees — sum of confirmed non-escalator line items. */
+  /** "Potential fixed fees" — sum of confirmed non-escalator line items,
+   *  INCLUDING any fee still conditional on an unsigned future Change
+   *  Order. Kept as-is (unchanged meaning/name) for existing compact-table
+   *  consumers ("New contracts" list, Agreements dashboard) — see
+   *  committedFixedFees/conditionalFixedFees below for the split. */
   tcv: number
   /** @deprecated kept for existing callers during the terminology migration — identical to billedToDate + confirmed one-time additions folded in the old way. Prefer billedToDate/committedContractValue. */
   actualTcv: number
   billedToDate: number
+  /** Committed fixed fees + confirmed minimum commitments — NEVER includes
+   *  a fee still conditional on an unsigned future Change Order (Agreement
+   *  A final amendment, item 2). This is the figure safe to label
+   *  "committed" without qualification. */
   committedContractValue: number
+  /** Committed fixed fees alone (no minimum commitments) — see
+   *  lib/contract-tcv-calc.ts's computeCommittedFixedFees. */
+  committedFixedFees: number
+  /** Sum of fees still conditional on an unsigned future Change Order —
+   *  shown separately, never folded into committedFixedFees/
+   *  committedContractValue. */
+  conditionalFixedFees: number
+  /** committedFixedFees + conditionalFixedFees — equals tcv. Provided
+   *  alongside the split so a caller never has to re-derive it. */
+  potentialFixedFees: number
   currency: string
 }
 
@@ -41,7 +61,7 @@ export async function getContractSummaries(jobIds: string[]): Promise<Record<str
   const [{ data: termsData }, { data: lineItemsData }, { data: sentInvoicesData }, { data: billedRowsData }, { data: meterMappingsData }] = await Promise.all([
     supabaseServer
       .from('contract_terms')
-      .select('job_id, customer_name, currency, contract_term_months, contract_start_date, contract_end_date')
+      .select('job_id, customer_name, currency, contract_term_months, contract_start_date, contract_end_date, one_time_fees')
       .in('job_id', jobIds),
     supabaseServer
       .from('line_items')
@@ -67,15 +87,49 @@ export async function getContractSummaries(jobIds: string[]): Promise<Record<str
       .eq('confirmed', true),
   ])
 
-  type LI = { product_name: string; applied_rule: string | null; total_amount: number | null; billing_period: string | null }
-  const lineItemsByJob: Record<string, LI[]> = {}
+  // Agreement A final amendment (post-review correction) — the commercial-
+  // item construction boundary. line_items rows carry no stable identity
+  // back to a specific OneTimeFee (the line_items table has no fee_id
+  // column), and matching them to contract_terms.one_time_fees by
+  // product_name === fee_label was rejected: display labels are not stable
+  // commercial identity — that's exactly why OneTimeFee.fee_id exists (Step
+  // 13) — two fees can legitimately share a label, and a label match would
+  // silently misclassify one of them in a FINANCIAL total. Instead: exclude
+  // one-time rows from line_items entirely (a category filter on
+  // billing_period, not an identity match) and rebuild the one-time portion
+  // DIRECTLY from contract_terms.one_time_fees, which already carries
+  // amount and billability_condition natively — no matching needed at all.
+  // Recurring rows need no classification either: Change-Order
+  // conditionality only ever applies to one_time_fees in this domain model
+  // (see isChangeOrderConditional), so every recurring row is committed by
+  // construction. computeCommittedFixedFees/computeConditionalFixedFees
+  // themselves stay dumb summations — they never import
+  // billability-condition.ts; only this construction boundary does.
+  type LI = BaseTcvItem
+  const recurringLineItemsByJob: Record<string, LI[]> = {}
   for (const li of lineItemsData ?? []) {
-    ;(lineItemsByJob[li.job_id] ??= []).push({
+    if (li.billing_period === 'one_time') continue
+    ;(recurringLineItemsByJob[li.job_id] ??= []).push({
       product_name:  li.product_name  as string,
       applied_rule:  li.applied_rule  as string | null,
       total_amount:  li.total_amount  as number | null,
       billing_period: li.billing_period as string | null,
     })
+  }
+  const oneTimeItemsByJob: Record<string, LI[]> = {}
+  for (const row of termsData ?? []) {
+    const fees = (row.one_time_fees ?? []) as Array<{ fee_label?: string; amount?: number | null; billability_condition?: BillabilityCondition | null }>
+    oneTimeItemsByJob[row.job_id as string] = fees.map(f => ({
+      product_name: f.fee_label ?? '',
+      applied_rule: null,
+      total_amount: f.amount ?? 0,
+      billing_period: 'one_time',
+      commitmentStatus: isChangeOrderConditional(f.billability_condition) ? 'conditional_future_agreement' : 'committed',
+    }))
+  }
+  const lineItemsByJob: Record<string, LI[]> = {}
+  for (const jobId of new Set([...Object.keys(recurringLineItemsByJob), ...Object.keys(oneTimeItemsByJob)])) {
+    lineItemsByJob[jobId] = [...(recurringLineItemsByJob[jobId] ?? []), ...(oneTimeItemsByJob[jobId] ?? [])]
   }
 
   const sentByJob: Record<string, Array<{ fee_label: string | null; base_amount: number }>> = {}
@@ -150,7 +204,14 @@ export async function getContractSummaries(jobIds: string[]): Promise<Record<str
       tcv,
       actualTcv: tcv + additionsTotal,
       billedToDate,
-      committedContractValue: model.committedContractValue ?? tcv,
+      // Falls back to model.fixedFees (committed), never tcv (potential,
+      // includes any conditional Change-Order fee) — the two only diverge
+      // once a conditional fee exists, and a fallback must not silently
+      // reintroduce the exact number this fix excludes.
+      committedContractValue: model.committedContractValue ?? model.fixedFees,
+      committedFixedFees: model.fixedFees,
+      conditionalFixedFees: model.conditionalFixedFees,
+      potentialFixedFees: model.potentialFixedFees,
       currency: (row.currency as string | null) ?? 'EUR',
     }
   }

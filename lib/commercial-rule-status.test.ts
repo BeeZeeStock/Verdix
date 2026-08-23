@@ -854,3 +854,64 @@ describe('computeCommercialRuleWorkload — Step 13 operational evidence clears 
     expect(workload.executionBlockers).toHaveLength(1)
   })
 })
+
+// Agreement A final amendment, item 3 — the review-count divergence bug
+// (11/7 items shown in different parts of the same page) was two
+// independent call sites in app/(dashboard)/configure/[id]/page.tsx each
+// building their own arguments (one omitting operationalEventEvidence
+// entirely, one folding meterMapping down into a crude 0/1 pair) and each
+// defaulting `asOf` ambiently to `new Date()`. The real fix was
+// architectural — compute this once in the owning page component and pass
+// the single result down as a prop, so a second call site can no longer
+// exist to drift in the first place. This is the read-model-boundary
+// regression test for that invariant: computeCommercialRuleWorkload is
+// pure and must produce byte-identical output for byte-identical
+// arguments, INCLUDING when `asOf` is passed explicitly (as the real
+// call site does) rather than left to its ambient `new Date()` default —
+// two call sites that pass the same explicit asOf can never diverge on
+// evidence future-dating, closing off the exact non-determinism vector
+// that made the original two-call-site design unsafe.
+describe('computeCommercialRuleWorkload — determinism (Agreement A final amendment, item 3: one canonical workload object)', () => {
+  it('two calls with byte-identical terms/meterMapping/evidence/asOf produce byte-identical output', () => {
+    const terms: CommercialRuleTerms = {
+      overage_tiers: [{ unit_type: 'api_call', rate_per_unit: 1, minimum_commitment: { mode: 'floor', requires_confirmation: true } }],
+      discounts: [{ discount_rule_id: 'd1', interpretation: { requires_confirmation: true } }],
+      service_credits: [{
+        credit_rule_id: 'c1',
+        interpretation: { requires_confirmation: false, application_rule: { requires_confirmation: false } },
+      }],
+      one_time_fees: [{
+        fee_label: 'Implementation fee', fee_id: 'fee-1', amount: 150000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const meterMapping = { total: 2, confirmed: 1 }
+    const evidenceRows = [evidence()]
+
+    // Simulates the two independent "screens" (main page summary vs.
+    // ReviewPanel drawer) that previously each built their own arguments —
+    // now, both would receive this SAME computed object rather than
+    // calling the function separately at all, but the underlying
+    // guarantee this test protects is that doing so would have been safe:
+    // identical real inputs -> identical output, always.
+    const screenA = computeCommercialRuleWorkload(terms, meterMapping, 0, undefined, { configured: true }, undefined, evidenceRows, ASOF)
+    const screenB = computeCommercialRuleWorkload({ ...terms }, { ...meterMapping }, 0, undefined, { configured: true }, undefined, [...evidenceRows], ASOF)
+    expect(screenA).toEqual(screenB)
+  })
+
+  it('omitting operationalEventEvidence (the actual historical bug) DOES change the result — proving the argument matters and a single shared computation is the only way to guarantee it is never omitted at one call site but not another', () => {
+    const terms: CommercialRuleTerms = {
+      one_time_fees: [{
+        fee_label: 'Implementation fee', fee_id: 'fee-1', amount: 150000, amount_provenance: 'reviewer_policy',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        billability_provenance: 'reviewer_policy',
+      }],
+    }
+    const withEvidence = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [evidence()], ASOF)
+    const withoutEvidence = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [], ASOF)
+    expect(withEvidence.executionBlockers).toHaveLength(0)
+    expect(withoutEvidence.executionBlockers).toHaveLength(1)
+    expect(withEvidence).not.toEqual(withoutEvidence)
+  })
+})

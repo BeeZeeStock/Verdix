@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   parseBillabilityCondition, getBillabilityExecutionCapability, projectBillabilityConditionToExecutionFields,
+  describeBillabilityCondition, isChangeOrderConditional,
 } from './billability-condition'
 
 describe('parseBillabilityCondition — closed-union enforcement (item 2)', () => {
@@ -94,5 +95,51 @@ describe('projectBillabilityConditionToExecutionFields (item 15 — the ONE dete
     const signatureEvent = projectBillabilityConditionToExecutionFields({ kind: 'event', event_type: 'contract_signature' })
     expect(fixedDate).not.toEqual(signatureEvent)
     expect(signatureEvent.due_date).toBeNull()
+  })
+})
+
+describe('describeBillabilityCondition — canonical human-readable label, shared by review card and overview table', () => {
+  it('describes immediate as "Immediate", never "Contract signature" merely because a signing date coincides with the Effective Date (Agreement A regression)', () => {
+    expect(describeBillabilityCondition({ kind: 'immediate' })).toBe('Immediate')
+  })
+
+  it('describes fixed_date with the concrete date', () => {
+    expect(describeBillabilityCondition({ kind: 'fixed_date', date: '2026-10-15' })).toBe('Fixed date — 2026-10-15')
+  })
+
+  it('describes every event_type with its own distinct, human-readable label', () => {
+    expect(describeBillabilityCondition({ kind: 'event', event_type: 'contract_signature' })).toBe('Contract signature')
+    expect(describeBillabilityCondition({ kind: 'event', event_type: 'delivery' })).toBe('Delivery')
+    expect(describeBillabilityCondition({ kind: 'event', event_type: 'customer_acceptance' })).toBe('Customer acceptance')
+    expect(describeBillabilityCondition({ kind: 'event', event_type: 'final_acceptance' })).toBe('Final acceptance')
+    expect(describeBillabilityCondition({ kind: 'event', event_type: 'change_order_signature' })).toBe('Signed change order')
+  })
+
+  it('returns null for a null/undefined condition — never a fabricated label', () => {
+    expect(describeBillabilityCondition(null)).toBeNull()
+    expect(describeBillabilityCondition(undefined)).toBeNull()
+  })
+})
+
+describe('isChangeOrderConditional — the structural signal for "may never become billable" (item 3 aggregation)', () => {
+  it('is true only for event/change_order_signature', () => {
+    expect(isChangeOrderConditional({ kind: 'event', event_type: 'change_order_signature' })).toBe(true)
+  })
+
+  it('is false for every other event_type — these are all events within the current agreement\'s guaranteed lifecycle', () => {
+    expect(isChangeOrderConditional({ kind: 'event', event_type: 'contract_signature' })).toBe(false)
+    expect(isChangeOrderConditional({ kind: 'event', event_type: 'delivery' })).toBe(false)
+    expect(isChangeOrderConditional({ kind: 'event', event_type: 'customer_acceptance' })).toBe(false)
+    expect(isChangeOrderConditional({ kind: 'event', event_type: 'final_acceptance' })).toBe(false)
+  })
+
+  it('is false for immediate and fixed_date', () => {
+    expect(isChangeOrderConditional({ kind: 'immediate' })).toBe(false)
+    expect(isChangeOrderConditional({ kind: 'fixed_date', date: '2026-10-15' })).toBe(false)
+  })
+
+  it('is false for null/undefined — an unresolved condition is not treated as conditional-on-a-change-order', () => {
+    expect(isChangeOrderConditional(null)).toBe(false)
+    expect(isChangeOrderConditional(undefined)).toBe(false)
   })
 })

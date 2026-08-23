@@ -89,14 +89,14 @@ Rules:
   - When manual_trigger=true, set metric_name to the unit of work (e.g. "hours", "days", "sessions", "units") and rate_per_unit to the per-unit rate. Set amount=0 when the total is variable/unknown at contract time.
   - Set manual_trigger=false (or omit it) for fixed-amount fees — this includes fees gated on a contractual event (billability_condition.kind = "event"), not just fees with a clear calendar due date.
   - billability_condition — REQUIRED for every fixed-amount (non-manual_trigger) one_time_fees entry: the contractual condition that makes THIS fee billable, one of:
-    {"kind": "immediate"} — the contract states the fee is due/payable immediately, with NO further condition (e.g. "payable immediately", "due upon execution of this Agreement with no further condition"). Do NOT use this merely because no due date is stated elsewhere — see the null case below.
-    {"kind": "fixed_date", "date": "YYYY-MM-DD"} — the contract states a specific calendar date on which the fee becomes billable.
-    {"kind": "event", "event_type": "contract_signature"|"delivery"|"customer_acceptance"|"final_acceptance"|"change_order_signature"} — the fee becomes billable only once a specific contractual EVENT occurs, not a calendar date.
-      - "contract_signature": "upon signing" / "upon execution of this Agreement". CRITICAL: use this even when the contract's effective/start date is known elsewhere in the document — signing is a distinct commercial event from the stated start date, and must NEVER be collapsed into due_date/fixed_date just because a start date happens to be extractable. This is the single most common failure mode to avoid.
+    {"kind": "fixed_date", "date": "YYYY-MM-DD"} — the contract ties the fee to a specific calendar date. Use this for "on/as of the agreement's Effective Date" (e.g. "billable on the Effective Date", "due at contract commencement") — use the SAME date you extract as contract_start_date — ONLY when the clause's own words actually name the Effective Date/commencement ("Effective Date", "commencement", "contract start"); never merely because a start date happens to be extractable elsewhere in the document while the clause itself says something else (e.g. "immediately", "upon signing"). EXECUTION-SAFETY RULE for the genuine Effective-Date case: Verdix may process this contract before its Effective Date arrives, and "immediate" below has no way to hold the fee back until then — so a clause that DOES name the Effective Date must resolve to fixed_date with that concrete date, never to "immediate". This also covers any other explicitly separate milestone date the contract states, distinct from both signing and the Effective Date. "Effective Date" is the date the agreement's OBLIGATIONS begin — a distinct legal concept from the act of signing (see contract_signature below), even in the common case where the two dates happen to be the same calendar date in a given contract.
+    {"kind": "immediate"} — the clause states the fee is due/payable immediately, with NO reference to the Effective Date/commencement AND no reference to signing/execution either (those are fixed_date and contract_signature above/below, respectively) — e.g. "payable immediately", "due upon invoicing", or similar language naming neither anchor. Do NOT use "immediate" merely because no due date is stated elsewhere — see the null case below. Do NOT default bare "immediately" language toward fixed_date(contract_start_date) either, absent the clause actually naming the Effective Date — that guess is exactly as unsafe as defaulting toward "immediate": both silently pick a commercial meaning the clause's own words don't establish. Match only what the clause actually says.
+    {"kind": "event", "event_type": "contract_signature"|"delivery"|"customer_acceptance"|"final_acceptance"|"change_order_signature"} — the fee becomes billable only once a specific contractual EVENT occurs, not a calendar date and not the agreement taking effect.
+      - "contract_signature": specifically "upon signing" / "upon execution of this Agreement" / "upon countersignature" / "immediately upon execution of this Agreement" — the act of the parties signing, INCLUDING when "immediately" modifies the signing/execution language itself (the anchor is still the signing act, not a bare unconditional "immediate" — do not extract this as "immediate" merely because the word "immediately" appears). Use this ONLY when the clause's own language ties billability to the signing act itself. CRITICAL, and the single most common failure mode to avoid: do NOT use "contract_signature" for a clause that instead says "on/as of the Effective Date" — Effective Date and signature date are different commercial concepts even when their calendar values coincide in a given contract; a clause naming "the Effective Date" belongs under "fixed_date" above (using the Effective Date's own value), never here, regardless of whether a signature date is also extractable elsewhere in the document. Conversely, do not collapse an actual "upon signing" clause into "fixed_date"/"immediate" just because a start date happens to be extractable elsewhere — the two failure modes are mirror images of each other; always match the clause's OWN stated trigger word ("signing"/"execution" vs "Effective Date" vs neither).
       - "delivery": "upon delivery" / "upon completion of the Services" — distinct from acceptance; do not use this for language that instead describes a customer sign-off/approval step.
       - "customer_acceptance": "upon Customer's acceptance" / "upon written acceptance of the deliverables".
       - "final_acceptance": ONLY when the contract itself explicitly distinguishes an earlier/interim acceptance from a separate, later FINAL acceptance milestone — otherwise use "customer_acceptance".
-      - "change_order_signature": "upon execution of a signed Change Order".
+      - "change_order_signature": "upon execution of a signed Change Order" — note for aggregation purposes elsewhere in this pipeline: a fee gated on a Change Order is inherently conditional/optional (the Change Order may never be executed), unlike every other event type above, which are all events within the current agreement's own guaranteed lifecycle.
       - COUNTEREXAMPLE: if the contract explicitly states an equivalence such as "delivery shall constitute acceptance", use event_type "delivery" (the contract's own stated trigger) — do not invent a general rule that delivery always equals acceptance for other fees where the contract does not say this.
     null — the contract does not state any determinable billing timing or triggering condition for this fee. NEVER default to "immediate" merely because no date/event is stated — that silence must stay null. NEVER force a condition that doesn't clearly fit one of the five events above into the closest-sounding category (e.g. a "deemed accepted after 10 business days unless rejected" clause, or a partial-now/partial-on-milestone retention split) — leave billability_condition null for these and note the complication in description; a human will review it.
   - due_date should be kept consistent with billability_condition when you set one: fixed_date -> due_date = billability_condition.date; event or immediate -> due_date = null. Verdix's own normalization is the actual source of truth for due_date, so this consistency matters less than getting billability_condition itself right.
@@ -673,6 +673,34 @@ export function isExistingVariableRateFeeShape(fee: OneTimeFee): boolean {
 // resolved (isProvenanceResolved(billability_provenance)) — re-extraction
 // must not silently overwrite a human's prior confirmation or a genuine
 // contract_derived resolution.
+//
+// Acceptance-test fix round — a fee described as "billable immediately on
+// the Effective Date" is not safely representable as `immediate` (it
+// projects to due_date: null, which lib/billing-execution-plan.ts's due-now
+// check reads as "due whenever this next runs," with no awareness of the
+// Effective Date — see lib/billing-execution-plan.test.ts's execution-safety
+// regression). The FIX for that lives entirely in the extraction PROMPT
+// above (billability_condition's fixed_date/immediate guidance): the model
+// reads the actual clause and is instructed to emit fixed_date(contract_
+// start_date) directly whenever the clause names the Effective Date/
+// commencement, reserving immediate for wording with no such reference.
+//
+// A prior draft of this function ALSO rewrote every `kind: 'immediate'` to
+// `fixed_date(contractStartDate)` here, unconditionally, whenever a start
+// date was known — deliberately removed. This function has no access to the
+// source clause text, only the model's already-chosen `kind` — it cannot
+// tell "Customer shall pay the onboarding fee immediately [upon execution]"
+// (genuinely tied to signing, wrongly extracted as immediate rather than
+// event/contract_signature — a different bug) apart from "billable
+// immediately on the Effective Date" (genuinely Effective-Date-tied). Since
+// a contract almost always HAS a start date, that rewrite would have fired
+// on every immediate fee regardless of what the clause actually says,
+// silently changing a signing-anchored fee's commercial meaning to an
+// Effective-Date-anchored one whenever the two dates differ (e.g. signed 1
+// September, Effective Date 1 October). Reinterpreting contract meaning
+// from a field this function cannot ground in source text is worse than the
+// residual risk it would have closed — the correct fix is upstream, in what
+// the model is told to extract, not a downstream structural guess.
 function normalizeBillabilityCondition(fees: OneTimeFee[]): OneTimeFee[] {
   return fees.map(fee => {
     if (isProvenanceResolved(fee.billability_provenance)) return fee

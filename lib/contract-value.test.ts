@@ -77,6 +77,42 @@ describe('computeContractValueModel — minimum commitments summed across every 
   })
 })
 
+// Agreement A final amendment, item 2 — a fee still conditional on an
+// unsigned future Change Order must never inflate fixedFees/
+// committedContractValue, must be visible separately via
+// conditionalFixedFees, and fixedRecurringValue must stay correct (not go
+// negative) despite oneTimeFees and fixedFees both excluding it in lockstep.
+describe('computeContractValueModel — Change-Order-conditional fees (Agreement A, item 2)', () => {
+  it('fixedFees/committedContractValue exclude the conditional fee; conditionalFixedFees/potentialFixedFees surface it separately', () => {
+    const items = [
+      item({ total_amount: 1008000, product_name: 'Base subscription' }),
+      item({ total_amount: 190000, product_name: 'Implementation fee', billing_period: 'one_time' }),
+      item({
+        total_amount: 60000, product_name: 'ERP connector', billing_period: 'one_time',
+        commitmentStatus: 'conditional_future_agreement',
+      }),
+    ]
+    const model = computeContractValueModel(inputs({ items }))
+    expect(model.fixedFees).toBe(1198000)
+    expect(model.conditionalFixedFees).toBe(60000)
+    expect(model.potentialFixedFees).toBe(1258000)
+    // Do not call 1,258,000 committed contract value while the Change Order is unsigned.
+    expect(model.committedContractValue).toBe(1198000)
+  })
+
+  it('fixedRecurringValue stays correct (never negative) even though a conditional one-time fee is excluded from both fixedFees and oneTimeFees', () => {
+    const items = [
+      item({ total_amount: 1008000, product_name: 'Base subscription' }),
+      item({
+        total_amount: 60000, product_name: 'ERP connector', billing_period: 'one_time',
+        commitmentStatus: 'conditional_future_agreement',
+      }),
+    ]
+    const model = computeContractValueModel(inputs({ items }))
+    expect(model.fixedRecurringValue).toBe(1008000)
+  })
+})
+
 describe('computeContractValueModel — cross-screen consistency (regression: 104,375 vs 126,375 divergence)', () => {
   it('two independent call sites given the same inputs produce identical output', () => {
     const sharedInputs = inputs({

@@ -111,3 +111,41 @@ export function projectBillabilityConditionToExecutionFields(
     case 'event': return { due_date: null, manual_trigger: true }
   }
 }
+
+// Acceptance-test fix round — the ONE canonical, human-readable
+// description of a BillabilityCondition, used by BOTH the one-time-fee
+// review card and the Products & Services overview table (previously two
+// independent copies — a page-local one only the review card used, and a
+// generic fee-type guess ("Services"/"Hardware"/"On delivery") in the
+// overview table that could contradict it). Never raw JSON, never the
+// internal event_type string as-is.
+const BILLABILITY_EVENT_LABELS: Record<BillabilityEventType, string> = {
+  contract_signature: 'Contract signature',
+  delivery: 'Delivery',
+  customer_acceptance: 'Customer acceptance',
+  final_acceptance: 'Final acceptance',
+  change_order_signature: 'Signed change order',
+}
+export function describeBillabilityCondition(condition: BillabilityCondition | null | undefined): string | null {
+  if (!condition) return null
+  if (condition.kind === 'immediate') return 'Immediate'
+  if (condition.kind === 'fixed_date') return `Fixed date — ${condition.date}`
+  return BILLABILITY_EVENT_LABELS[condition.event_type] ?? condition.event_type
+}
+
+// Acceptance-test fix round, item 3 — the operational definition of
+// "conditional" for one-time-fee AGGREGATION purposes (contract-brief
+// summary totals, Pricing-overview cards): a fee gated on a Change Order
+// is inherently optional — the Change Order may never be executed —
+// unlike every other billability event (contract_signature/delivery/
+// customer_acceptance/final_acceptance), all of which are events within
+// the CURRENT agreement's own guaranteed lifecycle (the fee is definitely
+// going to be billed; only the timing is pending). This is the one
+// existing, structurally-modeled signal that matches "may never become
+// billable" — deliberately not a new schema field, and deliberately not
+// the unrelated fee-label/type heuristic (classifyFee in the Configure
+// page) some UI elsewhere uses for a different purpose (grouping by kind
+// of fee, not by certainty of billing).
+export function isChangeOrderConditional(condition: BillabilityCondition | null | undefined): boolean {
+  return condition?.kind === 'event' && condition.event_type === 'change_order_signature'
+}

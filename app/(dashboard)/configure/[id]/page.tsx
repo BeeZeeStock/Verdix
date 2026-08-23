@@ -11,12 +11,13 @@ import { MeterMappingPanel } from '@/app/_components/MeterMappingPanel'
 import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCard'
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
-import { computeBaseTcv, contractLifecycleStatus } from '@/lib/contract-tcv-calc'
+import { computeBaseTcv, computeCommittedFixedFees, computeConditionalFixedFees, contractLifecycleStatus, type BaseTcvItem } from '@/lib/contract-tcv-calc'
 import { ruleCadenceLabel, cadenceNoun, contractMonthLabel } from '@/lib/cadence-labels'
 import { optionsForRuleType, optionsForEdit, deriveSelectedOption, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
-import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved } from '@/lib/commercial-rule-status'
+import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
+import { describeBillabilityCondition, isChangeOrderConditional } from '@/lib/billability-condition'
 import { getCreditRepresentationCapability } from '@/lib/connectors/billing/types'
 import { FinancialAmount, FinancialMetaTag } from '@/app/_components/FinancialAmount'
 import { FinancialKPICard } from '@/app/_components/FinancialKPICard'
@@ -298,7 +299,14 @@ function parseLocalDate(s: string): Date {
 function buildContractSummary(
   terms: Terms | undefined,
   cur: string,
-  tcv: number,
+  // committedFixedFees/conditionalFixedFees — the full-contract split
+  // (recurring + one-time, annotated by the caller via
+  // computeCommittedFixedFees/computeConditionalFixedFees), NOT the
+  // one-time-fees-only split this function derives internally below for
+  // oneTimeStr. Agreement A final amendment, item 2 — the summary sentence
+  // must never call the Change-Order-conditional portion "committed".
+  committedFixedFees: number,
+  conditionalFixedFees: number,
   userTiers: Tier[],
   apiTiers: Tier[],
 ): string[] {
@@ -346,13 +354,25 @@ function buildContractSummary(
   // X" right after "subscription" reads as if X were the subscription's own
   // value, when Fixed fees (tcv) is actually subscription + one-time combined.
   const oneTimeFees = (terms.one_time_fees ?? []).filter(f => (f.amount ?? 0) > 0)
-  const oneTimeTotal = oneTimeFees.reduce((s, f) => s + Number(f.amount ?? 0), 0)
-  const oneTimeStr = oneTimeFees.length === 1
-    ? ` plus a ${fmt(oneTimeFees[0].amount, cur)} one-time ${oneTimeFees[0].fee_label.toLowerCase()}`
-    : oneTimeFees.length > 1
-      ? ` plus ${fmt(oneTimeTotal, cur)} in one-time fees`
-      : ''
-  const tcvStr = tcv > 0 ? ` Fixed fees over the initial term: ${fmt(tcv, cur)}.` : ''
+  // Item 3 — same conditionality split as the Pricing overview's own
+  // cards (isChangeOrderConditionalFee): a fee gated on a Change Order
+  // that may never be executed is never folded into the same total as a
+  // fee that's definitely going to be billed, so this sentence can never
+  // disagree with the overview cards' own figures again.
+  const unconditionalSummaryFees = oneTimeFees.filter(f => !isChangeOrderConditionalFee(f))
+  const conditionalSummaryFees   = oneTimeFees.filter(isChangeOrderConditionalFee)
+  const unconditionalSummaryTotal = unconditionalSummaryFees.reduce((s, f) => s + Number(f.amount ?? 0), 0)
+  const conditionalSummaryTotal   = conditionalSummaryFees.reduce((s, f) => s + Number(f.amount ?? 0), 0)
+  const oneTimeStr = (unconditionalSummaryFees.length === 1
+    ? ` plus a ${fmt(unconditionalSummaryFees[0].amount, cur)} one-time ${unconditionalSummaryFees[0].fee_label.toLowerCase()}`
+    : unconditionalSummaryFees.length > 1
+      ? ` plus ${fmt(unconditionalSummaryTotal, cur)} in one-time fees`
+      : '') + (conditionalSummaryFees.length > 0
+    ? `${unconditionalSummaryFees.length > 0 ? ' (' : ' plus '}${fmt(conditionalSummaryTotal, cur)} conditional on a signed Change Order${unconditionalSummaryFees.length > 0 ? ')' : ''}`
+    : '')
+  const tcvStr = committedFixedFees > 0
+    ? ` Committed fixed fees over the initial term: ${fmt(committedFixedFees, cur)}${conditionalFixedFees > 0 ? ` (plus ${fmt(conditionalFixedFees, cur)} conditional on a signed Change Order — potential total ${fmt(committedFixedFees + conditionalFixedFees, cur)})` : ''}.`
+    : ''
   lines.push(`${duration}contract${customer}${dates} — ${pricing}${oneTimeStr}.${tcvStr}`)
 
   // ── Sentence 2: billing cadence · payment terms · auto-renewal ───────────
@@ -443,6 +463,19 @@ function classifyFee(label: string): 'service' | 'hardware' | 'other' {
   if (/service|implement|setup|onboard|profession|training|consult|deploy|migration/.test(l)) return 'service'
   if (/hardware|device|equipment|physical|machine|sensor/.test(l)) return 'hardware'
   return 'other'
+}
+
+// billabilityConditionLabel/isChangeOrderConditionalFee now live in
+// lib/billability-condition.ts (describeBillabilityCondition/
+// isChangeOrderConditional) — item 10/3, so both this page's review card
+// and Products & Services overview table, and any future page, share the
+// exact same canonical labels/conditionality definition, with real unit
+// test coverage (lib/billability-condition.test.ts).
+function billabilityConditionLabel(c: OneTimeFee['billability_condition']): string | null {
+  return describeBillabilityCondition(c ?? null)
+}
+function isChangeOrderConditionalFee(f: OneTimeFee): boolean {
+  return isChangeOrderConditional(f.billability_condition ?? null)
 }
 
 // Exports billing line items as a Stripe-compatible CSV
@@ -725,6 +758,27 @@ function SectionChip({ heading, onClick }: { heading?: string; onClick: () => vo
       title={`Open §${heading} in contract PDF`}
     >
       §{num ?? heading}
+    </button>
+  )
+}
+
+// Item 6 — a small, adjacent "View source clause ↗" affordance for a
+// review card, using the SAME onViewSource callback (and PDF-scrolling
+// behavior) the line-items table's per-section header already uses.
+// Module scope (not declared inside ReviewPanel) so it isn't recreated on
+// every render — a component created during render resets its own state
+// each time, which is meaningless here since it's stateless, but is still
+// flagged by react-hooks/static-components and is bad practice regardless.
+// Renders nothing when no section is known (never a dead/misleading link)
+// or when the caller has no onViewSource at all.
+function SourceClauseLink({ section, onViewSource }: { section: string | undefined; onViewSource?: (section: string) => void }) {
+  if (!section || !onViewSource) return null
+  return (
+    <button
+      onClick={() => onViewSource(section)}
+      className="text-[10px] font-medium text-forest hover:underline whitespace-nowrap flex-shrink-0"
+    >
+      View source clause ↗
     </button>
   )
 }
@@ -1930,21 +1984,27 @@ function RuleInterpretationCard({
             // and why they're not being asked a question. This is the
             // proposal's own advisory metadata; the value confirm-rule
             // actually applies is independently re-resolved server-side.
+            // Item 7 — tightened to "source fact -> short explanation",
+            // never restating the card title or the full clause prose here
+            // (the clause itself stays available via the card's own More
+            // details/source disclosure). Material facts (which dimension
+            // is open, what an organization policy would apply) are kept —
+            // concise is not the same as incomplete (item 9).
             const decisionRequiredText = aiProposal.survival_organization_policy
-              ? `The contract doesn't state this, but your organization's own policy already covers it — ${describeSurvivalResolution({ carry_forward: aiProposal.survival_organization_policy.value }).charAt(0).toLowerCase()}${describeSurvivalResolution({ carry_forward: aiProposal.survival_organization_policy.value }).slice(1)} Confirming this credit applies that policy automatically, with no separate decision needed here.`
+              ? `Not stated in the contract. Your organization's policy applies: ${describeSurvivalResolution({ carry_forward: aiProposal.survival_organization_policy.value }).charAt(0).toLowerCase()}${describeSurvivalResolution({ carry_forward: aiProposal.survival_organization_policy.value }).slice(1)}`
               : survivalCarryForwardOpen && !survivalOneTimeOpen
-                ? "The contract doesn't state what happens to any portion of this credit that is credited but not fully applied."
+                ? 'The contract does not say what happens to an unused balance.'
                 : survivalOneTimeOpen && !survivalCarryForwardOpen
-                  ? "The contract doesn't state whether this credit can be earned more than once — resolve this before it can be applied against an invoice."
-                  : "The contract doesn't state how long an earned-but-unused credit remains available, or whether it can be earned more than once — resolve this before it can be applied against an invoice."
+                  ? 'The contract does not say whether this credit can be earned more than once.'
+                  : 'The contract does not say how long an earned credit stays available, or whether it can be earned more than once.'
             const resolvedText = survivalNeedsInlinePicker
               ? 'Verdix recommends a treatment below — confirm it or choose a different one.'
-              : "Whether this credit carries forward and whether it can be earned more than once is covered in the reasoning above."
+              : 'Covered in the reasoning above.'
             return (
               <SubStateBadge
                 label={label}
                 state={aiProposal.survival_state}
-                decisionRequiredText={survivalNeedsInlinePicker ? `${decisionRequiredText} Pick how it should be treated below.` : decisionRequiredText}
+                decisionRequiredText={survivalNeedsInlinePicker ? `${decisionRequiredText} Choose the treatment.` : decisionRequiredText}
                 resolvedText={resolvedText}
                 organizationPolicyAvailable={!!aiProposal.survival_organization_policy}
               />
@@ -1967,8 +2027,8 @@ function RuleInterpretationCard({
               label="Cash redeemability"
               state={aiProposal.cash_redeemable_state}
               nonBlocking
-              decisionRequiredText="The contract doesn't state whether this credit may be paid out in cash rather than applied against future invoices. This isn't needed to apply the credit against future invoices — it would only matter if a cash payout were requested."
-              resolvedText="Whether this credit may be paid out in cash is covered in the reasoning above."
+              decisionRequiredText="Cash redemption is not specified. This does not block invoice-credit use."
+              resolvedText="Covered in the reasoning above."
             />
           )}
           {/* Inline decision-required/recommendation picker — neither state
@@ -3102,6 +3162,7 @@ function ReviewPanel({
   baseFeeProration,
   additionalRecurringFees,
   oneTimeFees,
+  fieldSources,
   operationalEventEvidence,
   extractionNotes,
   contractStartDate,
@@ -3115,6 +3176,7 @@ function ReviewPanel({
   onVatStatusChange,
   onVatSaved,
   refreshSignal,
+  workload,
 }: {
   items: LineItem[]
   corrections: Record<string, { value: string; remember: boolean }>
@@ -3131,6 +3193,14 @@ function ReviewPanel({
   additionalRecurringFees?: AdditionalRecurringFee[]
   // Step 11B — the minimal OneTimeFee review path.
   oneTimeFees?: OneTimeFee[]
+  // Item 6 — maps a field key (e.g. "base_monthly_fee") to the contract
+  // section it was extracted from, e.g. "1.1 Base Platform Fee" — the
+  // same field the main page's own line-items view already reads
+  // (terms.field_sources), threaded in here so the base-fee/recurring-fee
+  // billing-period cards can show their own adjacent source link even
+  // though the base fee itself isn't addressed by a fee_label the way a
+  // one-time fee is (see findSourceSection for that path instead).
+  fieldSources?: Record<string, string>
   // Step 13 — real operational_event_evidence rows for this job.
   operationalEventEvidence?: OperationalEventEvidence[]
   // Free-text notes the extraction model writes for anything it noticed but
@@ -3163,6 +3233,19 @@ function ReviewPanel({
   // reload. Also used by the drawer's own VatReviewCard so a VAT save from
   // the main GUI (or vice versa) is reflected here without a manual reload.
   refreshSignal?: number
+  // Agreement A final amendment, item 3 — computed ONCE by the owning page
+  // component (same inputs as its own summary/readiness banner: terms,
+  // meterMappingSummary, unresolvedInteractions, vatConfigured,
+  // job?.operational_event_evidence) and passed down here, rather than this
+  // panel independently re-deriving a second computeCommercialRuleWorkload
+  // call from its own separately-fetched meterSuggestions/vat. One job
+  // state -> one canonical workload object -> every displayed count. Safe
+  // because every input that differed between the two former calls
+  // (meter-mapping totals, VAT status) is already fetched by both the
+  // parent and this panel off the SAME refreshSignal/endpoint, so using the
+  // parent's value introduces no staleness — see the removed local
+  // computeCommercialRuleWorkload call this replaced for the full history.
+  workload: CommercialRuleWorkload
 }) {
   const [saving,    setSaving]    = useState<string | null>(null)
   const [resolved,  setResolved]  = useState<Record<string, 'confirmed' | 'corrected'>>({})
@@ -3176,6 +3259,16 @@ function ReviewPanel({
   // not eagerly for every fee on render.
   const [evidenceDateDraft, setEvidenceDateDraft] = useState<Record<string, string>>({})
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  // Item 6 — every LineItem already carries its own source_section (the
+  // SAME field the line-items table's "Contract §X" grouping already
+  // reads — see the groups.reduce below). Reused here, never hardcoded,
+  // so a review card's source link is driven by the actual extracted
+  // provenance for THAT fee, not a section number typed into the JSX.
+  // Matched by product_name, mirroring how buildLineItems itself
+  // addresses a one-time fee's own generated row.
+  const findSourceSection = (feeLabel: string): string | undefined =>
+    items.find(i => i.product_name === feeLabel)?.source_section ?? undefined
 
   // Meter-mapping suggestions, fetched once so any rule-interpretation card
   // can show/resolve its "usage source" dependency inline — the same data
@@ -3204,46 +3297,27 @@ function ReviewPanel({
 
   const partialPeriodMetrics = computePartialPeriodMetrics(contractStartDate, contractEndDate, overageTiers ?? [])
 
-  // Canonical readiness — same computeCommercialRuleWorkload call the main
-  // page and the server approval gate use, built from this panel's own
-  // already-fetched data (overageTiers/discounts/serviceCredits/
-  // baseFeeProration/meterSuggestions), so the drawer header can never show
-  // a different "N confirmed" than the page-level readiness banner. This
-  // replaces the old resolvedCount/items.length header, which tracked
-  // per-LINE-ITEM confirmation (a mechanism the metric-scoped rule cards —
-  // minimum commitment, partial period, base-fee proration, tier
-  // calculation — never actually write to, so it stayed stuck at "0 of N"
-  // regardless of how many of those cards were genuinely confirmed.
-  const unresolvedInteractionsForWorkload = detectRuleInteractionCandidates({
-    service_credits: serviceCredits, discounts, escalators,
-  }).filter(cand => {
-    const credit = (serviceCredits ?? []).find(c => c.credit_rule_id === cand.creditId)
-    return !!credit?.interpretation && !credit.interpretation.requires_confirmation && !credit.interpretation.interaction_note
-  })
-  const meterMappingWorkload = {
-    total: meterSuggestions.length,
-    confirmed: meterSuggestions.filter(s => isMeterMappingResolved({
-      classification: s.input_classification ?? 'meter', confirmed: s.confirmed, meter_key: s.meter_key, manual_value_configured: s.manual_value_configured,
-    })).length,
-  }
   // Same canonical useVatConfig hook every VAT surface in the product uses
   // (main GUI's pre-approval row, BillingSummaryCard, and this drawer's own
   // VatReviewCard below) — refreshSignal keeps this in sync with whichever
   // surface last saved, and onVatStatusChange feeds the page's own
-  // vatConfigured state so the Approve gate sees one canonical value.
+  // vatConfigured state so the Approve gate sees one canonical value. Still
+  // needed for the VAT card UI below even though its aggregate .configured
+  // no longer independently feeds a second computeCommercialRuleWorkload
+  // call — see the `workload` prop's own doc comment.
   const vat = useVatConfig(jobId, refreshSignal, onVatStatusChange)
 
-  const commercialWorkload = computeCommercialRuleWorkload(
-    {
-      overage_tiers: overageTiers, escalators, discounts, service_credits: serviceCredits,
-      base_fee_proration: baseFeeProration, additional_recurring_fees: additionalRecurringFees,
-      contract_start_date: contractStartDate, contract_end_date: contractEndDate,
-    },
-    meterMappingWorkload,
-    unresolvedInteractionsForWorkload.length,
-    undefined,
-    { configured: vat.configured },
-  )
+  // Agreement A final amendment, item 3 — canonical readiness is now the
+  // `workload` prop, computed ONCE by the owning page component and passed
+  // down (see its doc comment above), never a second independent
+  // computeCommercialRuleWorkload call built from this panel's own
+  // separately-fetched meterSuggestions/vat. This replaces the old
+  // resolvedCount/items.length header, which tracked per-LINE-ITEM
+  // confirmation (a mechanism the metric-scoped rule cards — minimum
+  // commitment, partial period, base-fee proration, tier calculation —
+  // never actually write to, so it stayed stuck at "0 of N" regardless of
+  // how many of those cards were genuinely confirmed.
+  const commercialWorkload = workload
   const usageMappingsOutstanding = Math.max(0, commercialWorkload.meterMapping.total - commercialWorkload.meterMapping.confirmed)
   const commercialDecisionsOutstanding = commercialWorkload.totalToConfirm + commercialWorkload.interactionsToConfirm
   const vatOutstandingInPanel = !commercialWorkload.vat.configured
@@ -3637,9 +3711,18 @@ function ReviewPanel({
             if (unresolvedDiscounts.length === 0) return null
             return (
               <div>
+                {/* Item 5 — a shared local heading, not a detached block: every
+                    discount in this group traces back to the SAME extracted
+                    field_sources.discounts section (extraction records one
+                    section per FIELD, not per discount item) — acceptable per
+                    "if several cards share a clause group, a shared local
+                    heading is acceptable but must not be detached", since
+                    this link sits directly in the group's own header, not in
+                    a separate far-away block. */}
                 <div className="flex items-center gap-2 mb-3">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Discounts</p>
                   <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                  <SourceClauseLink section={fieldSources?.discounts} onViewSource={onViewSource} />
                 </div>
                 <div className="space-y-3">
                   {unresolvedDiscounts.map((d, i) => {
@@ -3697,9 +3780,13 @@ function ReviewPanel({
             if (unresolvedCredits.length === 0) return null
             return (
               <div>
+                {/* Item 5 — shared local heading, same rationale as the
+                    Discounts group above (field_sources.service_credits is
+                    one section per FIELD, not per credit item). */}
                 <div className="flex items-center gap-2 mb-3">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Service credits</p>
                   <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                  <SourceClauseLink section={fieldSources?.service_credits} onViewSource={onViewSource} />
                 </div>
                 <div className="space-y-3">
                   {unresolvedCredits.map((c, i) => {
@@ -3749,9 +3836,17 @@ function ReviewPanel({
             if (candidates.length === 0) return null
             return (
               <div>
+                {/* Item 5 — a rule interaction is a DERIVED comparison
+                    between an already-sourced service credit and an
+                    already-sourced discount/escalator, not its own
+                    extracted field — links to the credit's own group source
+                    (its own card, addressed via creditId, is the anchor this
+                    card resolves) rather than inventing a second combined
+                    reference. */}
                 <div className="flex items-center gap-2 mb-3">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Rule interactions</p>
                   <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                  <SourceClauseLink section={fieldSources?.service_credits} onViewSource={onViewSource} />
                 </div>
                 <div className="space-y-3">
                   {candidates.map(cand => (
@@ -3788,7 +3883,17 @@ function ReviewPanel({
               Discounts/Service credits above. Only surfaced once extraction
               has actually flagged a calendar-anchored ambiguity
               (requires_confirmation === true); a contract with no such
-              ambiguity (or one already resolved) shows nothing here. */}
+              ambiguity (or one already resolved) shows nothing here.
+              Deliberately does NOT hardcode a "Decision required" badge or
+              generic "does not specify" prose here — RuleInterpretationCard
+              runs its own propose-rule analysis of the real source_clause
+              and owns its own state badge (Clear from source / Verdix
+              recommendation / Decision required), exactly like every other
+              metric-scoped rule card (renderMetricRuleCard above). A
+              contract that actually resolves the period-boundary question
+              in its source text (e.g. an explicit "Contract Month" clause)
+              must show as resolved, not be contradicted by stale outer
+              copy asserting the contract is silent. */}
           {(() => {
             const baseUnresolved = !!baseFeeProration?.requires_confirmation && !!baseFeeAmount
             const unresolvedFees = (additionalRecurringFees ?? []).filter(f => f.proration?.requires_confirmation)
@@ -3801,21 +3906,13 @@ function ReviewPanel({
                 </div>
                 <div className="space-y-3">
                   {baseUnresolved && (
-                    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FECACA', background: 'white' }}>
+                    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
                       <div className="px-4 pt-4 pb-3">
                         <div className="flex items-center gap-1.5 mb-2.5">
                           <i className="ti ti-calendar-exclamation text-stone" style={{ fontSize: 12 }} />
-                          <span
-                            className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full"
-                            style={{ background: 'rgba(153,27,27,0.1)', color: '#991B1B' }}
-                          >
-                            Decision required
-                          </span>
+                          <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">Platform fee billing period</span>
+                          <SourceClauseLink section={fieldSources?.base_monthly_fee ?? fieldSources?.base_annual_fee} onViewSource={onViewSource} />
                         </div>
-                        <p className="text-sm font-medium text-ink leading-snug mb-1">Platform fee billing-period treatment</p>
-                        <p className="text-[11px] text-stone leading-relaxed mb-3">
-                          The contract states {fmt(baseFeeAmount, cur ?? 'EUR')}/{contractBillingFrequency === 'annual' ? 'year' : contractBillingFrequency === 'quarterly' ? 'quarter' : 'month'} billed {contractBillingFrequency ?? 'monthly'} in advance, but does not specify whether {contractBillingFrequency === 'annual' ? 'annual' : contractBillingFrequency === 'quarterly' ? 'quarterly' : 'monthly'} periods follow the Effective Date{contractStartDate ? ` (${contractStartDate})` : ''} or calendar {contractBillingFrequency === 'annual' ? 'years' : contractBillingFrequency === 'quarterly' ? 'quarters' : 'months'}.
-                        </p>
                         <RuleInterpretationCard
                           jobId={jobId}
                           kind="base_fee_proration"
@@ -3830,16 +3927,13 @@ function ReviewPanel({
                     </div>
                   )}
                   {unresolvedFees.map((f, i) => (
-                    <div key={f.fee_label ?? i} className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FAC775', background: 'white' }}>
+                    <div key={f.fee_label ?? i} className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
                       <div className="px-4 pt-4 pb-3">
                         <div className="flex items-center gap-1.5 mb-2.5">
                           <i className="ti ti-calendar-exclamation text-stone" style={{ fontSize: 12 }} />
-                          <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">Partial-period treatment</span>
+                          <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">{f.fee_label} billing period</span>
+                          <SourceClauseLink section={findSourceSection(f.fee_label)} onViewSource={onViewSource} />
                         </div>
-                        <p className="text-sm font-medium text-ink leading-snug mb-1">{f.fee_label}</p>
-                        <p className="text-[11px] text-stone leading-relaxed mb-3">
-                          The agreement states the {fmt(f.amount, cur ?? 'EUR')} fee is billed {f.billing_frequency ?? contractBillingFrequency ?? 'monthly'}, but does not say whether billing periods reset on calendar boundaries or on the contract start date itself{contractStartDate ? ` (${contractStartDate})` : ''}. This decides whether a partial-period question exists at all.
-                        </p>
                         <RuleInterpretationCard
                           jobId={jobId}
                           kind="recurring_fee_proration"
@@ -3884,19 +3978,11 @@ function ReviewPanel({
             )
             if (feesNeedingAttention.length === 0) return null
 
-            const BILLABILITY_EVENT_LABELS: Record<string, string> = {
-              contract_signature: 'Contract signature',
-              delivery: 'Delivery',
-              customer_acceptance: 'Customer acceptance',
-              final_acceptance: 'Final acceptance',
-              change_order_signature: 'Signed change order',
-            }
-            const billabilityConditionLabel = (c: OneTimeFee['billability_condition']): string | null => {
-              if (!c) return null
-              if (c.kind === 'immediate') return 'Immediate'
-              if (c.kind === 'fixed_date') return `Fixed date — ${c.date}`
-              return BILLABILITY_EVENT_LABELS[c.event_type] ?? c.event_type
-            }
+            // billabilityConditionLabel is now module-scope (see near
+            // classifyFee above) — item 10, so the Products & Services
+            // overview table can share the exact same canonical labels
+            // this review card uses, rather than an independent "On
+            // delivery"/"Services" fee-type guess that could contradict it.
 
             // The client only ever says WHICH dimension it is confirming —
             // confirmAmount / confirmBillability, plain booleans — never an
@@ -4029,7 +4115,8 @@ function ReviewPanel({
                         <div className="px-4 pt-4 pb-3">
                           <div className="flex items-center gap-1.5 mb-2.5">
                             <i className="ti ti-receipt text-stone" style={{ fontSize: 12 }} />
-                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone">One-time fee</span>
+                            <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">One-time fee</span>
+                            <SourceClauseLink section={findSourceSection(f.fee_label)} onViewSource={onViewSource} />
                           </div>
                           <p className="text-sm font-medium text-ink leading-snug mb-1">{f.fee_label} — {fmt(f.amount, cur ?? 'EUR')}</p>
 
@@ -5263,7 +5350,14 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   })
   const commercialRuleWorkload = computeCommercialRuleWorkload(
     terms ?? null,
-    { total: tiers.length > 0 ? 1 : 0, confirmed: tiers.length === 0 || meterMappingsConfirmed ? 1 : 0 },
+    // Same real per-suggestion meterMappingSummary (fetched once, eagerly,
+    // via the identical isMeterMappingResolved logic — see its own
+    // useEffect above) the Review Panel drawer's own commercialWorkload
+    // call uses — previously this call folded the real total/confirmed
+    // counts down into a single 0/1 pair, which could disagree with the
+    // drawer's precise count and was the other half of the "different
+    // totals in different parts of the same page" discrepancy (item 4).
+    meterMappingSummary,
     unresolvedInteractions.length,
     undefined,
     // vatConfigured is undefined while still loading — treated as "not yet
@@ -5322,8 +5416,24 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const hardwareFees = allFees.filter(f => f.amount >= 0 && classifyFee(f.fee_label) === 'hardware')
   const otherPosFees = allFees.filter(f => f.amount >= 0 && classifyFee(f.fee_label) === 'other')
   const creditFees   = allFees.filter(f => f.amount < 0)
-  const serviceFeeTotal  = serviceFees.reduce((s, f) => s + f.amount, 0)
-  const hardwareFeeTotal = hardwareFees.reduce((s, f) => s + f.amount, 0)
+  // Item 3 — the Pricing overview's own total, kept SEPARATE from the
+  // service/hardware/other TYPE split above (still used by the detailed
+  // Products & Services table below, item 10). The type split previously
+  // doubled as the summary card here too, which was wrong two ways: (a)
+  // "other"-classified fees (e.g. a fee whose label doesn't match any
+  // service/hardware keyword — a real example: "ERP connector") had no
+  // card at all and were silently dropped from this summary, and (b) even
+  // if they had one, fee TYPE has nothing to do with whether the fee will
+  // ever actually be billed — a Change-Order-gated fee may never occur,
+  // regardless of what kind of fee it is. Conditionality (isChangeOrder
+  // ConditionalFee) is the dimension that actually matters for a "how
+  // much will this contract collect" summary, and it accounts for every
+  // positive one-time fee, never silently dropping one.
+  const positiveOneTimeFees     = allFees.filter(f => f.amount >= 0)
+  const unconditionalOneTimeFees = positiveOneTimeFees.filter(f => !isChangeOrderConditionalFee(f))
+  const conditionalOneTimeFees   = positiveOneTimeFees.filter(isChangeOrderConditionalFee)
+  const unconditionalOneTimeFeeTotal = unconditionalOneTimeFees.reduce((s, f) => s + f.amount, 0)
+  const conditionalOneTimeFeeTotal   = conditionalOneTimeFees.reduce((s, f) => s + f.amount, 0)
 
   const billingModel = deriveBillingModel(terms)
   const src = terms?.field_sources ?? {}
@@ -5334,7 +5444,39 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // computeBaseTcv is the one shared implementation (lib/contract-tcv.ts) —
   // also used by getContractSummaries for the "New contracts" list and the
   // Agreements dashboard, so this page can never silently diverge from them.
+  // tcv itself is deliberately left as the POTENTIAL total (unchanged
+  // meaning) — see committedFixedFeeTotal/conditionalFixedFeeTotal below
+  // for the split a "committed" claim must use instead (Agreement A final
+  // amendment, item 2).
   const tcv = computeBaseTcv(items)
+
+  // Agreement A final amendment (post-review correction) — commitment
+  // classification is derived DIRECTLY from terms.one_time_fees (which
+  // natively carries fee_id, amount, and billability_condition — no
+  // matching needed) rather than joining `items`/LineItem rows against
+  // terms.one_time_fees by product_name === fee_label. Display labels are
+  // not stable commercial identity — that is exactly why OneTimeFee.fee_id
+  // exists (Step 13): two fees can legitimately share a label ("Implementation
+  // fee" / "Implementation fee"), and a label match would silently
+  // misclassify one of them, corrupting a financial total. The recurring
+  // portion of `items` needs no identity matching at all: every non-one-time
+  // row is committed by construction — Change-Order conditionality only
+  // ever applies to one_time_fees in this domain model (see
+  // isChangeOrderConditional) — so it's included as-is, untagged (defaults
+  // to 'committed'). computeCommittedFixedFees/computeConditionalFixedFees
+  // themselves stay dumb summations — they never import billability-condition.ts;
+  // only this construction boundary does.
+  const recurringTcvItems: BaseTcvItem[] = items.filter(i => i.billing_period !== 'one_time')
+  const oneTimeTcvItems: BaseTcvItem[] = (terms?.one_time_fees ?? []).map(f => ({
+    product_name: f.fee_label,
+    applied_rule: null,
+    total_amount: f.amount,
+    billing_period: 'one_time',
+    commitmentStatus: isChangeOrderConditional(f.billability_condition) ? 'conditional_future_agreement' as const : 'committed' as const,
+  }))
+  const tcvItems: BaseTcvItem[] = [...recurringTcvItems, ...oneTimeTcvItems]
+  const committedFixedFeeTotal   = computeCommittedFixedFees(tcvItems)
+  const conditionalFixedFeeTotal = computeConditionalFixedFees(tcvItems)
 
   // Additions = sent one-time invoices for variable fees (total_amount = 0 in billing config)
   const additionsTotal = sentOneTimeInvoices.reduce((s, inv) => {
@@ -5345,14 +5487,17 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // server-side (GET /api/jobs/[id], via getContractSummaries) so this page
   // never diverges from the "New contracts" list or Agreements dashboard.
   const billedToDate            = job?.billedToDate ?? 0
-  const committedContractValue  = job?.committedContractValue ?? tcv
+  // Falls back to committedFixedFeeTotal, never tcv — tcv is the POTENTIAL
+  // total (includes any Change-Order-conditional fee); the fallback must
+  // not reintroduce the exact number this fix excludes from "committed".
+  const committedContractValue  = job?.committedContractValue ?? committedFixedFeeTotal
   const lifecycleStatus         = contractLifecycleStatus(terms?.contract_start_date ?? null, terms?.contract_end_date ?? null)
   // Once a contract's own end date has passed, nothing further will ever be
   // invoiced against it — "billed to date" becomes the final, realised
   // total under a different label, per the terminology-standardisation plan.
   const isCompleted             = lifecycleStatus === 'completed'
 
-  const summaryLines = buildContractSummary(terms, cur, tcv, userTiers, apiTiers)
+  const summaryLines = buildContractSummary(terms, cur, committedFixedFeeTotal, conditionalFixedFeeTotal, userTiers, apiTiers)
 
   const baseItem = findItem('base subscription')
 
@@ -5925,7 +6070,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             {/* ── 4. Pricing ── */}
             {(terms?.base_monthly_fee || terms?.year_pricing ||
               (terms?.ramp_schedule?.length ?? 0) > 0 ||
-              serviceFeeTotal > 0 || hardwareFeeTotal > 0) && (
+              unconditionalOneTimeFeeTotal > 0 || conditionalOneTimeFeeTotal > 0) && (
               <div className="bg-white rounded-2xl border border-forest/10 p-6">
                 <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-5">Pricing</h2>
                 <div className="grid grid-cols-3 gap-8">
@@ -5967,13 +6112,20 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         ].filter(Boolean).join(' · ')} />
                     )
                   })}
-                  {serviceFeeTotal > 0 && (
-                    <BigValue label="Services total" value={fmt(serviceFeeTotal, cur)}
-                      note={`${serviceFees.length} fee${serviceFees.length > 1 ? 's' : ''} · one-time`} />
+                  {/* Item 3 — conditionality-aware, never fee-type-based:
+                      the SAME isChangeOrderConditionalFee split
+                      buildContractSummary's own oneTimeStr sentence uses,
+                      so the two can never show conflicting figures again.
+                      Conditional fees get their own, clearly-labeled card
+                      only when any exist — never silently folded into the
+                      unconditional total, and never silently dropped. */}
+                  {unconditionalOneTimeFeeTotal > 0 && (
+                    <BigValue label="Unconditional one-time fees" value={fmt(unconditionalOneTimeFeeTotal, cur)}
+                      note={`${unconditionalOneTimeFees.length} fee${unconditionalOneTimeFees.length > 1 ? 's' : ''} · one-time`} />
                   )}
-                  {hardwareFeeTotal > 0 && (
-                    <BigValue label="Hardware / physical" value={fmt(hardwareFeeTotal, cur)}
-                      note={`${hardwareFees.length} item${hardwareFees.length > 1 ? 's' : ''} · one-time`} />
+                  {conditionalOneTimeFeeTotal > 0 && (
+                    <BigValue label="Conditional one-time fees" value={fmt(conditionalOneTimeFeeTotal, cur)}
+                      note={`${conditionalOneTimeFees.length} fee${conditionalOneTimeFees.length > 1 ? 's' : ''} · pending a signed Change Order`} />
                   )}
                 </div>
               </div>
@@ -6080,7 +6232,19 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                               : fmt(f.amount, cur)}
                           </td>
                           <td className="py-2.5 text-[11px] text-stone text-right">
-                            {f.manual_trigger ? <span className="text-amber-600">On delivery</span> : 'Services'}
+                            {/* Item 10 — canonical billability semantics,
+                                never a generic fee-type label that could
+                                contradict the detailed review card for the
+                                same fee. manual_trigger fees keep "On
+                                delivery" (a genuinely different concept —
+                                variable-quantity work invoiced once
+                                confirmed, not a billability_condition);
+                                everything else falls back to the fee-type
+                                label only when no condition has been
+                                extracted/resolved at all yet. */}
+                            {f.manual_trigger
+                              ? <span className="text-amber-600">On delivery</span>
+                              : billabilityConditionLabel(f.billability_condition) ?? 'Services'}
                           </td>
                         </tr>
                       ))}
@@ -6096,7 +6260,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                               : fmt(f.amount, cur)}
                           </td>
                           <td className="py-2.5 text-[11px] text-stone text-right">
-                            {f.manual_trigger ? <span className="text-amber-600">On delivery</span> : 'Hardware'}
+                            {f.manual_trigger
+                              ? <span className="text-amber-600">On delivery</span>
+                              : billabilityConditionLabel(f.billability_condition) ?? 'Hardware'}
                           </td>
                         </tr>
                       ))}
@@ -6112,7 +6278,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                               : fmt(f.amount, cur)}
                           </td>
                           <td className="py-2.5 text-[11px] text-stone text-right">
-                            {f.manual_trigger ? <span className="text-amber-600">On delivery</span> : 'One-time'}
+                            {f.manual_trigger
+                              ? <span className="text-amber-600">On delivery</span>
+                              : billabilityConditionLabel(f.billability_condition) ?? 'One-time'}
                           </td>
                         </tr>
                       ))}
@@ -6155,7 +6323,23 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
 
               {items.length > 0 && (() => {
-                const platformLabel = billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'
+                // Same source of truth the Approve section's own platform
+                // control uses (item 5) — previously this fell through to
+                // 'Stripe' whenever billingPlatform was anything other than
+                // 'remembill'/'chargebee', INCLUDING the not-yet-configured
+                // case (billingPlatform undefined for a job that hasn't
+                // been approved yet), showing "Platform: Stripe" as if a
+                // provider had already been chosen/saved while the Approve
+                // footer below still correctly showed "Select platform…".
+                // Never claims a platform is configured/selected unless it
+                // actually is.
+                const platformLabel = isConfigured
+                  ? (billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : billingPlatform === 'stripe' ? 'Stripe' : 'Not yet configured')
+                  : selectedBillingPlatform
+                    ? selectedBillingPlatform.charAt(0).toUpperCase() + selectedBillingPlatform.slice(1)
+                    : connectedBillingPlatforms.length === 1
+                      ? connectedBillingPlatforms[0].charAt(0).toUpperCase() + connectedBillingPlatforms[0].slice(1)
+                      : 'Not yet selected'
                 const periodOptions = ['monthly', 'quarterly', 'semi-annual', 'annual', 'one_time']
                 const editCellStyle = 'w-full text-right bg-transparent border-0 border-b border-forest/30 focus:outline-none focus:border-forest text-[12px] tabular-nums py-0 px-0'
 
@@ -6622,7 +6806,21 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               // line, not a global downgrade of "ready to push" for every
               // invoice this contract will ever generate.
               const hasServiceCredits = (terms?.service_credits ?? []).length > 0
-              const creditCapability = getCreditRepresentationCapability(billingPlatform)
+              // Agreement A final amendment, item 4 — selectedBillingPlatform
+              // (the same canonical state the Approve button/selector below
+              // reads), NEVER billingPlatform here: this banner can render
+              // before approval (gated on commercialRuleWorkload.status
+              // above, not isConfigured), and billingPlatform's own
+              // pre-execution branch falls back to job.billing_platform ??
+              // 'stripe' — a field Step 15 only ever populates AFTER a
+              // successful execution. Showing "stripe credit-adjustment
+              // capability" from that fallback would assert a platform the
+              // org may never have connected or selected at all. An empty
+              // selection resolves to 'unsupported_pending_vendor_guidance'
+              // (getCreditRepresentationCapability's own safe default for an
+              // unrecognized key) — fails closed exactly like every other
+              // capability check in this codebase, rather than guessing.
+              const creditCapability = getCreditRepresentationCapability(selectedBillingPlatform ?? '')
               const creditCapabilityBlocked = hasServiceCredits && creditCapability === 'unsupported_pending_vendor_guidance'
               const billingReady = vatConfigured === true && !creditCapabilityBlocked
               return (
@@ -6645,14 +6843,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         ? 'Billing readiness: VAT treatment still required before push'
                         : billingReady
                           ? 'Billing readiness: ready to push'
-                          : `Billing readiness: normal invoices ready — invoices carrying a credit will fail closed (${billingPlatform} cannot yet represent a contractual credit adjustment)`}
+                          : !selectedBillingPlatform
+                            ? 'Billing readiness: select a billing platform below to check credit-adjustment support'
+                            : `Billing readiness: normal invoices ready — invoices carrying a credit will fail closed (${selectedBillingPlatform} cannot yet represent a contractual credit adjustment)`}
                     </p>
                   </div>
                   {hasServiceCredits && (
                     <div className="mt-2 flex items-center gap-1.5">
                       <i className={`ti ${creditCapability === 'supported' ? 'ti-circle-check-filled' : 'ti-shield-exclamation'}`} style={{ fontSize: 13, color: creditCapability === 'supported' ? '#0B5C36' : '#D97706' }} />
                       <p className="text-[11px]" style={{ color: creditCapability === 'supported' ? '#0B5C36' : '#92400E' }}>
-                        {billingPlatform} credit-adjustment capability: {creditCapability === 'supported' ? 'Supported' : 'Unsupported — pending vendor guidance'}
+                        {selectedBillingPlatform
+                          ? `${selectedBillingPlatform} credit-adjustment capability: ${creditCapability === 'supported' ? 'Supported' : 'Unsupported — pending vendor guidance'}`
+                          : 'Credit-adjustment capability: unknown until a billing platform is selected'}
                       </p>
                     </div>
                   )}
@@ -7059,8 +7261,15 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                  "Gross" contradicted that everywhere else it appears. */}
             <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
               <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-                {/* Card A — Fixed fees */}
-                <FinancialKPICard icon="ti-wallet" label="Fixed fees" metaChip={<FinancialMetaTag>Net · excl. VAT</FinancialMetaTag>}>
+                {/* Card A — Committed fixed fees. Agreement A final
+                    amendment, item 2 — relabeled from "Fixed fees" and the
+                    headline figure switched from tcv (potential, includes
+                    any Change-Order-conditional fee) to
+                    committedFixedFeeTotal, so this card can never claim a
+                    conditional fee as committed. The conditional amount (if
+                    any) is surfaced as its own line, never folded silently
+                    into the headline. */}
+                <FinancialKPICard icon="ti-wallet" label="Committed fixed fees" metaChip={<FinancialMetaTag>Net · excl. VAT</FinancialMetaTag>}>
                   {/* Never shown as a final authoritative total while the
                       dates it depends on are unresolved — computeBaseTcv
                       multiplies each line item's rate by a period count
@@ -7087,33 +7296,41 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       && parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date)
                     return (
                       <>
-                        {tcv > 0 && datesResolved ? (
-                          <FinancialAmount amount={tcv} currency={cur} basis="net" size="xl" />
+                        {committedFixedFeeTotal > 0 && datesResolved ? (
+                          <FinancialAmount amount={committedFixedFeeTotal} currency={cur} basis="net" size="xl" />
                         ) : billingModel === 'consumption' ? (
                           <p className="text-[20px] font-medium text-stone/60">Usage-based</p>
                         ) : (
                           <p className="text-[32px] font-semibold text-stone/30" style={{ fontVariantNumeric: 'tabular-nums' }}>—</p>
                         )}
-                        {tcv === 0 && billingModel === 'consumption' && terms?.contract_start_date && terms?.contract_end_date && (
+                        {committedFixedFeeTotal === 0 && billingModel === 'consumption' && terms?.contract_start_date && terms?.contract_end_date && (
                           <p className="text-[10px] text-stone/40 mt-2">Fixed fees depend on usage volume</p>
                         )}
-                        {tcv > 0 && datesUnresolved && (
+                        {committedFixedFeeTotal > 0 && datesUnresolved && (
                           <p className="text-[10px] text-amber-600 mt-2">Contract dates unresolved — fixed-fee total withheld until confirmed above</p>
                         )}
-                        {tcv > 0 && datesResolved && partialPeriodUnconfirmed && (
+                        {committedFixedFeeTotal > 0 && datesResolved && partialPeriodUnconfirmed && (
                           <p className="text-[10px] text-amber-600 mt-2">Partial-period billing treatment not yet confirmed — the generated invoice schedule is not final</p>
                         )}
-                        {tcv === 0 && billingModel !== 'consumption' && endBeforeStart && (
+                        {committedFixedFeeTotal === 0 && billingModel !== 'consumption' && endBeforeStart && (
                           <p className="text-[10px] text-amber-600 mt-2">End date is before start date — correct it above</p>
                         )}
-                        {tcv === 0 && billingModel !== 'consumption' && (!terms?.contract_start_date || !terms?.contract_end_date) && (
+                        {committedFixedFeeTotal === 0 && billingModel !== 'consumption' && (!terms?.contract_start_date || !terms?.contract_end_date) && (
                           <p className="text-[10px] text-stone/40 mt-2">Add contract dates above to calculate</p>
+                        )}
+                        {/* Never folded into the headline above — a
+                            Change-Order-conditional fee may never actually
+                            be billed, so it stays visibly separate. */}
+                        {conditionalFixedFeeTotal > 0 && (
+                          <p className="text-[10px] text-stone mt-2">
+                            + {fmt(conditionalFixedFeeTotal, cur)} conditional on a signed Change Order — potential total {fmt(committedFixedFeeTotal + conditionalFixedFeeTotal, cur)}
+                          </p>
                         )}
                         {/* Confirmation is expressed here, not by recoloring
                             the number above — same discipline as the
                             Confirmed billing rules cards: the figure stays
                             in the financial palette regardless of status. */}
-                        {tcv > 0 && datesResolved && !partialPeriodUnconfirmed && (
+                        {committedFixedFeeTotal > 0 && datesResolved && !partialPeriodUnconfirmed && (
                           <div className="mt-2"><StatusInline kind="confirmed" label="Confirmed fees" /></div>
                         )}
                       </>
@@ -7133,9 +7350,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     lib/contract-value.ts's computeContractValueModel
                     computes server-side (committedContractValue = fixedFees
                     + minimumCommitments), derived here from the two
-                    already-fetched totals rather than a new server field. */}
-                {committedContractValue > tcv && (() => {
-                  const minimumCommitmentsTotal = committedContractValue - tcv
+                    already-fetched totals rather than a new server field.
+                    Compared against committedFixedFeeTotal, NOT tcv —
+                    committedContractValue is itself built from committed
+                    (not potential) fixed fees server-side (Agreement A
+                    final amendment, item 2), so diffing against the
+                    potential total here would silently reintroduce the
+                    conditional Change Order fee into this delta, or even
+                    go negative once the two diverge. */}
+                {committedContractValue > committedFixedFeeTotal && (() => {
+                  const minimumCommitmentsTotal = committedContractValue - committedFixedFeeTotal
                   return (
                     <FinancialKPICard
                       icon="ti-shield" label="Minimum charges before credits/rebates"
@@ -7144,7 +7368,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       <FinancialAmount amount={committedContractValue} currency={cur} basis="net" size="xl" />
                       <div className="mt-3 space-y-1 text-[11px] text-stone">
                         <p>
-                          <span className="font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(tcv, cur)}</span> fixed fees
+                          <span className="font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(committedFixedFeeTotal, cur)}</span> committed fixed fees
                         </p>
                         <p>
                           <span className="font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>+ {fmt(minimumCommitmentsTotal, cur)}</span> minimum commitments
@@ -7308,6 +7532,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           baseFeeProration={terms?.base_fee_proration}
           additionalRecurringFees={terms?.additional_recurring_fees}
           oneTimeFees={terms?.one_time_fees}
+          fieldSources={terms?.field_sources}
           operationalEventEvidence={job?.operational_event_evidence}
           extractionNotes={terms?.extraction_notes}
           contractStartDate={terms?.contract_start_date}
@@ -7321,6 +7546,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           onVatStatusChange={setVatConfigured}
           onVatSaved={handleVatSaved}
           refreshSignal={refreshSignal}
+          workload={commercialRuleWorkload}
         />
       )}
 
