@@ -2983,7 +2983,13 @@ function OrganizationPolicyControls({
         {mode !== 'promote-preview' && mode !== 'view-policy' && mode !== 'override' && (
           <div className="rounded-xl p-3" style={{ background: '#FFFDF5', border: '1px solid rgba(217,167,90,0.35)' }}>
             <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: '#92400E' }}>Reviewer policy</p>
-            <p className="text-[11px] text-stone mb-2">Agreement-specific override</p>
+            {/* "Override" only makes sense when there's an active org
+                policy this decision actually overrides. When the contract
+                was silent and no org policy applies to this scope, the
+                reviewer made a standalone decision, not an override of
+                anything — wording (and the "Change override"/"Change
+                decision" button below) reflects which case this is. */}
+            <p className="text-[11px] text-stone mb-2">{currentlyApplicableRule ? 'Agreement-specific override' : 'Agreement-specific decision'}</p>
             {currentlyApplicableRule ? (
               <p className="text-[11px] text-stone">
                 Organization default: <span className="font-medium text-ink">{currentlyApplicableRule.value ? 'Carry forward until fully used' : 'Expires after next invoice'}</span>
@@ -3022,7 +3028,7 @@ function OrganizationPolicyControls({
                   agreement" already uses (submitOverride) — a different
                   entry point into an unchanged action, not a new one. */}
               <button onClick={() => { setOverrideValue(null); setMode('override') }} disabled={busy} className="text-[11px] font-medium px-2.5 py-1 rounded-lg border" style={{ borderColor: 'rgba(26,61,43,0.15)' }}>
-                Change override
+                {currentlyApplicableRule ? 'Change override' : 'Change decision'}
               </button>
               {currentlyApplicableRule && (
                 <button onClick={revertToOrganizationPolicy} disabled={busy} className="text-[11px] font-medium px-2.5 py-1 rounded-lg border" style={{ borderColor: 'rgba(26,61,43,0.15)' }}>
