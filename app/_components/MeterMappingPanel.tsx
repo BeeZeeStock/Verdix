@@ -388,12 +388,31 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
                   // deliberate state (meter_or_manual_input only) — empty
                   // meterKey there is not an error, it's the reviewer's
                   // actual choice.
-                  <div className="flex items-center gap-2 text-xs font-medium" style={{ color: manualConfigured || meterKey ? '#0B5C36' : '#991B1B' }}>
-                    <i className={`ti ${manualConfigured || meterKey ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 14 }} />
-                    {manualConfigured ? 'Configured for manual entry each period' : meterKey ? `Mapped to ${matchedMeter?.display_name ?? meterKey}` : 'No meter selected'}
-                    <button onClick={() => setEdit(s.contract_unit_type, 'confirmed', false)} className="ml-auto text-stone hover:text-ink underline underline-offset-2 font-normal">
-                      Change
-                    </button>
+                  <div>
+                    <div className="flex items-center gap-2 text-xs font-medium" style={{ color: manualConfigured || meterKey ? '#0B5C36' : '#991B1B' }}>
+                      <i className={`ti ${manualConfigured || meterKey ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 14 }} />
+                      {manualConfigured ? 'Configured for manual entry each period' : meterKey ? `Mapped to ${matchedMeter?.display_name ?? meterKey}` : 'No meter selected'}
+                      <button onClick={() => setEdit(s.contract_unit_type, 'confirmed', false)} className="ml-auto text-stone hover:text-ink underline underline-offset-2 font-normal">
+                        Change
+                      </button>
+                    </div>
+                    {/* Readiness audit, final correction — confidence is
+                        frozen from whichever generation pass first created
+                        this row and is never recomputed against the final
+                        selected meter_key, so it cannot support any claim
+                        about the CURRENT mapping's semantic quality (AI
+                        matched, manual override, high/low confidence) —
+                        using it that way would assert something the data
+                        model doesn't actually know. `confirmed` alone,
+                        however, IS reliable: the server only ever sets it
+                        true together with confirmed_by (POST handler,
+                        same route), so a real human decision is the one
+                        thing this note can honestly claim. */}
+                    {!manualConfigured && meterKey && (
+                      <p className="text-[10px] text-stone mt-1 flex items-center gap-1">
+                        <i className="ti ti-user-check" style={{ fontSize: 11 }} /> Reviewer-confirmed mapping
+                      </p>
+                    )}
                   </div>
                 ) : (
                   <>

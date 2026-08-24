@@ -5418,9 +5418,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [meterInputRows, setMeterInputRows] = useState<MeterInputRow[]>([])
   const [availableMeters, setAvailableMeters] = useState<Array<{ meter_key: string; display_name: string }>>([])
   useEffect(() => {
+    // Same out-of-order-response guard as fetchJob's own fetchJobSeq — this
+    // effect re-runs on every refreshSignal bump (meter-mapping confirm,
+    // VAT save, or any fetchJob() completion), and two bumps in quick
+    // succession can dispatch overlapping requests with no guarantee the
+    // earlier one's response arrives first; without this guard a late,
+    // stale response could overwrite meterMappingSummary/meterInputRows
+    // with an outdated count after a newer one already landed.
+    let cancelled = false
     fetch(`/api/jobs/${id}/meter-mappings`)
       .then(r => r.json())
       .then((res: { suggestions?: MeterInputRow[]; available_meters?: Array<{ meter_key: string; display_name: string }> }) => {
+        if (cancelled) return
         const suggestions = res.suggestions ?? []
         setMeterMappingSummary({
           total: suggestions.length,
@@ -5430,6 +5439,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
         setAvailableMeters(res.available_meters ?? [])
       })
       .catch(() => {})
+    return () => { cancelled = true }
   }, [id, refreshSignal])
   const [escEditing,   setEscEditing]   = useState<number | null>(null)
   const [escEditValue, setEscEditValue] = useState('')
@@ -5493,54 +5503,117 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
   const needsReview = items.filter(i => i.confidence_score < 0.95 && !(i.id in corrections)).length
 
-  const fetchJob = async () => {
-    const res = await fetch(`/api/jobs/${id}`)
-    if (!res.ok) return
-    const data = await res.json()
-    setJob(data)
-    if (data.line_items?.length) setItems(data.line_items)
-    setRefreshSignal(s => s + 1)
+  // Review-count state sync fix — every confirm action in this page (rule
+  // interpretation, one-time-fee confirm, operational-event evidence,
+  // meter-mapping confirm, VAT save, ...) fires this SAME canonical
+  // fetchJob() as its "refresh" step, but fire-and-forget — none of those
+  // call sites await it (onRefresh/onApplied are typed () => void, called
+  // synchronously right after a POST succeeds). Two confirm actions taken
+  // in quick succession (e.g. "resolve item 1" immediately followed by
+  // "resolve item 2") each dispatch their own independent fetchJob() call,
+  // with no cross-call ordering guarantee: nothing prevents the FIRST
+  // call's response (reflecting state from before item 2 was resolved)
+  // from arriving and calling setJob() AFTER the second, newer call's
+  // response already did — silently clobbering the correct, fully-resolved
+  // state with a stale one. Because nothing else re-triggers another
+  // fetchJob() afterward, that stale state then persists indefinitely
+  // (surviving closing the drawer, since the drawer and the top-level
+  // banner both read the same now-wrong job/terms state) until a full page
+  // reload starts over. fetchJobSeq is a monotonic call counter: each
+  // invocation captures its own sequence number and only ever applies its
+  // result if no NEWER call has been dispatched since — an old response
+  // arriving late is discarded rather than applied, so the canonical state
+  // can only ever move forward to what was actually most recently
+  // requested, never backward to something already superseded.
+  const fetchJobSeq = useRef(0)
+  // Readiness audit — a successfully-persisted mutation (confirm-rule, meter
+  // mapping, VAT, ...) followed by a refresh that itself fails (network
+  // blip, transient 5xx) previously left the UI silently showing whatever
+  // job/terms snapshot it had before, forever — no error, no retry, no
+  // signal anything was wrong. That's a real risk specifically for a job
+  // already at a stable status (READY_TO_APPROVE/PENDING_HUMAN_REVIEW/...),
+  // since the poll loop below deliberately stops once a job reaches one of
+  // those, so nothing else would ever call fetchJob() again on its own.
+  // refreshError surfaces that failure (never rolls back or re-attempts the
+  // already-persisted mutation itself — only the READ that follows it) with
+  // a manual retry, the same minimal pattern approveError/scheduleBlockers
+  // already use elsewhere on this page — not a new fetching mechanism.
+  const [refreshError, setRefreshError] = useState<string | null>(null)
+  const fetchJob = useCallback(async () => {
+    const seq = ++fetchJobSeq.current
+    try {
+      const res = await fetch(`/api/jobs/${id}`)
+      if (!res.ok) {
+        if (seq === fetchJobSeq.current) setRefreshError('Could not refresh the latest state — some information on this page may be out of date.')
+        return
+      }
+      const data = await res.json()
+      if (seq === fetchJobSeq.current) {
+        setJob(data)
+        if (data.line_items?.length) setItems(data.line_items)
+        setRefreshSignal(s => s + 1)
+        setRefreshError(null)
+      }
 
-    // Auto-sync: if line_items have corrected overage rates that are still zero
-    // in contract_terms.overage_tiers, patch terms immediately.
-    // This reconciles corrections saved before the review-panel propagation fix.
-    const tiers: Tier[] = data.contract_terms?.[0]?.overage_tiers ?? []
-    const lineItems: LineItem[] = data.line_items ?? []
-    if (tiers.length > 0 && lineItems.length > 0) {
-      let synced = false
-      const newTiers = tiers.map(t => {
-        if ((t.rate_per_unit ?? 0) > 0) return t  // already has a rate — skip
-        const match = lineItems.find(item => {
-          if (item.unit_price <= 0) return false
-          const baseName = item.product_name.replace(/\s*—\s*overage\s*$/i, '').trim()
-          return t.tier_label && (
-            baseName.toLowerCase() === t.tier_label.toLowerCase() ||
-            item.product_name.toLowerCase().includes(t.tier_label.toLowerCase())
-          )
+      // Auto-sync: if line_items have corrected overage rates that are still zero
+      // in contract_terms.overage_tiers, patch terms immediately.
+      // This reconciles corrections saved before the review-panel propagation fix.
+      const tiers: Tier[] = data.contract_terms?.[0]?.overage_tiers ?? []
+      const lineItems: LineItem[] = data.line_items ?? []
+      if (tiers.length > 0 && lineItems.length > 0) {
+        let synced = false
+        const newTiers = tiers.map(t => {
+          if ((t.rate_per_unit ?? 0) > 0) return t  // already has a rate — skip
+          const match = lineItems.find(item => {
+            if (item.unit_price <= 0) return false
+            const baseName = item.product_name.replace(/\s*—\s*overage\s*$/i, '').trim()
+            return t.tier_label && (
+              baseName.toLowerCase() === t.tier_label.toLowerCase() ||
+              item.product_name.toLowerCase().includes(t.tier_label.toLowerCase())
+            )
+          })
+          if (!match) return t
+          synced = true
+          return { ...t, rate_per_unit: match.unit_price }
         })
-        if (!match) return t
-        synced = true
-        return { ...t, rate_per_unit: match.unit_price }
-      })
-      if (synced) {
-        await fetch(`/api/jobs/${id}/terms`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ overage_tiers: newTiers }),
-        })
-        // Re-fetch once so the UI reflects the synced rates
-        const res2 = await fetch(`/api/jobs/${id}`)
-        if (res2.ok) {
-          const data2 = await res2.json()
-          setJob(data2)
-          if (data2.line_items?.length) setItems(data2.line_items)
-          return data2
+        if (synced) {
+          await fetch(`/api/jobs/${id}/terms`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ overage_tiers: newTiers }),
+          })
+          // Re-fetch once so the UI reflects the synced rates
+          const res2 = await fetch(`/api/jobs/${id}`)
+          if (res2.ok) {
+            const data2 = await res2.json()
+            if (seq === fetchJobSeq.current) {
+              setJob(data2)
+              if (data2.line_items?.length) setItems(data2.line_items)
+            }
+            return data2
+          }
         }
       }
-    }
 
-    return data
-  }
+      return data
+    } catch {
+      // fetch() itself threw (offline, DNS, aborted connection) — same
+      // stale-forever risk as a non-OK response, same minimal signal.
+      if (seq === fetchJobSeq.current) setRefreshError('Could not refresh the latest state — some information on this page may be out of date.')
+      return undefined
+    }
+  }, [id])
+
+  // Stable top-level callback for EditCommercialRuleDrawer's onApplied — a
+  // plain inline arrow function referencing fetchJob here (which closes
+  // over the fetchJobSeq ref above) trips react-hooks/refs when constructed
+  // inside the surrounding IIFE this drawer renders from; defining it once,
+  // outside any nested closure, keeps the exact same behavior without that.
+  const handleEditRuleApplied = useCallback(() => {
+    setEditingRule(null)
+    fetchRuleInterpretations()
+    fetchJob()
+  }, [fetchJob])
 
   useEffect(() => {
     // `cancelled` is checked both before scheduling the next tick and before
@@ -5867,6 +5940,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     const credit = (terms?.service_credits ?? []).find(c => c.credit_rule_id === cand.creditId)
     return !!credit?.interpretation && !credit.interpretation.requires_confirmation && !credit.interpretation.interaction_note
   })
+  // Readiness audit fix — this component (ConfigureResultsPage) is a
+  // separate scope from ReviewPanel, which computes its own identical call
+  // for its own drawer cards; the "Confirmed billing rules" cards below are
+  // rendered from here instead, so they need their own instance of the SAME
+  // shared, date-aware helper — never a second, duplicated date
+  // calculation, just called from the scope that actually needs it.
+  const partialPeriodMetricsTop = computePartialPeriodMetrics(terms?.contract_start_date, terms?.contract_end_date, terms?.overage_tiers ?? [])
   const commercialRuleWorkload = computeCommercialRuleWorkload(
     terms ?? null,
     // Same real per-suggestion meterMappingSummary (fetched once, eagerly,
@@ -5928,6 +6008,22 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     needsReview > 0 && `${needsReview} extracted field${needsReview > 1 ? 's' : ''} below confidence threshold`,
   ].filter((x): x is string => typeof x === 'string')
   const totalOutstanding = commercialDecisionsOutstanding + usageMappingsOutstanding + (vatOutstanding ? 1 : 0) + needsReview
+
+  // Readiness audit — "ready to approve" (totalOutstanding === 0) and
+  // "every fee is billable now" are two different questions (Approve gates
+  // on interpretation/configuration readiness only; a fee still held on
+  // real-world operational evidence is a SEPARATE, execution-time concern
+  // — see lib/commercial-rule-status.ts's RequiredOperationalEventMissingBlocker
+  // and getBillabilityExecutionCapability, neither changed by this pass).
+  // This is purely informational surfacing of blockers the workload
+  // computation already derives — never a new blocking condition, never
+  // read by handleApprove/totalOutstanding/the approve route's own gate.
+  const pendingExecutionHolds = commercialRuleWorkload.executionBlockers
+    .filter((b): b is import('@/lib/commercial-rule-status').RequiredOperationalEventMissingBlocker => b.type === 'required_operational_event_missing')
+    .map(b => ({
+      feeLabel: b.field.startsWith('one_time_fee:') ? b.field.slice('one_time_fee:'.length) : b.field,
+      eventLabel: describeBillabilityCondition({ kind: 'event', event_type: b.event_type }) ?? b.event_type,
+    }))
 
   // Classify one-time fees into services / hardware / credits / other
   const allFees      = terms?.one_time_fees ?? []
@@ -6065,9 +6161,28 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           ) : totalOutstanding === 0 && vatConfigured !== undefined ? (
             <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: '#4A7C59' }}>
               <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> Ready to approve
+              {pendingExecutionHolds.length > 0 && (
+                <span className="text-stone font-normal">
+                  · {pendingExecutionHolds.length} billing condition{pendingExecutionHolds.length > 1 ? 's' : ''} pending
+                </span>
+              )}
             </span>
           ) : null}
         </div>
+
+        {/* Readiness audit — a refresh failure after a successful mutation
+            (see fetchJob's own comment) must not leave the page silently
+            claiming stale state forever. Never rolls back the mutation
+            itself (already persisted) — only offers to re-fetch. */}
+        {refreshError && (
+          <div className="flex-shrink-0 mx-8 mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-3">
+            <i className="ti ti-refresh-alert text-amber-600 flex-shrink-0" style={{ fontSize: 16 }} />
+            <p className="text-sm text-amber-800 flex-1">{refreshError}</p>
+            <button onClick={() => fetchJob()} className="text-xs font-semibold text-amber-700 hover:text-amber-900 underline underline-offset-2 flex-shrink-0">
+              Retry
+            </button>
+          </div>
+        )}
 
         {/* Push-failed banner — stays visible so the user can fix data and retry */}
         {isFailed && (
@@ -7528,10 +7643,25 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 const audit = findAudit('minimum_commitment', unitType)
                 const params: { label: string; value: string }[] = [{ label: 'Applies to', value: unitType }]
                 if (t0?.reset_anchor === 'calendar') {
-                  params.push({
-                    label: 'Partial-period treatment',
-                    value: mc.prorate_partial_periods === true ? 'Prorated by days' : mc.prorate_partial_periods === false ? 'Full amount charged' : 'Decision required',
-                  })
+                  // Readiness audit fix — mc.prorate_partial_periods being
+                  // unclear/null does NOT by itself mean a reviewer decision
+                  // is outstanding; it only does when the contract's own
+                  // dates actually create a partial first/last calendar
+                  // window for this cadence (partialPeriodMetrics, computed
+                  // once above via the SAME date-aware
+                  // isMinimumCommitmentProrationUnresolved check readiness
+                  // itself uses — never a second, duplicated date
+                  // calculation). A contract that starts and ends exactly on
+                  // calendar-period boundaries (e.g. 1 Oct – 30 Sep) has no
+                  // partial window at all, so this can never manufacture a
+                  // provenance value or a reviewer decision for a scenario
+                  // that cannot occur — it only ever changes which of two
+                  // purely-descriptive strings is shown.
+                  const provenValue = mc.prorate_partial_periods === true ? 'Prorated by days'
+                    : mc.prorate_partial_periods === false ? 'Full amount charged'
+                    : partialPeriodMetricsTop.has(unitType) ? 'Decision required'
+                    : 'Not applicable — full calendar periods'
+                  params.push({ label: 'Partial-period treatment', value: provenValue })
                 }
                 cards.push({
                   key: `min:${unitType}`,
@@ -8047,6 +8177,25 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         Billing schedule needs: {scheduleBlockers.join(', ')}
                       </p>
                     )}
+                    {/* Informational only — never read by `blocked` above.
+                        The agreement's interpretation/configuration can be
+                        fully resolved (totalOutstanding === 0) while a
+                        specific fee still can't execute yet because its
+                        required real-world event hasn't been evidenced —
+                        two different questions, kept visibly separate
+                        rather than folded into one "ready" claim. Styled
+                        as neutral/informational (not amber) since this is
+                        never something Approve is waiting on. */}
+                    {pendingExecutionHolds.length > 0 && (
+                      <div className="text-[10px] text-stone text-right max-w-[240px]">
+                        <p className="font-medium text-ink">
+                          {pendingExecutionHolds.length} billing condition{pendingExecutionHolds.length > 1 ? 's' : ''} pending
+                        </p>
+                        {pendingExecutionHolds.map((h, i) => (
+                          <p key={i}>{h.feeLabel} — waiting for {h.eventLabel}</p>
+                        ))}
+                      </div>
+                    )}
                     {/* Single unified hint — same breakdown as the top
                         callout and the meter-mapping chip, so this never
                         shows a different outstanding count than either. */}
@@ -8168,7 +8317,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             currentRecord={currentRecord}
             historyRecords={historyRecords}
             onClose={() => setEditingRule(null)}
-            onApplied={() => { setEditingRule(null); fetchRuleInterpretations(); fetchJob() }}
+            onApplied={handleEditRuleApplied}
           />
         )
       })()}
