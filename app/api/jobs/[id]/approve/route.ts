@@ -133,9 +133,24 @@ export async function POST(
   // check a capability-blocked fee could silently reach configureBilling
   // below. A genuine engine contradiction or modeling-capability gap fails
   // closed regardless of how resolved every other item is.
-  if (workload.executionBlockers.length > 0) {
+  //
+  // Contract B live acceptance failure (2026-08-29) — this used to check
+  // workload.executionBlockers.length (every blocker type, uniformly),
+  // which live-rejected an otherwise fully-resolved, event-gated
+  // Integration Fee waiting only on Customer Acceptance evidence — a
+  // legitimate execution HOLD, not an approval blocker (the UI already
+  // correctly treated it as non-blocking; the API did not — see
+  // classifyExecutionBlockers's own comment). Now checks
+  // workload.approvalBlockers specifically: a required_operational_event_
+  // missing hold no longer blocks approval; configureBilling below parks
+  // that one fee (unchanged behavior — lib/billing-writer.ts's
+  // isOneTimeFeeHeldForExecution already does this correctly) while the
+  // rest of the agreement proceeds normally. A genuine rulebook
+  // contradiction or unsupported-semantics capability gap still fails
+  // closed exactly as before.
+  if (workload.approvalBlocked) {
     return NextResponse.json(
-      { error: `Billing blocked: Verdix cannot safely determine a billing instruction for ${workload.executionBlockers.length} item(s) — see execution blockers.`, executionBlockers: workload.executionBlockers },
+      { error: `Billing blocked: Verdix cannot safely determine a billing instruction for ${workload.approvalBlockers.length} item(s) — see execution blockers.`, executionBlockers: workload.approvalBlockers },
       { status: 400 },
     )
   }
@@ -263,7 +278,15 @@ export async function POST(
       terms, meterMappingWorkload, unresolvedInteractions.length, undefined, { configured: vatConfigured },
       undefined, freshEvidence, new Date(),
     )
-    if (freshWorkload.executionBlockers.length > 0) {
+    // Contract B live acceptance failure (2026-08-29) — same
+    // approvalBlockers-only check as the preflight gate above, for the
+    // same reason: a required_operational_event_missing hold (still
+    // missing, or newly appeared, since the preflight read) must not
+    // reject this approval — configureBilling below parks that fee and
+    // proceeds. Only a genuine rulebook contradiction or unsupported-
+    // semantics gap appearing between preflight and claim still aborts
+    // here (a real, if rare, race this check exists to catch).
+    if (freshWorkload.approvalBlocked) {
       // Item 3 — no external attempt has happened yet at this point (the
       // only thing that could throw ahead of it, configureBilling, hasn't
       // been called), so no retry-ambiguity exists. Restoring the job to
@@ -271,11 +294,10 @@ export async function POST(
       // same 'FAILED' state used for a genuinely uncertain external
       // outcome — keeps those two failure classes visibly distinct and
       // lets the reviewer immediately retry from a normal, non-alarming
-      // state once they've addressed whatever changed (e.g. re-recording
-      // revoked evidence).
+      // state once they've addressed whatever changed.
       await supabaseServer.from('jobs').update({ execute_status: claimedFrom }).eq('id', id).eq('execute_status', 'APPROVING')
       return NextResponse.json(
-        { error: 'Billing blocked: operational evidence changed while this approval was in progress — please review and retry.', executionBlockers: freshWorkload.executionBlockers },
+        { error: 'Billing blocked: commercial rules changed while this approval was in progress — please review and retry.', executionBlockers: freshWorkload.approvalBlockers },
         { status: 400 },
       )
     }

@@ -13,8 +13,15 @@ import type { OneTimeFee } from '@/lib/types'
 
 const ASOF = new Date('2026-10-15T00:00:00.000Z')
 
+// Contract B live acceptance failure (2026-08-29) — this mirror originally
+// checked workload.executionBlockers (every blocker type, uniformly),
+// which is the exact live bug this project hit: a required_operational_
+// event_missing hold on an otherwise fully-resolved fee incorrectly
+// blocked approval. Now checks approvalBlockers, matching approve/
+// route.ts's corrected gate — see lib/commercial-rule-status.ts's
+// classifyExecutionBlockers for the canonical split both now share.
 function approveWouldBlock(workload: CommercialRuleWorkload): boolean {
-  if (workload.executionBlockers.length > 0) return true
+  if (workload.approvalBlockers.length > 0) return true
   if (workload.totalToConfirm > 0 || workload.interactionsToConfirm > 0) return true
   if (!workload.vat.configured) return true
   return false
@@ -133,7 +140,7 @@ describe('item 23 — adversarial matrix', () => {
 })
 
 describe('item 24 — full synthetic end-to-end acceptance ("SEK 100,000 becomes billable upon customer acceptance")', () => {
-  it('extraction → event/customer_acceptance → reviewer confirms interpretation → semantic readiness resolved → Approve blocked (operational event missing) → reviewer records acceptance → blocker disappears → Approve reaches VAT (or whatever gate is next) → evidence revoked → blocker returns', () => {
+  it('extraction → event/customer_acceptance → reviewer confirms interpretation → semantic readiness resolved → Approve allowed, fee held as an execution hold (operational event missing) → reviewer records acceptance → hold clears entirely → Approve reaches VAT (or whatever gate is next) → evidence revoked → hold returns, Approve still allowed', () => {
     // 1. "Extraction" — hand-constructed to mirror exactly what
     // lib/contract-extractor.ts's normalizeBillabilityCondition would
     // produce for this clause (already proven live in Step 12's report).
@@ -150,13 +157,17 @@ describe('item 24 — full synthetic end-to-end acceptance ("SEK 100,000 becomes
     const interpretationConfirmed = buildOneTimeFeeConfirmation(amountConfirmed, { confirmBillability: true })
     expect(interpretationConfirmed.billability_provenance).toBe('reviewer_policy')
 
-    // 3. Semantic readiness resolved, but Approve blocked — operational event missing.
+    // 3. Semantic readiness resolved; Approve is NOT blocked — the fee
+    // becomes a legitimate execution hold (operational event missing),
+    // not an approval blocker. Contract B live acceptance failure
+    // (2026-08-29) is exactly this scenario, hit for real.
     const blockedWorkload = computeCommercialRuleWorkload(
       { one_time_fees: [interpretationConfirmed] }, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [], ASOF,
     )
-    expect(blockedWorkload.status).toBe('execution_blocked')
-    expect(blockedWorkload.executionBlockers[0]).toMatchObject({ type: 'required_operational_event_missing', event_type: 'customer_acceptance' })
-    expect(approveWouldBlock(blockedWorkload)).toBe(true)
+    expect(blockedWorkload.status).not.toBe('execution_blocked')
+    expect(blockedWorkload.approvalBlockers).toEqual([])
+    expect(blockedWorkload.executionHolds[0]).toMatchObject({ type: 'required_operational_event_missing', event_type: 'customer_acceptance' })
+    expect(approveWouldBlock(blockedWorkload)).toBe(false)
 
     // 4. Reviewer records customer acceptance (the attest route's real job
     // — here simulated as the evidence row it would produce).
@@ -181,13 +192,18 @@ describe('item 24 — full synthetic end-to-end acceptance ("SEK 100,000 becomes
     // 6. Billing-writer execution decision: no longer held once evidence exists.
     expect(isOneTimeFeeHeldForExecution(interpretationConfirmed, [recordedEvidence], ASOF)).toBe(false)
 
-    // 7. Evidence revoked before billing → blocker returns.
+    // 7. Evidence revoked before billing → the hold returns, but Approve
+    // remains allowed either way — agreement-level approval was never
+    // gated on this specific fee's evidence status; the fee itself simply
+    // reverts to parked (isOneTimeFeeHeldForExecution below).
     const revoked: OperationalEventEvidence = { ...recordedEvidence, status: 'revoked' }
     const reblockedWorkload = computeCommercialRuleWorkload(
       { one_time_fees: [interpretationConfirmed] }, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, [revoked], ASOF,
     )
     expect(reblockedWorkload.executionBlockers).toHaveLength(1)
-    expect(approveWouldBlock(reblockedWorkload)).toBe(true)
+    expect(reblockedWorkload.executionHolds).toHaveLength(1)
+    expect(reblockedWorkload.approvalBlockers).toEqual([])
+    expect(approveWouldBlock(reblockedWorkload)).toBe(false)
     expect(isOneTimeFeeHeldForExecution(interpretationConfirmed, [revoked], ASOF)).toBe(true)
   })
 })

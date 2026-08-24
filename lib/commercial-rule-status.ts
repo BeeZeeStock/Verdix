@@ -396,6 +396,36 @@ export type CommercialRuleWorkload = {
   // 'unsupported_semantics' on a real OneTimeFee yet (lib/rulebook/
   // MILESTONE_BILLING_FINDINGS.md), so this is currently always [] too.
   executionBlockers: CommercialRuleExecutionBlocker[]
+  // The canonical split of executionBlockers — see classifyExecutionBlockers
+  // below for the single implementation both fields are derived from.
+  // approvalBlockers genuinely block Approve (rulebook_invariant_violation,
+  // unsupported_commercial_semantics) — status becomes 'execution_blocked'
+  // if and only if this is non-empty. executionHolds
+  // (RequiredOperationalEventMissingBlocker) do NOT block approval — the
+  // agreement may still be approved; the affected fee(s) simply park
+  // instead of pushing to the provider (lib/billing-writer.ts's
+  // isOneTimeFeeHeldForExecution). Every consumer of this workload —
+  // server preflight/post-claim recheck, and the UI's readiness/Approve
+  // gate — must branch on approvalBlockers, never on the raw
+  // executionBlockers array, so they can never diverge again.
+  approvalBlockers: CommercialRuleExecutionBlocker[]
+  executionHolds: RequiredOperationalEventMissingBlocker[]
+  // Convenience booleans over the two arrays above — deliberately BOTH
+  // exposed, deliberately NOT interchangeable. See computeCommercialRuleWorkload's
+  // own comment for the full rationale.
+  //   executionBlocked = executionBlockers.length > 0 — true whenever ANY
+  //     execution blocker or hold exists, INCLUDING a plain missing-
+  //     evidence hold. An execution-oriented reader asking "is everything
+  //     on this contract currently executable" reads this, never
+  //     approvalBlocked/status — setting this false is the only thing that
+  //     would correctly mean "yes, fully executable."
+  //   approvalBlocked = approvalBlockers.length > 0 — true only for a
+  //     genuine rulebook contradiction or unsupported-semantics capability
+  //     gap; false for a pure execution hold. This is what status/the
+  //     Approve gates derive from — approving is safe even when
+  //     executionBlocked is still true (the held fee simply parks).
+  executionBlocked: boolean
+  approvalBlocked: boolean
 }
 
 // A rulebook-detected engine contradiction, structurally compatible with
@@ -646,18 +676,47 @@ export function computeCommercialRuleWorkload(
   // "has anyone opened the review panel yet" signal may downgrade
   // 'review_required' to it for copy purposes.
   //
-  // executionBlocked (Step 3, widened Step 11) is checked FIRST and
-  // short-circuits every other branch, including an otherwise-fully-
-  // confirmed contract — fail closed, per lib/rulebook/activation.ts's
-  // enforce_invariant contract, and per the same reasoning for a
-  // capability gap: no amount of reviewer confirmation elsewhere can make
-  // an unsupported-semantics fee safe to bill. Always false unless a
-  // caller passes real Rulebook violations OR terms.one_time_fees
-  // contains a real unresolved_kind: 'unsupported_semantics' entry —
-  // nothing in production sets the latter yet.
+  // Contract B semantic audit (2026-08-29) — TWO deliberately distinct
+  // booleans, never conflated again after the live incident this session
+  // already fixed once:
+  //   executionBlocked — the ORIGINAL, broader concept ("does ANY current
+  //     execution blocker or hold exist" — allExecutionBlockers.length > 0).
+  //     True whenever an event-gated fee is currently non-executable for
+  //     ANY reason, including a plain missing-evidence hold. An execution-
+  //     oriented reader (e.g. a future caller wanting "is everything on
+  //     this contract executable right now") should read THIS, not
+  //     approvalBlocked — it intentionally still includes holds.
+  //   approvalBlocked — status ('execution_blocked'/'all_commercial_rules_
+  //     confirmed'/etc.) is an APPROVAL/READINESS signal, not a general
+  //     execution status (confirmed by its only two real production
+  //     consumers, both approval-time: approve/route.ts's preflight/post-
+  //     claim gates, and the Configure page's Approve-button readiness
+  //     computation — nothing execution-time, e.g. lib/billing-writer.ts
+  //     or the invoice-scheduler, has ever read this workload at all).
+  //     approvalBlocked (Step 3, widened Step 11, narrowed Step 13 to
+  //     exclude execution holds) is what status derives from, and is
+  //     checked FIRST, short-circuiting every other branch, including an
+  //     otherwise-fully-confirmed contract — fail closed, per lib/rulebook/
+  //     activation.ts's enforce_invariant contract, and per the same
+  //     reasoning for a capability gap: no amount of reviewer confirmation
+  //     elsewhere can make an unsupported-semantics fee safe to bill.
+  // Setting `executionBlocked = false` here NEVER means "everything is
+  // executable" — a caller wanting that answer reads executionBlocked
+  // (still true for a pure hold) or executionHolds directly, never status/
+  // approvalBlocked, which only ever answer the approval question.
+  //
+  // classifyExecutionBlockers is the ONE canonical split every consumer
+  // must use — approve/route.ts's preflight and post-claim fresh check,
+  // and app/(dashboard)/configure/[id]/page.tsx's readiness/Approve-button
+  // gate — so UI and API can never diverge on this again the way they did
+  // live: the UI already correctly surfaced holds as non-blocking
+  // ("Ready to approve · N billing condition(s) pending"), while the API's
+  // preflight rejected the same job outright.
+  const { approvalBlockers, executionHolds } = classifyExecutionBlockers(allExecutionBlockers)
   const executionBlocked = allExecutionBlockers.length > 0
+  const approvalBlocked = approvalBlockers.length > 0
   let status: CommercialRuleStatus
-  if (executionBlocked) status = 'execution_blocked'
+  if (approvalBlocked) status = 'execution_blocked'
   else if (commercialRulesConfirmed && meterMappingOk && vat.configured) status = 'all_commercial_rules_confirmed'
   else if (commercialRulesConfirmed) status = 'ready_for_billing_configuration'
   else if (totalToConfirm < totalItems) status = 'partially_confirmed'
@@ -673,7 +732,34 @@ export function computeCommercialRuleWorkload(
     vat,
     blockers,
     executionBlockers: allExecutionBlockers,
+    approvalBlockers,
+    executionHolds,
+    executionBlocked,
+    approvalBlocked,
   }
+}
+
+// The one canonical split of CommercialRuleExecutionBlocker[] into what
+// genuinely blocks approval vs. what's merely an execution-time hold —
+// see the Contract B comment above computeCommercialRuleWorkload's own use
+// of this for the full rationale. Exported separately (not just embedded
+// in computeCommercialRuleWorkload) so a caller already holding an
+// executionBlockers array (e.g. from a stored/serialized workload) can
+// classify it without recomputing the whole workload, and so this is the
+// literal single implementation every consumer — server preflight, fresh
+// post-claim recheck, and the UI's readiness/Approve-button gate — shares,
+// never a second hand-rolled allowlist/filter.
+export function classifyExecutionBlockers(executionBlockers: CommercialRuleExecutionBlocker[]): {
+  approvalBlockers: CommercialRuleExecutionBlocker[]
+  executionHolds: RequiredOperationalEventMissingBlocker[]
+} {
+  const executionHolds: RequiredOperationalEventMissingBlocker[] = []
+  const approvalBlockers: CommercialRuleExecutionBlocker[] = []
+  for (const b of executionBlockers) {
+    if (b.type === 'required_operational_event_missing') executionHolds.push(b)
+    else approvalBlockers.push(b)
+  }
+  return { approvalBlockers, executionHolds }
 }
 
 // Deterministic, extraction-time signal for whether a service credit's

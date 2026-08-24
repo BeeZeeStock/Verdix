@@ -15,11 +15,21 @@ import { computeCommercialRuleWorkload, type CommercialRuleWorkload } from '@/li
 import type { OneTimeFee } from '@/lib/types'
 
 // Verbatim mirror of app/api/jobs/[id]/approve/route.ts's three sequential
-// gate checks (executionBlockers, then totalToConfirm/interactionsToConfirm,
+// gate checks (approvalBlockers, then totalToConfirm/interactionsToConfirm,
 // then vat.configured) — Approve proceeds to configureBilling() only when
 // none of these trip.
+//
+// Contract B live acceptance failure (2026-08-29) — this mirror originally
+// checked workload.executionBlockers (every blocker type, uniformly,
+// including RequiredOperationalEventMissingBlocker), which is the exact
+// live bug: an otherwise fully-resolved, event-gated fee waiting only on
+// real-world evidence incorrectly blocked approval. None of this file's own
+// fixtures happen to exercise that specific blocker type, but the mirror
+// itself must still match approve/route.ts's real, corrected gate exactly
+// — see lib/commercial-rule-status.ts's classifyExecutionBlockers for the
+// canonical split both now share.
 function approveWouldBlock(workload: CommercialRuleWorkload): boolean {
-  if (workload.executionBlockers.length > 0) return true
+  if (workload.approvalBlockers.length > 0) return true
   if (workload.totalToConfirm > 0 || workload.interactionsToConfirm > 0) return true
   if (!workload.vat.configured) return true
   return false

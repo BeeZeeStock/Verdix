@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, requiredServiceCreditFields, isDiscountUnresolved, countSourceConfirmations, isServiceCreditFullySourceResolved, isOneTimeFeeUnresolved, type CommercialRuleTerms, type UnsupportedCommercialSemanticsBlocker } from './commercial-rule-status'
+import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, requiredServiceCreditFields, isDiscountUnresolved, countSourceConfirmations, isServiceCreditFullySourceResolved, isOneTimeFeeUnresolved, classifyExecutionBlockers, type CommercialRuleTerms, type UnsupportedCommercialSemanticsBlocker, type RulebookInvariantViolationLike } from './commercial-rule-status'
 import type { OperationalEventEvidence } from './operational-event-evidence'
 
 describe('computeCommercialRuleWorkload — "all confirmed" must check every rule type (regression)', () => {
@@ -635,7 +635,14 @@ describe('isOneTimeFeeUnresolved — Step 12 billability_condition awareness', (
 })
 
 describe('computeCommercialRuleWorkload — Step 12 operational-evidence blocker (item 6/16)', () => {
-  it('an event condition, confirmed (reviewer_policy), produces a required_operational_event_missing blocker — never unsupported_commercial_semantics', () => {
+  // Contract B live acceptance failure (2026-08-29) — this test originally
+  // asserted status === 'execution_blocked' for a PURE
+  // required_operational_event_missing case, which is exactly the live bug:
+  // an otherwise fully-resolved, event-gated fee waiting only on real-world
+  // evidence is a legitimate execution HOLD, not an approval blocker — the
+  // agreement must remain approvable (the fee itself parks instead). See
+  // classifyExecutionBlockers/computeCommercialRuleWorkload's own comments.
+  it('an event condition, confirmed (reviewer_policy), produces a required_operational_event_missing blocker as an execution HOLD — never blocks approval, never unsupported_commercial_semantics', () => {
     const terms: CommercialRuleTerms = {
       one_time_fees: [{
         fee_label: 'Design Milestone Fee', amount: 100000, amount_provenance: 'reviewer_policy',
@@ -644,13 +651,21 @@ describe('computeCommercialRuleWorkload — Step 12 operational-evidence blocker
       }],
     }
     const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
-    expect(workload.status).toBe('execution_blocked')
+    // A pure operational-event hold no longer blocks approval — status
+    // reaches full readiness, not 'execution_blocked'.
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+    expect(workload.approvalBlockers).toHaveLength(0)
     expect(workload.executionBlockers).toHaveLength(1)
+    expect(workload.executionHolds).toHaveLength(1)
     expect(workload.executionBlockers[0]).toMatchObject({
       type: 'required_operational_event_missing',
       rule_family: 'one_time_fee',
       event_type: 'customer_acceptance',
       field: 'one_time_fee:Design Milestone Fee',
+    })
+    expect(workload.executionHolds[0]).toMatchObject({
+      type: 'required_operational_event_missing',
+      event_type: 'customer_acceptance',
     })
     // Never counted as an ordinary reviewer decision — nothing left to confirm.
     expect(workload.totalToConfirm).toBe(0)
@@ -913,5 +928,141 @@ describe('computeCommercialRuleWorkload — determinism (Agreement A final amend
     expect(withEvidence.executionBlockers).toHaveLength(0)
     expect(withoutEvidence.executionBlockers).toHaveLength(1)
     expect(withEvidence).not.toEqual(withoutEvidence)
+  })
+})
+
+// Contract B live acceptance failure (2026-08-29), Part 8 regression
+// coverage — the canonical approvalBlockers/executionHolds split, proven
+// against the real Contract B Integration Fee shape (SEK 90,000, fee_id
+// 0f56a974-68de-496d-8393-3850450e31d9, customer_acceptance) where
+// practical, plus classifyExecutionBlockers directly.
+describe('classifyExecutionBlockers / approvalBlockers / executionHolds — canonical split (regression)', () => {
+  const integrationFeeTerms: CommercialRuleTerms = {
+    one_time_fees: [{
+      fee_label: 'Integration fee', fee_id: '0f56a974-68de-496d-8393-3850450e31d9',
+      amount: 90000, amount_provenance: 'contract_derived',
+      billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+      manual_trigger: true, billability_provenance: 'contract_derived',
+    }],
+  }
+
+  // A — READY_TO_APPROVE + only required_operational_event_missing -> approval allowed.
+  it('A: an otherwise fully-resolved event-gated fee with no evidence -> approval allowed (status not execution_blocked, approvalBlockers empty)', () => {
+    const workload = computeCommercialRuleWorkload(
+      integrationFeeTerms, { total: 0, confirmed: 0 }, 0, undefined, { configured: true }, undefined, [], new Date('2026-10-15'),
+    )
+    expect(workload.status).not.toBe('execution_blocked')
+    expect(workload.approvalBlockers).toHaveLength(0)
+    expect(workload.executionHolds).toHaveLength(1)
+    expect(workload.executionHolds[0].event_type).toBe('customer_acceptance')
+    // Semantic audit (2026-08-29) — the two booleans deliberately disagree
+    // here: approval is safe (approvalBlocked false) even though the
+    // contract is NOT fully executable right now (executionBlocked stays
+    // true — the Integration Fee genuinely cannot execute without
+    // evidence). Neither field is derivable from the other.
+    expect(workload.approvalBlocked).toBe(false)
+    expect(workload.executionBlocked).toBe(true)
+  })
+
+  // B — same fee without evidence -> remains non-executable (the hold
+  // itself is still present, just not approval-blocking; whether it
+  // actually PARKS at push time is lib/billing-writer.ts's
+  // isOneTimeFeeHeldForExecution, exercised in its own test file — this
+  // proves the classification side of that same fact).
+  it('B: without evidence, the fee is still flagged as an execution hold (non-executable), distinct from being fully clear', () => {
+    const workload = computeCommercialRuleWorkload(
+      integrationFeeTerms, { total: 0, confirmed: 0 }, 0, undefined, { configured: true }, undefined, [], new Date('2026-10-15'),
+    )
+    expect(workload.executionHolds.map(h => h.field)).toContain('one_time_fee:Integration fee')
+  })
+
+  it('B (continued): once satisfied evidence exists, the hold clears entirely', () => {
+    const ev: OperationalEventEvidence = {
+      id: 'ev-1', subjectId: '0f56a974-68de-496d-8393-3850450e31d9', eventType: 'customer_acceptance',
+      occurredAt: '2026-10-10T00:00:00.000Z', source: 'reviewer_attestation',
+      recordedAt: '2026-10-10T00:00:00.000Z', recordedBy: 'reviewer@example.com', status: 'active',
+    }
+    const workload = computeCommercialRuleWorkload(
+      integrationFeeTerms, { total: 0, confirmed: 0 }, 0, undefined, { configured: true }, undefined, [ev], new Date('2026-10-15'),
+    )
+    expect(workload.executionHolds).toHaveLength(0)
+    expect(workload.approvalBlockers).toHaveLength(0)
+  })
+
+  // C — unresolved commercial interpretation -> approval still blocked.
+  // This is the SEPARATE totalToConfirm/interactionsToConfirm gate in
+  // approve/route.ts (unchanged by this pass) — proven here at the
+  // workload level: an unconfirmed discount produces totalToConfirm > 0
+  // regardless of approvalBlockers/executionHolds being empty.
+  it('C: an unresolved commercial interpretation (unconfirmed discount) still leaves totalToConfirm > 0, independent of the blocker classification', () => {
+    const terms: CommercialRuleTerms = { discounts: [{ discount_rule_id: 'd1', interpretation: null }] }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.totalToConfirm).toBeGreaterThan(0)
+    expect(workload.approvalBlockers).toHaveLength(0) // not an execution-blocker case at all — a different gate
+  })
+
+  // D — genuinely unsafe execution blocker -> approval still blocked.
+  // Covers BOTH kinds this codebase supports: an unsupported-semantics
+  // capability gap (already had test coverage above) and a caller-supplied
+  // rulebook invariant violation (new coverage here).
+  it('D: a caller-supplied rulebook invariant violation still blocks approval — status execution_blocked, approvalBlockers non-empty', () => {
+    const violation: RulebookInvariantViolationLike = {
+      type: 'rulebook_invariant_violation', rule_id: 'r1', field: 'minimum_commitment', reason: 'computed result contradicts the normalized floor',
+    }
+    const workload = computeCommercialRuleWorkload(
+      integrationFeeTerms, { total: 0, confirmed: 0 }, 0, undefined, { configured: true }, [violation], [], new Date('2026-10-15'),
+    )
+    expect(workload.status).toBe('execution_blocked')
+    expect(workload.approvalBlockers).toHaveLength(1)
+    expect(workload.approvalBlockers[0].type).toBe('rulebook_invariant_violation')
+    // The unrelated execution hold on the Integration Fee is still present
+    // and still correctly NOT counted as an approval blocker — a genuine
+    // blocker elsewhere doesn't reclassify an unrelated hold.
+    expect(workload.executionHolds).toHaveLength(1)
+    // Here BOTH booleans agree (unlike test A) — a genuine blocker means
+    // neither approval nor full execution is safe.
+    expect(workload.approvalBlocked).toBe(true)
+    expect(workload.executionBlocked).toBe(true)
+  })
+
+  it('D (continued): a rulebook violation blocks approval even when the SAME job also has a satisfied evidence hold (mixed case)', () => {
+    const violation: RulebookInvariantViolationLike = {
+      type: 'rulebook_invariant_violation', rule_id: 'r2', field: 'tier_calculation', reason: 'graduated result diverges from volume result',
+    }
+    const ev: OperationalEventEvidence = {
+      id: 'ev-1', subjectId: '0f56a974-68de-496d-8393-3850450e31d9', eventType: 'customer_acceptance',
+      occurredAt: '2026-10-10T00:00:00.000Z', source: 'reviewer_attestation',
+      recordedAt: '2026-10-10T00:00:00.000Z', recordedBy: 'reviewer@example.com', status: 'active',
+    }
+    const workload = computeCommercialRuleWorkload(
+      integrationFeeTerms, { total: 0, confirmed: 0 }, 0, undefined, { configured: true }, [violation], [ev], new Date('2026-10-15'),
+    )
+    expect(workload.status).toBe('execution_blocked')
+    expect(workload.approvalBlockers).toHaveLength(1)
+    expect(workload.executionHolds).toHaveLength(0) // evidence satisfied this one
+  })
+
+  // E — UI and API classification agree: both read workload.approvalBlockers/
+  // workload.executionHolds directly (app/(dashboard)/configure/[id]/page.tsx's
+  // pendingExecutionHolds and approvalBlockersOutstanding; app/api/jobs/[id]/
+  // approve/route.ts's two gates) — proven here by testing the single shared
+  // classifyExecutionBlockers function they both ultimately depend on.
+  it('E: classifyExecutionBlockers is the single implementation — same input always produces the same split, independent of caller', () => {
+    const mixed = [
+      { type: 'required_operational_event_missing' as const, rule_family: 'one_time_fee', event_type: 'customer_acceptance' as const, field: 'one_time_fee:A', reason: 'r' },
+      { type: 'unsupported_commercial_semantics' as const, rule_family: 'one_time_fee', missing_capability: 'x', field: 'one_time_fee:B', reason: 'r' },
+      { type: 'rulebook_invariant_violation' as const, rule_id: 'r1', field: 'f', reason: 'r' },
+    ]
+    const result = classifyExecutionBlockers(mixed)
+    expect(result.executionHolds).toEqual([mixed[0]])
+    expect(result.approvalBlockers).toEqual([mixed[1], mixed[2]])
+    // Idempotent/pure — calling again with the same input reproduces the
+    // identical split (what "UI and API can never diverge" actually rests on).
+    expect(classifyExecutionBlockers(mixed)).toEqual(result)
+  })
+
+  it('E (continued): an empty executionBlockers array classifies to two empty arrays, never undefined/null', () => {
+    const result = classifyExecutionBlockers([])
+    expect(result).toEqual({ approvalBlockers: [], executionHolds: [] })
   })
 })

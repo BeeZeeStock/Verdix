@@ -6000,26 +6000,41 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // of which cards a reviewer has opened.
   const sourceConfirmationsOutstanding = countSourceConfirmations(commercialRuleWorkload.blockers, terms?.service_credits)
   const genuineDecisionsOutstanding = commercialDecisionsOutstanding - sourceConfirmationsOutstanding
+  // Genuine approval blockers (rulebook contradictions / unsupported-
+  // semantics capability gaps — never a required_operational_event_missing
+  // hold, see commercialRuleWorkload.approvalBlockers's own doc comment)
+  // — previously MISSING from this page's readiness computation entirely:
+  // totalOutstanding never looked at executionBlockers in any form, so a
+  // genuine approval blocker (were one ever to occur — currently
+  // unreachable in production, per lib/commercial-rule-status.ts's own
+  // comments) would have shown "Ready to approve" here while the server
+  // correctly rejected it. Found and fixed while establishing the single
+  // shared classification this page and approve/route.ts both now use, so
+  // they can never diverge on this again — Contract B live acceptance
+  // failure (2026-08-29), the reverse direction of this same class of bug.
+  const approvalBlockersOutstanding = commercialRuleWorkload.approvalBlockers.length
   const readinessBreakdown = [
     genuineDecisionsOutstanding > 0 && `${genuineDecisionsOutstanding} commercial decision${genuineDecisionsOutstanding > 1 ? 's' : ''} outstanding`,
     sourceConfirmationsOutstanding > 0 && `${sourceConfirmationsOutstanding} source confirmation${sourceConfirmationsOutstanding > 1 ? 's' : ''} outstanding`,
     usageMappingsOutstanding > 0 && `${usageMappingsOutstanding} usage mapping${usageMappingsOutstanding > 1 ? 's' : ''} outstanding`,
     vatOutstanding && 'VAT not configured',
     needsReview > 0 && `${needsReview} extracted field${needsReview > 1 ? 's' : ''} below confidence threshold`,
+    approvalBlockersOutstanding > 0 && `${approvalBlockersOutstanding} unresolved execution blocker${approvalBlockersOutstanding > 1 ? 's' : ''}`,
   ].filter((x): x is string => typeof x === 'string')
-  const totalOutstanding = commercialDecisionsOutstanding + usageMappingsOutstanding + (vatOutstanding ? 1 : 0) + needsReview
+  const totalOutstanding = commercialDecisionsOutstanding + usageMappingsOutstanding + (vatOutstanding ? 1 : 0) + needsReview + approvalBlockersOutstanding
 
   // Readiness audit — "ready to approve" (totalOutstanding === 0) and
   // "every fee is billable now" are two different questions (Approve gates
   // on interpretation/configuration readiness only; a fee still held on
   // real-world operational evidence is a SEPARATE, execution-time concern
   // — see lib/commercial-rule-status.ts's RequiredOperationalEventMissingBlocker
-  // and getBillabilityExecutionCapability, neither changed by this pass).
-  // This is purely informational surfacing of blockers the workload
-  // computation already derives — never a new blocking condition, never
-  // read by handleApprove/totalOutstanding/the approve route's own gate.
-  const pendingExecutionHolds = commercialRuleWorkload.executionBlockers
-    .filter((b): b is import('@/lib/commercial-rule-status').RequiredOperationalEventMissingBlocker => b.type === 'required_operational_event_missing')
+  // and getBillabilityExecutionCapability). This is purely informational
+  // surfacing of the SAME executionHolds field the server-side gate reads
+  // (never re-filtered here — was previously a locally-duplicated
+  // type-guard filter, now the canonical field directly) — never a
+  // blocking condition, never read by handleApprove/totalOutstanding/the
+  // approve route's own gate.
+  const pendingExecutionHolds = commercialRuleWorkload.executionHolds
     .map(b => ({
       feeLabel: b.field.startsWith('one_time_fee:') ? b.field.slice('one_time_fee:'.length) : b.field,
       eventLabel: describeBillabilityCondition({ kind: 'event', event_type: b.event_type }) ?? b.event_type,

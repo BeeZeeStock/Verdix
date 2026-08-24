@@ -14,8 +14,15 @@ import { buildOneTimeFeeConfirmation } from '@/lib/one-time-fee'
 import { applyExtractionSafetyNets } from '@/lib/contract-extractor'
 import type { OneTimeFee, ContractTerms } from '@/lib/types'
 
+// Contract B live acceptance failure (2026-08-29) — this mirror originally
+// checked workload.executionBlockers.length (every blocker type,
+// uniformly), which is the exact live bug: a required_operational_event_
+// missing hold on an otherwise fully-resolved fee incorrectly blocked
+// approval. Updated to workload.approvalBlockers, matching approve/
+// route.ts's corrected gate exactly — see lib/commercial-rule-status.ts's
+// classifyExecutionBlockers for the canonical split both now share.
 function approveWouldBlock(workload: CommercialRuleWorkload): boolean {
-  if (workload.executionBlockers.length > 0) return true
+  if (workload.approvalBlockers.length > 0) return true
   if (workload.totalToConfirm > 0 || workload.interactionsToConfirm > 0) return true
   if (!workload.vat.configured) return true
   return false
@@ -58,8 +65,8 @@ describe('Scenario 2 — immediate: explicit source meaning only, supported', ()
   })
 })
 
-describe('Scenario 3 — contract signature: semantic condition represented, confirmed, execution blocked pending signature evidence', () => {
-  it('"payable upon signing" normalizes to event/contract_signature; once confirmed, semantics are resolved but Approve stays blocked on operational evidence', () => {
+describe('Scenario 3 — contract signature: semantic condition represented, confirmed, execution HOLD pending signature evidence (approval allowed, fee parks)', () => {
+  it('"payable upon signing" normalizes to event/contract_signature; once confirmed, semantics are resolved and Approve is NOT blocked — the fee becomes an execution hold instead', () => {
     const extracted = extractOne({
       amount: 100000, due_date: '2026-09-01', // a stray effective-date guess must never leak through — see Scenario 6/contract-extractor.test.ts
       billability_condition: { kind: 'event', event_type: 'contract_signature' },
@@ -71,25 +78,33 @@ describe('Scenario 3 — contract signature: semantic condition represented, con
     const stillBlocked = computeCommercialRuleWorkload({ one_time_fees: [amountConfirmed] }, { total: 0, confirmed: 0 })
     expect(approveWouldBlock(stillBlocked)).toBe(true) // billability not yet confirmed at all
 
+    // Contract B live acceptance failure (2026-08-29) — once billability
+    // IS confirmed, a missing-evidence event condition is a legitimate
+    // execution HOLD, not an approval blocker: the agreement may still be
+    // approved; this one fee parks instead of pushing to the provider
+    // (lib/billing-writer.ts's isOneTimeFeeHeldForExecution already
+    // implements exactly this).
     const fullyConfirmed = buildOneTimeFeeConfirmation(amountConfirmed, { confirmBillability: true })
     const workload = computeCommercialRuleWorkload({ one_time_fees: [fullyConfirmed] }, { total: 0, confirmed: 0 })
-    expect(workload.status).toBe('execution_blocked')
-    expect(workload.executionBlockers).toEqual([{
+    expect(workload.status).not.toBe('execution_blocked')
+    expect(workload.approvalBlockers).toEqual([])
+    expect(workload.executionHolds).toEqual([{
       type: 'required_operational_event_missing', rule_family: 'one_time_fee',
       event_type: 'contract_signature', field: 'one_time_fee:Fee',
       reason: expect.any(String),
     }])
-    expect(approveWouldBlock(workload)).toBe(true)
+    expect(approveWouldBlock(workload)).toBe(false)
   })
 })
 
-describe('Scenario 4 — customer acceptance: semantic condition represented, confirmed, execution blocked pending acceptance evidence', () => {
-  it('"becomes billable upon customer acceptance" normalizes to event/customer_acceptance; confirmed interpretation still blocks Approve', () => {
+describe('Scenario 4 — customer acceptance: semantic condition represented, confirmed, execution HOLD pending acceptance evidence (approval allowed, fee parks)', () => {
+  it('"becomes billable upon customer acceptance" normalizes to event/customer_acceptance; confirmed interpretation does NOT block Approve — the fee becomes an execution hold instead', () => {
     const extracted = extractOne({ billability_condition: { kind: 'event', event_type: 'customer_acceptance' } } as Partial<OneTimeFee>)
     const fullyConfirmed = buildOneTimeFeeConfirmation(buildOneTimeFeeConfirmation(extracted, { confirmAmount: true }), { confirmBillability: true })
     const workload = computeCommercialRuleWorkload({ one_time_fees: [fullyConfirmed] }, { total: 0, confirmed: 0 })
-    expect(workload.executionBlockers[0]).toMatchObject({ type: 'required_operational_event_missing', event_type: 'customer_acceptance' })
-    expect(approveWouldBlock(workload)).toBe(true)
+    expect(workload.executionHolds[0]).toMatchObject({ type: 'required_operational_event_missing', event_type: 'customer_acceptance' })
+    expect(workload.approvalBlockers).toEqual([])
+    expect(approveWouldBlock(workload)).toBe(false)
     // But the reviewer's decision IS recorded and visible — this is not the
     // same as unsupported_semantics (item 6).
     expect(fullyConfirmed.billability_provenance).toBe('reviewer_policy')
