@@ -230,16 +230,40 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
         borderColor: allConfirmed ? 'rgba(11,92,54,0.2)' : '#FAC775',
         background:  allConfirmed ? '#F8FDF9' : 'white',
       }}>
-      {/* Header */}
+      {/* Header — flex-wrap so the action group drops to its own row
+          instead of squeezing the title/badge below their natural width
+          (see the content group's own comment just below for why it
+          deliberately does NOT get min-width:0). items-start (not center)
+          so the actions stay pinned to the title line — with align-items:
+          center, once the content group grows taller than one line
+          (title row + description, sometimes + the mixed-schedule note),
+          actions would visually drift down to the vertical middle of that
+          whole block instead of sitting next to the title. */}
       <div
-        className="px-7 py-4 flex items-center justify-between gap-4 cursor-pointer"
+        className="px-7 py-4 flex flex-wrap items-start justify-between gap-4 cursor-pointer"
         style={collapsed ? undefined : { borderBottom: '1px solid rgba(26,61,43,0.07)' }}
         onClick={() => setCollapsed(c => !c)}
         role="button"
         tabIndex={0}
         onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') setCollapsed(c => !c) }}
       >
-        <div>
+        {/* flex-1 so this group claims all leftover row width on wide
+            viewports; deliberately no min-w-0 override — the title/badge
+            below are whitespace-nowrap, so their rendered (unbreakable)
+            width becomes this item's content-based shrink floor. That
+            floor is what makes the flex-wrap on the row above trigger
+            (dropping the actions group to its own line) instead of the
+            browser quietly shrinking this box past that floor and
+            wrapping the title/badge text word-by-word — the actual bug. */}
+        <div className="flex-1">
+          {/* Deliberately NOT flex-wrap here — its un-wrapped width (icons
+              + nowrap title + nowrap badge) is exactly the content-based
+              shrink floor the OUTER header row's flex-wrap needs in order
+              to decide, correctly, when to drop the actions group to its
+              own line. Letting this row wrap internally would lower that
+              floor and let the outer row stay "single line" past the
+              point where it should have wrapped — reintroducing a
+              squeeze, just one level down. */}
           <div className="flex items-center gap-2 mb-0.5">
             <i className={`ti ti-chevron-right text-stone/50 transition-transform ${collapsed ? '' : 'rotate-90'}`} style={{ fontSize: 12 }} />
             <i className="ti ti-plug-connected text-amber-700" style={{ fontSize: 15 }} />
@@ -249,9 +273,9 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
                 calculation method, minimum commitments, etc.) are resolved,
                 so its "All confirmed" must never be read as "billing fully
                 configured" when other ambiguities remain elsewhere. */}
-            <span className="text-sm font-medium text-ink">Usage mappings</span>
+            <span className="text-sm font-medium text-ink whitespace-nowrap">Usage mappings</span>
             {allConfirmed && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-semibold" style={{ color: '#4A7C59' }}>
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold whitespace-nowrap" style={{ color: '#4A7C59' }}>
                 · <i className="ti ti-check" style={{ fontSize: 10 }} /> All confirmed
               </span>
             )}
@@ -261,10 +285,16 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
                 before approval" state) rather than plain inline text
                 sitting at the same visual weight as "Usage mappings"
                 itself. "approve" -> "approval" also corrected for
-                consistency with that same VAT wording. */}
+                consistency with that same VAT wording.
+                whitespace-nowrap only on the short "Required before
+                approval" copy — the compact badge that must never break
+                word-by-word (the reported bug). The longer "Unconfirmed…"
+                message is left free to wrap normally rather than forcing
+                a much wider nowrap pill that could itself overflow a
+                narrow mobile width. */}
             {!allConfirmed && (
               <span
-                className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full"
+                className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full ${isConfigured ? '' : 'whitespace-nowrap flex-shrink-0'}`}
                 style={isConfigured ? { background: 'rgba(180,83,9,0.1)', color: '#B45309' } : { background: 'rgba(153,27,27,0.1)', color: '#991B1B' }}
               >
                 {isConfigured ? 'Unconfirmed — usage-based billing will skip these meters' : 'Required before approval'}
@@ -281,6 +311,17 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
             </p>
           )}
         </div>
+        {/* justify-between on the header (not margin-left:auto here) is
+            what right-aligns this group — verified empirically that
+            margin-left:auto on this item overflows past the card's right
+            edge once flex-wrap has put it alone on its own line (a real
+            multi-line-flex + auto-margin interaction, not a hypothetical
+            concern). justify-between right-aligns it correctly when it
+            shares the row with the heading; once wrapped to its own row
+            it's alone on that line and settles at the row's start
+            (left-aligned) — a clean, fully-visible fallback rather than
+            an overflowing "right-aligned" row. flex-shrink-0 unchanged,
+            so the buttons themselves never compress. */}
         <div className="flex items-center gap-2 flex-shrink-0" onClick={ev => ev.stopPropagation()}>
           {!allConfirmed && (
             <button
