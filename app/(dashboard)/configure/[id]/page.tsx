@@ -4703,7 +4703,11 @@ function ReviewPanel({
                                   e => e.subjectId === f.fee_id && e.eventType === eventType && e.status === 'active'
                                 )
                                 const dateKey = f.fee_id
-                                const draft = evidenceDateDraft[dateKey] ?? new Date().toISOString().slice(0, 10)
+                                // Deliberately blank, not today — recording that a
+                                // real-world event occurred must be an intentional
+                                // reviewer choice, never a silently-suggested date
+                                // that happens to predate signing/Effective Date.
+                                const draft = evidenceDateDraft[dateKey] ?? ''
                                 const recording = saving === `one_time_fee:${f.fee_label}:evidence`
                                 const revoking = saving === `one_time_fee:${f.fee_label}:evidence-revoke`
                                 return (
@@ -4736,7 +4740,7 @@ function ReviewPanel({
                                         />
                                         <button
                                           onClick={() => recordEvidence(f.fee_id!, f.fee_label, draft)}
-                                          disabled={recording}
+                                          disabled={recording || !draft}
                                           className="text-[11px] font-medium px-2.5 py-1 rounded-lg border"
                                           style={{ borderColor: 'rgba(26,61,43,0.15)' }}
                                         >
