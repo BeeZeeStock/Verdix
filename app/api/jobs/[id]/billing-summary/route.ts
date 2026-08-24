@@ -5,7 +5,9 @@ import { billingInterval } from '@/lib/stripe-meter'
 import { remembillAppUrl } from '@/lib/billing-writer'
 import { enumerateContractWindows, resolveWindowMinimum, clampWindowToContract } from '@/lib/tariff'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
-import type { ContractTerms } from '@/lib/types'
+import type { ContractTerms, OneTimeFee } from '@/lib/types'
+import type { OperationalEventEvidence } from '@/lib/operational-event-evidence'
+import { resolveOperationalEventEvidence } from '@/lib/operational-event-evidence'
 
 export async function GET(
   _req: NextRequest,
@@ -276,6 +278,12 @@ async function handlePlannedInvoicesPath({
     base_amount: number
     currency: string
     fee_label: string | null
+    // Stable Step-13 subject identity, when present — see lib/types.ts's
+    // OneTimeFee.fee_id comment. Populated at Stage A (lib/billing-writer.ts)
+    // only for a fee whose billability_condition.kind === 'event'; null for
+    // every genuinely manual/quantity-rate parked fee (those never entered
+    // the Step-12 lifecycle) and for legacy rows predating fee_id entirely.
+    fee_id: string | null
     invoice_type: string
     status: string
     stripe_invoice_id: string | null
@@ -504,18 +512,68 @@ async function handlePlannedInvoicesPath({
   }
 
   // ── parkedInvoices: service fees awaiting manual trigger ───────────────────
-  type AnyFee = { fee_label: string; metric_name?: string | null; rate_per_unit?: number | null; description?: string | null }
-  const termsFees = (terms?.one_time_fees ?? []) as AnyFee[]
+  // Identity: a row with a stable fee_id (Stage A only ever sets this for a
+  // fee whose billability_condition.kind === 'event' — see PlannedRow.fee_id's
+  // own comment) is matched to its contract-terms fee by that id, never by
+  // fee_label — item's own "do not reconstruct fee identity from label text"
+  // requirement. A row with no fee_id is a genuinely manual/quantity-rate
+  // parked fee (never entered the Step-12 event lifecycle at all), for which
+  // label-matching remains the only identity this codebase has ever had —
+  // unchanged, pre-existing behavior for that case.
+  const termsFees = (terms?.one_time_fees ?? []) as OneTimeFee[]
+
+  // Evidence lookup is scoped to this job only, fetched once for every
+  // parked row rather than per-row — the same resolver
+  // (resolveOperationalEventEvidence) already used by
+  // lib/operational-event-evidence.ts's isOneTimeFeeHeldForExecution and the
+  // Review drawer's own evidence panel, so "is this event satisfied" is
+  // answered identically everywhere in the product, never re-derived here.
+  let activeEvidence: OperationalEventEvidence[] = []
+  if (parkedRows.some(r => r.fee_id)) {
+    const { data: evidenceRows } = await supabaseServer
+      .from('operational_event_evidence')
+      .select('*')
+      .eq('job_id', id)
+      .eq('status', 'active')
+    activeEvidence = (evidenceRows ?? []).map(r => ({
+      id: r.id, subjectId: r.subject_id, eventType: r.event_type,
+      occurredAt: r.occurred_at, source: r.source, recordedAt: r.recorded_at, recordedBy: r.recorded_by, status: r.status,
+    }))
+  }
+
   const parkedInvoices = parkedRows.map(row => {
-    const termFee = termsFees.find(f => f.fee_label === row.fee_label)
+    const termFee = row.fee_id
+      ? termsFees.find(f => f.fee_id === row.fee_id)
+      : termsFees.find(f => f.fee_label === row.fee_label)
+    const billabilityCondition = termFee?.billability_condition ?? null
+    const satisfaction = (billabilityCondition?.kind === 'event' && termFee?.fee_id)
+      ? resolveOperationalEventEvidence({ condition: billabilityCondition, subjectId: termFee.fee_id, evidence: activeEvidence, asOf: new Date() })
+      : null
     return {
       id:          row.id,
+      feeId:       termFee?.fee_id ?? null,
       feeLabel:    row.fee_label,
       currency:    (row.currency ?? 'EUR').toUpperCase(),
       baseAmount:  Number(row.base_amount),
       metricName:  termFee?.metric_name  ?? null,
       ratePerUnit: termFee?.rate_per_unit ?? null,
       description: termFee?.description  ?? null,
+      // null for a genuinely manual/quantity-rate fee (no billability_
+      // condition at all) — the UI branches structurally on this being
+      // non-null AND kind === 'event', never on fee_label/description text.
+      billabilityCondition,
+      // Only meaningful when billabilityCondition.kind === 'event'; null
+      // otherwise. Mirrors OperationalEventEvidence's own shape rather than
+      // inventing a parallel one — occurredAt is the reviewer-attested
+      // real-world date, recordedAt is when Verdix learned about it.
+      evidence: satisfaction?.evidence
+        ? { occurredAt: satisfaction.evidence.occurredAt, recordedAt: satisfaction.evidence.recordedAt }
+        : null,
+      // Always 'parked' today (parkedRows is already filtered to
+      // status==='parked') — included so the read model doesn't force the
+      // UI to hardcode that assumption; once a row is actually sent it
+      // moves out of this array entirely (see oneTimeInvoices below).
+      plannedInvoiceStatus: row.status,
     }
   })
 

@@ -81,12 +81,20 @@ type OneTimeFee = {
 
 type ParkedInvoiceSummary = {
   id:          string
+  // Stable Step-13 subject identity — see lib/types.ts's OneTimeFee.fee_id —
+  // null for a genuinely manual/quantity-rate fee that never entered the
+  // Step-12 event lifecycle.
+  feeId:       string | null
   feeLabel:    string | null
   currency:    string
   baseAmount:  number
   metricName:  string | null
   ratePerUnit: number | null
   description: string | null
+  billabilityCondition: { kind: 'immediate' } | { kind: 'fixed_date'; date: string }
+    | { kind: 'event'; event_type: 'contract_signature' | 'delivery' | 'customer_acceptance' | 'final_acceptance' | 'change_order_signature' } | null
+  evidence:    { occurredAt: string; recordedAt: string } | null
+  plannedInvoiceStatus: string
 }
 
 type CommercialRuleEvent = {

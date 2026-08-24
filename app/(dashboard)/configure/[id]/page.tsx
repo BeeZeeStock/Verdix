@@ -5620,7 +5620,21 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [rebuildError,    setRebuildError]    = useState<string | null>(null)
   const [rebuildDone,     setRebuildDone]     = useState(false)
   const [scheduleExists,  setScheduleExists]  = useState<boolean | null>(null)
-  const [parkedInvoices,  setParkedInvoices]  = useState<Array<{ id: string; feeLabel: string | null; currency: string; baseAmount: number; metricName: string | null; ratePerUnit: number | null; description: string | null }>>([])
+  const [parkedInvoices,  setParkedInvoices]  = useState<Array<{
+    id: string; feeId: string | null; feeLabel: string | null; currency: string; baseAmount: number
+    metricName: string | null; ratePerUnit: number | null; description: string | null
+    billabilityCondition: { kind: 'immediate' } | { kind: 'fixed_date'; date: string }
+      | { kind: 'event'; event_type: 'contract_signature' | 'delivery' | 'customer_acceptance' | 'final_acceptance' | 'change_order_signature' } | null
+    evidence: { occurredAt: string; recordedAt: string } | null
+    plannedInvoiceStatus: string
+  }>>([])
+  // Bumped after recording operational-event evidence from the Parked
+  // Invoices card — included in BillingSummaryCard's own remount key
+  // (same existing idiom as rebuildDone/approved below) so billing-summary
+  // is re-fetched and parkedInvoices reflects the newly-recorded evidence,
+  // without a full page reload. Evidence recording itself never calls
+  // Stripe/Remembill/the scheduler — this only refreshes the READ model.
+  const [parkedEvidenceTick, setParkedEvidenceTick] = useState(0)
   const [sentOneTimeInvoices, setSentOneTimeInvoices] = useState<{ feeLabel: string | null; amount: number }[]>([])
 
   // Audit-trail metadata (reviewer, timestamp, source clause) for every
@@ -7447,13 +7461,17 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             {isConfigured && (billingPlatform === 'stripe' || billingPlatform === 'remembill') && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (
               <>
                 {parkedInvoices.length > 0 && (
-                  <ParkedInvoicesCard jobId={id} parkedInvoices={parkedInvoices} />
+                  <ParkedInvoicesCard
+                    jobId={id}
+                    parkedInvoices={parkedInvoices}
+                    onEvidenceRecorded={() => setParkedEvidenceTick(t => t + 1)}
+                  />
                 )}
                 <ManualInvoiceCard jobId={id} />
                 {(terms?.overage_tiers?.length ?? 0) > 0 && (
                   <ConsumptionTimelineCard jobId={id} />
                 )}
-                <BillingSummaryCard jobId={id} key={rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial'} onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} onSentOneTimeInvoices={setSentOneTimeInvoices} />
+                <BillingSummaryCard jobId={id} key={(rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial') + ':' + parkedEvidenceTick} onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} onSentOneTimeInvoices={setSentOneTimeInvoices} />
                 {/* Rebuild banner — shown when customer exists but no planned schedule yet */}
                 {!subId && !rebuildDone && scheduleExists === false && (() => {
                   const missingForRebuild: string[] = []
