@@ -8,7 +8,18 @@ import type { PIIEntity } from '@/lib/pii-detector'
 
 const GENERIC_INFRA_ERROR = 'This contract couldn’t be processed right now due to a temporary system issue. Please contact bilal@lynoraai.com for help.'
 
-export const maxDuration = 120
+// 120s was too tight: extractDocumentText's underlying client
+// (lib/ai-client.ts's getAIClient) has a real worst case of 60s per attempt
+// x up to 3 attempts (1 + 2 retries) = 180s, before this route's own PDF
+// download / local PII detection / DB writes are even counted. A route
+// killed by the PLATFORM at 120s never reaches this file's own try/catch,
+// so no error_message is ever written — the job is left stuck in
+// 'DETECTING_PII' forever and the caller only sees a raw platform timeout,
+// not a real error (confirmed live: two production jobs got stuck exactly
+// this way). 200s gives headroom over that 180s worst case, same
+// reasoning as execute/route.ts's 300s and audit/route.ts's 290s budgets
+// for their own AI-client worst cases.
+export const maxDuration = 200
 
 export async function POST(
   _req: NextRequest,
