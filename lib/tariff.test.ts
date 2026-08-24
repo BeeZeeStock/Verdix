@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   computeMetricOverage,
   computeUserOverage,
@@ -6,6 +6,7 @@ import {
   enumerateCadenceWindows,
   findCadenceWindowContaining,
   isPartialWindow,
+  isBillingWindowClosed,
   computeMinimumCommitmentSchedule,
   resolveWindowMinimum,
   clampWindowToContract,
@@ -417,5 +418,114 @@ describe('clampWindowToContract — real usage-measurement/display bounds, never
     const wm = resolveWindowMinimum(finalWindow, contractStart, contractEnd, 'calendar', mc)
     expect(wm.isPartial).toBe(true)
     expect(wm.amount).toBe(66000) // full floor still applies — proration policy is independent of the measurement clamp
+  })
+})
+
+// Fail-closed real-billing invariant (usage/minimum period-closure audit,
+// final hardening pass). window.end's own convention — confirmed directly
+// from enumerateCadenceWindows above (`end = nextStart - 1 day`) — is
+// midnight of the window's own LAST INCLUSIVE calendar day, never the day
+// after and never that day's own 23:59:59 instant. Contract B's real
+// October window: start = 1 Oct 2026 00:00, end = 31 Oct 2026 00:00.
+describe('isBillingWindowClosed — canonical closure boundary (usage/minimum period-closure audit)', () => {
+  // Oct 1 – Oct 31 2026, matching Contract B's real first calendar-month
+  // window exactly (enumerateCadenceWindows would produce this same pair).
+  const octWindow = { start: new Date(2026, 9, 1), end: new Date(2026, 9, 31) }
+
+  it('mid-period (Oct 15) -> NOT closed — the exact scenario this invariant exists to reject', () => {
+    expect(isBillingWindowClosed(octWindow, new Date(2026, 9, 15))).toBe(false)
+  })
+
+  it('the window\'s own last calendar day, any time during it (Oct 31 14:00) -> still NOT closed — the day itself has not finished', () => {
+    expect(isBillingWindowClosed(octWindow, new Date(2026, 9, 31, 14, 0, 0))).toBe(false)
+  })
+
+  it('the very last instant of the window\'s last day (Oct 31 23:59:59) -> still NOT closed, by one second', () => {
+    expect(isBillingWindowClosed(octWindow, new Date(2026, 9, 31, 23, 59, 59))).toBe(false)
+  })
+
+  it('the exact boundary instant (Nov 1 00:00:00, i.e. window.end + 1 day) -> closed — inclusive lower bound', () => {
+    expect(isBillingWindowClosed(octWindow, new Date(2026, 10, 1, 0, 0, 0))).toBe(true)
+  })
+
+  it('one second past the boundary (Nov 1 00:00:01) -> closed', () => {
+    expect(isBillingWindowClosed(octWindow, new Date(2026, 10, 1, 0, 0, 1))).toBe(true)
+  })
+
+  it('well after the window (Dec 1) -> closed', () => {
+    expect(isBillingWindowClosed(octWindow, new Date(2026, 11, 1))).toBe(true)
+  })
+
+  it('a naive `billingAsOf > window.end` comparison would have wrongly reported Oct 31 as closed — confirms the fix is not equivalent to that', () => {
+    const midLastDay = new Date(2026, 9, 31, 14, 0, 0)
+    expect(midLastDay.getTime() > octWindow.end.getTime()).toBe(true) // the naive, wrong check
+    expect(isBillingWindowClosed(octWindow, midLastDay)).toBe(false) // the correct answer
+  })
+
+  it('well before the window (Sep 1) -> not closed', () => {
+    expect(isBillingWindowClosed(octWindow, new Date(2026, 8, 1))).toBe(false)
+  })
+})
+
+// This codebase's window/date model is local-calendar-based throughout
+// (new Date(y, m, d) construction, never Date.UTC/Z-suffixed ISO strings —
+// confirmed by direct reading of enumerateCadenceWindows/
+// findCadenceWindowContaining above; no TZ override exists anywhere in the
+// repo). Under a local-calendar model a "calendar day" is not always
+// exactly 86,400,000ms: a US fall-back day is 25 real hours, a
+// spring-forward day is 23. These tests pin process.env.TZ to a real IANA
+// zone with DST for their own duration (Node.js respects TZ reassignment at
+// runtime — confirmed empirically) so they exercise a genuine transition
+// deterministically, independent of whatever timezone the runner's own
+// machine happens to be in. Sun Nov 1 2026 is the real US fall-back
+// transition (2am -> 1am), chosen because it also happens to be directly
+// adjacent to Contract B's real Oct/Nov 2026 dates used elsewhere in this
+// suite.
+describe('isBillingWindowClosed / enumerateCadenceWindows — DST fall-back transition (America/New_York, Sun Nov 1 2026)', () => {
+  const originalTZ = process.env.TZ
+  beforeEach(() => { process.env.TZ = 'America/New_York' })
+  afterEach(() => { process.env.TZ = originalTZ })
+
+  it('a window ending Nov 1 is NOT closed at Nov 1 23:00 local, even though that instant is a full 86_400_000ms past window.end -- the naive ms-literal form this helper used to use would have wrongly said "closed" here', () => {
+    const window = { start: new Date(2026, 9, 2), end: new Date(2026, 10, 1) } // Oct 2 - Nov 1
+    const naiveBoundary = new Date(window.end.getTime() + 86_400_000)
+    expect(naiveBoundary.toString()).toContain('Nov 01 2026 23:00:00') // confirms the transition really lands here
+    expect(isBillingWindowClosed(window, naiveBoundary)).toBe(false) // still Nov 1 -> not closed
+    expect(isBillingWindowClosed(window, new Date(2026, 9, 2))).toBe(false) // sanity: mid-window still open too
+  })
+
+  it('that same window IS closed at the true next local midnight, Nov 2 00:00 -- one hour later than the naive boundary above, because Nov 1 was a 25-hour day', () => {
+    const window = { start: new Date(2026, 9, 2), end: new Date(2026, 10, 1) }
+    const trueNextMidnight = new Date(2026, 10, 2) // Nov 2, 00:00 local, via field construction
+    expect(isBillingWindowClosed(window, trueNextMidnight)).toBe(true)
+    expect(isBillingWindowClosed(window, new Date(trueNextMidnight.getTime() - 1))).toBe(false) // one ms before -> still not closed
+  })
+
+  it('enumerateCadenceWindows itself produces a window.end at exact local midnight (Nov 1 00:00), not skewed into the day, when nextStart falls the day after the fall-back transition', () => {
+    // Monthly cadence anchored on day-of-month 2 -> the window ending in
+    // early November has nextStart = Nov 2 2026, the real day immediately
+    // after the fall-back transition -- exactly the case that provably
+    // skewed the old `nextStart.getTime() - 86_400_000` form by one hour.
+    const anchor = new Date(2026, 8, 2) // Sep 2, 2026 (day-of-month 2)
+    const windows = enumerateCadenceWindows(anchor, 'monthly', new Date(2026, 9, 1), new Date(2026, 10, 5))
+    const novemberBoundaryWindow = windows.find(w => w.end.getFullYear() === 2026 && w.end.getMonth() === 10 && w.end.getDate() === 1)
+    expect(novemberBoundaryWindow).toBeDefined()
+    expect(novemberBoundaryWindow!.end.getHours()).toBe(0) // exact midnight, not 01:00
+    expect(novemberBoundaryWindow!.end.getTime()).toBe(new Date(2026, 10, 1).getTime())
+  })
+
+  it('findCadenceWindowContaining produces the same exact-midnight end across the same transition', () => {
+    const anchor = new Date(2026, 8, 2)
+    const window = findCadenceWindowContaining(anchor, 'monthly', new Date(2026, 9, 15))
+    expect(window.end.getHours()).toBe(0)
+    expect(window.end.getTime()).toBe(new Date(2026, 10, 1).getTime())
+  })
+
+  it('isPartialWindow no longer false-positives for a contract ending exactly on this DST-adjacent window\'s last day -- the concrete bug the old ms-subtraction form produced', () => {
+    const anchor = new Date(2026, 8, 2)
+    const window = findCadenceWindowContaining(anchor, 'monthly', new Date(2026, 9, 15)) // Oct 2 - Nov 1
+    const contractStart = new Date(2026, 0, 1)
+    const contractEndExactlyOnWindowsLastDay = new Date(2026, 10, 1) // Nov 1, 00:00 -- same calendar day as window.end
+    expect(isPartialWindow(window, contractStart, contractEndExactlyOnWindowsLastDay)).toBe(false)
   })
 })

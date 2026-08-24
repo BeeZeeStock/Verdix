@@ -175,11 +175,16 @@ export async function requestInvoiceCorrection(params: RequestParams): Promise<R
     // for the same period (meter mappings/usage data may have been
     // corrected since); VAT is resolved fresh (the explicit case a
     // correction exists for — VAT config or the contract may have changed).
+    // This period was already invoiced once (that's the whole premise of a
+    // correction), so it was already closed at that time — "now" is always
+    // later still. Captured once, explicitly, same discipline as every
+    // other real-billing caller of computeOverageForPeriod.
     const overageLineItems = await computeOverageForPeriod({
       orgId, jobId, terms, customerId,
       periodStartUnix: Math.floor(new Date(invoice.period_start + 'T00:00:00').getTime() / 1000),
       periodEndUnix: Math.floor(new Date(invoice.period_end + 'T23:59:59').getTime() / 1000),
       currency: invoice.currency,
+      billingAsOfUnix: Math.floor(Date.now() / 1000),
     })
 
     const netAmount = Number(invoice.base_amount) + overageLineItems.reduce((s, i) => s + i.amount, 0)

@@ -31,7 +31,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
-  const today = new Date().toISOString().slice(0, 10)
+  // Captured exactly once for the whole run, not re-read per row — the
+  // same explicit "as of" reference threads through period selection,
+  // usage calculation, and the closure invariant below, so a single
+  // scheduler run is internally consistent even if it takes a while to
+  // process every due row.
+  const billingAsOf = new Date()
+  const today = billingAsOf.toISOString().slice(0, 10)
 
   // ── Find all due planned invoices ─────────────────────────────────────────
   const { data: dueRows, error: fetchError } = await supabaseServer
@@ -150,6 +156,7 @@ export async function GET(req: NextRequest) {
             periodStartUnix: Math.floor(new Date(scanStart + 'T00:00:00').getTime() / 1000),
             periodEndUnix:   Math.floor(new Date(scanEnd   + 'T23:59:59').getTime() / 1000),
             currency: cur,
+            billingAsOfUnix: Math.floor(billingAsOf.getTime() / 1000),
           })
         }
       }

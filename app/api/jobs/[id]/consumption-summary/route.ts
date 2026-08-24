@@ -112,6 +112,12 @@ export async function GET(
         currency:        row.currency ?? terms.currency ?? 'EUR',
         ignoreTestModeGate: true,
         includeZeroUsage:   true,
+        // billingAsOfUnix is required on every call now, but the real-
+        // billing closure check it governs is skipped whenever
+        // livePreviewAsOfUnix is also set (preview mode) — same value,
+        // captured once, satisfies the type without changing this route's
+        // existing preview behavior at all.
+        billingAsOfUnix:     Math.floor(Date.now() / 1000),
         livePreviewAsOfUnix: Math.floor(Date.now() / 1000),
       }).catch(() => [])
     } else if (status === 'future' && terms) {

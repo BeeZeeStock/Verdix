@@ -4,9 +4,39 @@
 // summary / billing-test simulator (preview only) alike, so they can never
 // silently diverge from each other.
 import { supabaseServer } from '@/lib/supabase'
-import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining, isPartialWindow, resolveWindowMinimum, clampWindowToContract, type CadenceAnchorMode } from '@/lib/tariff'
+import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining, isPartialWindow, isBillingWindowClosed, resolveWindowMinimum, clampWindowToContract, type CadenceAnchorMode } from '@/lib/tariff'
 import { createRemembillUsageConnector } from '@/lib/connectors/usage/remembill'
 import type { ContractTerms, MinimumCommitment, TierCalculationMethod } from '@/lib/types'
+
+// Fail-closed real-billing invariant — thrown by computeOverageForPeriod
+// (never caught/converted to zero internally) whenever a real-billing call
+// (livePreviewAsOfUnix absent) is about to apply a usage/minimum charge for
+// a window that isn't actually closed as of the caller's own explicit
+// billingAsOfUnix. Distinct, catchable type (mirrors this codebase's other
+// structured billing-precondition errors, e.g. lib/one-time-fee.ts's
+// OneTimeFeeCapabilityBlockedError) so a caller can classify this
+// precisely rather than treating it as a generic failure — though today
+// every real caller simply lets it propagate to its own existing
+// fail-closed catch block (e.g. invoice-scheduler's per-row try/catch,
+// the same pattern already used for the credit-ledger's capability gate).
+export class OpenBillingWindowError extends Error {
+  readonly meterKey: string
+  readonly windowStart: string
+  readonly windowEnd: string
+  constructor(meterKey: string, windowStart: Date, windowEnd: Date) {
+    // Local-date extraction, never toISOString() — window.start/end are
+    // local-midnight Dates (see enumerateCadenceWindows), and toISOString()
+    // converts to UTC first, which silently shifts the reported date by a
+    // day on a server not running in UTC. Same discipline this codebase
+    // already applies elsewhere (e.g. invoice-scheduler's own fmtDate).
+    const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    super(`Cannot bill meter '${meterKey}': its usage window (${fmt(windowStart)} – ${fmt(windowEnd)}) is not yet closed as of the billing execution time.`)
+    this.name = 'OpenBillingWindowError'
+    this.meterKey = meterKey
+    this.windowStart = fmt(windowStart)
+    this.windowEnd = fmt(windowEnd)
+  }
+}
 
 type MeterCfg = {
   meter_key: string
@@ -77,6 +107,18 @@ export async function computeOverageForPeriod(params: {
   periodStartUnix: number
   periodEndUnix: number
   currency: string
+  // Required, always — the single explicit temporal reference point this
+  // computation is evaluated against, for BOTH real billing and preview.
+  // Never read from Date.now()/new Date() internally: the caller (the
+  // scheduler run, a correction request, a preview request) captures its
+  // own "now" exactly once and passes it in, so the same inputs always
+  // reproduce the same result regardless of when this function happens to
+  // execute — the same discipline Step 14's billing-plan snapshot/
+  // fingerprint already requires of its own `now`. When livePreviewAsOfUnix
+  // is also supplied (preview mode), THAT value governs which open window
+  // gets surfaced, unchanged from before; billingAsOfUnix is what real
+  // billing's own closure check (below) is measured against.
+  billingAsOfUnix: number
   // Real billing (invoice-scheduler) must skip meters still in test mode —
   // never invoice off an unfinished meter. Read-only previews (consumption
   // summary) create no invoice and no side effect, so they should still show
@@ -101,7 +143,12 @@ export async function computeOverageForPeriod(params: {
   // charge for windows that have actually closed.
   livePreviewAsOfUnix?: number
 }): Promise<OverageLineItem[]> {
-  const { orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, currency, ignoreTestModeGate, includeZeroUsage, livePreviewAsOfUnix } = params
+  const { orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, currency, billingAsOfUnix, ignoreTestModeGate, includeZeroUsage, livePreviewAsOfUnix } = params
+  const billingAsOf = new Date(billingAsOfUnix * 1000)
+  // Real billing only — preview is explicitly allowed to inspect an open
+  // window (that's the entire point of livePreviewAsOfUnix), so this gate
+  // is scoped to its absence, never applied when previewing.
+  const isRealBilling = livePreviewAsOfUnix == null
   const items: OverageLineItem[] = []
 
   // Primary source: this job's own confirmed agreement-specific tiers.
@@ -205,6 +252,19 @@ export async function computeOverageForPeriod(params: {
       }
 
       for (const window of windows) {
+        // Fail-closed real-billing invariant — independent of, and in
+        // addition to, invoice-scheduler's own prior-period selection
+        // (which today already only ever passes a closed window). Checked
+        // FIRST, before pulling any usage or computing any charge, so a
+        // future bug anywhere upstream that hands this function an
+        // actually-open window can never produce a usage/minimum charge —
+        // it throws instead of silently returning zero and letting the
+        // caller treat this period as settled. Never applied in preview
+        // mode (isRealBilling false) — preview is explicitly allowed to
+        // inspect an open window via the isOpen branch above.
+        if (isRealBilling && !isBillingWindowClosed(window, billingAsOf)) {
+          throw new OpenBillingWindowError(cfg.meter_key, window.start, window.end)
+        }
         // Actual usage query uses measureStart/measureEnd (clamped to the
         // contract's real start/end), never the true unclamped cadence
         // start/end — see the comment on the windows construction above.

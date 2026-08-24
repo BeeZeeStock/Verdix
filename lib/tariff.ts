@@ -341,6 +341,24 @@ function resolveWindowAnchor(anchorDate: Date, months: number, anchor: CadenceAn
 // common case (a meter's cadence matches the invoice cadence) yields exactly
 // one window equal to the full scan range, so this is a strict superset of
 // the old single-period behavior, not a divergent path for it.
+//
+// `end` is derived via calendar-FIELD subtraction (`nextStart`'s own date
+// fields, minus one day), not `nextStart.getTime() - 86_400_000` — the
+// latter was this function's original form and is provably wrong across a
+// DST fall-back: when `nextStart` falls on the local calendar day right
+// after a fall-back transition (a 25-hour day), subtracting exactly 24h
+// undershoots true local midnight by the one extra hour that day gained,
+// landing `end` at e.g. 01:00 local instead of 00:00 — still the correct
+// calendar date, but not the exact midnight instant every other consumer
+// (isPartialWindow's exact-boundary comparisons, isBillingWindowClosed)
+// assumes `end` to be. Confirmed concretely: with a monthly cadence
+// anchored on day-of-month 2, the window ending "Nov 1" has
+// nextStart = Nov 2 2026 — a real US fall-back day — and the old form
+// produced `end` = Nov 1 2026 01:00 EDT rather than Nov 1 2026 00:00 EDT,
+// which flipped isPartialWindow's `contractEndDate < window.end` check for
+// a contract ending exactly on that window's last day (a false "partial"
+// positive). Field-based subtraction matches how `start`/`nextStart`
+// themselves are already safely constructed above.
 export function enumerateCadenceWindows(
   anchorDate: Date,
   cadence: string | null | undefined,
@@ -354,7 +372,7 @@ export function enumerateCadenceWindows(
   for (let n = 0; n < 1200; n++) {
     const start     = new Date(base.getFullYear(), base.getMonth() + n * months, base.getDate())
     const nextStart = new Date(base.getFullYear(), base.getMonth() + (n + 1) * months, base.getDate())
-    const end       = new Date(nextStart.getTime() - 86_400_000)
+    const end       = new Date(nextStart.getFullYear(), nextStart.getMonth(), nextStart.getDate() - 1)
     if (start > rangeEnd) break
     if (end >= rangeStart && end <= rangeEnd) windows.push({ start, end })
   }
@@ -385,7 +403,9 @@ export function findCadenceWindowContaining(
     const nextStart = new Date(base.getFullYear(), base.getMonth() + (n + 1) * months, base.getDate())
     if (date < start)      { n--; continue }
     if (date >= nextStart) { n++; continue }
-    return { start, end: new Date(nextStart.getTime() - 86_400_000) }
+    // Field-based, matching enumerateCadenceWindows's own corrected form
+    // above — same DST reasoning, same fix, one convention.
+    return { start, end: new Date(nextStart.getFullYear(), nextStart.getMonth(), nextStart.getDate() - 1) }
   }
   // Should never hit this given the correction loop above, but keep the
   // function total rather than possibly returning undefined.
@@ -408,6 +428,45 @@ export function isPartialWindow(
   if (contractStartDate && contractStartDate > window.start && contractStartDate <= window.end) return true
   if (contractEndDate && contractEndDate < window.end && contractEndDate >= window.start) return true
   return false
+}
+
+// Fail-closed real-billing invariant, independent of any caller's own date
+// arithmetic (e.g. invoice-scheduler's prior-period lookup) — the second,
+// canonical layer real billing checks before applying a usage/minimum
+// charge, so a future bug in a caller's own window selection can't silently
+// bill an actually-open period.
+//
+// Boundary convention, confirmed from enumerateCadenceWindows/
+// findCadenceWindowContaining above: `window.end` is midnight of the
+// window's own LAST INCLUSIVE calendar day (nextStart minus one day) — NOT
+// the day after, and not that day's own end-of-day instant. A window is
+// therefore not actually over until the very start of the next calendar day
+// after that midnight — i.e. until billingAsOf reaches "window.end's date,
+// plus one calendar day" (equivalently, the same instant as the window's own
+// `nextStart`). A naive `billingAsOf > window.end` would be wrong: on the
+// window's own last day (e.g. Oct 31 14:00, window.end = Oct 31 00:00), that
+// comparison is already true even though the day itself — and therefore the
+// window — hasn't finished yet.
+//
+// This codebase's date model here is LOCAL-calendar-based, not UTC-based
+// (enumerateCadenceWindows/findCadenceWindowContaining both build dates via
+// `new Date(year, month, day)`, never `Date.UTC`/`Z`-suffixed ISO strings —
+// and no TZ override exists anywhere in this repo). Under a local-calendar
+// model, "the next calendar day" is NOT always exactly 86,400,000ms away: a
+// DST fall-back day is 25 hours long, a spring-forward day is 23. Adding the
+// ms literal is provably wrong across a fall-back transition — e.g. in
+// America/New_York, Sun Nov 1 2026 00:00 EDT + 86_400_000ms lands at Sun Nov
+// 1 2026 23:00 EST, a full hour BEFORE Mon Nov 2's true local midnight,
+// which would report a window "closed" an hour early (the dangerous
+// direction for a fail-closed billing check). So this derives the next
+// calendar day the same way enumerateCadenceWindows derives `nextStart` —
+// via calendar-FIELD arithmetic, letting the Date constructor itself perform
+// the local-time/DST normalization — rather than via raw millisecond
+// addition. This is the same convention already used elsewhere in this
+// file, not a second one introduced just for this helper.
+export function isBillingWindowClosed(window: { end: Date }, billingAsOf: Date): boolean {
+  const nextDayStart = new Date(window.end.getFullYear(), window.end.getMonth(), window.end.getDate() + 1)
+  return billingAsOf.getTime() >= nextDayStart.getTime()
 }
 
 // Clamps a cadence window's boundaries to the contract's actual
