@@ -626,16 +626,34 @@ describe('applyExtractionSafetyNets — billability_provenance grounding wiring 
     expect(terms.one_time_fees[0].billability_provenance).toBeNull()
   })
 
-  it('an event condition (e.g. Customer Acceptance) never grounds, regardless of contract_start_date being known', () => {
+  it('an event condition outside this pass\'s scope (e.g. contract_signature) never grounds, regardless of contract_start_date being known', () => {
     const terms = applyExtractionSafetyNets(chunk({
       contract_start_date: '2026-10-01',
       one_time_fees: [oneTimeFee({
         amount: 90000, due_date: null,
-        source_clause: 'Customer will pay a one-time integration fee of SEK 90,000, billable only upon Customer Acceptance.',
-        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+        source_clause: 'Customer will pay a one-time setup fee of SEK 90,000, billable upon execution of this Agreement.',
+        billability_condition: { kind: 'event', event_type: 'contract_signature' },
       } as Partial<OneTimeFee>)],
     }))
     expect(terms.one_time_fees[0].billability_provenance).toBeNull()
+  })
+
+  // Customer Acceptance amendment — the ONE event class this pass adds.
+  it('a Customer Acceptance event condition with an explicit billing-trigger clause DOES ground (this amendment\'s whole point)', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      contract_start_date: '2026-10-01',
+      one_time_fees: [oneTimeFee({
+        fee_label: 'Integration Fee', amount: 90000, due_date: null,
+        source_clause: 'Customer will pay a one-time integration fee of SEK 90,000, billable only upon Customer Acceptance. '
+          + 'Customer Acceptance occurs when Customer signs the production acceptance certificate. '
+          + 'Supplier delivery, test completion, or project-manager email does not by itself constitute Customer Acceptance.',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+      } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].billability_provenance).toBe('contract_derived')
+    // manual_trigger must remain true — grounding provenance is orthogonal
+    // to the execution-safety projection.
+    expect(terms.one_time_fees[0].manual_trigger).toBe(true)
   })
 
   it('already-present reviewer_policy is preserved, never re-evaluated', () => {
@@ -657,6 +675,28 @@ describe('applyExtractionSafetyNets — billability_provenance grounding wiring 
         amount: 20000, due_date: '2026-10-01', billability_provenance: 'contract_derived',
         source_clause: 'Launch fee to be agreed.', // deliberately would NOT ground if re-evaluated
         billability_condition: { kind: 'fixed_date', date: '2026-10-01' },
+      } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].billability_provenance).toBe('contract_derived')
+  })
+
+  it('a Customer Acceptance fee with an already-present reviewer_policy is preserved, never re-evaluated', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      one_time_fees: [oneTimeFee({
+        amount: 90000, due_date: null, billability_provenance: 'reviewer_policy',
+        source_clause: 'Customer will pay a one-time integration fee of SEK 90,000, billable only upon Customer Acceptance.',
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
+      } as Partial<OneTimeFee>)],
+    }))
+    expect(terms.one_time_fees[0].billability_provenance).toBe('reviewer_policy')
+  })
+
+  it('a Customer Acceptance fee with an already-present contract_derived is preserved, never re-evaluated', () => {
+    const terms = applyExtractionSafetyNets(chunk({
+      one_time_fees: [oneTimeFee({
+        amount: 90000, due_date: null, billability_provenance: 'contract_derived',
+        source_clause: 'Fee to be agreed.', // deliberately would NOT ground if re-evaluated
+        billability_condition: { kind: 'event', event_type: 'customer_acceptance' },
       } as Partial<OneTimeFee>)],
     }))
     expect(terms.one_time_fees[0].billability_provenance).toBe('contract_derived')
