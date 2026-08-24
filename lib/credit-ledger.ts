@@ -1,21 +1,65 @@
 import type { CreditApplicationRule, CreditEarnRule } from './types'
+import { resolveScopeTokenClass, type CommercialComponentClass } from './commercial-component-scope'
 
 export interface PoolComponent {
+  // Operational identity — used for ledger consumption bookkeeping/audit
+  // (consumePool's `consumed` breakdown) and display, never for eligibility
+  // matching. May be an arbitrary org-chosen meter_key.
   key: string
   amountMinor: number
+  // Commercial classification — what filterEligibleComponents actually
+  // matches against (see lib/commercial-component-scope.ts). Optional:
+  // when absent, resolution falls back to resolving `key` itself through
+  // the same canonical alias table, which is what keeps every pre-existing
+  // test fixture (whose keys already ARE the canonical short forms —
+  // 'platform_fee'/'transaction_processing'/'chargeback') matching exactly
+  // as before with no changes. Real callers (invoice-scheduler) supply
+  // this explicitly, resolved from contract_unit_type — never from the
+  // operational meter_key — because a customer's real meter_key (Contract
+  // B's transaction-processing meter is literally named 'sync') has no
+  // reliable relationship to the commercial concept it represents.
+  componentClass?: CommercialComponentClass | null
+}
+
+function resolvedClassOf(c: PoolComponent): CommercialComponentClass | null {
+  return c.componentClass ?? resolveScopeTokenClass(c.key)
 }
 
 // What a credit's application_rule actually matches against a component
 // pool — 'all' minus excluded, a concrete list minus excluded, or nothing
 // when eligible_component_keys is null (unresolved, never assumed).
+//
+// Matches by CANONICAL COMMERCIAL CLASS, never by raw string equality
+// between a contract's eligible_component_keys token and a pool
+// component's key — see lib/commercial-component-scope.ts for why exact
+// key equality silently failed for real contracts (Contract B: extraction
+// wrote 'transaction_processing_fees'/'platform_subscription_fees'; the
+// runtime pool's actual keys are 'platform_fee' and whatever arbitrary
+// meter_key the org configured). A token/component that can't be resolved
+// to a known class never contributes to a match (fails closed — 'all'
+// still includes an unclassified component since 'all' means "everything
+// in the pool", but a specific eligible_component_keys list, or an
+// excluded_component_keys entry, can only ever apply to components/tokens
+// that DO resolve to a known class).
 export function filterEligibleComponents(components: PoolComponent[], rule: CreditApplicationRule): PoolComponent[] {
   if (rule.eligible_component_keys === null) return []
-  const excluded = new Set(rule.excluded_component_keys)
-  if (rule.eligible_component_keys === 'all') {
-    return components.filter(c => !excluded.has(c.key) && c.amountMinor > 0)
+  const excludedClasses = new Set(
+    rule.excluded_component_keys.map(resolveScopeTokenClass).filter((c): c is CommercialComponentClass => c !== null),
+  )
+  const isExcluded = (c: PoolComponent) => {
+    const cls = resolvedClassOf(c)
+    return cls !== null && excludedClasses.has(cls)
   }
-  const eligible = new Set(rule.eligible_component_keys)
-  return components.filter(c => eligible.has(c.key) && !excluded.has(c.key) && c.amountMinor > 0)
+  if (rule.eligible_component_keys === 'all') {
+    return components.filter(c => !isExcluded(c) && c.amountMinor > 0)
+  }
+  const eligibleClasses = new Set(
+    rule.eligible_component_keys.map(resolveScopeTokenClass).filter((c): c is CommercialComponentClass => c !== null),
+  )
+  return components.filter(c => {
+    const cls = resolvedClassOf(c)
+    return cls !== null && eligibleClasses.has(cls) && !isExcluded(c) && c.amountMinor > 0
+  })
 }
 
 // Computes ONE credit's requested amount against the CURRENT remaining
@@ -51,12 +95,17 @@ export function consumePool(
   const matchedSet = new Set(matchedComponentKeys)
   let remaining = amountMinor
   const consumed: PoolComponent[] = []
+  // Preserves every other field (componentClass included) via spread —
+  // reconstructing only { key, amountMinor } here would silently drop a
+  // partially-consumed component's resolved class, breaking the NEXT
+  // credit in the same applicationOrder loop's ability to match against
+  // it (remainingPool feeds directly into that next call).
   const remainingPool = pool.map(c => {
     if (remaining <= 0 || !matchedSet.has(c.key)) return c
     const take = Math.min(c.amountMinor, remaining)
     remaining -= take
-    if (take > 0) consumed.push({ key: c.key, amountMinor: take })
-    return { key: c.key, amountMinor: c.amountMinor - take }
+    if (take > 0) consumed.push({ ...c, amountMinor: take })
+    return { ...c, amountMinor: c.amountMinor - take }
   })
   return { consumed, remainingPool }
 }

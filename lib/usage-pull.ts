@@ -41,6 +41,14 @@ export class OpenBillingWindowError extends Error {
 type MeterCfg = {
   meter_key: string
   included_units: number
+  // The contract's own description of what this meter measures (e.g.
+  // "Processed Transaction", "chargeback") — distinct from meter_key
+  // (the org's operational identity for the meter, which may be anything).
+  // Threaded through to OverageLineItem.contractUnitType so a caller
+  // building a credit-ledger component pool can classify this component
+  // commercially without ever depending on the arbitrary meter_key — see
+  // lib/commercial-component-scope.ts.
+  contract_unit_type: string | null
   overage_tiers: Array<{
     from_unit?: number | null
     to_unit?: number | null
@@ -68,6 +76,14 @@ type PullCfg = { client_usage_url: string; client_read_api_key?: string }
 // without re-deriving it from Stripe/Remembill after the fact.
 export type OverageLineItem = {
   meter_key: string
+  // The contract's own description of what this meter measures (e.g.
+  // "Processed Transaction") — see MeterCfg.contract_unit_type. Absent for
+  // the legacy client_pull aggregate path (no per-job meter mapping row
+  // exists there to source it from). A caller building a credit-ledger
+  // component pool resolves this into a CommercialComponentClass (see
+  // lib/commercial-component-scope.ts) rather than ever classifying off
+  // meter_key itself.
+  contractUnitType?: string | null
   total_units: number
   included_units: number
   billable_units: number
@@ -159,7 +175,7 @@ export async function computeOverageForPeriod(params: {
   // genuinely per-agreement.
   const { data: meterConfigs } = await supabaseServer
     .from('contract_meter_mappings')
-    .select('meter_key, included_units, overage_tiers, billing_cycle')
+    .select('meter_key, included_units, overage_tiers, billing_cycle, contract_unit_type')
     .eq('job_id', jobId)
     .eq('confirmed', true)
 
@@ -417,7 +433,8 @@ export async function computeOverageForPeriod(params: {
           : ''
         const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits, applyMinimum, overageResult?.method ?? 'graduated') + windowSuffix
         items.push({
-          meter_key: cfg.meter_key, total_units: totalUnits, included_units: includedUnits,
+          meter_key: cfg.meter_key, contractUnitType: cfg.contract_unit_type ?? null,
+          total_units: totalUnits, included_units: includedUnits,
           billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,
           amount: Math.round(overageEur * 100) / 100, currency: currency.toUpperCase(),
           description: overageDesc, metric_source: 'meter_pull',

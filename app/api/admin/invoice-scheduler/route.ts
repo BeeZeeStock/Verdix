@@ -25,6 +25,25 @@ import { isAuthorizedCronRequest } from '@/lib/cron-auth'
 import { resolveVatTreatment, computeVat, reconcileGrossAmount } from '@/lib/vat'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import { getCustomerVatConfig, getInvoiceVatOverride } from '@/lib/vat-service'
+import { evaluateParkedOneTimeFeeEligibility } from '@/lib/parked-one-time-fee-eligibility'
+import type { OperationalEventEvidence } from '@/lib/operational-event-evidence'
+import { classifyContractUnitType } from '@/lib/commercial-component-scope'
+import {
+  stripeInvoiceIdempotencyKey, stripeBaseItemIdempotencyKey, stripeOverageItemIdempotencyKey,
+  stripeCreditItemIdempotencyKey, stripeFinalizeIdempotencyKey, remembillInvoiceIdempotencyKey,
+} from '@/lib/invoice-scheduler-idempotency'
+
+// Contract B pre-approval pass — maps a raw operational_event_evidence row
+// onto the domain type, identical to the mapping already used at
+// lib/billing-reconciliation.ts and app/api/jobs/[id]/approve/route.ts, so
+// there is only ever one shape this conversion produces.
+function mapEvidenceRows(rows: Record<string, unknown>[] | null): OperationalEventEvidence[] {
+  return (rows ?? []).map(r => ({
+    id: r.id as string, subjectId: r.subject_id as string, eventType: r.event_type as OperationalEventEvidence['eventType'],
+    occurredAt: r.occurred_at as string, source: r.source as OperationalEventEvidence['source'],
+    recordedAt: r.recorded_at as string, recordedBy: r.recorded_by as string, status: r.status as OperationalEventEvidence['status'],
+  }))
+}
 
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCronRequest(req)) {
@@ -39,8 +58,14 @@ export async function GET(req: NextRequest) {
   const billingAsOf = new Date()
   const today = billingAsOf.toISOString().slice(0, 10)
 
+  // Declared here (not just before the main loop) so the stale-processing
+  // reclaim block below can also report into it — an exhausted row is
+  // marked 'failed' directly by reclaim_stale_processing_row and never
+  // enters the main per-row loop at all, so it needs its own result entry.
+  const results: { id: string; ok: boolean; stripe_invoice_id?: string; error?: string }[] = []
+
   // ── Find all due planned invoices ─────────────────────────────────────────
-  const { data: dueRows, error: fetchError } = await supabaseServer
+  const { data: scheduledRows, error: fetchError } = await supabaseServer
     .from('planned_invoices')
     .select('*')
     .eq('status', 'scheduled')
@@ -52,23 +77,241 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: fetchError.message }, { status: 500 })
   }
 
-  if (!dueRows?.length) {
-    return NextResponse.json({ processed: 0, results: [] })
+  // ── Contract B pre-approval pass, Part A — event-gated parked one-time
+  // fees, discovered freshly each run ─────────────────────────────────────
+  // Structural discriminator only, never fee_label/description matching:
+  // status='parked' AND invoice_type='one_time' AND fee_id populated.
+  // fee_id is populated ONLY at Stage A (lib/billing-writer.ts) for a fee
+  // whose billability_condition.kind === 'event' — an ordinary quantity x
+  // rate manual-trigger parked fee never has fee_id set, so it can never
+  // appear in this query and is completely unaffected (still exclusively
+  // human-driven via POST /parked-invoices).
+  const { data: parkedEventFeeCandidates, error: parkedFetchError } = await supabaseServer
+    .from('planned_invoices')
+    .select('*')
+    .eq('status', 'parked')
+    .eq('invoice_type', 'one_time')
+    .not('fee_id', 'is', null)
+
+  if (parkedFetchError) {
+    console.error('[invoice-scheduler] failed to fetch parked event-fee candidates', parkedFetchError)
   }
 
-  const results: { id: string; ok: boolean; stripe_invoice_id?: string; error?: string }[] = []
+  // A2 — freshly re-evaluate every candidate right now, against CURRENT
+  // contract_terms.one_time_fees and CURRENT active evidence. Never trust
+  // the historical 'parked' status as proof either way. This in-process
+  // evaluation is a cheap PRE-FILTER/diagnostic only, never itself the
+  // authorization to execute — evidence could still be revoked in the gap
+  // between this read and the DB write that follows it. Final
+  // authorization is the atomic claim_parked_event_fee SQL function
+  // (supabase/migrations/20260828000001_claim_parked_event_fee.sql): it
+  // re-verifies row state AND evidence itself, inside one transaction,
+  // immediately before the parked -> processing transition — closing that
+  // gap entirely rather than narrowing it. A candidate this pre-filter (or
+  // the atomic claim) finds ineligible is left completely untouched below
+  // — no write, zero provider mutation — and simply remains parked for a
+  // future run to reconsider once evidence changes. Only a row whose claim
+  // actually succeeds is admitted into the main processing loop below,
+  // where it flows through the exact same invoicing/VAT/status-transition
+  // machinery as every other due row.
+  // Matches this file's existing style: planned_invoices rows are read via
+  // .select('*') with no dedicated row type anywhere in this codebase (see
+  // lib/billing-writer.ts's own PlannedRow comment), so every field access
+  // below was already effectively `any` before this change.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type DueRow = Record<string, any> & { id: string; job_id: string; base_amount: number }
+  const eligibleParkedRows: DueRow[] = []
+  for (const candidate of (parkedEventFeeCandidates ?? []) as DueRow[]) {
+    const { data: candidateJob } = await supabaseServer
+      .from('jobs')
+      .select('contract_terms ( one_time_fees )')
+      .eq('id', candidate.job_id)
+      .maybeSingle()
+    const candidateTermsRaw = unwrapEmbedded(
+      candidateJob?.contract_terms as unknown as ContractTerms | ContractTerms[] | null | undefined,
+    )
+    const { data: evidenceRows } = await supabaseServer
+      .from('operational_event_evidence')
+      .select('*')
+      .eq('job_id', candidate.job_id)
+      .eq('status', 'active')
+
+    const decision = evaluateParkedOneTimeFeeEligibility({
+      candidateFeeId: candidate.fee_id as string | null | undefined,
+      oneTimeFees: candidateTermsRaw?.one_time_fees ?? [],
+      evidence: mapEvidenceRows(evidenceRows),
+      asOf: billingAsOf,
+    })
+    if (!decision.eligible) continue // pre-filter says no — remains parked, zero DB write
+
+    // Final authorization — a single atomic DB claim, not this process's
+    // own stale read. Re-verifies row status/invoice_type/fee_id AND
+    // evidence (active/subject/event_type/occurred_at) together, inside
+    // one transaction, then performs the parked -> processing transition
+    // — persisting the canonical base_amount in the SAME atomic write —
+    // only if every predicate still holds at that instant. Row-level
+    // locking on BOTH the planned_invoice row AND the qualifying evidence
+    // row itself (see the migration's own header comment for the exact
+    // lock mode and why it genuinely conflicts with the real revoke
+    // implementation) is what makes a concurrent second scheduler worker's
+    // claim on the same row, AND a concurrent revoke of the evidence that
+    // authorized it, both fail/wait cleanly rather than racing (A4/point
+    // 4 — the existing per-row provider idempotency key remains the
+    // second, independent layer). The application never computes or
+    // writes base_amount itself — p_amount is passed straight through as
+    // an opaque, already-resolved fact; SQL persists it, never interprets
+    // it.
+    const { data: claimed, error: claimError } = await supabaseServer.rpc('claim_parked_event_fee', {
+      p_planned_invoice_id: candidate.id,
+      p_fee_id: decision.feeId,
+      p_event_type: decision.eventType,
+      p_execution_as_of: billingAsOf.toISOString(),
+      p_amount: decision.amount,
+    })
+    if (claimError) {
+      console.error('[invoice-scheduler] claim_parked_event_fee RPC failed', claimError)
+      continue
+    }
+    if (!claimed) continue // evidence changed (or a concurrent worker won) between discovery and the atomic claim — remains parked
+
+    // The claim succeeded — status and base_amount are already correctly
+    // persisted together, atomically, by the RPC above. This worker now
+    // exclusively owns the row (status is no longer 'parked', so no
+    // concurrent claim can succeed against it).
+    eligibleParkedRows.push({ ...candidate, status: 'processing', base_amount: decision.amount, __alreadyLocked: true })
+  }
+
+  // ── Stage-B crash recovery — stranded 'processing' rows ─────────────────
+  // Neither the 'scheduled' nor the 'parked' candidate queries above ever
+  // select status='processing' — a worker that claims a row and then
+  // crashes/times out before reaching the final 'sent'/'failed' write
+  // leaves it permanently un-selectable by any other existing path. This
+  // is a Stage-B row-lifecycle fix, not specific to any row's origin: it
+  // applies identically to an ordinary scheduled base-fee row and to the
+  // new event-gated one-time-fee claim path.
+  //
+  // Stale threshold: this route has no explicit `maxDuration` export, so
+  // it runs under the platform default — documented as 300s (Vercel's
+  // current default function execution timeout on all plans). A row still
+  // 'processing' more than 300s after its lease began can therefore never
+  // still be the original worker (the platform would already have killed
+  // it) — STALE_PROCESSING_MS uses double that (10 minutes) as a
+  // deliberately conservative margin, not an invented number: it can never
+  // reclaim a row a legitimately-running attempt still owns under this
+  // platform's own enforced ceiling, while still recovering promptly once
+  // a row is genuinely abandoned. This cron itself only runs once daily,
+  // so there is no risk of the NEXT scheduled invocation overlapping a
+  // still-running one at this timescale either.
+  const STALE_PROCESSING_MS = 10 * 60 * 1000
+  // A row failing this many independent, lease-interval-spaced reclaim
+  // cycles is far more likely a deterministic failure than a transient
+  // crash/timeout — marked 'failed' (visible, reviewable) rather than
+  // retried forever. reclaim_stale_processing_row enforces this
+  // atomically, in the same statement that decides exhaustion (see the
+  // migration and the 'exhausted' handling below).
+  const MAX_PROCESSING_ATTEMPTS = 5
+  const staleCutoffIso = new Date(billingAsOf.getTime() - STALE_PROCESSING_MS).toISOString()
+
+  const { data: staleProcessingCandidates, error: staleFetchError } = await supabaseServer
+    .from('planned_invoices')
+    .select('*')
+    .eq('status', 'processing')
+    .lte('processing_started_at', staleCutoffIso)
+
+  if (staleFetchError) {
+    console.error('[invoice-scheduler] failed to fetch stale processing candidates', staleFetchError)
+  }
+
+  const recoveredRows: DueRow[] = []
+  for (const candidate of (staleProcessingCandidates ?? []) as DueRow[]) {
+    // Atomic lease refresh/exhaustion decision — see the migration's own
+    // comment. reclaim_stale_processing_row now returns one of three
+    // outcomes, decided atomically under a single row lock, so exhaustion
+    // can never race with a concurrent reclaim attempt:
+    //   'reclaimed'  — lease refreshed; admitted into the main loop below.
+    //   'exhausted'  — processing_attempt_count already hit the cap; the
+    //                  RPC itself transitioned the row directly to
+    //                  'failed' with a clear error_message (in the SAME
+    //                  atomic statement) rather than leaving it stuck in
+    //                  'processing' forever, invisible to every existing
+    //                  status query/UI (confirmed by audit: a permanently-
+    //                  processing row falls through billing-summary's own
+    //                  status mapping straight to the generic 'draft'
+    //                  display — indistinguishable from "not due yet",
+    //                  with no error shown at all). 'failed' already has a
+    //                  real review surface (BillingSummaryCard renders
+    //                  row.error_message for status='failed') — reused
+    //                  here rather than inventing a new lifecycle state.
+    //   'not_stale'  — no longer stale (already reclaimed by another
+    //                  worker, or a legitimate concurrent execution is
+    //                  still within its lease) — left untouched.
+    const { data: reclaimResult, error: reclaimError } = await supabaseServer.rpc('reclaim_stale_processing_row', {
+      p_planned_invoice_id: candidate.id,
+      p_stale_cutoff: staleCutoffIso,
+      p_max_attempts: MAX_PROCESSING_ATTEMPTS,
+    })
+    if (reclaimError) {
+      console.error('[invoice-scheduler] reclaim_stale_processing_row RPC failed', reclaimError)
+      continue
+    }
+    if (reclaimResult === 'exhausted') {
+      results.push({
+        id: candidate.id, ok: false,
+        error: `Stage-B recovery attempt limit (${MAX_PROCESSING_ATTEMPTS}) reached — marked failed for manual reconciliation.`,
+      })
+      continue
+    }
+    if (reclaimResult !== 'reclaimed') continue // 'not_stale'
+
+    // Recovery never re-evaluates Customer Acceptance (or any other
+    // contract/evidence fact) — the row is already 'processing', meaning
+    // execution formally began at the ORIGINAL claim; evidence was that
+    // claim's authorization, not something recovery re-checks. Below,
+    // candidate.execution_payload (if present) is what actually prevents
+    // recomputation of any commercial figure on recovery.
+    recoveredRows.push({ ...candidate, __alreadyLocked: true })
+  }
+
+  const dueRows: DueRow[] = [...((scheduledRows ?? []) as DueRow[]), ...eligibleParkedRows, ...recoveredRows]
+
+  // Note: `results` may already be non-empty here (an attempt-exhausted
+  // row marked 'failed' directly by reclaim_stale_processing_row, never
+  // entering dueRows at all) even when dueRows itself is empty — report
+  // what actually happened rather than hardcoding an empty summary.
+  if (!dueRows.length) {
+    const succeeded = results.filter(r => r.ok).length
+    const failed    = results.filter(r => !r.ok).length
+    return NextResponse.json({ processed: results.length, succeeded, failed, results })
+  }
 
   for (const row of dueRows) {
-    // Mark as processing so concurrent runs skip it
-    const { error: lockError } = await supabaseServer
-      .from('planned_invoices')
-      .update({ status: 'processing' })
-      .eq('id', row.id)
-      .eq('status', 'scheduled')
+    // A4/A5 — a row admitted above via the parked-event-fee path was
+    // already locked (parked -> processing) at the exact moment its
+    // eligibility was confirmed, using the same conditional-update
+    // concurrency guard as the 'scheduled' path below; re-locking it here
+    // would be redundant and would incorrectly require status='scheduled'.
+    if (!(row as Record<string, unknown>).__alreadyLocked) {
+      // Mark as processing so concurrent runs skip it, and stamp the
+      // execution lease's start time in the SAME write (Stage-B recovery
+      // — see the stale-processing reclaim block above). Checking `!locked`
+      // rather than only `error` is a real fix found while auditing this:
+      // a plain UPDATE whose WHERE clause matches zero rows (because
+      // another worker already won the race) is NOT a PostgREST error —
+      // `error` stays null regardless — so the old `if (lockError)` check
+      // could never actually detect "another run already grabbed this
+      // row"; only `.select().maybeSingle()` returning null reliably does.
+      const { data: locked, error: lockError } = await supabaseServer
+        .from('planned_invoices')
+        .update({ status: 'processing', processing_started_at: new Date().toISOString() })
+        .eq('id', row.id)
+        .eq('status', 'scheduled')
+        .select('*')
+        .maybeSingle()
 
-    if (lockError) {
-      // Another run already grabbed this row
-      continue
+      if (lockError || !locked) {
+        // Another run already grabbed this row
+        continue
+      }
     }
 
     try {
@@ -109,116 +352,201 @@ export async function GET(req: NextRequest) {
       let sentInvoiceId:  string | null = null
       let sentInvoiceUrl: string | null = null
 
-      // Overage is billed in arrears, on the same invoice as the next
-      // period's advance base fee — this row's own period_start/period_end
-      // describe the period the BASE FEE covers (prepaid, hence due the
-      // moment it starts). Usage for that period doesn't exist yet at that
-      // point, so overage must be computed for the period that just closed
-      // (the one immediately before this row), not this row's own period —
-      // querying it fresh each run rather than trusting whatever was
-      // recorded on that period's own (necessarily $0, prematurely-computed)
-      // invoice.
-      let overageLineItems: OverageLineItem[] = []
-      let scanStart: string | null = null
-      let scanEnd: string | null = null
-      if (row.invoice_type === 'period') {
-        const { data: prevPeriod } = await supabaseServer
-          .from('planned_invoices')
-          .select('period_start, period_end')
-          .eq('job_id', row.job_id)
-          .eq('invoice_type', 'period')
-          .lt('period_end', row.period_start)
-          .order('period_end', { ascending: false })
-          .limit(1)
-          .maybeSingle()
+      // ── Durable execution payload — point 7 of the Stage-B recovery fix ──
+      // Everything below that depends on MUTABLE external state (meter
+      // usage, credit ledger balances, VAT config) is computed ONCE and
+      // persisted BEFORE any provider call. A row reclaimed from stale
+      // 'processing' with a non-null execution_payload reuses it verbatim
+      // — never recomputed, regardless of what usage/credits/org policy/
+      // contract/evidence/clock look like at recovery time. This is
+      // distinct from (and does not replace) computeOverageForPeriod and
+      // applyCreditLedgerForPeriod's OWN individual idempotency — those
+      // protect against a mid-computation crash (nothing durable yet, so
+      // recomputing IS the first real computation); this payload protects
+      // the case where computation already completed once, by making sure
+      // it's never asked again.
+      type ExecutionPayload = {
+        overageLineItems: OverageLineItem[]
+        creditLineItems: import('@/lib/credit-ledger-service').CreditLineItem[]
+        netAmount: number
+        vatNetAmount: number
+        vatRatePct: number
+        vatAmount: number
+        expectedGrossAmount: number
+        vatModeUsed: 'rate' | 'zero_rated' | 'not_configured'
+        vatSourceUsed: 'override' | 'customer_default'
+      }
 
-        // No prior invoice (this is the job's first) — scan from the
-        // contract's own start date instead of skipping outright. A meter
-        // with a shorter measurement cadence than the deal's first invoice
-        // period (e.g. a monthly-measured metric inside a quarterly-billed
-        // first invoice) can still have closed windows to bill even before
-        // any invoice has ever gone out.
-        scanStart = prevPeriod?.period_start ?? terms.contract_start_date
-        // toISOString() converts to UTC first — on a server not running in
-        // UTC that silently shifts this a day off from the local calendar
-        // date d was built from. Format from d's own local fields instead.
-        scanEnd    = prevPeriod?.period_end
-          ?? (() => {
-            const d = new Date(row.period_start + 'T00:00:00')
-            d.setDate(d.getDate() - 1)
-            const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0')
-            return `${y}-${m}-${day}`
-          })()
+      let payload: ExecutionPayload
+      if (row.execution_payload) {
+        payload = row.execution_payload as ExecutionPayload
+      } else {
+        // Overage is billed in arrears, on the same invoice as the next
+        // period's advance base fee — this row's own period_start/period_end
+        // describe the period the BASE FEE covers (prepaid, hence due the
+        // moment it starts). Usage for that period doesn't exist yet at that
+        // point, so overage must be computed for the period that just closed
+        // (the one immediately before this row), not this row's own period —
+        // querying it fresh each run rather than trusting whatever was
+        // recorded on that period's own (necessarily $0, prematurely-computed)
+        // invoice.
+        let overageLineItems: OverageLineItem[] = []
+        let scanStart: string | null = null
+        let scanEnd: string | null = null
+        if (row.invoice_type === 'period') {
+          const { data: prevPeriod } = await supabaseServer
+            .from('planned_invoices')
+            .select('period_start, period_end')
+            .eq('job_id', row.job_id)
+            .eq('invoice_type', 'period')
+            .lt('period_end', row.period_start)
+            .order('period_end', { ascending: false })
+            .limit(1)
+            .maybeSingle()
 
-        if (scanStart) {
-          overageLineItems = await computeOverageForPeriod({
-            orgId: job.org_id, jobId: row.job_id, terms, customerId,
-            periodStartUnix: Math.floor(new Date(scanStart + 'T00:00:00').getTime() / 1000),
-            periodEndUnix:   Math.floor(new Date(scanEnd   + 'T23:59:59').getTime() / 1000),
-            currency: cur,
-            billingAsOfUnix: Math.floor(billingAsOf.getTime() / 1000),
+          // No prior invoice (this is the job's first) — scan from the
+          // contract's own start date instead of skipping outright. A meter
+          // with a shorter measurement cadence than the deal's first invoice
+          // period (e.g. a monthly-measured metric inside a quarterly-billed
+          // first invoice) can still have closed windows to bill even before
+          // any invoice has ever gone out.
+          scanStart = prevPeriod?.period_start ?? terms.contract_start_date
+          // toISOString() converts to UTC first — on a server not running in
+          // UTC that silently shifts this a day off from the local calendar
+          // date d was built from. Format from d's own local fields instead.
+          scanEnd    = prevPeriod?.period_end
+            ?? (() => {
+              const d = new Date(row.period_start + 'T00:00:00')
+              d.setDate(d.getDate() - 1)
+              const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0')
+              return `${y}-${m}-${day}`
+            })()
+
+          if (scanStart) {
+            overageLineItems = await computeOverageForPeriod({
+              orgId: job.org_id, jobId: row.job_id, terms, customerId,
+              periodStartUnix: Math.floor(new Date(scanStart + 'T00:00:00').getTime() / 1000),
+              periodEndUnix:   Math.floor(new Date(scanEnd   + 'T23:59:59').getTime() / 1000),
+              currency: cur,
+              billingAsOfUnix: Math.floor(billingAsOf.getTime() / 1000),
+            })
+          }
+        }
+
+        // ── Credits/rebates ────────────────────────────────────────────────
+        // Computed once, platform-agnostically, before either downstream
+        // branch runs — the fail-closed capability gate must be checked (and
+        // must be able to throw) BEFORE a Remembill invoice is ever created,
+        // not after. Zero reservation happens in the blocked case, so a
+        // credit whose invoice can't be sent correctly is never consumed.
+        let creditLineItems: import('@/lib/credit-ledger-service').CreditLineItem[] = []
+        if (row.invoice_type === 'period') {
+          // componentClass is the canonical commercial classification a
+          // credit's eligible_component_keys actually matches against (see
+          // lib/commercial-component-scope.ts) — resolved here from the
+          // contract's own contractUnitType, NEVER from the operational
+          // meter_key (which stays on the pool entry's own `key` field only
+          // for ledger consumption bookkeeping/audit, unchanged). The
+          // 'platform_fee' entry's class is the literal constant itself —
+          // no resolution needed, it's already canonical.
+          const fullComponentPool = [
+            { key: 'platform_fee', amountMinor: Math.round(Number(row.base_amount) * 100), componentClass: 'platform_fee' as const },
+            ...overageLineItems.map(i => ({
+              key: i.meter_key, amountMinor: Math.round(i.amount * 100),
+              componentClass: classifyContractUnitType(i.contractUnitType),
+            })),
+          ]
+          const outcome = await applyCreditLedgerForPeriod({
+            jobId: row.job_id, orgId: job.org_id, terms, customerId, billingPlatform,
+            plannedInvoiceId: row.id, periodStart: row.period_start, periodEnd: row.period_end,
+            fullComponentPool,
+            scanStart: new Date((scanStart ?? row.period_start) + 'T00:00:00'),
+            scanEnd: new Date((scanEnd ?? row.period_end) + 'T00:00:00'),
           })
+          if (outcome.status === 'blocked') {
+            // Fail closed — do not create/send an invoice missing a
+            // contractual credit. Nothing was reserved, so the balance stays
+            // fully available for the next attempt (e.g. once a verified
+            // Remembill representation exists). Verdix's own calculated
+            // figures (gross/available/proposed/net) remain inspectable via
+            // the credit_ledger_entries rows the earning pass already wrote,
+            // independent of this delivery block.
+            throw new Error(outcome.reason)
+          }
+          if (outcome.status === 'applied') creditLineItems = outcome.creditLineItems
+        }
+
+        // ── VAT ─────────────────────────────────────────────────────────────
+        // Verdix owns the complete invoice instruction — net/VAT/gross is
+        // calculated here, once, platform-agnostically, before either
+        // downstream branch runs (same placement discipline as the credit
+        // ledger's fail-closed gate above). Neither Remembill nor Stripe ever
+        // decides which rate applies; they only mechanically apply the value
+        // already resolved here. Invoice-level override (if ever set for this
+        // specific planned_invoice) wins over the customer's standing default.
+        const netAmount = Number(row.base_amount)
+          + overageLineItems.reduce((s, i) => s + i.amount, 0)
+          + creditLineItems.reduce((s, i) => s + i.amount, 0)
+        const [customerVat, invoiceVatOverride] = await Promise.all([
+          getCustomerVatConfig(job.org_id, customerId),
+          getInvoiceVatOverride(row.id),
+        ])
+        const vatTreatment = resolveVatTreatment(customerVat, invoiceVatOverride)
+        const vatResult = computeVat(netAmount, vatTreatment)
+        if (!vatResult.ok) {
+          // Fail closed — do not create/send an invoice with an unconfirmed
+          // VAT treatment. Mirrors the credit ledger's identical throw-before-
+          // either-platform-branch pattern above.
+          throw new Error(`Billing blocked: ${vatResult.reason}`)
+        }
+        const { netAmount: vatNetAmount, vatRatePct, vatAmount, grossAmount: expectedGrossAmount } = vatResult.calculation
+
+        payload = {
+          overageLineItems, creditLineItems, netAmount, vatNetAmount, vatRatePct, vatAmount, expectedGrossAmount,
+          vatModeUsed: vatTreatment.mode, vatSourceUsed: invoiceVatOverride ? 'override' : 'customer_default',
+        }
+
+        // Persisted BEFORE any provider call — this is what a later
+        // reclaim reads back instead of recomputing. Logged, not thrown,
+        // on failure: we still have the correct in-memory payload to
+        // proceed with this attempt; only a crash from here onward would
+        // force a genuine recompute on the next reclaim.
+        const { error: payloadError } = await supabaseServer
+          .from('planned_invoices')
+          .update({ execution_payload: payload })
+          .eq('id', row.id)
+        if (payloadError) {
+          console.error(`[invoice-scheduler] failed to persist execution_payload for ${row.id}`, payloadError)
         }
       }
+      const {
+        overageLineItems, creditLineItems, vatNetAmount, vatRatePct, vatAmount, expectedGrossAmount,
+        vatModeUsed, vatSourceUsed,
+      } = payload
 
-      // ── Credits/rebates ──────────────────────────────────────────────────
-      // Computed once, platform-agnostically, before either downstream
-      // branch runs — the fail-closed capability gate must be checked (and
-      // must be able to throw) BEFORE a Remembill invoice is ever created,
-      // not after. Zero reservation happens in the blocked case, so a
-      // credit whose invoice can't be sent correctly is never consumed.
-      let creditLineItems: import('@/lib/credit-ledger-service').CreditLineItem[] = []
-      if (row.invoice_type === 'period') {
-        const fullComponentPool = [
-          { key: 'platform_fee', amountMinor: Math.round(Number(row.base_amount) * 100) },
-          ...overageLineItems.map(i => ({ key: i.meter_key, amountMinor: Math.round(i.amount * 100) })),
-        ]
-        const outcome = await applyCreditLedgerForPeriod({
-          jobId: row.job_id, orgId: job.org_id, terms, customerId, billingPlatform,
-          plannedInvoiceId: row.id, periodStart: row.period_start, periodEnd: row.period_end,
-          fullComponentPool,
-          scanStart: new Date((scanStart ?? row.period_start) + 'T00:00:00'),
-          scanEnd: new Date((scanEnd ?? row.period_end) + 'T00:00:00'),
-        })
-        if (outcome.status === 'blocked') {
-          // Fail closed — do not create/send an invoice missing a
-          // contractual credit. Nothing was reserved, so the balance stays
-          // fully available for the next attempt (e.g. once a verified
-          // Remembill representation exists). Verdix's own calculated
-          // figures (gross/available/proposed/net) remain inspectable via
-          // the credit_ledger_entries rows the earning pass already wrote,
-          // independent of this delivery block.
-          throw new Error(outcome.reason)
-        }
-        if (outcome.status === 'applied') creditLineItems = outcome.creditLineItems
+      // Ambiguous-recovery guard, Remembill only — a non-null stripe_invoice_id
+      // here means a PRIOR attempt already got far enough to create a real
+      // provider invoice (persisted immediately after creation below, on
+      // every attempt). Stripe's own idempotency-key coverage (added below,
+      // on every invoice/item/finalize call, all stable across recovery)
+      // makes retrying past that point safe. Remembill's is NOT: per this
+      // codebase's own established finding (lib/credit-ledger-service.ts's
+      // Remembill row-posting comment), its Idempotency-Key header is only
+      // honored on invoice CREATION, never on the row-creation endpoint — a
+      // blind retry past a successful create could duplicate line items on
+      // an invoice that already exists. Preserving existing Remembill
+      // verification behavior means not touching how those calls work;
+      // instead, fail closed here rather than ever risk it — this is
+      // exactly the "provider-specific/manual reconciliation" path point 6
+      // explicitly allows for a provider lacking a sufficiently strong
+      // idempotency guarantee at every step.
+      if (billingPlatform === 'remembill' && row.stripe_invoice_id) {
+        throw new Error(
+          `Row already has a Remembill provider reference (${row.stripe_invoice_id}) from a prior attempt — ` +
+          `ambiguous state (rows/email may have partially sent), requires manual reconciliation before retry.`,
+        )
       }
 
-      // ── VAT ──────────────────────────────────────────────────────────────
-      // Verdix owns the complete invoice instruction — net/VAT/gross is
-      // calculated here, once, platform-agnostically, before either
-      // downstream branch runs (same placement discipline as the credit
-      // ledger's fail-closed gate above). Neither Remembill nor Stripe ever
-      // decides which rate applies; they only mechanically apply the value
-      // already resolved here. Invoice-level override (if ever set for this
-      // specific planned_invoice) wins over the customer's standing default.
-      const netAmount = Number(row.base_amount)
-        + overageLineItems.reduce((s, i) => s + i.amount, 0)
-        + creditLineItems.reduce((s, i) => s + i.amount, 0)
-      const [customerVat, invoiceVatOverride] = await Promise.all([
-        getCustomerVatConfig(job.org_id, customerId),
-        getInvoiceVatOverride(row.id),
-      ])
-      const vatTreatment = resolveVatTreatment(customerVat, invoiceVatOverride)
-      const vatResult = computeVat(netAmount, vatTreatment)
-      if (!vatResult.ok) {
-        // Fail closed — do not create/send an invoice with an unconfirmed
-        // VAT treatment. Mirrors the credit ledger's identical throw-before-
-        // either-platform-branch pattern above.
-        throw new Error(`Billing blocked: ${vatResult.reason}`)
-      }
-      const { netAmount: vatNetAmount, vatRatePct, vatAmount, grossAmount: expectedGrossAmount } = vatResult.calculation
-      const vatModeUsed = vatTreatment.mode
-      const vatSourceUsed = invoiceVatOverride ? 'override' : 'customer_default'
       // Stripe Tax Rate objects are reused across invoices (one per unique
       // percentage), not recreated every run — created lazily just before
       // the Stripe branch needs one, so the Remembill branch never touches
@@ -247,7 +575,7 @@ export async function GET(req: NextRequest) {
 
         // Create draft invoice
         const invRes = await fetch(`${REMEMBILL_BASE}/invoices`, {
-          method: 'POST', headers: { ...rbH, 'Idempotency-Key': `verdix-sched-${row.id}` },
+          method: 'POST', headers: { ...rbH, 'Idempotency-Key': remembillInvoiceIdempotencyKey(row.id) },
           body: JSON.stringify({
             customer_id:   customerId,
             currency:      cur.toUpperCase(),
@@ -262,6 +590,12 @@ export async function GET(req: NextRequest) {
           throw new Error(`Remembill invoice creation failed (${invRes.status}): ${rawBody}`)
         }
         const invoiceId = ((await invRes.json()) as { id: string }).id
+
+        // Persisted immediately — durable proof a provider invoice now
+        // exists, BEFORE any further (non-idempotency-protected) row/email
+        // calls. This is the exact signal the ambiguous-recovery guard
+        // above checks on any future reclaim of this row.
+        await supabaseServer.from('planned_invoices').update({ stripe_invoice_id: invoiceId }).eq('id', row.id)
 
         // Add line item row (amount in minor units, e.g. öre for SEK).
         // Real quantity/unit_price when we have a per-unit breakdown, else
@@ -343,42 +677,90 @@ export async function GET(req: NextRequest) {
         }
         const taxRates = stripeTaxRateId ? [stripeTaxRateId] : undefined
 
-        const inv = await stripe.invoices.create({
-          customer:                       customerId,
-          collection_method:              'send_invoice',
-          days_until_due:                 daysUntilDue,
-          pending_invoice_items_behavior: 'exclude',
-          metadata: {
-            verdix_job:      row.job_id,
-            invoice_type:    row.invoice_type,
-            year:            String(row.year_num ?? ''),
-            scheduled_date:  row.period_start,
-            planned_invoice: row.id,
-          },
-        })
+        // Every call below carries a real Stripe idempotency key, stable
+        // across recovery (derived only from row.id and other already-
+        // durable identifiers — never anything regenerated per attempt).
+        // Previously only the credit-adjustment items had one; invoice
+        // creation, the base/overage items, and finalization did not —
+        // found and fixed while auditing this exact recovery path.
+        //
+        // invoiceId resolution — prefer Verdix's own durable knowledge
+        // over re-deriving it from Stripe. row.stripe_invoice_id is
+        // persisted immediately below, the instant invoice creation
+        // succeeds, before any further Stripe call — so on a later
+        // reclaim it is Verdix's authoritative record that creation
+        // already happened. Calling invoices.create() again WOULD still
+        // be safe (Stripe's own idempotency key returns the identical
+        // object rather than a duplicate), but it's an unnecessary
+        // round-trip and treats already-known state as unknown; the
+        // known reference is used directly instead. The idempotency key
+        // remains essential for the one window this can't cover — a
+        // request sent, the provider may have created the invoice, but
+        // the process crashed before row.stripe_invoice_id itself got
+        // persisted — that case still falls into the `else` branch below
+        // and relies on the key exactly as before.
+        let invoiceId: string
+        if (row.stripe_invoice_id) {
+          invoiceId = row.stripe_invoice_id as string
+        } else {
+          const inv = await stripe.invoices.create({
+            customer:                       customerId,
+            collection_method:              'send_invoice',
+            days_until_due:                 daysUntilDue,
+            pending_invoice_items_behavior: 'exclude',
+            metadata: {
+              verdix_job:      row.job_id,
+              invoice_type:    row.invoice_type,
+              year:            String(row.year_num ?? ''),
+              scheduled_date:  row.period_start,
+              planned_invoice: row.id,
+            },
+          }, { idempotencyKey: stripeInvoiceIdempotencyKey(row.id) })
+          invoiceId = inv.id
 
+          // Persisted immediately — durable proof a provider invoice now
+          // exists, before any further Stripe calls. Mirrors the
+          // Remembill branch's identical early persist above.
+          await supabaseServer.from('planned_invoices').update({ stripe_invoice_id: invoiceId }).eq('id', row.id)
+        }
+
+        // Remaining operations (items, finalize) resume idempotently
+        // regardless of which branch above supplied invoiceId — each call
+        // below carries its own stable, row.id-derived key, so Stripe
+        // transparently returns the already-completed result for any
+        // operation a prior attempt finished, and genuinely executes only
+        // what's still outstanding. This is what makes partial-completion
+        // recovery (base item done, overage not yet; or every item done
+        // but not yet finalized) safe without a second execution ledger —
+        // the durable row (stripe_invoice_id + execution_payload) plus
+        // these stable per-operation identities are sufficient.
         if (row.base_amount > 0) {
           await stripe.invoiceItems.create({
             customer:    customerId,
-            invoice:     inv.id,
+            invoice:     invoiceId,
             amount:      Math.round(Number(row.base_amount) * 100),
             currency:    cur,
             description,
             tax_rates:   taxRates,
-          })
+          }, { idempotencyKey: stripeBaseItemIdempotencyKey(row.id) })
         }
 
         // ── Overage line items (already pulled + computed above) ────────────
-        for (const item of overageLineItems) {
+        // Keyed by meter_key + windowStart (falling back to the item's
+        // index when windowStart is absent — the legacy client_pull path
+        // has no per-meter window) so two windows of the same meter within
+        // one invoice each get a distinct, but still deterministic/stable,
+        // identity across recovery.
+        for (const [i, item] of overageLineItems.entries()) {
           await stripe.invoiceItems.create({
             customer:    customerId,
-            invoice:     inv.id,
+            invoice:     invoiceId,
             amount:      Math.round(item.amount * 100),
             currency:    cur,
             description: item.description,
             tax_rates:   taxRates,
             metadata: { metric_source: item.metric_source, meter_key: item.meter_key, total_units: String(item.total_units), verdix_job: row.job_id },
-          })
+          }, { idempotencyKey: stripeOverageItemIdempotencyKey(row.id, item.meter_key, item.windowStart, i) })
         }
 
         // ── Credit/rebate adjustments (Stripe supports negative invoice-item
@@ -389,17 +771,17 @@ export async function GET(req: NextRequest) {
         for (const item of creditLineItems) {
           await stripe.invoiceItems.create({
             customer:    customerId,
-            invoice:     inv.id,
+            invoice:     invoiceId,
             amount:      Math.round(item.amount * 100),
             currency:    cur,
             description: item.description,
             tax_rates:   taxRates,
             metadata: { credit_rule_id: item.credit_rule_id, verdix_job: row.job_id },
-          }, { idempotencyKey: `verdix-credit-${row.id}-${item.credit_rule_id}` })
+          }, { idempotencyKey: stripeCreditItemIdempotencyKey(row.id, item.credit_rule_id) })
         }
 
-        const finalized = await stripe.invoices.finalizeInvoice(inv.id)
-        sentInvoiceId  = inv.id
+        const finalized = await stripe.invoices.finalizeInvoice(invoiceId, {}, { idempotencyKey: stripeFinalizeIdempotencyKey(row.id) })
+        sentInvoiceId  = invoiceId
         sentInvoiceUrl = finalized.hosted_invoice_url ?? null
         // Reconcile: Stripe's own computed total (net + its own tax
         // calculation off the attached tax_rates) against Verdix's expected

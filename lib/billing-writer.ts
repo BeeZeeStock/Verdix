@@ -472,6 +472,13 @@ async function configureStripe(
     stripe_invoice_id: string | null; stripe_invoice_url: string | null
     sent_at: string | null
     line_item_id?: string | null; quantity?: number | null; unit_price?: number | null
+    // Populated ONLY for a parked, event-gated one-time fee (see the
+    // one_time_fees/isHeld loop below) — the sole discriminator
+    // app/api/admin/invoice-scheduler/route.ts uses to later find this row
+    // once matching evidence exists. Never set for a legacy manual_trigger
+    // parked fee, which stays exclusively human-driven via
+    // POST /parked-invoices, unaffected by that new path.
+    fee_id?: string | null
   }
 
   // Idempotent repush: carry forward already-sent invoices unchanged, and
@@ -664,11 +671,18 @@ async function configureStripe(
     for (const fee of oneTimeFees.filter(isHeld)) {
       if (alreadySentKeys.has(`one_time_fee:${fee.fee_label}`)) continue
       const li = findOneTimeLineItem(lineItems, fee.fee_label)
+      // isHeld is also true for a genuine legacy manual_trigger fee (no
+      // billability_condition at all) — that case must NEVER get a fee_id,
+      // since it stays exclusively human-driven via POST /parked-invoices;
+      // only a real event-gated fee is eligible for the scheduler's later
+      // automatic evidence-triggered execution.
+      const isEventGated = fee.billability_condition?.kind === 'event'
       scheduledRows.push({
         year_num: null, period_start: fee.due_date ?? formatDate(now), period_end: fee.due_date ?? formatDate(now),
         base_amount: fee.amount ?? 0, currency: terms.currency ?? 'EUR', fee_label: fee.fee_label,
         invoice_type: 'one_time', status: 'parked', stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
         line_item_id: li?.id ?? null, quantity: null, unit_price: li?.unit_price ?? fee.rate_per_unit ?? null,
+        fee_id: isEventGated ? (fee.fee_id ?? null) : null,
       })
     }
     for (const fee of oneTimeFees.filter(f => !isHeld(f) && f.amount > 0)) {
@@ -876,6 +890,9 @@ async function configureRememhill(
     stripe_invoice_id: string | null; stripe_invoice_url: string | null
     sent_at: string | null
     line_item_id?: string | null; quantity?: number | null; unit_price?: number | null
+    // See the identical field on configureStripe's own PlannedRow above —
+    // populated only for a parked, event-gated one-time fee.
+    fee_id?: string | null
   }
 
   try {
@@ -1021,11 +1038,15 @@ async function configureRememhill(
     for (const fee of oneTimeFees.filter(isHeld)) {
       if (alreadySentKeys.has(`one_time_fee:${fee.fee_label}`)) continue
       const li = findOneTimeLineItem(lineItems, fee.fee_label)
+      // See the identical comment on configureStripe's own isHeld loop —
+      // only a real event-gated fee gets a fee_id.
+      const isEventGated = fee.billability_condition?.kind === 'event'
       scheduledRows.push({
         year_num: null, period_start: fee.due_date ?? fmtDate(now), period_end: fee.due_date ?? fmtDate(now),
         base_amount: fee.amount ?? 0, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
         invoice_type: 'one_time', status: 'parked', stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
         line_item_id: li?.id ?? null, quantity: null, unit_price: li?.unit_price ?? fee.rate_per_unit ?? null,
+        fee_id: isEventGated ? (fee.fee_id ?? null) : null,
       })
     }
     for (const fee of oneTimeFees.filter(f => !isHeld(f) && f.amount > 0)) {
