@@ -19,7 +19,7 @@ import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMin
 import { isMonetaryBasisRecognitionApplicable, isPaidBasisFinalizationApplicable } from '@/lib/paid-basis-finalization'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
 import { describeBillabilityCondition, isChangeOrderConditional, resolveOneTimeFeeTypeLabel } from '@/lib/billability-condition'
-import { formatEligibleComponentsFact, formatCarryForwardFact, formatCashRedeemableFact } from '@/lib/review-card-format'
+import { formatEligibleComponentsFact, formatCarryForwardFact, formatCashRedeemableFact, formatEarningBasisFact, computeExcludedFromEarningBasisKeys } from '@/lib/review-card-format'
 import { getCreditRepresentationCapability } from '@/lib/connectors/billing/types'
 import { FinancialAmount, FinancialMetaTag } from '@/app/_components/FinancialAmount'
 import { FinancialKPICard } from '@/app/_components/FinancialKPICard'
@@ -89,6 +89,12 @@ type ServiceCredit = {
     // forward) remains a real, separate, unresolved decision the contract
     // never stated. See buildCreditApplicationRule (confirm-rule/route.ts).
     application_rule?: {
+      // 2026-08-30 UI fix — WHAT a percentage credit's earning calculation
+      // is computed FROM (lib/credit-ledger-service.ts's own field of the
+      // same name), deliberately independent of eligible_component_keys
+      // (WHAT it may later be applied against) — see lib/review-card-
+      // format.ts's formatEarningBasisFact/computeExcludedFromEarningBasisKeys.
+      computed_from_component_keys?: string[] | null
       eligible_component_keys: string[] | 'all' | null
       eligibility_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null
       excluded_component_keys?: string[]
@@ -7927,12 +7933,36 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 if (value) params.push({ label: 'Value', value })
                 const cap = interp.cap_amount != null ? fmt(interp.cap_amount, cur) : interp.cap_pct != null ? `${interp.cap_pct}%` : null
                 if (cap) params.push({ label: `Cap${interp.settlement_period ? ` (${interp.settlement_period})` : ''}`, value: cap })
+                // Earning basis vs. application scope (2026-08-30 UI fix) —
+                // rendered as up to three DISTINCT rows rather than the
+                // previous "Eligible components"/"Excluded" pair, which
+                // conflated what a percentage credit's SIZE is computed
+                // from with what the resulting credit may later reduce.
+                // Only shown when computed_from_component_keys actually
+                // carries data — a credit with no percentage-of-component
+                // basis (flat_amount, usage_units, ...) has no earning-
+                // basis concept to display, and behaves exactly as before
+                // (falls straight through to "Can be applied against").
+                const computedFromKeys = Array.isArray(appRule.computed_from_component_keys) && appRule.computed_from_component_keys.length > 0
+                  ? appRule.computed_from_component_keys : null
+                if (computedFromKeys) {
+                  const isRebate = c.credit_type === 'rebate'
+                  const basisValue = formatEarningBasisFact(computedFromKeys) + (interp.monetary_basis_recognition === 'paid' ? ' actually paid' : '')
+                  params.push({ label: isRebate ? 'Rebate basis' : 'Earning basis', value: basisValue })
+                  const excludedFromBasis = computeExcludedFromEarningBasisKeys({
+                    computedFromComponentKeys: computedFromKeys,
+                    eligibleComponentKeys: appRule.eligible_component_keys,
+                    excludedComponentKeys: appRule.excluded_component_keys,
+                  })
+                  if (excludedFromBasis.length > 0) {
+                    params.push({ label: isRebate ? 'Excluded from rebate basis' : 'Excluded from earning basis', value: formatEligibleComponentsFact(excludedFromBasis) })
+                  }
+                }
                 params.push({
-                  label: 'Eligible components',
+                  label: 'Can be applied against',
                   value: appRule.eligible_component_keys === 'all' ? 'All future amounts payable'
                     : Array.isArray(appRule.eligible_component_keys) ? formatEligibleComponentsFact(appRule.eligible_component_keys) : 'Decision required',
                 })
-                if (appRule.excluded_component_keys?.length) params.push({ label: 'Excluded', value: formatEligibleComponentsFact(appRule.excluded_component_keys) })
                 params.push({ label: 'Repeatable', value: appRule.one_time === true ? 'No — one-time' : appRule.one_time === false ? 'Yes' : 'Decision required' })
                 if (typeof appRule.carry_forward === 'boolean') {
                   // Short-form (matches every other param row on this card,

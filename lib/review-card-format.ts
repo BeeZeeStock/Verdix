@@ -62,3 +62,50 @@ export function formatCashRedeemableFact(cashRedeemable: boolean | 'unclear' | u
   if (cashRedeemable === false) return 'Not redeemable'
   return 'Not specified'
 }
+
+// Earning basis vs. application scope — DELIBERATELY separate read-model
+// facts that must never be conflated on the Confirmed billing rules card
+// (2026-08-30 UI fix). computed_from_component_keys is WHAT a percentage
+// credit's earning calculation is computed FROM (lib/credit-ledger-service
+// .ts's resolveEarningBasisClasses reads this exact field); eligible_
+// component_keys is WHAT the resulting credit may later be applied against
+// (lib/credit-ledger.ts's filterEligibleComponents reads that one). A
+// component can legitimately appear in both, meaning both things at once —
+// Contract B's platform_subscription_fees never contributes to how much
+// the Annual Rebate is worth (excluded from computed_from_component_keys)
+// while still being a valid target the earned rebate may later reduce
+// (included in eligible_component_keys). The previous single "Eligible
+// components"/"Excluded" pair blended these two questions into one row,
+// which read as though the rebate's SIZE depended on the platform fee too.
+export function formatEarningBasisFact(computedFromComponentKeys: string[] | null | undefined): string {
+  return formatEligibleComponentsFact(Array.isArray(computedFromComponentKeys) && computedFromComponentKeys.length > 0 ? computedFromComponentKeys : null)
+}
+
+// Every component key mentioned anywhere in this credit's application
+// scope (eligible ∪ excluded) that is NOT part of the earning basis —
+// i.e. "does not contribute to how much this credit is worth", regardless
+// of whether it may still be an eligible APPLICATION target (see the
+// module comment above — those are independent questions, and a key can
+// appear here AND under "can be applied against" simultaneously). When
+// eligible_component_keys is 'all' (unbounded), it cannot be enumerated
+// into a concrete exclusion list, so this falls back to the application
+// rule's own stated excluded_component_keys only — the best concrete data
+// available, never a guess at what 'all' minus the basis would contain.
+export function computeExcludedFromEarningBasisKeys(params: {
+  computedFromComponentKeys: string[] | null | undefined
+  eligibleComponentKeys: string[] | 'all' | null | undefined
+  excludedComponentKeys: string[] | null | undefined
+}): string[] {
+  const computedFrom = new Set(params.computedFromComponentKeys ?? [])
+  const universe = params.eligibleComponentKeys === 'all'
+    ? (params.excludedComponentKeys ?? [])
+    : [...(params.eligibleComponentKeys ?? []), ...(params.excludedComponentKeys ?? [])]
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const key of universe) {
+    if (computedFrom.has(key) || seen.has(key)) continue
+    seen.add(key)
+    result.push(key)
+  }
+  return result
+}
