@@ -12,6 +12,8 @@ import {
   type PoolComponent,
 } from '@/lib/credit-ledger'
 import { detectCreditPriorityNeed } from '@/lib/credit-priority'
+import { canFreezeMonetaryBasisEarn } from '@/lib/paid-basis-finalization'
+import { classifyContractUnitType, resolveScopeTokenClass, type CommercialComponentClass } from '@/lib/commercial-component-scope'
 import type { ContractTerms, ServiceCredit, ServiceCreditInterpretation } from '@/lib/types'
 
 export interface CreditLineItem {
@@ -102,9 +104,83 @@ async function pullMetricUsageForWindow(params: {
 // matching overage_line_items component only from invoices whose payment is
 // actually confirmed as of today — unpaid invoices in the window simply
 // don't contribute yet, recomputed fresh on every pass.
+//
+// 2026-08-30 audit fix — matches by CANONICAL COMMERCIAL CLASS, never by raw
+// string equality between the earning basis and a line item's OPERATIONAL
+// identity, exactly the same principle lib/commercial-component-scope.ts
+// already established for application scope (lib/credit-ledger.ts's
+// filterEligibleComponents). Confirmed as a real, live bug: the prior
+// implementation compared `basis_component` (a full free-text clause
+// fragment, e.g. "transaction-processing fees actually paid for that
+// Contract Year") against `item.meter_key` (an arbitrary org-chosen
+// operational identifier — Contract B's real transaction-processing meter
+// is literally named 'sync') via exact Set membership — these two strings
+// can never be equal for any real contract, so the rebate's paid basis
+// would have silently summed to zero forever, even once real payments
+// exist. eligibleClasses is resolved by the caller from
+// application_rule.computed_from_component_keys (the pre-existing,
+// already-extracted, canonical-token field for "what this % is computed
+// from" — a genuinely separate question from eligible_component_keys,
+// which governs what the credit may later be APPLIED against; see
+// isPaidBasisFinalizationApplicable's own module for the earning-basis vs.
+// application-scope distinction). item.contractUnitType — persisted
+// verbatim into planned_invoices.overage_line_items at send time
+// (lib/usage-pull.ts's OverageLineItem, sourced from contract_meter_
+// mappings, never from the operational meter_key) — is what's classified
+// here, mirroring invoice-scheduler's own PoolComponent.componentClass
+// resolution exactly. An empty/unresolvable eligibleClasses set (a legacy
+// record with no computed_from_component_keys, or a genuinely unknown
+// token) fails closed to zero — never falls back to matching everything,
+// and never falls back to the old meter_key comparison.
+// Resolves application_rule.computed_from_component_keys (the pre-existing,
+// already-extracted canonical-token field for "what this credit's %-basis
+// is computed from") into the closed CommercialComponentClass vocabulary —
+// exported and pure so it's directly unit-testable, and so
+// isPaidBasisFinalizationApplicable's own "earning basis vs. application
+// scope" boundary has exactly one implementation on the earning side, same
+// discipline as lib/credit-ledger.ts's filterEligibleComponents on the
+// application side. Empty/unresolvable input resolves to an empty set,
+// which sumPaidLineItemsForClasses below treats as fail-closed (matches
+// nothing, never everything).
+export function resolveEarningBasisClasses(
+  applicationRule: { computed_from_component_keys?: string[] | null } | null | undefined,
+): Set<CommercialComponentClass> {
+  return new Set(
+    (applicationRule?.computed_from_component_keys ?? [])
+      .map(resolveScopeTokenClass)
+      .filter((c): c is CommercialComponentClass => c !== null),
+  )
+}
+
+// The actual classification + summing logic, kept separate from the DB
+// fetch below (sumPaidComponentAmountForWindow) so it's directly unit-
+// testable without a database — same pure/imperative split this file's own
+// header describes for the rest of the codebase (lib/tariff.ts vs.
+// lib/usage-pull.ts). item.contractUnitType — persisted verbatim into
+// planned_invoices.overage_line_items at send time (lib/usage-pull.ts's
+// OverageLineItem, sourced from contract_meter_mappings, never from the
+// operational meter_key) — is what's classified, mirroring invoice-
+// scheduler's own PoolComponent.componentClass resolution exactly.
+export function sumPaidLineItemsForClasses(
+  rows: Array<{ overage_line_items: Array<{ meter_key: string; amount: number; contractUnitType?: string | null }> | null }>,
+  eligibleClasses: Set<CommercialComponentClass>,
+): number {
+  if (eligibleClasses.size === 0) return 0
+  let totalMinor = 0
+  for (const row of rows) {
+    for (const item of row.overage_line_items ?? []) {
+      const cls = classifyContractUnitType(item.contractUnitType)
+      if (cls !== null && eligibleClasses.has(cls)) totalMinor += toMinorUnits(item.amount)
+    }
+  }
+  return totalMinor
+}
+
 async function sumPaidComponentAmountForWindow(params: {
-  jobId: string; windowStart: Date; windowEnd: Date; componentKeys: string[]
+  jobId: string; windowStart: Date; windowEnd: Date; eligibleClasses: Set<CommercialComponentClass>
 }): Promise<number> {
+  if (params.eligibleClasses.size === 0) return 0
+
   const { data: rows } = await supabaseServer
     .from('planned_invoices')
     .select('overage_line_items, status, period_start')
@@ -113,15 +189,10 @@ async function sumPaidComponentAmountForWindow(params: {
     .gte('period_start', fmtDate(params.windowStart))
     .lte('period_start', fmtDate(params.windowEnd))
 
-  const keys = new Set(params.componentKeys)
-  let totalMinor = 0
-  for (const row of rows ?? []) {
-    const items = (row.overage_line_items ?? []) as Array<{ meter_key: string; amount: number }>
-    for (const item of items) {
-      if (keys.has(item.meter_key)) totalMinor += toMinorUnits(item.amount)
-    }
-  }
-  return totalMinor
+  return sumPaidLineItemsForClasses(
+    (rows ?? []) as Array<{ overage_line_items: Array<{ meter_key: string; amount: number; contractUnitType?: string | null }> | null }>,
+    params.eligibleClasses,
+  )
 }
 
 function creditBasisToValues(interp: ServiceCreditInterpretation): {
@@ -142,7 +213,14 @@ function creditBasisToValues(interp: ServiceCreditInterpretation): {
 // always, and an earn row only once a window both meets the threshold AND
 // (for the Annual Rebate specifically) has reached its finalization
 // deadline — see CreditEarnRule.finalization_deadline_days.
-async function runEarningPass(params: {
+// Exported so the credit finalization sweep (app/api/admin/
+// credit-finalization-sweep/route.ts) can re-invoke this EXACT function for
+// a specific pending window, rather than duplicating its logic — the sweep
+// and applyCreditLedgerForPeriod's own per-invoice earning pass are the
+// same operation, just triggered from two different places (a due
+// planned_invoice vs. a periodic re-check of a still-pending trigger_check
+// window with no planned_invoice involved at all).
+export async function runEarningPass(params: {
   jobId: string; orgId: string; terms: ContractTerms; customerId: string
   credit: ServiceCredit; scanStart: Date; scanEnd: Date; today: Date
 }): Promise<void> {
@@ -207,10 +285,35 @@ async function runEarningPass(params: {
       })
     }
     if (pctBp != null && interp.basis_component) {
-      computedFromAmountMinor = await sumPaidComponentAmountForWindow({
-        jobId: params.jobId, windowStart: window.start, windowEnd: window.end,
-        componentKeys: [interp.basis_component],
-      })
+      // Earning basis, classified through the SAME canonical taxonomy
+      // application scope uses (lib/commercial-component-scope.ts) — never
+      // collapsed INTO application scope, though: eligible_component_keys
+      // (what this credit may reduce) is read nowhere here.
+      // computed_from_component_keys answers a different, earning-only
+      // question ("what is the % computed from") and is resolved
+      // independently. Contract B: eligible_component_keys includes
+      // platform_subscription_fees (the rebate may be APPLIED against the
+      // platform fee later), but computed_from_component_keys is
+      // ['transaction_processing_fees'] only — platform fees must never
+      // leak into the earning sum just because they're an eligible
+      // application target.
+      //
+      // 2026-08-30 correction — WHICH sum function runs (if any) is now
+      // gated on monetary_basis_recognition, the sole trusted source for
+      // "what monetary state does this % apply to" (never on credit_basis
+      // type alone — see lib/paid-basis-finalization.ts). 'paid' uses the
+      // real, corrected paid-amount sum. 'component_amount' and unresolved
+      // both leave computedFromAmountMinor at 0 — never a guessed number —
+      // because canFreezeMonetaryBasisEarn (below) already prevents either
+      // case from ever freezing into an immutable earn; only the
+      // provisional trigger_check preview would otherwise show a
+      // fabricated figure for a basis Verdix cannot yet correctly compute.
+      if (interp.monetary_basis_recognition === 'paid') {
+        computedFromAmountMinor = await sumPaidComponentAmountForWindow({
+          jobId: params.jobId, windowStart: window.start, windowEnd: window.end,
+          eligibleClasses: resolveEarningBasisClasses(interp.application_rule),
+        })
+      }
     }
 
     const evaluation = evaluateCreditEarn({
@@ -241,11 +344,41 @@ async function runEarningPass(params: {
     // reached — only then does the earn row (frozen, one-time-only per
     // window via the unique index) get written. Credits with no deadline
     // finalize the moment their window closes.
+    //
+    // This is currently implemented as a mandatory WAIT ("do not finalize
+    // before window_end + N days") for every credit that sets this field —
+    // today, only Contract-B-shaped paid-basis rebates do. That is NOT what
+    // finalization_deadline_days is documented to mean in general (see its
+    // own doc comment in lib/types.ts: "a deadline, not a mandatory wait" —
+    // an upper bound, "finalize no later than N days"). Do not read this
+    // block as license to assume every finalization_deadline_days is
+    // inherently a wait — it happens to produce the right paid-basis
+    // behavior for deadline_cutoff (below) today, but a future credit that
+    // sets this field for an unrelated reason should not inherit a wait
+    // it never asked for without a fresh audit. Left exactly as-is per
+    // that audit's explicit instruction not to globally reinterpret it as
+    // collateral work here.
     if (earnRule.finalization_deadline_days != null) {
       const deadline = new Date(window.end)
       deadline.setDate(deadline.getDate() + earnRule.finalization_deadline_days)
       if (params.today < deadline) continue
     }
+
+    // Monetary basis recognition + paid-basis finalization (2026-08-24 ->
+    // 2026-08-30 audit) — reaching the deadline above is necessary but not
+    // sufficient to freeze a percentage-of-component basis: Verdix must
+    // first know WHAT monetary state that basis represents
+    // (monetary_basis_recognition — never inferred from credit_basis type
+    // or from this file's own status='paid' query), and if it's 'paid',
+    // WHEN it's complete enough to freeze (paid_basis_finalization_policy
+    // — a reviewer decision this codebase never invents). Unresolved
+    // monetary_basis_recognition, 'component_amount' (no verified
+    // execution path today), unresolved paid_basis_finalization_policy,
+    // and 'full_attribution' (no invoice-terminality model) all mean:
+    // never freeze. The credit-finalization-sweep keeps rediscovering this
+    // window from its trigger_check row (written above regardless) every
+    // day until a 'paid' + 'deadline_cutoff' resolution exists.
+    if (!canFreezeMonetaryBasisEarn(interp)) continue
 
     await supabaseServer.from('credit_ledger_entries').insert({
       job_id: params.jobId, org_id: params.orgId, credit_rule_id: creditRuleId,

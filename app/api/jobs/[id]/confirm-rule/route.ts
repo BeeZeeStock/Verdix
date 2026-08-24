@@ -24,8 +24,9 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
 import type { RuleType } from '@/lib/rule-interpretation'
-import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation, CreditEarnRule, PeriodProrationRule, AdditionalRecurringFee, FieldProvenance, OneTimeFee } from '@/lib/types'
-import { buildCreditApplicationRule, sanitizeAssertedProvenance } from '@/lib/credit-application-rule'
+import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation, PeriodProrationRule, AdditionalRecurringFee, FieldProvenance, OneTimeFee } from '@/lib/types'
+import { buildCreditApplicationRule } from '@/lib/credit-application-rule'
+import { buildServiceCreditInterpretation } from '@/lib/service-credit-interpretation'
 import { buildOneTimeFeeConfirmation, OneTimeFeeCapabilityBlockedError, OneTimeFeeValueMutationRejectedError } from '@/lib/one-time-fee'
 import { listMatchableOrganizationRules } from '@/lib/rulebook/organization-rules-service'
 import { resolveProductionOrganizationField, isOrganizationPolicyStale, type ProductionOrganizationResolution, type SeenOrganizationPolicy } from '@/lib/rulebook/organization-rulebook-production'
@@ -79,6 +80,15 @@ type Body = {
   // 'reviewer_policy' on Override/"Confirm recommendation". See
   // buildServiceCreditInterpretation below.
   cashRedeemableProvenance?: FieldProvenance
+  // service_credit only (2026-08-24 audit) — provenance for earn_rule's
+  // paid_basis_finalization_policy sub-question. Only ever legitimately
+  // 'reviewer_policy' — there is no AI proposal pipeline for this
+  // question (see lib/credit-earn-rule.ts's own header), so unlike
+  // applicationRuleProvenance/cashRedeemableProvenance this never accepts
+  // an AI-proposal-derived state. sanitizeAssertedProvenance still strips
+  // 'organization_rulebook' server-side regardless (no resolution path
+  // exists for this field either).
+  earnRuleProvenance?: { paidBasisFinalization?: FieldProvenance }
   // service_credit only (Step 5C, pre-commit review) — evidence of the
   // organization policy (rule id/version/value) the client's review panel
   // showed the reviewer, sourced from RuleProposal.survival_organization_
@@ -98,91 +108,6 @@ function buildTierCalculation(approved: Record<string, unknown>): TierCalculatio
     source_clause: (approved.source_clause as string | undefined) ?? null,
     requires_confirmation: false,
     confirmation_reason: null,
-  }
-}
-
-// earn_rule: when/how this credit is earned. Same explicit-fields/existing-
-// fallback discipline as every other builder here — the top-level
-// interpretation's own requires_confirmation still resets to false (the
-// reviewer just confirmed THIS interpretation), but earn_rule has no
-// separate ambiguity gate of its own the way application_rule does below.
-// quantity_treatment (Step 1.5) passes through the same way — 'exact' when
-// omitted is the deterministic engine's own default (lib/credit-ledger.ts),
-// not asserted here, so a legacy record with neither this field nor an
-// opinion on it behaves exactly as it did before this field existed.
-function buildCreditEarnRule(approved: Record<string, unknown>, existing: CreditEarnRule | null | undefined): CreditEarnRule | null {
-  const source = approved.earn_rule as Record<string, unknown> | undefined
-  if (!source && !existing) return null
-  return {
-    trigger_metric_key: (source?.trigger_metric_key as string | null | undefined) ?? existing?.trigger_metric_key ?? null,
-    trigger_quantity: typeof source?.trigger_quantity === 'number' ? source.trigger_quantity : existing?.trigger_quantity ?? null,
-    trigger_comparator: (source?.trigger_comparator as CreditEarnRule['trigger_comparator']) ?? existing?.trigger_comparator ?? 'gt',
-    trigger_window: (source?.trigger_window as CreditEarnRule['trigger_window']) ?? existing?.trigger_window ?? 'billing_period',
-    consecutive_windows_required: typeof source?.consecutive_windows_required === 'number' ? source.consecutive_windows_required : existing?.consecutive_windows_required ?? 1,
-    window_anchor: (source?.window_anchor as CreditEarnRule['window_anchor']) ?? existing?.window_anchor ?? 'contract_start',
-    finalization_deadline_days: typeof source?.finalization_deadline_days === 'number' ? source.finalization_deadline_days : existing?.finalization_deadline_days ?? null,
-    quantity_treatment: (source?.quantity_treatment as CreditEarnRule['quantity_treatment']) ?? existing?.quantity_treatment,
-    requires_confirmation: false,
-    confirmation_reason: null,
-  }
-}
-
-// cash_redeemable (Step 1.5): a three-way value (true / false / 'unclear'),
-// never defaulted to false on silence — the exact gap the regression corpus
-// surfaced (explicit "not paid in cash" and genuine contract silence
-// previously collapsed to the identical false with no way to tell them
-// apart). 'unclear' is the correct, honest result of "nothing usable was
-// submitted and nothing was already on file" — never silently coerced to
-// false. Provenance follows the same never-invent-server-side discipline as
-// buildCreditApplicationRule's eligibility_provenance: exactly what THIS
-// submission claims, falling back to whatever was already persisted so an
-// unrelated later confirm can't downgrade an earlier resolved grading.
-function resolveCashRedeemable(
-  approved: Record<string, unknown>,
-  existing: ServiceCreditInterpretation | null | undefined,
-  cashRedeemableProvenance: FieldProvenance | undefined,
-): { cash_redeemable: ServiceCreditInterpretation['cash_redeemable']; cash_redeemable_provenance: FieldProvenance | null } {
-  const cash_redeemable: ServiceCreditInterpretation['cash_redeemable'] =
-    typeof approved.cash_redeemable === 'boolean' ? approved.cash_redeemable
-      : approved.cash_redeemable === 'unclear' ? 'unclear'
-      : existing?.cash_redeemable ?? 'unclear'
-  // Step 5C — cash_redeemable has no organization-resolution path at all
-  // (not in PRODUCTION_ORGANIZATION_RULEBOOK_ALLOWLIST), so a client
-  // claiming 'organization_rulebook' here would be entirely unfounded —
-  // same sanitizeAssertedProvenance guard buildCreditApplicationRule uses.
-  const cash_redeemable_provenance = sanitizeAssertedProvenance(cashRedeemableProvenance) ?? existing?.cash_redeemable_provenance ?? null
-  return { cash_redeemable, cash_redeemable_provenance }
-}
-
-function buildServiceCreditInterpretation(
-  approved: Record<string, unknown>,
-  existing: ServiceCreditInterpretation | null | undefined,
-  applicationRuleProvenance?: { eligibility?: FieldProvenance; survival?: FieldProvenance },
-  cashRedeemableProvenance?: FieldProvenance,
-  // Step 5C — pre-computed by the POST handler (which owns the org-scoped
-  // DB lookup) and threaded straight through to buildCreditApplicationRule,
-  // the actual enforcement point. See that function's own comment.
-  organizationResolution?: ProductionOrganizationResolution,
-): ServiceCreditInterpretation {
-  const { cash_redeemable, cash_redeemable_provenance } = resolveCashRedeemable(approved, existing, cashRedeemableProvenance)
-  return {
-    trigger_type: (approved.trigger_type as ServiceCreditInterpretation['trigger_type']) ?? existing?.trigger_type ?? 'other',
-    trigger_description: (approved.trigger_description as string | null) ?? existing?.trigger_description ?? null,
-    credit_basis: (approved.credit_basis as ServiceCreditInterpretation['credit_basis']) ?? existing?.credit_basis ?? 'flat_amount',
-    basis_component: (approved.basis_component as string | null) ?? existing?.basis_component ?? null,
-    credit_value: typeof approved.credit_value === 'number' ? approved.credit_value : existing?.credit_value ?? null,
-    currency: existing?.currency ?? null,
-    cap_amount: (approved.cap_amount as number | null) ?? existing?.cap_amount ?? null,
-    cap_pct: (approved.cap_pct as number | null) ?? existing?.cap_pct ?? null,
-    settlement_period: (approved.settlement_period as ServiceCreditInterpretation['settlement_period']) ?? existing?.settlement_period ?? null,
-    cash_redeemable,
-    cash_redeemable_provenance,
-    interaction_note: existing?.interaction_note ?? null,
-    source_clause: (approved.source_clause as string | undefined) ?? existing?.source_clause ?? null,
-    requires_confirmation: false,
-    confirmation_reason: null,
-    earn_rule: buildCreditEarnRule(approved, existing?.earn_rule),
-    application_rule: buildCreditApplicationRule(approved, existing?.application_rule, applicationRuleProvenance, organizationResolution),
   }
 }
 
@@ -240,7 +165,7 @@ export async function POST(
   if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   const body = await req.json() as Body
-  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey, applicationRuleProvenance: rawApplicationRuleProvenance, cashRedeemableProvenance, survivalOrganizationPolicySeen, revertSurvivalToOrganizationPolicy } = body
+  const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey, applicationRuleProvenance: rawApplicationRuleProvenance, cashRedeemableProvenance, earnRuleProvenance, survivalOrganizationPolicySeen, revertSurvivalToOrganizationPolicy } = body
   // Defense in depth beyond the Body type itself (which a crafted raw JSON
   // payload can bypass) — survival: null is never a legitimate CLIENT
   // input; coerce it to undefined ("not asserted, preserve existing") so
@@ -770,7 +695,7 @@ export async function POST(
             organizationRevertResolution,
           ),
         }
-      : buildServiceCreditInterpretation(approvedInterpretation, currentCredit?.interpretation, applicationRuleProvenance, cashRedeemableProvenance, organizationResolution)
+      : buildServiceCreditInterpretation(approvedInterpretation, currentCredit?.interpretation, applicationRuleProvenance, cashRedeemableProvenance, organizationResolution, earnRuleProvenance)
     const targetIndex = credits.findIndex(c => c.credit_rule_id === creditId)
     const fallbackIndex = targetIndex === -1 && Number.isInteger(Number(creditId)) ? Number(creditId) : -1
     let newCredits: Credit[]

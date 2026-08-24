@@ -15,6 +15,7 @@ import {
   getOrCreateAttempt, markAttemptExecuting, markAttemptStatus,
   getOrCreateOperation, markOperationStarted, markOperationSucceeded, markOperationFailedSafe, markOperationOutcomeUncertain,
 } from './billing-execution-store'
+import { deriveTerminalSettlementTarget } from './terminal-settlement'
 
 // Re-exported so existing importers of monthCursor from this file (e.g.
 // execute/route.ts) don't need to change their import path — the function
@@ -479,6 +480,12 @@ async function configureStripe(
     // parked fee, which stays exclusively human-driven via
     // POST /parked-invoices, unaffected by that new path.
     fee_id?: string | null
+    // Only set for invoice_type='terminal_settlement' — see
+    // lib/terminal-settlement.ts. period_start/period_end on that row are
+    // the TRIGGER date (day after the contract's real final period ends);
+    // these two carry the actual settlement-target identity.
+    settlement_period_start?: string | null
+    settlement_period_end?: string | null
   }
 
   // Idempotent repush: carry forward already-sent invoices unchanged, and
@@ -656,7 +663,8 @@ async function configureStripe(
     // ── Scheduled/parked rows for everything NOT due now — no external
     // call, so these are safe to batch-insert with no operation tracking. ──
     const scheduledRows: PlannedRow[] = []
-    for (const period of computeBillingSchedule(terms)) {
+    const fullSchedule = computeBillingSchedule(terms)
+    for (const period of fullSchedule) {
       const periodStartStr = formatDate(period.periodStart)
       if (alreadySentKeys.has(`period:${period.yearNum}:${periodStartStr}`)) continue
       if (period.periodStart <= now && period.baseAmount > 0) continue // already handled above
@@ -665,6 +673,24 @@ async function configureStripe(
         base_amount: period.baseAmount, currency: terms.currency ?? 'EUR', fee_label: null,
         invoice_type: 'period', status: 'scheduled', stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
       })
+    }
+    // Terminal settlement — the contract's real final service period has no
+    // next advance-period row to trigger its own arrears usage/minimum/
+    // chargeback settlement under the existing backward-scan model. Adds
+    // exactly one extra row (never a manufactured extra subscription
+    // period — base_amount stays 0) whose trigger date is the day after
+    // the schedule's own last period ends. See lib/terminal-settlement.ts.
+    const lastPeriod = fullSchedule[fullSchedule.length - 1]
+    if (lastPeriod) {
+      const terminalTarget = deriveTerminalSettlementTarget(lastPeriod.periodStart, lastPeriod.periodEnd, terms)
+      if (terminalTarget) {
+        scheduledRows.push({
+          year_num: null, period_start: terminalTarget.triggerDate, period_end: terminalTarget.triggerDate,
+          base_amount: 0, currency: terms.currency ?? 'EUR', fee_label: null,
+          invoice_type: 'terminal_settlement', status: 'scheduled', stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
+          settlement_period_start: terminalTarget.settlementPeriodStart, settlement_period_end: terminalTarget.settlementPeriodEnd,
+        })
+      }
     }
     const oneTimeFees = terms.one_time_fees ?? []
     const isHeld = (fee: typeof oneTimeFees[number]) => isOneTimeFeeHeldForExecution(fee, operationalEventEvidence, now)
@@ -893,6 +919,10 @@ async function configureRememhill(
     // See the identical field on configureStripe's own PlannedRow above —
     // populated only for a parked, event-gated one-time fee.
     fee_id?: string | null
+    // See the identical field on configureStripe's own PlannedRow above —
+    // only set for invoice_type='terminal_settlement'.
+    settlement_period_start?: string | null
+    settlement_period_end?: string | null
   }
 
   try {
@@ -1023,7 +1053,8 @@ async function configureRememhill(
 
     // ── Scheduled/parked rows for everything NOT due now — no external call. ──
     const scheduledRows: PlannedRow[] = []
-    for (const period of computeBillingSchedule(terms)) {
+    const fullSchedule = computeBillingSchedule(terms)
+    for (const period of fullSchedule) {
       const periodStartStr = fmtDate(period.periodStart)
       if (alreadySentKeys.has(`period:${period.yearNum}:${periodStartStr}`)) continue
       if (period.periodStart <= now && period.baseAmount > 0) continue
@@ -1032,6 +1063,19 @@ async function configureRememhill(
         base_amount: period.baseAmount, currency: terms.currency ?? 'SEK', fee_label: null,
         invoice_type: 'period', status: 'scheduled', stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
       })
+    }
+    // See the identical block in configureStripe above.
+    const lastPeriod = fullSchedule[fullSchedule.length - 1]
+    if (lastPeriod) {
+      const terminalTarget = deriveTerminalSettlementTarget(lastPeriod.periodStart, lastPeriod.periodEnd, terms)
+      if (terminalTarget) {
+        scheduledRows.push({
+          year_num: null, period_start: terminalTarget.triggerDate, period_end: terminalTarget.triggerDate,
+          base_amount: 0, currency: terms.currency ?? 'SEK', fee_label: null,
+          invoice_type: 'terminal_settlement', status: 'scheduled', stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
+          settlement_period_start: terminalTarget.settlementPeriodStart, settlement_period_end: terminalTarget.settlementPeriodEnd,
+        })
+      }
     }
     const oneTimeFees = terms.one_time_fees ?? []
     const isHeld = (fee: typeof oneTimeFees[number]) => isOneTimeFeeHeldForExecution(fee, operationalEventEvidence, now)

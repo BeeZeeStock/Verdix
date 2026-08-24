@@ -125,7 +125,7 @@ describe('pre-review auto-resolution end to end (Step 5C fix)', () => {
     expect(applicationRule?.requires_confirmation).toBe(false)
   })
 
-  it('readiness/workload (computeCommercialRuleWorkload) sees the resolved credit as fully confirmed once the reviewer\'s single Confirm & apply persists it -- proving no SEPARATE survival decision was ever required', () => {
+  it('readiness: the reviewer\'s single Confirm & apply resolves SURVIVAL with no SEPARATE click -- proven directly on application_rule, independent of the (separately audited, genuinely unestablished) monetary-basis-recognition question this fixture does not attempt to resolve', () => {
     const availability = checkAvailability([orgRule()])
     const applicationRule = buildCreditApplicationRule(
       { application_rule: { eligible_component_keys: 'all', one_time: false, carry_forward: 'unclear' } },
@@ -138,6 +138,15 @@ describe('pre-review auto-resolution end to end (Step 5C fix)', () => {
     // — this is the one, unavoidable point of reviewer interaction (Verdix
     // cannot determine a credit's trigger/basis without a human/AI reading
     // the clause), but it required no ADDITIONAL click for survival.
+    //
+    // 2026-08-30 correction (final semantic fix) — this fixture's
+    // source_clause ("Applied against future amounts payable") speaks only
+    // to APPLICATION timing, never to whether the EARNING basis is amounts
+    // actually paid or the stated component amount — monetary_basis_
+    // recognition is therefore deliberately left unset (unclear), not
+    // manufactured as 'paid'/'reviewer_policy' just to make this credit
+    // read as fully confirmed. That would be exactly the conflation the
+    // audit fixed (lib/paid-basis-finalization.ts).
     const interpretation: ServiceCreditInterpretation = {
       trigger_type: 'usage_threshold', trigger_description: 'processes more than 300,000 transactions in a calendar month',
       credit_basis: 'pct_of_period_fee', basis_component: 'platform_fee', credit_value: 10, currency: 'SEK',
@@ -153,11 +162,18 @@ describe('pre-review auto-resolution end to end (Step 5C fix)', () => {
       application_rule: applicationRule,
     }
     const credit = { credit_rule_id: 'credit-1', interpretation }
-    expect(isServiceCreditUnresolved(credit)).toBe(false)
-
+    // The actual subject of this fixture, proven directly: survival
+    // resolved via organization policy with zero additional reviewer click.
+    expect(applicationRule.requires_confirmation).toBe(false)
+    expect(applicationRule.survival_provenance).toBe('organization_rulebook')
+    // The credit as a WHOLE still shows as unresolved — but for a
+    // genuinely different, unrelated reason (monetary-basis-recognition is
+    // unestablished by this fixture's source text). This is the correct,
+    // fail-closed state, not a regression in survival's own resolution,
+    // which the assertions above already prove independently.
+    expect(isServiceCreditUnresolved(credit)).toBe(true)
     const workload = computeCommercialRuleWorkload({ service_credits: [credit] }, { total: 0, confirmed: 0 })
-    expect(workload.blockers).not.toContain('service_credit:credit-1')
-    expect(workload.status).toBe('all_commercial_rules_confirmed')
+    expect(workload.blockers).toContain('service_credit:credit-1')
   })
 
   it('no applicable organization policy exists -> availability check does not resolve, picker correctly stays forced, confirm-rule correctly leaves the field unresolved if the reviewer still submits "unclear"', () => {

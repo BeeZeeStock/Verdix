@@ -346,7 +346,9 @@ export async function GET(req: NextRequest) {
       const hasBreakdown = rowQuantity != null && rowUnitPrice != null && rowQuantity > 0 && rowUnitPrice > 0
 
       const description = (row.fee_label
-        ?? `Base subscription — Year ${row.year_num ?? 1} (${fmtPeriod(periodStart)} – ${fmtPeriod(periodEnd)})`)
+        ?? (row.invoice_type === 'terminal_settlement'
+          ? `Final period settlement (${fmtPeriod(new Date(row.settlement_period_start + 'T00:00:00'))} – ${fmtPeriod(new Date(row.settlement_period_end + 'T00:00:00'))})`
+          : `Base subscription — Year ${row.year_num ?? 1} (${fmtPeriod(periodStart)} – ${fmtPeriod(periodEnd)})`))
         + (hasBreakdown ? ` — ${rowQuantity.toLocaleString()} × ${cur.toUpperCase()} ${rowUnitPrice.toLocaleString()}` : '')
 
       let sentInvoiceId:  string | null = null
@@ -422,12 +424,59 @@ export async function GET(req: NextRequest) {
               return `${y}-${m}-${day}`
             })()
 
+          // Terminal settlement, point 4 — future-renewal double-settlement
+          // guard. If a terminal_settlement row for this job already claims
+          // this exact candidate period (by its deterministic
+          // settlement_period_end identity, never by description matching)
+          // as its settlement target, that period's arrears are/will be
+          // settled via the dedicated terminal row — this ordinary period
+          // row's own backward-scan must not ALSO settle it. Only relevant
+          // once renewal support is ever added and generates a new period
+          // row whose own backward-scan would otherwise rediscover the same
+          // final period; harmless/never matches for any ordinary period.
+          if (scanEnd) {
+            const { data: alreadyTerminallySettled } = await supabaseServer
+              .from('planned_invoices')
+              .select('id')
+              .eq('job_id', row.job_id)
+              .eq('invoice_type', 'terminal_settlement')
+              .eq('settlement_period_end', scanEnd)
+              .maybeSingle()
+            if (alreadyTerminallySettled) {
+              scanStart = null
+              scanEnd = null
+            }
+          }
+
           if (scanStart) {
             overageLineItems = await computeOverageForPeriod({
               orgId: job.org_id, jobId: row.job_id, terms, customerId,
               periodStartUnix: Math.floor(new Date(scanStart + 'T00:00:00').getTime() / 1000),
               periodEndUnix:   Math.floor(new Date(scanEnd   + 'T23:59:59').getTime() / 1000),
               currency: cur,
+              billingAsOfUnix: Math.floor(billingAsOf.getTime() / 1000),
+            })
+          }
+        } else if (row.invoice_type === 'terminal_settlement') {
+          // Deterministic settlement target — never a backward "previous
+          // period" lookup. row.settlement_period_start/end were persisted
+          // at schedule-generation time (lib/terminal-settlement.ts) as the
+          // contract's real final service period; the scheduler reads them
+          // directly rather than inferring anything.
+          scanStart = row.settlement_period_start
+          scanEnd   = row.settlement_period_end
+          if (scanStart && scanEnd) {
+            overageLineItems = await computeOverageForPeriod({
+              orgId: job.org_id, jobId: row.job_id, terms, customerId,
+              periodStartUnix: Math.floor(new Date(scanStart + 'T00:00:00').getTime() / 1000),
+              periodEndUnix:   Math.floor(new Date(scanEnd   + 'T23:59:59').getTime() / 1000),
+              currency: cur,
+              // Same closed-window invariant as every other real-billing
+              // caller — computeOverageForPeriod's own isBillingWindowClosed
+              // check (point 5) still fails closed if this row's own due-
+              // date eligibility (period_start <= today, the trigger date)
+              // were ever somehow reached before the settlement window
+              // itself has genuinely closed.
               billingAsOfUnix: Math.floor(billingAsOf.getTime() / 1000),
             })
           }
@@ -439,8 +488,12 @@ export async function GET(req: NextRequest) {
         // must be able to throw) BEFORE a Remembill invoice is ever created,
         // not after. Zero reservation happens in the blocked case, so a
         // credit whose invoice can't be sent correctly is never consumed.
+        // Also runs for terminal_settlement rows — point 8/9: this is what
+        // makes the full Contract Year window visible to the Annual
+        // Rebate's earning pass, and what applies any already-eligible
+        // balance against September's real components.
         let creditLineItems: import('@/lib/credit-ledger-service').CreditLineItem[] = []
-        if (row.invoice_type === 'period') {
+        if (row.invoice_type === 'period' || row.invoice_type === 'terminal_settlement') {
           // componentClass is the canonical commercial classification a
           // credit's eligible_component_keys actually matches against (see
           // lib/commercial-component-scope.ts) — resolved here from the
@@ -557,8 +610,18 @@ export async function GET(req: NextRequest) {
       // real VAT/rounding divergence rather than assuming they match.
       let actualGrossAmount: number | null = null
 
-      // ── Remembill path ────────────────────────────────────────────────────
-      if (billingPlatform === 'remembill') {
+      // Terminal settlement, points 6/7 — a row with genuinely nothing to
+      // charge (no base amount, no overage/minimum, no credits) must never
+      // create a pointless empty/zero provider invoice — real for a
+      // terminal_settlement row whose final period had zero usage and no
+      // minimum commitment; a no-op check for every other row type, which
+      // always has base_amount > 0 by construction.
+      const hasSomethingToBill = Number(row.base_amount) > 0 || overageLineItems.length > 0 || creditLineItems.length > 0
+
+      if (!hasSomethingToBill) {
+        // sentInvoiceId/sentInvoiceUrl/actualGrossAmount stay null — the row
+        // is marked 'sent' below with zero amounts and no provider call at all.
+      } else if (billingPlatform === 'remembill') {
         const { data: rbIntegration } = await supabaseServer
           .from('org_integrations')
           .select('config')

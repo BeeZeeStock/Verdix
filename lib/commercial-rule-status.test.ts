@@ -296,6 +296,72 @@ describe('isServiceCreditUnresolved — shared by the canonical count and page.t
   it('unresolved when application_rule is entirely absent from the interpretation object', () => {
     expect(isServiceCreditUnresolved({ credit_rule_id: 'c1', interpretation: { requires_confirmation: false } })).toBe(true)
   })
+
+  // Monetary basis recognition + paid-basis finalization (2026-08-24 ->
+  // 2026-08-30 audit) — Contract B's real Annual Rebate shape: 3.5% of
+  // transaction-processing fees actually paid, calculated within 30 days
+  // after Contract Year end. threshold/rate/basis/eligibility/carry-
+  // forward are ALL already confirmed (mirroring the live production
+  // state, including the backfilled monetary_basis_recognition: 'paid' /
+  // 'contract_derived' fact); only the paid-basis-finalization sub-
+  // question is genuinely still open. This is what the whole point of the
+  // two-layer gating is: it must not falsely reopen review for the many
+  // credits neither question applies to, and it must never infer 'paid'
+  // from credit_basis type alone (2026-08-30 correction).
+  const rebateCredit = (overrides: {
+    monetaryBasisRecognition?: 'paid' | 'component_amount' | 'unclear' | null
+    monetaryBasisRecognitionProvenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | 'organization_rulebook' | null
+    paidBasisFinalizationPolicy?: 'deadline_cutoff' | 'full_attribution' | null
+    paidBasisFinalizationProvenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | 'organization_rulebook' | null
+  } = {}) => ({
+    credit_rule_id: 'c1',
+    interpretation: {
+      requires_confirmation: false,
+      application_rule: { requires_confirmation: false },
+      credit_basis: 'pct_of_affected_component',
+      basis_component: 'transaction-processing fees actually paid for that Contract Year',
+      monetary_basis_recognition: overrides.monetaryBasisRecognition ?? 'paid',
+      monetary_basis_recognition_provenance: 'monetaryBasisRecognitionProvenance' in overrides ? overrides.monetaryBasisRecognitionProvenance : 'contract_derived',
+      earn_rule: {
+        paid_basis_finalization_policy: overrides.paidBasisFinalizationPolicy ?? null,
+        paid_basis_finalization_provenance: overrides.paidBasisFinalizationProvenance ?? null,
+      },
+    },
+  })
+
+  it('A: Contract B\'s monetary basis (paid/contract_derived) does NOT by itself block review — it is Clear from source, no reviewer decision required for it', () => {
+    // Isolate: if paid_basis_finalization were also resolved, this credit
+    // would be fully resolved — proving monetary_basis_recognition itself
+    // contributes zero blocking when it's already contract_derived.
+    expect(isServiceCreditUnresolved(rebateCredit({ paidBasisFinalizationPolicy: 'deadline_cutoff', paidBasisFinalizationProvenance: 'reviewer_policy' }))).toBe(false)
+  })
+  it('B/G: an otherwise-fully-confirmed Contract-B-shaped rebate is STILL unresolved while paid_basis_finalization_provenance is null (monetary basis is separately resolved)', () => {
+    expect(isServiceCreditUnresolved(rebateCredit())).toBe(true)
+  })
+  it('D: monetary_basis_recognition unresolved (unclear/no provenance) blocks review, even before paid-basis-finalization is ever reached', () => {
+    expect(isServiceCreditUnresolved(rebateCredit({ monetaryBasisRecognition: null, monetaryBasisRecognitionProvenance: null }))).toBe(true)
+    expect(isServiceCreditUnresolved(rebateCredit({ monetaryBasisRecognition: 'unclear', monetaryBasisRecognitionProvenance: null }))).toBe(true)
+  })
+  it('C: monetary_basis_recognition resolved to component_amount does NOT trigger the paid-basis-finalization question (it is a resolved decision on its own, capability-blocked separately)', () => {
+    expect(isServiceCreditUnresolved(rebateCredit({ monetaryBasisRecognition: 'component_amount', monetaryBasisRecognitionProvenance: 'contract_derived' }))).toBe(false)
+  })
+  it('a flat/usage-based credit (no paid basis_component) is never blocked by either question', () => {
+    const c = rebateCredit({ monetaryBasisRecognition: null, monetaryBasisRecognitionProvenance: null })
+    c.interpretation.credit_basis = 'flat_amount'
+    expect(isServiceCreditUnresolved(c)).toBe(false)
+  })
+  it('H: resolved once paid_basis_finalization_policy is deadline_cutoff with reviewer_policy provenance, on top of the already-resolved monetary basis — the source-derived monetary basis is untouched by this later confirm', () => {
+    const c = rebateCredit({ paidBasisFinalizationPolicy: 'deadline_cutoff', paidBasisFinalizationProvenance: 'reviewer_policy' })
+    expect(isServiceCreditUnresolved(c)).toBe(false)
+    expect(c.interpretation.monetary_basis_recognition).toBe('paid')
+    expect(c.interpretation.monetary_basis_recognition_provenance).toBe('contract_derived')
+  })
+  it('E: full_attribution with reviewer_policy provenance is a RESOLVED decision (never re-blocks ordinary review) even though it cannot execute yet', () => {
+    expect(isServiceCreditUnresolved(rebateCredit({ paidBasisFinalizationPolicy: 'full_attribution', paidBasisFinalizationProvenance: 'reviewer_policy' }))).toBe(false)
+  })
+  it('a bare concrete policy value with no provenance is still treated as unresolved — AI confidence is not provenance, same discipline as every other field', () => {
+    expect(isServiceCreditUnresolved(rebateCredit({ paidBasisFinalizationPolicy: 'deadline_cutoff', paidBasisFinalizationProvenance: null }))).toBe(true)
+  })
 })
 
 describe('requiredServiceCreditFields — execution-context-aware requiredness (Step 1.5, corrected)', () => {
@@ -598,6 +664,107 @@ describe('computeCommercialRuleWorkload — OneTimeFee readiness integration (St
     const terms: CommercialRuleTerms = { one_time_fees: [{ amount: 100000, requires_confirmation: true }] }
     const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
     expect(workload.totalToConfirm).toBe(0)
+  })
+})
+
+// Paid-basis finalization (2026-08-24 audit) — Contract B's Annual Rebate,
+// exercised at the full computeCommercialRuleWorkload level (not just the
+// isServiceCreditUnresolved predicate above), matching the report's G/H/E
+// test scenarios exactly.
+describe('computeCommercialRuleWorkload — Contract B monetary basis + paid-basis finalization', () => {
+  const rebateTerms = (interpOverrides: Record<string, unknown> = {}, earnRuleOverrides: Record<string, unknown> = {}): CommercialRuleTerms => ({
+    service_credits: [{
+      credit_rule_id: 'rebate-1',
+      interpretation: {
+        requires_confirmation: false,
+        application_rule: { requires_confirmation: false },
+        credit_basis: 'pct_of_affected_component',
+        basis_component: 'transaction-processing fees actually paid for that Contract Year',
+        // Contract B's real, backfilled state — monetary basis already
+        // Clear from source, never requiring a reviewer decision on its
+        // own (Part 2 of the final semantic fix).
+        monetary_basis_recognition: 'paid', monetary_basis_recognition_provenance: 'contract_derived',
+        earn_rule: { paid_basis_finalization_policy: null, paid_basis_finalization_provenance: null, ...earnRuleOverrides },
+        ...interpOverrides,
+      },
+    }],
+  })
+
+  it('G: an otherwise fully-confirmed Contract B produces EXACTLY one outstanding item — the new paid-basis decision — never a rerun of already-confirmed trigger/rate/eligibility', () => {
+    const workload = computeCommercialRuleWorkload(rebateTerms(), { total: 0, confirmed: 0 })
+    expect(workload.totalToConfirm).toBe(1)
+    expect(workload.blockers).toEqual(['service_credit:rebate-1'])
+    expect(workload.status).not.toBe('all_commercial_rules_confirmed')
+  })
+
+  it('H: once deadline_cutoff is confirmed with reviewer_policy provenance, the item clears and the contract can reach all_commercial_rules_confirmed', () => {
+    const workload = computeCommercialRuleWorkload(
+      rebateTerms({}, { paid_basis_finalization_policy: 'deadline_cutoff', paid_basis_finalization_provenance: 'reviewer_policy' }),
+      { total: 0, confirmed: 0 },
+    )
+    expect(workload.totalToConfirm).toBe(0)
+    expect(workload.blockers).toEqual([])
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+
+  it('E: choosing full_attribution clears the ordinary review item but forces execution_blocked via a capability blocker — the contract must never claim all_commercial_rules_confirmed', () => {
+    const workload = computeCommercialRuleWorkload(
+      rebateTerms({}, { paid_basis_finalization_policy: 'full_attribution', paid_basis_finalization_provenance: 'reviewer_policy' }),
+      { total: 0, confirmed: 0 },
+    )
+    expect(workload.totalToConfirm).toBe(0) // the reviewer DID decide — not an ordinary open item
+    expect(workload.status).toBe('execution_blocked')
+    expect(workload.approvalBlocked).toBe(true)
+    expect(workload.executionBlockers).toContainEqual<UnsupportedCommercialSemanticsBlocker>({
+      type: 'unsupported_commercial_semantics',
+      rule_family: 'service_credit',
+      missing_capability: 'paid_basis_full_attribution_finalization',
+      field: 'service_credit:rebate-1',
+      reason: 'The reviewer chose to include Contract-Year-attributable payments received after the calculation deadline, but Verdix has no invoice-terminality model to determine when that basis is complete.',
+    })
+  })
+
+  it('C: monetary_basis_recognition = component_amount clears the ordinary review item but forces execution_blocked via a separate capability blocker', () => {
+    const workload = computeCommercialRuleWorkload(
+      rebateTerms({ monetary_basis_recognition: 'component_amount', monetary_basis_recognition_provenance: 'contract_derived' }),
+      { total: 0, confirmed: 0 },
+    )
+    expect(workload.totalToConfirm).toBe(0)
+    expect(workload.status).toBe('execution_blocked')
+    expect(workload.executionBlockers).toContainEqual<UnsupportedCommercialSemanticsBlocker>({
+      type: 'unsupported_commercial_semantics',
+      rule_family: 'service_credit',
+      missing_capability: 'component_amount_monetary_basis',
+      field: 'service_credit:rebate-1',
+      reason: 'The basis is the stated component amount rather than a payment-contingent one, but Verdix has no verified execution path for computing it yet.',
+    })
+  })
+
+  it('D: monetary_basis_recognition unresolved (unclear/no provenance) is an ordinary outstanding review item, never a capability blocker, never a guess', () => {
+    const workload = computeCommercialRuleWorkload(
+      rebateTerms({ monetary_basis_recognition: null, monetary_basis_recognition_provenance: null }),
+      { total: 0, confirmed: 0 },
+    )
+    expect(workload.totalToConfirm).toBe(1)
+    expect(workload.blockers).toEqual(['service_credit:rebate-1'])
+    expect(workload.executionBlockers).toHaveLength(0)
+    expect(workload.status).not.toBe('execution_blocked')
+    expect(workload.status).not.toBe('all_commercial_rules_confirmed')
+  })
+
+  it('a credit the paid-basis question does not apply to never produces either capability blocker', () => {
+    const terms: CommercialRuleTerms = {
+      service_credits: [{
+        credit_rule_id: 'growth-1',
+        interpretation: {
+          requires_confirmation: false, application_rule: { requires_confirmation: false },
+          credit_basis: 'flat_amount', basis_component: null,
+        },
+      }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+    expect(workload.executionBlockers).toHaveLength(0)
   })
 })
 

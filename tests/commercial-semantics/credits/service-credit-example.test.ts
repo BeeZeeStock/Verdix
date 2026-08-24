@@ -116,10 +116,23 @@ describe('generic Service Credit example — normalized rule (Layer A)', () => {
 })
 
 describe('generic Service Credit example — readiness/provenance (Layer B)', () => {
-  it('the whole credit is unresolved (blocking) because ONLY survival was never addressed — trigger/basis/cap/timing/cash-redeemability are all fully resolved', () => {
+  // 2026-08-30 correction (final semantic fix) — this fixture's "10% of
+  // that month's platform fee" scenario NEVER states that the basis is
+  // amounts actually paid — it also never states it's the invoiced
+  // component amount either; it is genuinely, deliberately underspecified
+  // (see file header: a synthetic example, not a real clause). Per the
+  // audit's explicit instruction, this must NOT be marked 'paid' just
+  // because credit_basis happens to be percentage-typed (that was exactly
+  // the bug this field exists to fix — see lib/paid-basis-finalization.ts),
+  // and must NOT be marked 'reviewer_policy'-resolved just to make a test
+  // pass. monetary_basis_recognition is therefore left unset (null),
+  // reading as 'unclear' — the honest, fail-closed state. This means the
+  // credit remains genuinely unresolved even once survival is confirmed;
+  // it is no longer a single-question fixture.
+  it('the whole credit is unresolved (blocking) — survival AND monetary-basis-recognition were both never addressed; trigger/rate/cap/timing/cash-redeemability are all fully resolved', () => {
     expect(isServiceCreditUnresolved({ credit_rule_id: CREDIT.credit_rule_id, interpretation: INTERPRETATION as unknown as { requires_confirmation: boolean; application_rule?: { requires_confirmation: boolean } | null; cash_redeemable_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null } })).toBe(true)
   })
-  it('confirming survival via buildCreditApplicationRule with reviewer_policy provenance resolves the credit entirely — cash (already contract_derived) and eligibility (already contract_derived) are untouched', () => {
+  it('confirming survival alone does NOT resolve the credit — monetary-basis-recognition remains a genuinely open, unmanufactured question (cash and eligibility, already contract_derived, are untouched)', () => {
     const resolved = buildCreditApplicationRule(
       { application_rule: { eligible_component_keys: 'all', one_time: false, carry_forward: true } },
       INTERPRETATION.application_rule,
@@ -128,8 +141,11 @@ describe('generic Service Credit example — readiness/provenance (Layer B)', ()
     expect(resolved?.requires_confirmation).toBe(false)
     expect(resolved?.eligibility_provenance).toBe('contract_derived') // carried over, not re-derived
     expect(resolved?.survival_provenance).toBe('reviewer_policy')
-    const fullyResolvedInterpretation = { ...INTERPRETATION, application_rule: resolved }
-    expect(isServiceCreditUnresolved({ credit_rule_id: CREDIT.credit_rule_id, interpretation: fullyResolvedInterpretation as unknown as { requires_confirmation: boolean; application_rule?: { requires_confirmation: boolean } | null; cash_redeemable_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null } })).toBe(false)
+    // Deliberately does NOT set monetary_basis_recognition — leaving it
+    // unset is the correct, honest representation for this underspecified
+    // synthetic scenario, not a gap to paper over.
+    const survivalOnlyResolved = { ...INTERPRETATION, application_rule: resolved }
+    expect(isServiceCreditUnresolved({ credit_rule_id: CREDIT.credit_rule_id, interpretation: survivalOnlyResolved as unknown as { requires_confirmation: boolean; application_rule?: { requires_confirmation: boolean } | null; cash_redeemable_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null } })).toBe(true)
   })
 })
 

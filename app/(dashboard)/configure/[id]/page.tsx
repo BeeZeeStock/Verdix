@@ -15,7 +15,8 @@ import { computeBaseTcv, computeCommittedFixedFees, computeConditionalFixedFees,
 import { ruleCadenceLabel, cadenceNoun, contractMonthLabel } from '@/lib/cadence-labels'
 import { optionsForRuleType, optionsForEdit, deriveSelectedOption, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
-import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
+import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, isProvenanceResolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
+import { isMonetaryBasisRecognitionApplicable, isPaidBasisFinalizationApplicable } from '@/lib/paid-basis-finalization'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
 import { describeBillabilityCondition, isChangeOrderConditional, resolveOneTimeFeeTypeLabel } from '@/lib/billability-condition'
 import { formatEligibleComponentsFact, formatCarryForwardFact, formatCashRedeemableFact } from '@/lib/review-card-format'
@@ -68,6 +69,11 @@ type ServiceCredit = {
     trigger_description: string | null
     credit_basis: 'pct_of_period_fee' | 'pct_of_affected_component' | 'fixed_amount_per_unit' | 'flat_amount' | 'usage_units'
     basis_component: string | null
+    // 2026-08-30 correction — WHAT monetary state the percentage applies
+    // to, independent of WHICH component (basis_component/computed_from_
+    // component_keys). See lib/paid-basis-finalization.ts.
+    monetary_basis_recognition?: 'paid' | 'component_amount' | 'unclear' | null
+    monetary_basis_recognition_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | 'organization_rulebook' | null
     credit_value: number | null
     cap_amount: number | null
     cap_pct: number | null
@@ -105,6 +111,16 @@ type ServiceCredit = {
       availability?: 'next_period'
       requires_confirmation: boolean
       confirmation_reason?: string | null
+    } | null
+    // 2026-08-24 audit — a THIRD independent gate, same discipline as
+    // application_rule above: a credit can be fully confirmed on
+    // trigger/rate/cap/application-scope while WHEN its paid monetary
+    // basis is complete enough to freeze remains a real, separate,
+    // unresolved decision. See lib/paid-basis-finalization.ts.
+    earn_rule?: {
+      finalization_deadline_days: number | null
+      paid_basis_finalization_policy?: 'deadline_cutoff' | 'full_attribution' | null
+      paid_basis_finalization_provenance?: 'contract_derived' | 'verdix_recommends' | 'reviewer_policy' | null
     } | null
   } | null
 }
@@ -2660,6 +2676,98 @@ function paramIcon(label: string): string {
 type PromoteSlotState = 'no_existing' | 'already_covered' | 'existing_draft' | 'draft_conflict' | 'proposed_policy_change' | 'ineligible'
 type SlotRuleSummary = { id: string; name: string; status: string; value: unknown; version: number }
 
+// Paid-basis finalization (2026-08-24 audit) — a dedicated, standalone
+// decision card, deliberately NOT routed through RuleInterpretationCard's
+// generic propose/interpret AI-proposal machinery. That machinery exists
+// to grade an AI's own reading of the contract into clear_from_source /
+// verdix_recommends / decision_required; this question has none of that —
+// the source is confirmed silent on it (lib/paid-basis-finalization.ts),
+// so there is nothing for an AI to propose. Reusing RuleInterpretationCard
+// here would also re-run its 'proposing' phase and force the reviewer back
+// through the credit's ENTIRE trigger/rate/cap/application-scope proposal
+// just to answer this one new question — exactly what the audit's "do not
+// make the reviewer reconfirm those" instruction rules out. Structurally
+// the same "no propose-rule pipeline, reviewer's own decision" shape
+// confirm-rule/route.ts already uses for partial_period/one_time_fee, just
+// addressed via the existing service_credit ruleType (the field lives on
+// that credit's own earn_rule) rather than a new RuleType.
+function PaidBasisFinalizationCard({
+  jobId, creditId, sourceClause, existingInterpretation, onApplied,
+}: {
+  jobId: string
+  creditId: string
+  sourceClause: string
+  // The credit's full, already-confirmed interpretation — sent back
+  // unchanged except for earn_rule.paid_basis_finalization_policy, so
+  // every other already-resolved field (trigger, rate, cap, application
+  // scope) survives this confirmation exactly as it was.
+  existingInterpretation: Record<string, unknown>
+  onApplied: () => void
+}) {
+  const [saving, setSaving] = useState<'deadline_cutoff' | 'full_attribution' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const choose = async (policy: 'deadline_cutoff' | 'full_attribution') => {
+    setSaving(policy)
+    setError(null)
+    try {
+      const earnRule = (existingInterpretation.earn_rule as Record<string, unknown> | null) ?? {}
+      const res = await fetch(`/api/jobs/${jobId}/confirm-rule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ruleType: 'service_credit',
+          creditId,
+          sourceClause,
+          reviewerInput: policy === 'deadline_cutoff'
+            ? 'Reviewer selected: cut off the paid basis at the contractual calculation deadline.'
+            : 'Reviewer selected: include Contract-Year-attributable payments received after the calculation deadline.',
+          aiProposedInterpretation: null,
+          approvedInterpretation: { ...existingInterpretation, earn_rule: { ...earnRule, paid_basis_finalization_policy: policy } },
+          earnRuleProvenance: { paidBasisFinalization: 'reviewer_policy' },
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.ok) throw new Error(data.error ?? 'Could not save this decision.')
+      onApplied()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save this decision.')
+      setSaving(null)
+    }
+  }
+
+  const OPTIONS: { id: 'deadline_cutoff' | 'full_attribution'; label: string; description: string }[] = [
+    { id: 'deadline_cutoff', label: 'Cut off at calculation deadline', description: 'Only qualifying fees paid by the 30-day calculation boundary count.' },
+    { id: 'full_attribution', label: 'Include late Contract-Year payments', description: 'Fees attributable to the Contract Year should still count if paid later.' },
+  ]
+
+  return (
+    <div className="rounded-xl p-3" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
+      <p className="text-[10px] font-bold uppercase tracking-widest mb-1.5" style={{ color: '#7F1D1D' }}>
+        <i className="ti ti-help-circle mr-1" />Decision required · Paid-basis finalization
+      </p>
+      <p className="text-xs leading-relaxed mb-3" style={{ color: '#7F1D1D' }}>
+        The agreement says the rebate is based on transaction-processing fees actually paid for the Contract Year and must be calculated within 30 days after year end. It does not specify how to treat Contract-Year fees paid after that calculation boundary.
+      </p>
+      <div className="space-y-2">
+        {OPTIONS.map(opt => (
+          <button
+            key={opt.id}
+            onClick={() => choose(opt.id)}
+            disabled={saving !== null}
+            className="w-full text-left rounded-lg p-2.5 transition-colors disabled:opacity-60"
+            style={{ background: 'white', border: '1px solid rgba(127,29,29,0.2)' }}
+          >
+            <p className="text-xs font-semibold text-ink">{opt.label}{saving === opt.id ? ' · Saving…' : ''}</p>
+            <p className="text-[11px] text-stone mt-0.5">{opt.description}</p>
+          </button>
+        ))}
+      </div>
+      {error && <p className="text-[11px] mt-2" style={{ color: '#B91C1C' }}>{error}</p>}
+    </div>
+  )
+}
+
 // Step 5D — Organization Rulebook controls attached to a service credit's
 // "Unused-balance policy" line on the confirmed card. Renders one of two
 // mutually-exclusive states, matching survival_provenance exactly (never
@@ -4255,6 +4363,27 @@ function ReviewPanel({
                   {unresolvedCredits.map((c, i) => {
                     const creditId = c.credit_rule_id ?? String((serviceCredits ?? []).indexOf(c))
                     const label = c.description || `Service credit ${i + 1}`
+                    // 2026-08-24 -> 2026-08-30 audit — a credit whose main
+                    // interpretation AND application_rule are ALREADY
+                    // resolved, but whose NEW monetary-basis-recognition
+                    // and/or paid-basis-finalization sub-questions are the
+                    // sole reason isServiceCreditUnresolved still flags it,
+                    // must never be sent back through RuleInterpretationCard's
+                    // full propose/interpret flow — that would force the
+                    // reviewer to reconfirm trigger/rate/cap/eligibility/
+                    // carry-forward all over again for questions they never
+                    // asked about. Shows the small, dedicated card instead;
+                    // only a genuinely fresh/still-open credit falls through
+                    // to the full AI-assisted flow.
+                    const interp = c.interpretation
+                    const mainInterpretationResolved = !!interp && !interp.requires_confirmation
+                      && !!interp.application_rule && !interp.application_rule.requires_confirmation
+                    const monetaryBasisOpen = mainInterpretationResolved
+                      && isMonetaryBasisRecognitionApplicable(interp!)
+                      && !isProvenanceResolved(interp!.monetary_basis_recognition_provenance)
+                    const onlyPaidBasisOpen = mainInterpretationResolved
+                      && isPaidBasisFinalizationApplicable(interp!)
+                      && !isProvenanceResolved(interp!.earn_rule?.paid_basis_finalization_provenance)
                     return (
                       <div key={creditId} className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FAC775', background: 'white' }}>
                         <div className="px-4 pt-4 pb-3">
@@ -4264,19 +4393,46 @@ function ReviewPanel({
                             <SourceClauseLink section={fieldSources?.service_credits} onViewSource={onViewSource} />
                           </div>
                           <p className="text-sm font-medium text-ink leading-snug mb-3">{label}</p>
-                          {/* Same as the Discounts section above — no separate
-                              static "why review" blurb; the AI proposal card's
-                              own clause-specific reasoning is the single
-                              source of truth. */}
-                          <RuleInterpretationCard
-                            jobId={jobId}
-                            kind="service_credit"
-                            creditId={creditId}
-                            creditType={c.credit_type}
-                            sourceClause={c.source_clause ?? label}
-                            currency={cur ?? 'EUR'}
-                            onApplied={onRefresh}
-                          />
+                          {monetaryBasisOpen && interp ? (
+                            // No reviewer picker exists for this field
+                            // deliberately (2026-08-30 audit, Part 3) — the
+                            // contract already answers it; a genuinely
+                            // unclear/synthetic case has no in-app decision
+                            // to offer either. This is a data-classification
+                            // gap, not a reviewer decision, so it's shown as
+                            // an honest, non-interactive notice rather than
+                            // a fabricated A/B choice.
+                            <div className="rounded-xl p-3" style={{ background: '#F5F5F4', border: '1px solid rgba(120,113,108,0.25)' }}>
+                              <p className="text-[10px] font-bold uppercase tracking-widest mb-1.5" style={{ color: '#57534E' }}>
+                                <i className="ti ti-database-off mr-1" />Monetary basis not yet classified
+                              </p>
+                              <p className="text-xs leading-relaxed" style={{ color: '#57534E' }}>
+                                Whether this credit&apos;s percentage basis is amounts actually paid or the stated component amount hasn&apos;t been classified from the source yet. This isn&apos;t a decision made here — it comes directly from the contract text and needs a data correction, not a reviewer choice.
+                              </p>
+                            </div>
+                          ) : onlyPaidBasisOpen && interp ? (
+                            <PaidBasisFinalizationCard
+                              jobId={jobId}
+                              creditId={creditId}
+                              sourceClause={c.source_clause ?? label}
+                              existingInterpretation={interp as unknown as Record<string, unknown>}
+                              onApplied={onRefresh}
+                            />
+                          ) : (
+                            /* Same as the Discounts section above — no separate
+                               static "why review" blurb; the AI proposal card's
+                               own clause-specific reasoning is the single
+                               source of truth. */
+                            <RuleInterpretationCard
+                              jobId={jobId}
+                              kind="service_credit"
+                              creditId={creditId}
+                              creditType={c.credit_type}
+                              sourceClause={c.source_clause ?? label}
+                              currency={cur ?? 'EUR'}
+                              onApplied={onRefresh}
+                            />
+                          )}
                         </div>
                       </div>
                     )
@@ -7835,6 +7991,41 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     : interp.cash_redeemable === false ? 'No'
                       : 'Not specified',
                 })
+                // Monetary basis recognition (2026-08-30 correction) — WHAT
+                // monetary state (paid / stated component amount) the
+                // percentage applies to, shown as its own fact/provenance
+                // row, separate from Paid-basis finalization below (WHEN a
+                // paid basis freezes). Only shown when the question
+                // actually applies (isMonetaryBasisRecognitionApplicable);
+                // this card is only reached once isServiceCreditUnresolved
+                // is false, so 'component_amount' here means a resolved
+                // DECISION that's still capability-blocked from execution —
+                // never silently hidden just because it's not yet executable.
+                if (isMonetaryBasisRecognitionApplicable(interp)) {
+                  params.push({
+                    label: 'Monetary basis',
+                    value: interp.monetary_basis_recognition === 'paid' ? 'Actually paid'
+                      : interp.monetary_basis_recognition === 'component_amount' ? 'Stated component amount (execution blocked — no verified path yet)'
+                      : 'Decision required',
+                  })
+                }
+                // Paid-basis finalization (2026-08-24 audit) — only shown
+                // for a credit the question actually applies to (see
+                // isPaidBasisFinalizationApplicable, which itself requires
+                // monetary_basis_recognition === 'paid'); this card is only
+                // reached once isServiceCreditUnresolved is false, so a
+                // 'full_attribution' row here means a resolved DECISION
+                // that's still capability-blocked from execution (see
+                // computeCommercialRuleWorkload's serviceCreditCapabilityBlockers) —
+                // never silently hidden just because it's not yet executable.
+                if (isPaidBasisFinalizationApplicable(interp)) {
+                  params.push({
+                    label: 'Paid-basis finalization',
+                    value: interp.earn_rule?.paid_basis_finalization_policy === 'deadline_cutoff' ? 'Cut off at calculation deadline'
+                      : interp.earn_rule?.paid_basis_finalization_policy === 'full_attribution' ? 'Include late Contract-Year payments (execution blocked — no invoice-terminality model yet)'
+                      : 'Decision required',
+                  })
+                }
                 cards.push({
                   key: `credit:${c.credit_rule_id}`,
                   icon: CREDIT_TYPE_ICON[c.credit_type ?? ''] ?? 'ti-receipt-refund',
@@ -7850,6 +8041,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     { label: 'Eligibility', value: appRule.eligibility_provenance },
                     { label: 'Unused-balance policy', value: appRule.survival_provenance },
                     { label: 'Cash redeemability', value: interp.cash_redeemable_provenance },
+                    ...(isMonetaryBasisRecognitionApplicable(interp) ? [{ label: 'Monetary basis', value: interp.monetary_basis_recognition_provenance }] : []),
+                    ...(isPaidBasisFinalizationApplicable(interp) ? [{ label: 'Paid-basis finalization', value: interp.earn_rule?.paid_basis_finalization_provenance }] : []),
                   ],
                   auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
                   onViewSource: src.service_credits ? () => openPDF(src.service_credits) : undefined,

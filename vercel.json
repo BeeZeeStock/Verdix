@@ -12,6 +12,10 @@
     {
       "path": "/api/admin/remembill-payment-sync",
       "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/admin/credit-finalization-sweep",
+      "schedule": "0 9 * * *"
     }
   ]
 }

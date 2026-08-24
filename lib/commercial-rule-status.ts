@@ -12,6 +12,7 @@ import { findCadenceWindowContaining, isPartialWindow } from './tariff'
 import type { FieldProvenance, BillabilityCondition, BillabilityEventType } from './types'
 import { getBillabilityExecutionCapability } from './billability-condition'
 import { resolveOperationalEventEvidence, type OperationalEventEvidence } from './operational-event-evidence'
+import { isMonetaryBasisRecognitionApplicable, isPaidBasisFinalizationApplicable } from './paid-basis-finalization'
 
 // The single place "is this field actually resolved" is decided, for any
 // field carrying a FieldProvenance. AI confidence is not provenance: a
@@ -129,6 +130,21 @@ type CreditLike = {
     // isServiceCreditUnresolved below and lib/types.ts's
     // ServiceCreditInterpretation.cash_redeemable_provenance.
     cash_redeemable_provenance?: FieldProvenance | null
+    // Monetary basis recognition + paid-basis finalization (2026-08-24 ->
+    // 2026-08-30 audit) — TWO layered, independent sub-questions, same
+    // discipline as application_rule's own eligibility/survival split.
+    // credit_basis/basis_component are needed alongside monetary_basis_
+    // recognition/earn_rule to decide whether either question even applies
+    // (see lib/paid-basis-finalization.ts) — a plain usage-threshold
+    // credit never asks either.
+    credit_basis?: string | null
+    basis_component?: string | null
+    monetary_basis_recognition?: 'paid' | 'component_amount' | 'unclear' | null
+    monetary_basis_recognition_provenance?: FieldProvenance | null
+    earn_rule?: {
+      paid_basis_finalization_policy?: 'deadline_cutoff' | 'full_attribution' | null
+      paid_basis_finalization_provenance?: FieldProvenance | null
+    } | null
   }) | null
 }
 
@@ -208,6 +224,38 @@ export function isServiceCreditUnresolved(credit: CreditLike, context: ServiceCr
   // context — this is what makes the Step 1.5 fix backwards-compatible
   // without lying about their provenance.
   if (requiredServiceCreditFields(context).includes('cash_redeemable') && !isProvenanceResolved(credit.interpretation.cash_redeemable_provenance)) {
+    return true
+  }
+  // Monetary basis recognition (2026-08-30 correction) — WHAT monetary
+  // state (paid / component_amount / unclear) a percentage-of-component
+  // credit's basis represents is a genuinely separate, PRIOR question to
+  // paid-basis-finalization below: never inferred from credit_basis being
+  // percentage-typed, and never inferred from the earning engine's own
+  // status='paid' query — only monetary_basis_recognition_provenance
+  // settles it (contract_derived/reviewer_policy/organization_rulebook).
+  // Unresolved (unclear/null/no provenance) is a live blocker whenever the
+  // question applies at all — Verdix must not guess payment behavior.
+  // 'component_amount' IS itself a resolved answer (never re-blocks
+  // ordinary review here) even though it has no verified execution path
+  // yet — that distinction, like full_attribution below, is handled
+  // separately as a capability blocker in computeCommercialRuleWorkload.
+  if (isMonetaryBasisRecognitionApplicable(credit.interpretation) && !isProvenanceResolved(credit.interpretation.monetary_basis_recognition_provenance)) {
+    return true
+  }
+  // Paid-basis finalization (2026-08-24 audit) — a genuinely separate
+  // question from whether trigger/rate/cap are settled: WHEN an "actually
+  // paid" monetary basis is complete enough to freeze into an immutable
+  // earn (see lib/paid-basis-finalization.ts). Only a live blocker when the
+  // question actually applies to this credit — isPaidBasisFinalizationApplicable
+  // is itself gated on monetary_basis_recognition === 'paid' (resolved), so
+  // a component_amount/unclear credit never reaches this check at all.
+  // 'full_attribution' IS a resolved reviewer decision (isProvenanceResolved
+  // sees 'reviewer_policy') even though Verdix can't yet EXECUTE it — that
+  // distinction is handled separately, as a capability blocker, in
+  // computeCommercialRuleWorkload below; it must never re-block ordinary
+  // review here, or a reviewer's explicit decision would look like it
+  // silently reverted.
+  if (isPaidBasisFinalizationApplicable(credit.interpretation) && !isProvenanceResolved(credit.interpretation.earn_rule?.paid_basis_finalization_provenance)) {
     return true
   }
   return false
@@ -591,8 +639,47 @@ export function computeCommercialRuleWorkload(
     countItem(`discount:${d.discount_rule_id}`, isDiscountUnresolved(d))
   }
 
+  // Paid-basis finalization capability gap (2026-08-24 audit) — structurally
+  // distinct from the ordinary review-decision case: 'full_attribution' IS
+  // a resolved reviewer decision (isServiceCreditUnresolved never re-blocks
+  // it, above), but Verdix has no invoice-terminality model (no cancelled/
+  // written-off/void terminal status on planned_invoices) to know when an
+  // "all Contract-Year-attributable payments, even late ones" basis is
+  // actually complete. This is never silently executed as "wait forever" —
+  // it surfaces as the same UnsupportedCommercialSemanticsBlocker shape
+  // one_time_fee's unresolved_kind: 'unsupported_semantics' already uses,
+  // so it forces status to 'execution_blocked' (never
+  // 'all_commercial_rules_confirmed') until the payment-finality model
+  // exists, exactly like item 7 of Step 11 above.
+  // Monetary basis recognition capability gap (2026-08-30 correction) —
+  // same structural shape: 'component_amount' IS a resolved decision
+  // (isServiceCreditUnresolved never re-blocks it, above) — the contract
+  // is clear that the basis is the stated/invoiced component amount, not a
+  // payment-contingent one — but Verdix has no verified execution path for
+  // computing that amount today (see lib/credit-ledger-service.ts's
+  // runEarningPass, which only implements the paid-status-gated path).
+  // Never silently computed as if it were 'paid'.
+  const serviceCreditCapabilityBlockers: UnsupportedCommercialSemanticsBlocker[] = []
   for (const c of terms?.service_credits ?? []) {
     if (!c.credit_rule_id) continue
+    if (c.interpretation?.monetary_basis_recognition === 'component_amount') {
+      serviceCreditCapabilityBlockers.push({
+        type: 'unsupported_commercial_semantics',
+        rule_family: 'service_credit',
+        missing_capability: 'component_amount_monetary_basis',
+        field: `service_credit:${c.credit_rule_id}`,
+        reason: 'The basis is the stated component amount rather than a payment-contingent one, but Verdix has no verified execution path for computing it yet.',
+      })
+    }
+    if (c.interpretation?.earn_rule?.paid_basis_finalization_policy === 'full_attribution') {
+      serviceCreditCapabilityBlockers.push({
+        type: 'unsupported_commercial_semantics',
+        rule_family: 'service_credit',
+        missing_capability: 'paid_basis_full_attribution_finalization',
+        field: `service_credit:${c.credit_rule_id}`,
+        reason: 'The reviewer chose to include Contract-Year-attributable payments received after the calculation deadline, but Verdix has no invoice-terminality model to determine when that basis is complete.',
+      })
+    }
     // Unresolved if EITHER the top-level interpretation is still open OR —
     // once that's confirmed — its independent application_rule still is.
     // A credit can be fully confirmed on trigger/rate/cap while its
@@ -664,7 +751,7 @@ export function computeCommercialRuleWorkload(
     }
     countItem(`one_time_fee:${fee.fee_label}`, isOneTimeFeeUnresolved(fee))
   }
-  const allExecutionBlockers = [...executionBlockers, ...oneTimeFeeCapabilityBlockers]
+  const allExecutionBlockers = [...executionBlockers, ...oneTimeFeeCapabilityBlockers, ...serviceCreditCapabilityBlockers]
 
   const meterMappingOk = meterMapping.total === 0 || meterMapping.confirmed >= meterMapping.total
   const commercialRulesConfirmed = totalToConfirm === 0 && interactionsToConfirm === 0

@@ -246,6 +246,41 @@ export interface CreditEarnRule {
    *  records with no opinion on this default safely rather than being
    *  silently floored. */
   quantity_treatment?: 'exact' | 'complete_units'
+  /** Answers a genuinely different question than finalization_deadline_days:
+   *  that field is the source's CALCULATION-TIMING obligation ("calculate
+   *  within N days") — this field is WHICH paid amounts belong in the
+   *  basis once that deadline arrives. Only meaningful for a credit whose
+   *  basis is actually computed from an "actually paid" monetary component
+   *  (see lib/paid-basis-finalization.ts's isPaidBasisFinalizationApplicable
+   *  — the exact condition under which lib/credit-ledger-service.ts calls
+   *  sumPaidComponentAmountForWindow); null/absent for every other credit.
+   *  'deadline_cutoff' — only fees paid by the calculation deadline count;
+   *  freezes once, there. 'full_attribution' — all Contract-Year-
+   *  attributable fees count even if paid later; Verdix cannot yet
+   *  determine when that basis is complete (no invoice-terminality model —
+   *  see lib/commercial-rule-status.ts's capability-blocker handling), so
+   *  this is a PRESERVED reviewer decision that never silently executes as
+   *  "wait forever." null — genuinely unresolved; the source contract is
+   *  silent on this and no reviewer has decided. Never inferred from the
+   *  mere presence of a calculation-deadline clause — see
+   *  paid_basis_finalization_provenance. Optional (not required, unlike
+   *  finalization_deadline_days itself) so every pre-existing fixture/
+   *  record that predates this field keeps compiling and behaves exactly
+   *  as "genuinely unresolved" — the correct, safe default — without
+   *  needing to be touched. */
+  paid_basis_finalization_policy?: 'deadline_cutoff' | 'full_attribution' | null
+  /** Provenance for paid_basis_finalization_policy specifically — same
+   *  FieldProvenance discipline as CreditApplicationRule's eligibility_
+   *  provenance/survival_provenance (lib/credit-application-rule.ts). The
+   *  source clause stating a calculation deadline ("within 30 days") is
+   *  NEVER, by itself, enough to mark this 'contract_derived' — it answers
+   *  a different question (see this field's own sibling comment above).
+   *  Only a human's explicit choice through the review UI (Paid-basis
+   *  finalization decision) may mint 'reviewer_policy' here; a future
+   *  contract that actually states a late-payment treatment could
+   *  legitimately be 'contract_derived', but no current extraction path
+   *  ever produces that. */
+  paid_basis_finalization_provenance?: FieldProvenance | null
   requires_confirmation: boolean
   confirmation_reason?: string | null
 }
@@ -355,6 +390,30 @@ export interface ServiceCreditInterpretation {
    *  text, mirrors DiscountInterpretation.applies_to's convention rather
    *  than inventing a second closed enum for the same concept. */
   basis_component: string | null
+  /** 2026-08-30 correction — answers a genuinely different question than
+   *  basis_component/computed_from_component_keys: WHICH component the %
+   *  is computed from is a separate concern from WHAT MONETARY STATE that
+   *  component must be in. 'paid' = the source states or implies the basis
+   *  is amounts actually paid (Contract B's "actually paid" — see
+   *  lib/paid-basis-finalization.ts, which this field is the sole trusted
+   *  input to). 'component_amount' = the basis is the stated/invoiced
+   *  amount for the component, independent of payment status — currently
+   *  has no verified execution path (see computeCommercialRuleWorkload's
+   *  capability-blocker handling), so it is never silently treated as
+   *  'paid'. 'unclear'/null = genuinely not established. Never inferred
+   *  from credit_basis being percentage-typed, or from the earning
+   *  engine's own implementation detail (lib/credit-ledger-service.ts's
+   *  sumPaidComponentAmountForWindow querying status='paid') — an
+   *  execution detail is not evidence of contract semantics. */
+  monetary_basis_recognition?: 'paid' | 'component_amount' | 'unclear' | null
+  /** Provenance for monetary_basis_recognition specifically — same
+   *  FieldProvenance discipline as every other *_provenance field in this
+   *  codebase. Confirm-rule never accepts a caller-asserted value for this
+   *  field (no reviewer decision resolves it today) — it can only ever be
+   *  'contract_derived' (set by extraction reading the source, or by a
+   *  one-time backfill for a pre-existing record whose source is already
+   *  known — e.g. Contract B) or preserved from what was already there. */
+  monetary_basis_recognition_provenance?: FieldProvenance | null
   credit_value: number | null
   currency: string | null
   /** Maximum credit per settlement_period, null = uncapped. */

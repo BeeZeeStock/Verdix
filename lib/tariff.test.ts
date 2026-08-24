@@ -484,7 +484,16 @@ describe('isBillingWindowClosed — canonical closure boundary (usage/minimum pe
 describe('isBillingWindowClosed / enumerateCadenceWindows — DST fall-back transition (America/New_York, Sun Nov 1 2026)', () => {
   const originalTZ = process.env.TZ
   beforeEach(() => { process.env.TZ = 'America/New_York' })
-  afterEach(() => { process.env.TZ = originalTZ })
+  // process.env.TZ = undefined does NOT unset the variable — it coerces to
+  // the literal string "undefined" (not a valid IANA zone), silently
+  // falling back to UTC rather than restoring the real original timezone.
+  // Found via this exact failure mode corrupting a later test file's local-
+  // time date construction (lib/terminal-settlement.test.ts) when the two
+  // ran in the same worker process. Must delete when there was no original.
+  afterEach(() => {
+    if (originalTZ === undefined) delete process.env.TZ
+    else process.env.TZ = originalTZ
+  })
 
   it('a window ending Nov 1 is NOT closed at Nov 1 23:00 local, even though that instant is a full 86_400_000ms past window.end -- the naive ms-literal form this helper used to use would have wrongly said "closed" here', () => {
     const window = { start: new Date(2026, 9, 2), end: new Date(2026, 10, 1) } // Oct 2 - Nov 1
