@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveTerminalSettlementTarget, isTerminalSettlementNeeded } from './terminal-settlement'
+import { classifyBackfillTerminalSettlementStatus, deriveTerminalSettlementTarget, isTerminalSettlementNeeded } from './terminal-settlement'
 import { enumerateCadenceWindows } from './tariff'
 import type { ContractTerms } from './types'
 
@@ -76,6 +76,35 @@ describe('deriveTerminalSettlementTarget — Contract B (A/B/C)', () => {
       if (originalTZ === undefined) delete process.env.TZ
       else process.env.TZ = originalTZ
     }
+  })
+})
+
+describe('classifyBackfillTerminalSettlementStatus — historical backfill hold boundary', () => {
+  const MIGRATION_DATE = '2026-08-24'
+
+  // Test A: historical terminal backfill → held, not scheduled.
+  it('A: trigger date before the migration date → backfill_review (Meridian: trigger 2026-02-01)', () => {
+    expect(classifyBackfillTerminalSettlementStatus('2026-02-01', MIGRATION_DATE)).toBe('backfill_review')
+  })
+  it('A: trigger date before the migration date → backfill_review (Stravito: trigger 2026-04-01)', () => {
+    expect(classifyBackfillTerminalSettlementStatus('2026-04-01', MIGRATION_DATE)).toBe('backfill_review')
+  })
+
+  // Test B: future terminal backfill → scheduled.
+  it('B: trigger date after the migration date → scheduled', () => {
+    expect(classifyBackfillTerminalSettlementStatus('2027-10-01', MIGRATION_DATE)).toBe('scheduled')
+  })
+
+  it('equality binds to the held side — a trigger date landing exactly on the migration date is backfill_review, not scheduled', () => {
+    expect(classifyBackfillTerminalSettlementStatus('2026-08-24', MIGRATION_DATE)).toBe('backfill_review')
+  })
+
+  it('one day after the migration date is already scheduled — the boundary is strict, no off-by-one grace window', () => {
+    expect(classifyBackfillTerminalSettlementStatus('2026-08-25', MIGRATION_DATE)).toBe('scheduled')
+  })
+
+  it('one day before the migration date is backfill_review', () => {
+    expect(classifyBackfillTerminalSettlementStatus('2026-08-23', MIGRATION_DATE)).toBe('backfill_review')
   })
 })
 

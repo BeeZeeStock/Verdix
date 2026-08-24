@@ -1,0 +1,77 @@
+-- Corrective migration for the terminal-settlement backfill safety gap
+-- found via a live shared-cron side-effect audit (2026-08-24): the applied
+-- backfill (20260830000003_terminal_settlement_backfill.sql) unconditionally
+-- wrote status='scheduled' for every backfilled row, regardless of whether
+-- its trigger date was already in the past — making a historical row
+-- immediately eligible for the global invoice-scheduler cron the moment it
+-- next ran (this is exactly what happened to the Meridian Health and
+-- Stravito AB rows during that audit).
+--
+-- 20260830000003 is NOT modified — it has already been applied to
+-- production (proven by the 20 rows it created, all sharing the identical
+-- created_at 2026-08-24T15:26:02.064526+00, a single statement-level
+-- timestamp) and an applied migration's file must continue to reflect
+-- exactly what ran, not be rewritten after the fact. All new
+-- historical-hold behavior lives here instead, as a separate, later,
+-- purely corrective migration.
+--
+-- Moves any BACKFILL-CREATED row whose trigger date was already on/before
+-- the backfill's own run date from 'scheduled' into 'backfill_review' — a
+-- hold state the scheduler's existing `.eq('status', 'scheduled')` queries
+-- (app/api/admin/invoice-scheduler/route.ts) structurally never select, so
+-- such a row becomes visible/reconcilable but can never be auto-executed
+-- until a human deliberately moves it back to 'scheduled'. This is
+-- MIGRATION-level classification only — the scheduler ALSO independently
+-- re-derives and enforces the same "historical/late-created" shape at
+-- read time from created_at/period_start themselves (see
+-- lib/terminal-settlement-guard.ts's isHeldHistoricalTerminalSettlement,
+-- wired into app/api/admin/invoice-scheduler/route.ts), so a row that
+-- somehow stayed 'scheduled' — because this migration was never applied,
+-- or was applied out of order in some other environment, or a future
+-- backfill reintroduces the same unconditional-'scheduled' bug — is still
+-- held at the scheduler level regardless of whether this migration ran at
+-- all. Migration state is deliberately not the sole safety control.
+--
+-- Guarded narrowly, on purpose — this must NEVER touch a row the scheduler
+-- (or a human) has already acted on:
+--   - status = 'scheduled' only. A row already 'sent', 'failed',
+--     'processing', or 'parked' is left completely untouched — in
+--     particular this migration does NOT reset Meridian (status='failed')
+--     or Stravito (status='sent') back to 'scheduled', which would risk
+--     driving a second provider execution attempt. Both rows already
+--     carry real audit history (a VAT-gate failure; a zero-monetary 'sent'
+--     row with no provider invoice) that this migration deliberately
+--     preserves rather than erasing.
+--   - invoice_type = 'terminal_settlement' only.
+--   - created_at pinned to the exact, single statement-level timestamp the
+--     backfill's 20 inserts share (all identical to the microsecond, since
+--     they were written by one `now()`-per-statement DO block, and
+--     confirmed identical by direct audit of the resulting rows) — this is
+--     what scopes the update to rows THE BACKFILL created, and never to an
+--     unrelated freshly-approved contract's own terminal_settlement row
+--     that happens to share a historical trigger date (that row is created
+--     by lib/billing-writer.ts's live approve path, unchanged by this
+--     amendment, and is out of scope by design — and is separately caught,
+--     if it ever matters, by the scheduler-level guard above regardless).
+--   - period_start (the trigger date) <= a fixed migration_date constant
+--     (2026-08-24, the backfill's own real run date) — matches
+--     lib/terminal-settlement.ts's classifyBackfillTerminalSettlementStatus
+--     boundary exactly: equality binds to the held side.
+--
+-- Currently a no-op in production as of this writing: the read-only audit
+-- found only 2 of the 20 backfilled rows have a historical trigger date
+-- (Meridian, Stravito), and both are already 'failed'/'sent' — not
+-- 'scheduled' — so this UPDATE's WHERE clause matches zero rows today.
+-- Written and shipped anyway so the fix is real, reviewable, and
+-- reproducible: if this backfill is ever (re-)run against another
+-- environment (e.g. staging) or a currently-'scheduled' historical row is
+-- found later, this statement is what brings it into the held state
+-- without guessing or hand-editing — and, independently, the scheduler
+-- guard above means such a row is never auto-executed even in the window
+-- before this migration is applied there.
+update planned_invoices
+set status = 'backfill_review'
+where invoice_type = 'terminal_settlement'
+  and status = 'scheduled'
+  and created_at = '2026-08-24 15:26:02.064526+00'::timestamptz
+  and period_start <= date '2026-08-24';

@@ -72,3 +72,37 @@ export function deriveTerminalSettlementTarget(
     triggerDate: fmtDate(trigger),
   }
 }
+
+// Backfill-only classification — NOT used by the live approve path above
+// (lib/billing-writer.ts), which keeps writing status: 'scheduled'
+// unconditionally: a freshly-approved contract was approved under the
+// current engine, so its lifecycle is fully known and there is nothing
+// historical about it. This function exists solely for a one-time DATA
+// BACKFILL (supabase/migrations/20260830000003_terminal_settlement_backfill.sql)
+// against contracts approved BEFORE terminal settlement existed at all —
+// where the derived trigger date can legitimately already be in the past
+// relative to the day the backfill itself runs. Inserting such a row as
+// 'scheduled' would make it immediately eligible for the next global
+// invoice-scheduler cron sweep, with no human ever having reviewed it.
+//
+// Boundary, deliberately grounded in a passed-in, deterministic migration
+// date — never `new Date()`/`current_date` — so the same migration re-run
+// on a different day, or a future test, evaluates the identical rows the
+// identical way:
+//   triggerDate >  migrationDate → 'scheduled'        (genuinely future)
+//   triggerDate <= migrationDate → 'backfill_review'   (due today or already
+//                                                        overdue at backfill
+//                                                        time — held)
+// Equality binds to the held side on purpose: a trigger date landing
+// exactly on the migration's own run date is a row that would become
+// scheduler-eligible the very next time the cron runs — no different in
+// practice from a row that's already overdue — so it gets the same
+// deliberate-activation hold rather than being treated as "not yet due".
+export type BackfillTerminalSettlementStatus = 'scheduled' | 'backfill_review'
+
+export function classifyBackfillTerminalSettlementStatus(
+  triggerDate: string,   // YYYY-MM-DD
+  migrationDate: string, // YYYY-MM-DD — deterministic constant, not a clock read
+): BackfillTerminalSettlementStatus {
+  return triggerDate > migrationDate ? 'scheduled' : 'backfill_review'
+}

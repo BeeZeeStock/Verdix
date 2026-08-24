@@ -22,6 +22,8 @@ import { computeOverageForPeriod, type OverageLineItem } from '@/lib/usage-pull'
 import { applyCreditLedgerForPeriod } from '@/lib/credit-ledger-service'
 import type { ContractTerms } from '@/lib/types'
 import { isAuthorizedCronRequest } from '@/lib/cron-auth'
+import { resolveSchedulerScope } from '@/lib/invoice-scheduler-scope'
+import { isHeldHistoricalTerminalSettlement } from '@/lib/terminal-settlement-guard'
 import { resolveVatTreatment, computeVat, reconcileGrossAmount } from '@/lib/vat'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import { getCustomerVatConfig, getInvoiceVatOverride } from '@/lib/vat-service'
@@ -50,6 +52,21 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
+  // Manual/test scope — see lib/invoice-scheduler-scope.ts. Requires its
+  // own secret, checked IN ADDITION TO the cron auth above; a normal
+  // Vercel Cron invocation never sends planned_invoice_id/job_id/the scope
+  // header at all, so this is a strict no-op for the whole-platform sweep.
+  const scopeResolution = resolveSchedulerScope({
+    plannedInvoiceIdParam: req.nextUrl.searchParams.get('planned_invoice_id'),
+    jobIdParam: req.nextUrl.searchParams.get('job_id'),
+    scopeSecretHeader: req.headers.get('x-scheduler-scope-secret'),
+    configuredScopeSecret: process.env.SCHEDULER_SCOPE_SECRET,
+  })
+  if (!scopeResolution.ok) {
+    return NextResponse.json({ error: scopeResolution.error }, { status: scopeResolution.status })
+  }
+  const scope = scopeResolution.scope
+
   // Captured exactly once for the whole run, not re-read per row — the
   // same explicit "as of" reference threads through period selection,
   // usage calculation, and the closure invariant below, so a single
@@ -65,16 +82,50 @@ export async function GET(req: NextRequest) {
   const results: { id: string; ok: boolean; stripe_invoice_id?: string; error?: string }[] = []
 
   // ── Find all due planned invoices ─────────────────────────────────────────
-  const { data: scheduledRows, error: fetchError } = await supabaseServer
+  // status='scheduled' structurally excludes 'backfill_review' by
+  // construction — a migration-created historical terminal-settlement row
+  // held in that state (see lib/terminal-settlement.ts's
+  // classifyBackfillTerminalSettlementStatus) is never selected here, and
+  // needs no separate exclusion filter.
+  let scheduledQuery = supabaseServer
     .from('planned_invoices')
     .select('*')
     .eq('status', 'scheduled')
     .lte('period_start', today)
-    .order('period_start', { ascending: true })
+  if (scope.kind === 'planned_invoice_id') scheduledQuery = scheduledQuery.eq('id', scope.plannedInvoiceId)
+  else if (scope.kind === 'job_id') scheduledQuery = scheduledQuery.eq('job_id', scope.jobId)
+  const { data: scheduledRows, error: fetchError } = await scheduledQuery.order('period_start', { ascending: true })
 
   if (fetchError) {
     console.error('[invoice-scheduler] failed to fetch due rows', fetchError)
     return NextResponse.json({ error: fetchError.message }, { status: 500 })
+  }
+
+  // ── Scheduler-side historical-terminal-settlement guard ──────────────────
+  // Defense-in-depth, independent of migration status: re-derives
+  // "historical/late-created" directly from each row's own created_at vs.
+  // period_start, at read time, rather than trusting that a backfill/
+  // corrective migration correctly set status='backfill_review'. Catches
+  // the case where that migration was never applied, was applied out of
+  // order in some other environment, or a future bug reintroduces the same
+  // unconditional-'scheduled' backfill shape. Applied here — BEFORE the
+  // scope filter has any chance to matter — so a manually scoped request
+  // (?planned_invoice_id=<a held row>) cannot bypass this either; scope
+  // only narrows WHICH rows are considered, never whether a matched row
+  // still has to pass this invariant.
+  const heldRows: DueRow[] = []
+  const scheduledRowsAfterGuard = ((scheduledRows ?? []) as DueRow[]).filter(row => {
+    if (isHeldHistoricalTerminalSettlement(row as unknown as Parameters<typeof isHeldHistoricalTerminalSettlement>[0])) {
+      heldRows.push(row)
+      return false
+    }
+    return true
+  })
+  for (const held of heldRows) {
+    results.push({
+      id: held.id, ok: false,
+      error: 'Held: historical/late-created terminal_settlement row (created_at >= period_start, no backfill_released_at) — scheduler-side defense-in-depth, independent of migration status.',
+    })
   }
 
   // ── Contract B pre-approval pass, Part A — event-gated parked one-time
@@ -86,12 +137,15 @@ export async function GET(req: NextRequest) {
   // rate manual-trigger parked fee never has fee_id set, so it can never
   // appear in this query and is completely unaffected (still exclusively
   // human-driven via POST /parked-invoices).
-  const { data: parkedEventFeeCandidates, error: parkedFetchError } = await supabaseServer
+  let parkedEventFeeQuery = supabaseServer
     .from('planned_invoices')
     .select('*')
     .eq('status', 'parked')
     .eq('invoice_type', 'one_time')
     .not('fee_id', 'is', null)
+  if (scope.kind === 'planned_invoice_id') parkedEventFeeQuery = parkedEventFeeQuery.eq('id', scope.plannedInvoiceId)
+  else if (scope.kind === 'job_id') parkedEventFeeQuery = parkedEventFeeQuery.eq('job_id', scope.jobId)
+  const { data: parkedEventFeeCandidates, error: parkedFetchError } = await parkedEventFeeQuery
 
   if (parkedFetchError) {
     console.error('[invoice-scheduler] failed to fetch parked event-fee candidates', parkedFetchError)
@@ -212,11 +266,14 @@ export async function GET(req: NextRequest) {
   const MAX_PROCESSING_ATTEMPTS = 5
   const staleCutoffIso = new Date(billingAsOf.getTime() - STALE_PROCESSING_MS).toISOString()
 
-  const { data: staleProcessingCandidates, error: staleFetchError } = await supabaseServer
+  let staleProcessingQuery = supabaseServer
     .from('planned_invoices')
     .select('*')
     .eq('status', 'processing')
     .lte('processing_started_at', staleCutoffIso)
+  if (scope.kind === 'planned_invoice_id') staleProcessingQuery = staleProcessingQuery.eq('id', scope.plannedInvoiceId)
+  else if (scope.kind === 'job_id') staleProcessingQuery = staleProcessingQuery.eq('job_id', scope.jobId)
+  const { data: staleProcessingCandidates, error: staleFetchError } = await staleProcessingQuery
 
   if (staleFetchError) {
     console.error('[invoice-scheduler] failed to fetch stale processing candidates', staleFetchError)
@@ -272,7 +329,7 @@ export async function GET(req: NextRequest) {
     recoveredRows.push({ ...candidate, __alreadyLocked: true })
   }
 
-  const dueRows: DueRow[] = [...((scheduledRows ?? []) as DueRow[]), ...eligibleParkedRows, ...recoveredRows]
+  const dueRows: DueRow[] = [...scheduledRowsAfterGuard, ...eligibleParkedRows, ...recoveredRows]
 
   // Note: `results` may already be non-empty here (an attempt-exhausted
   // row marked 'failed' directly by reclaim_stale_processing_row, never
