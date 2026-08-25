@@ -25,6 +25,29 @@ const AI_CLIENT_MAX_RETRIES = 2
 const AI_REASONING_CLIENT_TIMEOUT_MS = 280_000
 const AI_REASONING_CLIENT_MAX_RETRIES = 0
 
+// Document-extraction tier — extractDocumentText() below, used by detect-pii/
+// execute/audit/partner-recon to turn an uploaded PDF into text via a
+// non-streaming Bedrock InvokeModelCommand call. Confirmed live
+// (2026-08-24): a real production call stalled at the ordinary 60s tier's
+// full 60s x 3 attempts (180s) — no partial response, since InvokeModelCommand
+// returns zero bytes until Bedrock's ENTIRE response is ready, so "no
+// activity for 60s" on this call type is functionally "Bedrock hasn't
+// finished generating yet," not a transient network blip. Retrying at the
+// same 60s timeout only repeats the identical failure (same reasoning
+// AI_REASONING_CLIENT_MAX_RETRIES=0 already uses below) — one longer
+// attempt, not several short ones, is what actually gives a legitimately
+// slow response room to complete. 170s x 1 attempt keeps the worst case
+// (170s) safely inside every caller's route maxDuration (detect-pii=200s,
+// audit/partner-recon=290s, execute=300s) with real margin (>=30s) for the
+// PDF download, DB writes, and (for detect-pii) local PII detection that
+// still have to run in the same invocation — never "approaching" the outer
+// budget the way 3 successive attempts at any per-attempt timeout would.
+// Exported (unlike the other tiers' constants) specifically so
+// lib/ai-client.test.ts can assert the worst-case budget math against the
+// real values rather than a hand-duplicated copy that could silently drift.
+export const AI_DOCUMENT_EXTRACTION_TIMEOUT_MS = 170_000
+export const AI_DOCUMENT_EXTRACTION_MAX_RETRIES = 0
+
 // The model name passed to messages.create() is used for Anthropic direct calls.
 // For Bedrock the modelId comes from AWS_BEDROCK_MODEL_ID env var instead.
 const BEDROCK_MODEL_ID = process.env.AWS_BEDROCK_MODEL_ID ?? 'eu.anthropic.claude-sonnet-4-6'
@@ -69,17 +92,21 @@ type MessageResponse = {
 }
 
 // thinkingEffort is only ever set by getReasoningAIClient() below — every
-// other caller (getAIClient/getFastAIClient) gets today's exact unmodified
-// request shape. When set, adds Bedrock's adaptive-thinking fields to the
-// request body and strips the resulting "thinking" content block(s) before
-// returning, so every existing caller's response.content[0] is still always
-// the text/JSON output — no caller needs to know whether thinking was used.
-// Deliberately does NOT set temperature/top_p — Bedrock's thinking mode
-// doesn't accept them alongside thinking, and CreateParams never carried
-// them in the first place, so there's nothing to strip on that front either.
-function bedrockClient(modelId: string, thinkingEffort?: ReasoningEffort) {
-  const timeoutMs = thinkingEffort ? AI_REASONING_CLIENT_TIMEOUT_MS : AI_CLIENT_TIMEOUT_MS
-  const maxRetries = thinkingEffort ? AI_REASONING_CLIENT_MAX_RETRIES : AI_CLIENT_MAX_RETRIES
+// other caller (getAIClient/getFastAIClient/document-extraction) gets
+// today's exact unmodified request shape. When set, adds Bedrock's
+// adaptive-thinking fields to the request body and strips the resulting
+// "thinking" content block(s) before returning, so every existing caller's
+// response.content[0] is still always the text/JSON output — no caller
+// needs to know whether thinking was used. Deliberately does NOT set
+// temperature/top_p — Bedrock's thinking mode doesn't accept them
+// alongside thinking, and CreateParams never carried them in the first
+// place, so there's nothing to strip on that front either.
+//
+// timeoutMs/maxRetries are now an explicit, per-caller tier (not derived
+// solely from thinkingEffort) — see AI_DOCUMENT_EXTRACTION_TIMEOUT_MS's own
+// comment for why document extraction needed a third tier distinct from
+// both the ordinary and reasoning ones.
+function bedrockClient(modelId: string, timeoutMs: number, maxRetries: number, thinkingEffort?: ReasoningEffort) {
   const bedrock = new BedrockRuntimeClient({
     region:      process.env.AWS_REGION ?? 'eu-west-1',
     credentials: {
@@ -124,7 +151,7 @@ function bedrockClient(modelId: string, thinkingEffort?: ReasoningEffort) {
 // Medium-complexity work — see getReasoningAIClient() for critical
 // commercial-reasoning calls and getFastAIClient() for lightweight matching.
 export function getAIClient(): { messages: { create(p: CreateParams): Promise<MessageResponse> } } {
-  if (USE_BEDROCK) return bedrockClient(BEDROCK_MODEL_ID)
+  if (USE_BEDROCK) return bedrockClient(BEDROCK_MODEL_ID, AI_CLIENT_TIMEOUT_MS, AI_CLIENT_MAX_RETRIES)
   return newAnthropicClient() as unknown as ReturnType<typeof bedrockClient>
 }
 
@@ -136,7 +163,7 @@ export function getAIClient(): { messages: { create(p: CreateParams): Promise<Me
 // an amount, eligibility condition, contractual scope, billing period, or
 // reviewer-policy requirement — those go through getReasoningAIClient().
 export function getFastAIClient(): { messages: { create(p: CreateParams): Promise<MessageResponse> } } {
-  if (USE_BEDROCK) return bedrockClient(BEDROCK_FAST_MODEL_ID)
+  if (USE_BEDROCK) return bedrockClient(BEDROCK_FAST_MODEL_ID, AI_CLIENT_TIMEOUT_MS, AI_CLIENT_MAX_RETRIES)
   return newAnthropicClient() as unknown as ReturnType<typeof bedrockClient>
 }
 
@@ -155,19 +182,28 @@ export function getFastAIClient(): { messages: { create(p: CreateParams): Promis
 // off (e.g. local dev without AWS credentials), same degrade-gracefully
 // pattern as getFastAIClient().
 export function getReasoningAIClient(): { messages: { create(p: CreateParams): Promise<MessageResponse> } } {
-  if (USE_BEDROCK) return bedrockClient(BEDROCK_REASONING_MODEL_ID, REASONING_EFFORT)
-  return newAnthropicClient(true) as unknown as ReturnType<typeof bedrockClient>
+  if (USE_BEDROCK) return bedrockClient(BEDROCK_REASONING_MODEL_ID, AI_REASONING_CLIENT_TIMEOUT_MS, AI_REASONING_CLIENT_MAX_RETRIES, REASONING_EFFORT)
+  return newAnthropicClient(AI_REASONING_CLIENT_TIMEOUT_MS, AI_REASONING_CLIENT_MAX_RETRIES) as unknown as ReturnType<typeof bedrockClient>
+}
+
+// Document-extraction tier — see AI_DOCUMENT_EXTRACTION_TIMEOUT_MS's own
+// comment. Used ONLY by extractDocumentText() below; every other AI call
+// site is unaffected by this tier's existence.
+function getDocumentExtractionAIClient(): { messages: { create(p: CreateParams): Promise<MessageResponse> } } {
+  if (USE_BEDROCK) return bedrockClient(BEDROCK_MODEL_ID, AI_DOCUMENT_EXTRACTION_TIMEOUT_MS, AI_DOCUMENT_EXTRACTION_MAX_RETRIES)
+  return newAnthropicClient(AI_DOCUMENT_EXTRACTION_TIMEOUT_MS, AI_DOCUMENT_EXTRACTION_MAX_RETRIES) as unknown as ReturnType<typeof bedrockClient>
 }
 
 // Shared factory so every direct-Anthropic client in the app gets the same
-// bounded timeout/retry behavior. reasoning=true applies the same longer
-// timeout/fewer-retries budget getReasoningAIClient()'s Bedrock path uses —
-// only the non-Bedrock (e.g. local dev without AWS credentials) fallback
-// for getReasoningAIClient() ever passes it.
-export function newAnthropicClient(reasoning = false): Anthropic {
+// bounded timeout/retry behavior. Explicit (timeoutMs, maxRetries) rather
+// than a reasoning boolean — there are now three distinct tiers (ordinary,
+// reasoning, document-extraction), not two — defaults to the ordinary tier
+// for getAIClient()/getFastAIClient()'s non-Bedrock fallback; the other two
+// tiers pass their own constants explicitly.
+export function newAnthropicClient(timeoutMs = AI_CLIENT_TIMEOUT_MS, maxRetries = AI_CLIENT_MAX_RETRIES): Anthropic {
   return new Anthropic({
-    timeout: reasoning ? AI_REASONING_CLIENT_TIMEOUT_MS : AI_CLIENT_TIMEOUT_MS,
-    maxRetries: reasoning ? AI_REASONING_CLIENT_MAX_RETRIES : AI_CLIENT_MAX_RETRIES,
+    timeout: timeoutMs,
+    maxRetries,
   })
 }
 
@@ -177,12 +213,14 @@ export const AI_PROVIDER = USE_BEDROCK ? `bedrock:${BEDROCK_MODEL_ID}` : 'anthro
 // partner-recon) — previously each route hand-rolled its own `new Anthropic()`
 // call for this, which bypassed getAIClient()'s Bedrock/EU routing entirely
 // (and ran on the RAW, unmasked document, since masking can't happen until
-// there's text to mask). Routing through getAIClient() means the same
-// USE_BEDROCK switch that pins the commercial-terms extraction call to an
-// EU AWS region now also covers this earlier, raw-document step.
+// there's text to mask). Routing through getDocumentExtractionAIClient()
+// means the same USE_BEDROCK switch that pins the commercial-terms
+// extraction call to an EU AWS region now also covers this earlier,
+// raw-document step — on its own timeout tier (see
+// AI_DOCUMENT_EXTRACTION_TIMEOUT_MS), not getAIClient()'s ordinary one.
 export async function extractDocumentText(buffer: Buffer, isPdf: boolean, instruction: string): Promise<string> {
   if (!isPdf) return buffer.toString('utf-8')
-  const client = getAIClient()
+  const client = getDocumentExtractionAIClient()
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 8192,
