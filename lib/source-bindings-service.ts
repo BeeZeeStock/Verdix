@@ -90,12 +90,23 @@ export async function resolveSourceBindingDetailed(
 // this DB service layer; callers needing "today" pass it explicitly.
 // Concurrency: two overlapping calls for the same job can both observe
 // zero active bindings for the role and both call createSourceBinding.
-// source_bindings_one_active_per_role_idx (a partial unique index, no
-// existing row to lock via create_source_binding's own `for update`
-// since this is each caller's FIRST-EVER binding for the role) lets only
-// one INSERT win; the loser's RPC call surfaces that as a 23505. Rather
-// than letting that propagate as an unnecessary error, re-read and
-// return the winner — same idempotency-race idiom as
+// Real-Postgres discovery (this turn) — the loser can surface EITHER of
+// two different errors depending on exact timing, not just one:
+//   1. Both callers' `for update` SELECTs see no existing row before
+//      either INSERT commits -> both INSERT -> source_bindings_one_
+//      active_per_role_idx lets one win, the other gets a raw 23505
+//      duplicate-key violation.
+//   2. Caller A's SELECT+INSERT commits first; caller B's `for update`
+//      SELECT then genuinely FINDS A's now-committed row (there was
+//      nothing to block B's SELECT on, since A had no predecessor row to
+//      lock) and hits create_source_binding's own business-rule check
+//      instead ("effective_from must be strictly after the current
+//      active binding's effective_from") — a clean exception, not a raw
+//      constraint violation, but it means exactly the same thing here:
+//      "I lost the race."
+// Both are the identical idempotency race from this caller's point of
+// view; re-read and return the winner in either case rather than letting
+// either propagate as an unnecessary error — same idiom as
 // createOrGetCandidate/createSuccessorDraft/ensureReviewerAttestationRole.
 export async function ensureReviewerAttestationBinding(
   jobId: string, orgId: string, effectiveFrom: string,
@@ -107,9 +118,23 @@ export async function ensureReviewerAttestationBinding(
   try {
     return await createSourceBinding(role.id, jobId, orgId, 'Reviewer attestation', effectiveFrom)
   } catch (err) {
-    if (err instanceof Error && /duplicate key value/.test(err.message)) {
+    if (err instanceof Error && /duplicate key value|must be strictly after/.test(err.message)) {
       const winner = (await listSourceBindingsForRole(role.id)).find(b => b.status === 'active')
-      if (winner) return winner
+      // Explicit verification, not implicit trust — before this error is
+      // ever treated as "I merely lost the race," the reread row must
+      // genuinely be an active binding for THIS exact role/job/org.
+      // listSourceBindingsForRole(role.id) already filters by role, and
+      // the composite FK chain (source_bindings_role_ownership_fk)
+      // already guarantees job_id/org_id match the role's own — but this
+      // function must not silently convert a genuine lifecycle/
+      // effective-date error into success by relying solely on those
+      // structural guarantees holding; it re-asserts them directly, so
+      // the safety property is visible here, not just inferred from
+      // elsewhere. Anything that fails this check falls through to the
+      // ORIGINAL error, unmodified — never a new/rewritten one.
+      if (winner && winner.source_role_id === role.id && winner.job_id === jobId && winner.org_id === orgId) {
+        return winner
+      }
     }
     throw err
   }
