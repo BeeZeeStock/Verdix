@@ -27,12 +27,14 @@ function makeMinimalRule(overrides?: Partial<BillableUnitQualificationRule>): Bi
       extensions: { value: [], state: 'decision_required', provenance: null },
       attestation_fact_key: { value: null, state: 'decision_required', provenance: 'reviewer_policy' },
     },
-    dedupe_rule: { value: { key_fields: ['amount'], lookback: { days: 30, unit: 'calendar' }, scope: [] }, state: 'clear_from_source', provenance: 'contract_derived' },
-    rejection_rule: { value: { valid_reasons: [], valid_channels: [], requires_timestamp: true, requires_identification: true, email_alone_valid: false, email_exception: 'none', late_rejection_behavior: 'ignored_for_initial_qualification' }, state: 'clear_from_source', provenance: 'contract_derived' },
-    rejection_window: { value: { business_days: 3, holiday_calendar: 'SE-stockholm', timezone: 'Europe/Stockholm' }, state: 'clear_from_source', provenance: 'contract_derived' },
+    dedupe_rule: { value: { key_fields: ['amount'], lookback: { days: 30, unit: 'calendar' }, scope: [], discovery_coverage_role_keys: [] }, state: 'clear_from_source', provenance: 'contract_derived' },
+    rejection_rule: { value: { valid_reasons: [], valid_channels: [], requires_timestamp: true, requires_identification: true, email_alone_valid: false, channel_exception: null, late_rejection_behavior: 'ignored_for_initial_qualification', reason_predicates: {} }, state: 'clear_from_source', provenance: 'contract_derived' },
+    rejection_window: { value: { business_days: 3, holiday_calendar: 'SE-stockholm', timezone: 'Europe/Stockholm', reference_time: 'occurred_at' }, state: 'clear_from_source', provenance: 'contract_derived' },
     deadline_convention: { value: 'end_of_business_day', state: 'decision_required', provenance: 'reviewer_policy' },
+    business_day_end_local_time: { value: '17:00:00', state: 'decision_required', provenance: 'reviewer_policy' },
     attribution_basis: { value: 'occurred_at', state: 'verdix_recommends', provenance: 'reviewer_policy' },
     evidence_precedence: {},
+    fact_evidence_source_roles: {},
     field_sources: {},
     version: 1, revision: 1, supersedes_rule_id: null,
     effective_from: '2026-01-01T00:00:00Z', effective_to: null, status: 'active',
@@ -459,7 +461,7 @@ describe('evaluateCandidateCriteria — generic attestation_fact_key mechanism',
 // ── evaluateDedupeObservation — generic guards ───────────────────────────
 describe('evaluateDedupeObservation — generic guards', () => {
   it('throws for business-day lookback — explicitly deferred to 16B.3, never silently treated as calendar days', () => {
-    const rule = makeMinimalRule({ dedupe_rule: { value: { key_fields: ['amount'], lookback: { days: 30, unit: 'business' }, scope: [] }, state: 'clear_from_source', provenance: 'contract_derived' } })
+    const rule = makeMinimalRule({ dedupe_rule: { value: { key_fields: ['amount'], lookback: { days: 30, unit: 'business' }, scope: [], discovery_coverage_role_keys: [] }, state: 'clear_from_source', provenance: 'contract_derived' } })
     const candidate = makeGenericCandidate({ qualification_rule_id: rule.id })
     expect(() => evaluateDedupeObservation({ candidate, rule, evidence: [], priorCandidates: [], sourceBindingRoleKeys: new Map(), asOf: '2026-01-11T00:00:00Z' }))
       .toThrow(/business-day lookback/)
@@ -494,6 +496,7 @@ const UNRESOLVED_ICP_PRECEDENCE_KEYS = [
 function buildActiveOs202609Rule(): BillableUnitQualificationRule {
   let rule = buildOs202609Rule()
   rule = confirmQualificationRuleField(rule, 'deadline_convention', 'end_of_business_day')
+  rule = confirmQualificationRuleField(rule, 'business_day_end_local_time', '17:00:00')
   rule = confirmQualificationRuleField(rule, 'attribution_basis')
   for (const key of UNRESOLVED_ICP_PRECEDENCE_KEYS) {
     rule = confirmQualificationRuleField(rule, `evidence_precedence.${key}`, { kind: 'source_precedence', order: ['crm', 'enrichment'] })
@@ -506,6 +509,9 @@ function buildActiveOs202609Rule(): BillableUnitQualificationRule {
   rule = confirmQualificationRuleField(rule, 'rejection_window')
   rule = confirmQualificationRuleField(rule, 'evidence_precedence.account.employee_count')
   rule = confirmQualificationRuleField(rule, 'evidence_precedence.attendance_minutes')
+  for (const key of Object.keys(rule.fact_evidence_source_roles)) {
+    rule = confirmQualificationRuleField(rule, `fact_evidence_source_roles.${key}`)
+  }
   return { ...rule, id: 'rule-os-2026-09-sqm-v1', status: 'active' }
 }
 

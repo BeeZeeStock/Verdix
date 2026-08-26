@@ -67,6 +67,21 @@ export function isSourceBindingEffectiveAt(binding: SourceBinding, referenceTime
   return ref < new Date(binding.effective_to).getTime()
 }
 
+// Interval variant of the point-in-time predicate above — Step 16B.3 needs
+// this to resolve every SourceBinding that backed a role_key at ANY point
+// during a completeness-check interval (e.g. a 90-day dedupe lookback),
+// not just at one instant, since a role's identity can legitimately change
+// mid-window on a genuine re-platform (see this module's own external-ID-
+// namespace note). Half-open interval semantics throughout, consistent
+// with effective_to's own convention.
+export function doesSourceBindingOverlapInterval(binding: SourceBinding, from: string, through: string): boolean {
+  const bindingFromMs = new Date(binding.effective_from).getTime()
+  const bindingThroughMs = binding.effective_to === null ? Infinity : new Date(binding.effective_to).getTime()
+  const fromMs = new Date(from).getTime()
+  const throughMs = new Date(through).getTime()
+  return bindingFromMs < throughMs && bindingThroughMs > fromMs
+}
+
 export type ResolveSourceBindingResult =
   | { status: 'resolved'; binding: SourceBinding }
   | { status: 'no_match'; reason: string }

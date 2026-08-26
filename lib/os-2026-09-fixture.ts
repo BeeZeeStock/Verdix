@@ -46,10 +46,34 @@ export function buildOs202609Rule(): BillableUnitQualificationRule {
     // depending on a 16B.2 module.
     'qualified_contact_role.reviewer_attested_equivalent': { type: 'boolean', reference_time: 'occurred_at' },
     'attendance_minutes': { type: 'number', reference_time: 'occurred_at' },
-    'rejection_reason': {
+    // Step 16B.3 — structured objection/rejection evidence, a generic
+    // evidence-shape convention (see lib/billable-unit-candidate-
+    // finality.ts's own header), populated together on ONE evidence row
+    // per §2.5/§3.3's recorded rejection.
+    'objection_or_rejection.reason': {
       type: 'enum', reference_time: 'occurred_at',
       enumValues: ['account_outside_icp_at_booking', 'attendee_not_qualified_contact', 'attendance_under_15_minutes', 'duplicate_meeting', 'preexisting_active_opportunity'],
     },
+    'objection_or_rejection.channel': { type: 'string', reference_time: 'occurred_at' },
+    'objection_or_rejection.timestamp': { type: 'timestamp', reference_time: 'occurred_at' },
+    'objection_or_rejection.subject_external_id': { type: 'string', reference_time: 'occurred_at' },
+    // §3.3's written-agreement exception (item 5) — a reference to the
+    // written agreement evidence for THIS specific candidate's rejection,
+    // plus a reviewer attestation linking it. Neither is contract-extracted
+    // text; both are Verdix-proposed mechanism keys a reviewer must
+    // explicitly accept (verdix_recommends on rejection_rule as a whole,
+    // same as attestation_fact_key elsewhere in this fixture).
+    'objection_or_rejection.written_agreement_reference': { type: 'string', reference_time: 'occurred_at' },
+    'objection_or_rejection.written_agreement_attested': { type: 'boolean', reference_time: 'occurred_at' },
+    // Contractual-finality hardening (item 2) — substantiates
+    // 'preexisting_active_opportunity': an active opportunity must have
+    // EXISTED, and been recorded at least 30 days before Supplier's first
+    // contact. reference_time 'booked_at' — the same moment Target Account
+    // status itself is judged (§2.1), since this reason is also an
+    // ICP-adjacent, booking-time fact.
+    'opportunity.exists_active': { type: 'boolean', reference_time: 'booked_at' },
+    'opportunity.recorded_at': { type: 'timestamp', reference_time: 'booked_at' },
+    'account.supplier_first_contact_at': { type: 'timestamp', reference_time: 'booked_at' },
   }
 
   // §2.1, §2.3 bullet 1, Schedule 1 — flattened into ONE all_of with a
@@ -110,7 +134,16 @@ export function buildOs202609Rule(): BillableUnitQualificationRule {
     dedupe_rule: {
       // §2.3 bullet 4 — "preceding 90 days" (no "Business Days" wording
       // here, unlike the rejection window — calendar days).
-      value: { key_fields: ['account.id'], lookback: { days: 90, unit: 'calendar' }, scope: [] },
+      value: {
+        key_fields: ['account.id'], lookback: { days: 90, unit: 'calendar' }, scope: [],
+        // Step 16B.3 — §2.3 bullet 4's "not a duplicate ... during the
+        // preceding 90 days" is only PROVABLE (not merely observed) once
+        // the source that would have surfaced a duplicate meeting has been
+        // completely watched for the whole lookback window. Meetings are
+        // sourced into Verdix via the CRM workflow (§2.3, §3.3) — the same
+        // role already registered as a rejection channel below.
+        discovery_coverage_role_keys: ['crm'],
+      },
       state: 'clear_from_source', provenance: null,
     },
     rejection_rule: {
@@ -122,18 +155,81 @@ export function buildOs202609Rule(): BillableUnitQualificationRule {
         requires_timestamp: true,
         requires_identification: true,
         email_alone_valid: false,
-        email_exception: 'candidate_level_reviewer_override',
+        // §3.3: "Email alone is not a valid rejection unless the parties
+        // expressly agree otherwise in writing for the specific meeting."
+        // Generic exception mechanism (item 5) — 'email' here is rule DATA,
+        // not an evaluator branch; see lib/billable-unit-candidate-
+        // finality.ts's evaluateObjectionRecordValidity.
+        channel_exception: {
+          applies_to_channels: ['email'],
+          evidence_reference_fact_key: 'objection_or_rejection.written_agreement_reference',
+          attestation_fact_key: 'objection_or_rejection.written_agreement_attested',
+        },
         late_rejection_behavior: 'ignored_for_initial_qualification',
+        // Contractual-finality hardening (item 2) — a claimed reason is
+        // not proof; each of §2.5's five reasons gets a generic,
+        // evaluator-agnostic predicate (lib/billable-unit-candidate-
+        // finality.ts's evaluateReasonPredicate dispatches purely on
+        // predicate.kind, never on the reason CODE). Verdix-authored
+        // formalizations of what the contract's own reason labels mean,
+        // not verbatim contract text — hence verdix_recommends on the
+        // whole rejection_rule (unchanged from before), same as every
+        // other Verdix-proposed mechanism in this fixture.
+        reason_predicates: {
+          account_outside_icp_at_booking: {
+            kind: 'expression', expect: 'not_satisfied',
+            // Every Target-Account bullet EXCEPT attendance — mirrors the
+            // main criteria expression minus its one non-ICP condition.
+            expression: {
+              kind: 'all_of', expressions: [
+                { kind: 'condition', condition: { field: 'account.hq_or_commercial_ops_country', operator: 'in', value: ['SE', 'NO', 'DK', 'FI', 'DE', 'NL', 'BE', 'FR', 'GB'] } },
+                { kind: 'condition', condition: { field: 'account.employee_count', operator: 'gte', value: 500 } },
+                { kind: 'condition', condition: { field: 'account.employee_count', operator: 'lte', value: 5000 } },
+                { kind: 'condition', condition: { field: 'account.business_category', operator: 'in', value: ['b2b_software', 'ai', 'developer_tools', 'enterprise_saas', 'fintech_infrastructure', 'deep_tech_b2b'] } },
+                { kind: 'any_of', expressions: [
+                  { kind: 'condition', condition: { field: 'account.quota_carrying_sellers', operator: 'gte', value: 10 } },
+                  { kind: 'condition', condition: { field: 'account.publicly_documented_enterprise_sales', operator: 'eq', value: true } },
+                ]},
+                { kind: 'condition', condition: { field: 'account.is_current_paying_customer', operator: 'eq', value: false } },
+              ],
+            },
+          },
+          // Reuses the ALREADY-COMPUTED qualified-contact-role result
+          // (base ∪ extensions ∪ attestation_fact_key) rather than
+          // re-deriving an equivalent expression independently.
+          attendee_not_qualified_contact: { kind: 'qualified_contact_role', expect: 'not_satisfied' },
+          attendance_under_15_minutes: {
+            kind: 'expression', expect: 'not_satisfied',
+            expression: { kind: 'condition', condition: { field: 'attendance_minutes', operator: 'gte', value: 15 } },
+          },
+          // Reuses the ALREADY-COMPUTED dedupe observation for the same
+          // candidate/asOf, never a second, independent dedupe scan.
+          duplicate_meeting: { kind: 'dedupe_observation', expect: 'duplicate_found' },
+          // "preexisting active opportunity recorded at least 30 days
+          // before supplier first contact" — existence AND the smallest
+          // reusable temporal-relation primitive (left <= right - duration).
+          preexisting_active_opportunity: {
+            kind: 'all_of', predicates: [
+              { kind: 'expression', expect: 'satisfied', expression: { kind: 'condition', condition: { field: 'opportunity.exists_active', operator: 'eq', value: true } } },
+              { kind: 'temporal_relation', left_field: 'opportunity.recorded_at', comparator: 'lte', right_field: 'account.supplier_first_contact_at', duration_days: 30 },
+            ],
+          },
+        },
       },
       state: 'clear_from_source', provenance: null,
     },
     rejection_window: {
-      // §2.7 — explicit calendar.
-      value: { business_days: 3, holiday_calendar: 'SE-stockholm', timezone: 'Europe/Stockholm' },
+      // §2.7 — explicit calendar. reference_time: 'occurred_at' per §2.5's
+      // "within three (3) Business Days after the meeting occurs."
+      value: { business_days: 3, holiday_calendar: 'SE-stockholm', timezone: 'Europe/Stockholm', reference_time: 'occurred_at' },
       state: 'clear_from_source', provenance: null,
     },
     // §2.7/§2.5 never state clock-time-vs-end-of-day — genuinely unresolved.
     deadline_convention: unresolved(),
+    // Only meaningful once deadline_convention resolves to
+    // 'end_of_business_day' — §2.7 never states a local cutoff time
+    // either, so this stays genuinely unresolved right alongside it.
+    business_day_end_local_time: unresolved(),
     // §5.1's "Monthly SQMs"/"each calendar month" framing reads naturally
     // as occurrence-month, but the contract never uses the word
     // "attribution" — a confident inference, not an explicit statement.
@@ -171,6 +267,40 @@ export function buildOs202609Rule(): BillableUnitQualificationRule {
       'account.publicly_documented_enterprise_sales': unresolved(),
       'account.is_current_paying_customer': unresolved(),
       'contact.role': unresolved(),
+    },
+    // Contractual-finality hardening (item 1) — the typed universe of
+    // source_role role_keys capable of affecting each fact's final
+    // resolution. Never inferred from evidence; a Verdix-proposed
+    // mechanism a reviewer must explicitly accept (verdix_recommends),
+    // same discipline as attestation_fact_key. One entry per fact key any
+    // executable path (criteria, qualified_contact_role, dedupe_rule,
+    // reason_predicates, channel_exception) actually references —
+    // validateQualificationRuleFieldReferences enforces this exhaustively.
+    fact_evidence_source_roles: {
+      'account.id': { value: ['crm'], state: 'verdix_recommends', provenance: null },
+      'account.hq_or_commercial_ops_country': { value: ['crm', 'enrichment'], state: 'verdix_recommends', provenance: null },
+      // §3.1 names all three sources explicitly: "Customer CRM data, the
+      // prospect's public materials, or Supplier's enrichment provider" —
+      // the capable set must include all three even though the resolved
+      // strategy only ever treats 'crm' as AUTHORITATIVE, since either of
+      // the other two could still be the fallback "most recent reliable
+      // source" when crm is stale/absent (see evaluateFactFinality).
+      'account.employee_count': { value: ['crm', 'public_materials', 'enrichment'], state: 'verdix_recommends', provenance: null },
+      'account.business_category': { value: ['crm', 'enrichment'], state: 'verdix_recommends', provenance: null },
+      'account.quota_carrying_sellers': { value: ['crm', 'enrichment'], state: 'verdix_recommends', provenance: null },
+      'account.publicly_documented_enterprise_sales': { value: ['crm', 'enrichment'], state: 'verdix_recommends', provenance: null },
+      'account.is_current_paying_customer': { value: ['crm', 'enrichment'], state: 'verdix_recommends', provenance: null },
+      'contact.role': { value: ['crm', 'enrichment'], state: 'verdix_recommends', provenance: null },
+      // Reviewer attestation is structurally final the moment it resolves
+      // (see evaluateFactFinality) — no connector coverage is required or
+      // meaningful for a human's own explicit, timestamped act.
+      'qualified_contact_role.reviewer_attested_equivalent': { value: ['reviewer_attestation'], state: 'verdix_recommends', provenance: null },
+      'attendance_minutes': { value: ['conferencing', 'calendar'], state: 'verdix_recommends', provenance: null },
+      'objection_or_rejection.written_agreement_reference': { value: ['reviewer_attestation'], state: 'verdix_recommends', provenance: null },
+      'objection_or_rejection.written_agreement_attested': { value: ['reviewer_attestation'], state: 'verdix_recommends', provenance: null },
+      'opportunity.exists_active': { value: ['crm'], state: 'verdix_recommends', provenance: null },
+      'opportunity.recorded_at': { value: ['crm'], state: 'verdix_recommends', provenance: null },
+      'account.supplier_first_contact_at': { value: ['crm'], state: 'verdix_recommends', provenance: null },
     },
     // Verbatim quotes from the actual signed OS-2026-09 PDF (read directly
     // from the stored contract during design; see the source-grounding-

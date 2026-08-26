@@ -46,12 +46,21 @@ function minimalRuleInput(jobId: string, orgId: string, unitType: string, effect
     },
     criteria: { value: { kind: 'condition' as const, condition: { field: 'amount', operator: 'gte' as const, value: 10 } }, state: 'clear_from_source' as const, provenance: null },
     qualified_contact_role: { base: unresolved<QualificationCondition>(), extensions: unresolved<string[]>(), attestation_fact_key: unresolved<string | null>() },
-    dedupe_rule: { value: { key_fields: ['account.id'], lookback: { days: 30, unit: 'calendar' as const }, scope: [] }, state: 'clear_from_source' as const, provenance: null },
-    rejection_rule: { value: { valid_reasons: [], valid_channels: [], requires_timestamp: true, requires_identification: true, email_alone_valid: false, email_exception: 'none' as const, late_rejection_behavior: 'ignored_for_initial_qualification' as const }, state: 'clear_from_source' as const, provenance: null },
-    rejection_window: { value: { business_days: 3, holiday_calendar: 'SE-stockholm', timezone: 'Europe/Stockholm' }, state: 'clear_from_source' as const, provenance: null },
+    dedupe_rule: { value: { key_fields: ['account.id'], lookback: { days: 30, unit: 'calendar' as const }, scope: [], discovery_coverage_role_keys: [] }, state: 'clear_from_source' as const, provenance: null },
+    rejection_rule: { value: { valid_reasons: [], valid_channels: [], requires_timestamp: true, requires_identification: true, email_alone_valid: false, channel_exception: null, late_rejection_behavior: 'ignored_for_initial_qualification' as const, reason_predicates: {} }, state: 'clear_from_source' as const, provenance: null },
+    rejection_window: { value: { business_days: 3, holiday_calendar: 'SE-stockholm', timezone: 'Europe/Stockholm', reference_time: 'occurred_at' as const }, state: 'clear_from_source' as const, provenance: null },
     deadline_convention: { value: 'end_of_business_day' as const, state: 'decision_required' as const, provenance: null },
+    business_day_end_local_time: unresolved<string | null>(),
     attribution_basis: { value: 'occurred_at' as const, state: 'verdix_recommends' as const, provenance: null },
     evidence_precedence: {},
+    // 'amount' backs both criteria and qualified_contact_role.base (once
+    // confirmed with its override below); 'account.id' backs dedupe_rule.
+    // key_fields — every fact an executable path references needs an
+    // entry, exactly like evidence_precedence.
+    fact_evidence_source_roles: {
+      amount: unresolved<string[]>(),
+      'account.id': unresolved<string[]>(),
+    },
     field_sources: {},
     effective_from: effectiveFrom,
   }
@@ -65,6 +74,9 @@ async function confirmAllMinimalFields(ruleId: string) {
   await confirmQualificationRuleFieldAndPersist(ruleId, 'rejection_rule')
   await confirmQualificationRuleFieldAndPersist(ruleId, 'rejection_window')
   await confirmQualificationRuleFieldAndPersist(ruleId, 'deadline_convention', 'end_of_business_day')
+  await confirmQualificationRuleFieldAndPersist(ruleId, 'business_day_end_local_time', '17:00:00')
+  await confirmQualificationRuleFieldAndPersist(ruleId, 'fact_evidence_source_roles.amount', ['crm'])
+  await confirmQualificationRuleFieldAndPersist(ruleId, 'fact_evidence_source_roles.account.id', ['crm'])
   return confirmQualificationRuleFieldAndPersist(ruleId, 'attribution_basis')
 }
 

@@ -17,16 +17,22 @@ import {
 
 // ── BillableUnitCandidate ────────────────────────────────────────────────
 //
-// status/rejection_deadline/decided_at are constrained to exactly their
-// 16B.2 values by the migration's own check constraints (supabase/
-// migrations/20260830000008_billable_unit_candidates_evidence.sql), not
-// merely by this codebase choosing not to write anything else yet — the
-// same "derive/constrain, don't trust the caller" discipline
-// isQualificationRuleReady already applies to requires_confirmation.
+// status/rejection_deadline/decided_at were constrained to exactly their
+// 16B.2 values by the 16B.2 migration's own check constraints; Step 16B.3
+// widened those same columns (supabase/migrations/
+// 20260827000009_billable_unit_candidate_finality.sql) to the full
+// pending/qualified/rejected lifecycle, still enforced at the database
+// level — decided_at/rejection_deadline populated iff status is terminal,
+// and terminal once set is immutable (see that migration's own comment).
+// The one allowed transition (pending -> qualified | rejected) happens
+// ONLY through finalize_billable_unit_candidate (lib/billable-unit-
+// candidate-finality-service.ts) — never a plain application-level UPDATE.
 export interface BillableUnitCandidateExternalIdentity {
   source_binding_id: string
   external_id: string
 }
+
+export type BillableUnitCandidateStatus = 'pending' | 'qualified' | 'rejected'
 
 export interface BillableUnitCandidate {
   id: string
@@ -43,9 +49,9 @@ export interface BillableUnitCandidate {
   qualification_rule_id: string
   qualification_rule_version: number
 
-  rejection_deadline: null
-  status: 'pending'
-  decided_at: null
+  rejection_deadline: string | null
+  status: BillableUnitCandidateStatus
+  decided_at: string | null
 
   created_at?: string
 }
@@ -255,9 +261,10 @@ function referenceTimeForFact(candidate: BillableUnitCandidate, kind: FreshnessR
     case 'booked_at': return candidate.booked_at
     case 'occurred_at': return candidate.occurred_at
     case 'attribution_at': return candidate.attribution_at
-    // rejection_deadline is always null in 16B.2 (migration-enforced) —
-    // any fact anchored to finality_deadline is simply not resolvable
-    // before 16B.3 exists, not a bug.
+    // Populated only once a terminal decision has been recorded (16B.3's
+    // finalize_billable_unit_candidate) — a fact anchored to
+    // finality_deadline on a still-pending candidate correctly resolves
+    // to 'unresolved' here, not an error.
     case 'finality_deadline': return candidate.rejection_deadline
   }
 }
@@ -792,18 +799,24 @@ export function evaluateCandidateEvidenceSnapshot(params: {
   }
 }
 
-// ── Deferred design notes (NOT implemented in this slice) ────────────────
+// ── Deferred design notes ─────────────────────────────────────────────────
 //
-// 16B.3 TODO — SourceCoverage, completeness assertions, connector
-// high-watermarks, bounded-lag policies, business-day holiday
-// calculations (including the 'business' lookback unit above, which
-// throws rather than approximating), rejection_deadline calculation,
-// valid-rejection finalization, and the terminal candidate.status ->
-// qualified/rejected transition (with decided_at population) all remain
-// unimplemented. evaluateDedupeObservation's 'no_known_duplicate' is
-// explicitly NOT equivalent to "no duplicate exists" until 16B.3's
-// SourceCoverage can prove historical discovery completeness for the
-// relevant window — see that function's own comment.
+// 16B.3 implemented SourceCoverage/completeness (lib/source-coverage.ts),
+// business-day/holiday-calendar deadline arithmetic (lib/business-days.ts),
+// rejection evidence + completeness, and the terminal pending ->
+// qualified/rejected transition — see lib/billable-unit-candidate-
+// finality.ts (pure evaluator, built strictly ON TOP of this file's
+// evaluateCandidateCriteria/evaluateDedupeObservation, neither of which
+// this file itself changed) and lib/billable-unit-candidate-finality-
+// service.ts (the one atomic transition). evaluateDedupeObservation's
+// 'no_known_duplicate' in THIS file is still never equivalent to "no
+// duplicate exists" on its own — that remains true; 16B.3's completeness
+// layer is what's allowed to combine it with coverage to reach a real
+// dedupe-cleared conclusion, never this file. The 'business' dedupe
+// lookback unit above still throws — no OS-2026-09 case needs it, and
+// business-day arithmetic now existing elsewhere (lib/business-days.ts)
+// doesn't by itself justify wiring it into dedupe lookback without a
+// concrete fixture need.
 //
 // 16B.4 TODO — computeQualifiedUnitCount, usage-pull integration,
 // scheduler changes, and wiring terminal qualified units into the meter

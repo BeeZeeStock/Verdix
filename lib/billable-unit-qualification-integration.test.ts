@@ -45,11 +45,13 @@ function minimalDraftInput(jobId: string, orgId: string, unitType: string, opts?
     rejection_rule: unresolved(),
     rejection_window: unresolved(),
     deadline_convention: unresolved(),
+    business_day_end_local_time: unresolved(),
     attribution_basis: unresolved(),
     evidence_precedence: {
       key_a: { value: { kind: 'authoritative_source', source: opts?.precedenceSourceA ?? 'crm' }, state: 'clear_from_source', provenance: null },
       key_b: { value: { kind: 'authoritative_source', source: opts?.precedenceSourceB ?? 'conferencing' }, state: 'clear_from_source', provenance: null },
     },
+    fact_evidence_source_roles: {},
     field_sources: { criteria: ['2.3 Sales Qualified Meeting'] },
     effective_from: '2026-08-25T00:00:00Z',
   }
@@ -63,17 +65,18 @@ function minimalDraftInput(jobId: string, orgId: string, unitType: string, opts?
 const SUCCESSOR_EFFECTIVE_FROM = '2026-09-01T00:00:00Z'
 
 function rejectionRuleValue(validChannel: string) {
-  return { valid_reasons: [], valid_channels: [validChannel], requires_timestamp: true, requires_identification: true, email_alone_valid: false, email_exception: 'none' as const, late_rejection_behavior: 'ignored_for_initial_qualification' as const }
+  return { valid_reasons: [], valid_channels: [validChannel], requires_timestamp: true, requires_identification: true, email_alone_valid: false, channel_exception: null, late_rejection_behavior: 'ignored_for_initial_qualification' as const, reason_predicates: {} }
 }
 
 async function confirmAllFields(ruleId: string, validChannel = 'crm'): Promise<BillableUnitQualificationRule> {
   await confirmQualificationRuleFieldAndPersist(ruleId, 'criteria')
   await confirmQualificationRuleFieldAndPersist(ruleId, 'qualified_contact_role.base', { field: 'contact.role', operator: 'in', value: ['CRO'] })
   await confirmQualificationRuleFieldAndPersist(ruleId, 'qualified_contact_role.attestation_fact_key', null)
-  await confirmQualificationRuleFieldAndPersist(ruleId, 'dedupe_rule', { key_fields: ['account.id'], lookback: { days: 90, unit: 'calendar' }, scope: [] })
+  await confirmQualificationRuleFieldAndPersist(ruleId, 'dedupe_rule', { key_fields: ['account.id'], lookback: { days: 90, unit: 'calendar' }, scope: [], discovery_coverage_role_keys: [] })
   await confirmQualificationRuleFieldAndPersist(ruleId, 'rejection_rule', rejectionRuleValue(validChannel))
-  await confirmQualificationRuleFieldAndPersist(ruleId, 'rejection_window', { business_days: 3, holiday_calendar: 'SE-stockholm', timezone: 'Europe/Stockholm' })
+  await confirmQualificationRuleFieldAndPersist(ruleId, 'rejection_window', { business_days: 3, holiday_calendar: 'SE-stockholm', timezone: 'Europe/Stockholm', reference_time: 'occurred_at' })
   await confirmQualificationRuleFieldAndPersist(ruleId, 'deadline_convention', 'end_of_business_day')
+  await confirmQualificationRuleFieldAndPersist(ruleId, 'business_day_end_local_time', '17:00:00')
   await confirmQualificationRuleFieldAndPersist(ruleId, 'attribution_basis', 'occurred_at')
   await confirmQualificationRuleFieldAndPersist(ruleId, 'evidence_precedence.key_a')
   const ready = await confirmQualificationRuleFieldAndPersist(ruleId, 'evidence_precedence.key_b')
@@ -272,9 +275,9 @@ describeIf('billable_unit_qualification_rules / source_roles — real Postgres r
       const rule = await createDraftQualificationRule(minimalDraftInput(jobId, orgId, 'SQM_ROLE_REJECTION_CHANNEL'))
       await confirmQualificationRuleFieldAndPersist(rule.id, 'criteria')
       await confirmQualificationRuleFieldAndPersist(rule.id, 'qualified_contact_role.base', { field: 'contact.role', operator: 'in', value: ['CRO'] })
-      await confirmQualificationRuleFieldAndPersist(rule.id, 'dedupe_rule', { key_fields: ['account.id'], lookback: { days: 90, unit: 'calendar' }, scope: [] })
+      await confirmQualificationRuleFieldAndPersist(rule.id, 'dedupe_rule', { key_fields: ['account.id'], lookback: { days: 90, unit: 'calendar' }, scope: [], discovery_coverage_role_keys: [] })
       await confirmQualificationRuleFieldAndPersist(rule.id, 'rejection_rule', rejectionRuleValue('unregistered_portal'))
-      await confirmQualificationRuleFieldAndPersist(rule.id, 'rejection_window', { business_days: 3, holiday_calendar: 'SE-stockholm', timezone: 'Europe/Stockholm' })
+      await confirmQualificationRuleFieldAndPersist(rule.id, 'rejection_window', { business_days: 3, holiday_calendar: 'SE-stockholm', timezone: 'Europe/Stockholm', reference_time: 'occurred_at' })
       await confirmQualificationRuleFieldAndPersist(rule.id, 'deadline_convention', 'end_of_business_day')
       await confirmQualificationRuleFieldAndPersist(rule.id, 'attribution_basis', 'occurred_at')
       await confirmQualificationRuleFieldAndPersist(rule.id, 'evidence_precedence.key_a')

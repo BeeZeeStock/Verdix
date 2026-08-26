@@ -14,7 +14,11 @@ import { listSourceRolesForJob } from './source-roles-service'
 const CANDIDATE_TABLE = 'billable_unit_candidates'
 const EVIDENCE_TABLE = 'candidate_unit_evidence'
 
-function rowToCandidate(row: Record<string, unknown>): BillableUnitCandidate {
+// Exported (16B.3) so lib/billable-unit-candidate-finality-service.ts can
+// map the finalize_billable_unit_candidate RPC's returned row the exact
+// same way every other read path here does, rather than duplicating this
+// mapping or re-fetching after every write.
+export function rowToCandidate(row: Record<string, unknown>): BillableUnitCandidate {
   return {
     id: row.id as string,
     job_id: row.job_id as string,
@@ -29,9 +33,9 @@ function rowToCandidate(row: Record<string, unknown>): BillableUnitCandidate {
     attribution_at: row.attribution_at as string,
     qualification_rule_id: row.qualification_rule_id as string,
     qualification_rule_version: row.qualification_rule_version as number,
-    rejection_deadline: null,
-    status: 'pending',
-    decided_at: null,
+    rejection_deadline: (row.rejection_deadline as string | null) ?? null,
+    status: row.status as BillableUnitCandidate['status'],
+    decided_at: (row.decided_at as string | null) ?? null,
     created_at: row.created_at as string | undefined,
   }
 }

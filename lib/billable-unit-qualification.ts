@@ -171,11 +171,79 @@ export interface DedupeRule {
   // OS-2026-09 — every candidate in this system is Supplier-sourced by
   // definition (§2.3), so no filter is needed for this contract specifically.
   scope: QualificationCondition[]
+  // Step 16B.3 — source_role role_key(s) whose SourceCoverage (coverage_kind
+  // 'candidate_discovery', lib/source-coverage.ts) must fully span the
+  // lookback interval before evaluateDedupeObservation's 'no_known_duplicate'
+  // may be treated as dedupe CLEARANCE rather than a mere observation (see
+  // that function's own comment — absence of a match is never proof by
+  // itself). Configuration, not evaluator-hardcoded: the finality evaluator
+  // (lib/billable-unit-candidate-finality.ts) has no built-in notion of
+  // which source "discovers" a candidate — it only ever resolves whichever
+  // role_key(s) this list names, exactly like rejection_rule.valid_channels
+  // or an evidence_precedence source. Empty is valid (and means dedupe can
+  // never clear via completeness for this rule — a real, fail-closed
+  // outcome, not an oversight to guard against).
+  discovery_coverage_role_keys: string[]
 }
 
 // ── Rejection ────────────────────────────────────────────────────────────
-export type RejectionEmailException = 'candidate_level_reviewer_override' | 'none'
 export type LateRejectionBehavior = 'ignored_for_initial_qualification'
+
+// Step 16B.3 — generic evidence-backed exception for an otherwise-invalid
+// rejection channel (e.g. a contract's "email alone is not valid unless
+// the parties expressly agree otherwise in writing for the specific
+// meeting"). Deliberately NOT named after "email" anywhere in this type —
+// applies_to_channels is rule DATA (like valid_channels itself), never an
+// evaluator branch; a different contract's out-of-band channel (a phone
+// call, a Slack message) fits the same shape without any evaluator change.
+// Both referenced keys are ordinary fact_schema entries resolved through
+// the SAME resolveCandidateFact machinery every other fact goes through —
+// there is no "email_exception" special case anywhere in
+// lib/billable-unit-candidate-finality.ts's evaluator.
+export interface RejectionChannelExceptionConfig {
+  applies_to_channels: string[]
+  // fact_schema key, type 'string' — a reference/pointer to the written
+  // agreement evidence for THIS specific candidate (e.g. a document or
+  // email-thread id). Validated by validateQualificationRuleFieldReferences.
+  evidence_reference_fact_key: string
+  // fact_schema key, type 'boolean' — an explicit reviewer attestation
+  // confirming the referenced written agreement genuinely applies to THIS
+  // candidate's rejection. Never inferred from the mere presence of the
+  // reference above; both must independently resolve.
+  attestation_fact_key: string
+}
+
+// Step 16B.3 hardening — a claimed rejection reason is a LABEL, not proof.
+// This is the generic, configured mechanism that substantiates it: a
+// closed set of REUSABLE evaluation primitives (an expression tri-state
+// check, the already-computed qualified-contact-role result, the
+// already-computed dedupe observation, a temporal ordering with a
+// duration offset, and boolean composition), never a reason-code-specific
+// evaluator branch. lib/billable-unit-candidate-finality.ts dispatches
+// purely on `kind` — it has no notion of "attendance" or "duplicate
+// meeting," only of these five generic shapes. The mapping from a
+// contract's actual reason codes to a predicate is entirely rule
+// CONFIGURATION (RejectionRule.reason_predicates below), exactly like
+// valid_reasons/valid_channels themselves.
+export type QualificationReasonPredicate =
+  | { kind: 'expression'; expression: QualificationExpression; expect: 'satisfied' | 'not_satisfied' }
+  // Reuses the ALREADY-COMPUTED qualified-contact-role result (base ∪
+  // extensions ∪ attestation_fact_key — lib/billable-unit-candidate.ts's
+  // evaluateCandidateCriteria) rather than re-deriving an equivalent
+  // expression independently, which would duplicate that composition
+  // logic and risk drifting from it.
+  | { kind: 'qualified_contact_role'; expect: 'satisfied' | 'not_satisfied' }
+  // Reuses the ALREADY-COMPUTED dedupe observation
+  // (evaluateDedupeObservation) for the SAME candidate/asOf, never a
+  // second, independent dedupe scan.
+  | { kind: 'dedupe_observation'; expect: 'duplicate_found' | 'no_known_duplicate' }
+  // The smallest reusable temporal-relation primitive: left_field <=
+  // right_field - duration_days (comparator 'lte') or left_field >=
+  // right_field + duration_days (comparator 'gte'). Both fields must be
+  // declared 'timestamp' facts. Verdix owns this contractual comparison —
+  // it is never precomputed by a connector and handed over as a boolean.
+  | { kind: 'temporal_relation'; left_field: string; comparator: 'lte' | 'gte'; right_field: string; duration_days: number }
+  | { kind: 'all_of'; predicates: QualificationReasonPredicate[] }
 
 export interface RejectionRule {
   valid_reasons: string[]
@@ -183,8 +251,46 @@ export interface RejectionRule {
   requires_timestamp: boolean
   requires_identification: boolean
   email_alone_valid: boolean
-  email_exception: RejectionEmailException
+  // Step 16B.3 — replaces the 16B.1 placeholder `email_exception` enum
+  // (which named no evidence/attestation mechanism at all — a bare flag).
+  // null = no exception mechanism configured for this rule (an
+  // out-of-band-channel rejection is simply always invalid).
+  channel_exception: RejectionChannelExceptionConfig | null
   late_rejection_behavior: LateRejectionBehavior
+  // Step 16B.3 hardening — one predicate per entry in valid_reasons (see
+  // validateQualificationRuleFieldReferences: every valid_reasons entry
+  // must have a corresponding predicate). A claimed reason whose predicate
+  // does not evaluate 'satisfied' never counts as a valid, terminally-
+  // dispositive rejection — see lib/billable-unit-candidate-finality.ts's
+  // evaluateObjectionRecordValidity.
+  reason_predicates: Record<string, QualificationReasonPredicate>
+}
+
+// Pure, recursive fact-key extraction — used both by
+// validateQualificationRuleFieldReferences (below) and by the finality
+// evaluator's material-fact collection (lib/billable-unit-candidate-
+// finality.ts), so the two can never disagree about which facts a
+// predicate touches.
+export function collectReasonPredicateFactKeys(predicate: QualificationReasonPredicate): string[] {
+  switch (predicate.kind) {
+    case 'expression': {
+      const keys: string[] = []
+      const walk = (e: QualificationExpression): void => {
+        if (e.kind === 'condition') keys.push(e.condition.field)
+        else e.expressions.forEach(walk)
+      }
+      walk(predicate.expression)
+      return keys
+    }
+    case 'qualified_contact_role':
+      return []
+    case 'dedupe_observation':
+      return []
+    case 'temporal_relation':
+      return [predicate.left_field, predicate.right_field]
+    case 'all_of':
+      return predicate.predicates.flatMap(collectReasonPredicateFactKeys)
+  }
 }
 
 // ── Evidence precedence ───────────────────────────────────────────────────
@@ -202,6 +308,15 @@ export interface RejectionWindowCalendar {
   business_days: number
   holiday_calendar: string   // jurisdiction identifier, e.g. 'SE-stockholm'
   timezone: string           // IANA identifier, e.g. 'Europe/Stockholm'
+  // Step 16B.3 — which candidate timestamp the N-business-day clock starts
+  // from. Contract-specific (OS-2026-09: 'occurred_at' — "within three (3)
+  // Business Days after the meeting occurs"), genuinely reusable for a
+  // future contract's differently-anchored window (e.g. a delivery-
+  // acceptance window measured from booked_at/attribution_at instead).
+  // Restricted to the three RAW candidate timestamps this slice can
+  // resolve — 'finality_deadline' would be self-referential and is
+  // excluded by the type.
+  reference_time: 'booked_at' | 'occurred_at' | 'attribution_at'
 }
 
 // Kept as an INDEPENDENT FieldDecision from RejectionWindowCalendar (not a
@@ -212,6 +327,23 @@ export interface RejectionWindowCalendar {
 // facts plus one open question" simultaneously — a real inconsistency
 // caught and fixed during this implementation pass.
 export type DeadlineConvention = 'same_clock_time' | 'end_of_business_day'
+
+// Step 16B.3 hardening — 'end_of_business_day' does not, by itself, mean
+// anything: without an explicit local cutoff it would silently degrade
+// into "end of CALENDAR day" (23:59:59.999), which is a materially
+// different, unstated commercial choice. Independent FieldDecision (not a
+// sub-property of RejectionWindowCalendar or DeadlineConvention) for the
+// same reason RejectionWindowCalendar and DeadlineConvention are already
+// split: this can be resolved or not, ORTHOGONALLY to whether the
+// convention itself is resolved. Only meaningful when
+// deadline_convention.value === 'end_of_business_day' — isQualificationRuleReady
+// and resolveRejectionDeadline (lib/billable-unit-candidate-finality.ts)
+// both enforce that this must ALSO be resolved (to a non-null value) in
+// that case; a null value or unresolved decision here is fine whenever
+// the convention is 'same_clock_time', where it plays no role at all.
+// Value format: 'HH:MM:SS' local civil time, same timezone as
+// RejectionWindowCalendar.timezone.
+export type BusinessDayEndLocalTime = string
 
 export type AttributionBasis = 'occurred_at' | 'booked_at' | 'qualified_at'
 
@@ -276,8 +408,30 @@ export interface BillableUnitQualificationRule {
   rejection_rule: FieldDecision<RejectionRule>
   rejection_window: FieldDecision<RejectionWindowCalendar>
   deadline_convention: FieldDecision<DeadlineConvention>
+  // Only meaningful, and only required to be resolved-non-null, when
+  // deadline_convention.value === 'end_of_business_day' — see
+  // BusinessDayEndLocalTime's own comment.
+  business_day_end_local_time: FieldDecision<BusinessDayEndLocalTime | null>
   attribution_basis: FieldDecision<AttributionBasis>
   evidence_precedence: Record<string, FieldDecision<EvidencePrecedenceStrategy>>
+
+  // Step 16B.3 hardening — fact-evidence finality. Names, PER FACT KEY
+  // actually referenced by an executable path (criteria, qualified_contact_
+  // role.base, dedupe_rule.key_fields/scope, rejection_rule.reason_predicates'
+  // temporal_relation fields), the closed universe of source_role role_keys
+  // CAPABLE of affecting that fact's final resolution. This is what makes
+  // fact-evidence finality checkable at all: lib/billable-unit-candidate-
+  // finality.ts's evaluateFactFinality NEVER infers "which sources matter"
+  // from whatever evidence happens to already exist — it only ever
+  // consults this typed, reviewer-confirmed list (exactly the same
+  // discipline as dedupe_rule.discovery_coverage_role_keys and
+  // rejection_rule.valid_channels). A fact whose ONLY capable source is
+  // the reserved reviewer_attestation role (RESERVED_SOURCE_ROLE_KEY, lib/
+  // source-roles.ts) is a structural exception: a human's explicit,
+  // timestamped attestation is inherently a final act the moment it is
+  // resolved — no SourceCoverage row is required or meaningful for it (see
+  // evaluateFactFinality's own comment).
+  fact_evidence_source_roles: Record<string, FieldDecision<string[]>>
 
   // field path -> VERBATIM (or lightly-paraphrased) quoted clause text,
   // one or more per field. Deliberately NOT ContractTerms.field_sources's
@@ -359,8 +513,18 @@ export function isQualificationRuleReady(rule: BillableUnitQualificationRule): b
   if (!isFieldDecisionResolved(rule.rejection_rule)) return false
   if (!isFieldDecisionResolved(rule.rejection_window)) return false
   if (!isFieldDecisionResolved(rule.deadline_convention)) return false
+  // business_day_end_local_time is only load-bearing when the resolved
+  // convention actually needs it — a rule using 'same_clock_time' is
+  // never blocked on it, matching that field's own comment.
+  if (rule.deadline_convention.value === 'end_of_business_day') {
+    if (!isFieldDecisionResolved(rule.business_day_end_local_time)) return false
+    if (!rule.business_day_end_local_time.value) return false
+  }
   if (!isFieldDecisionResolved(rule.attribution_basis)) return false
   for (const decision of Object.values(rule.evidence_precedence)) {
+    if (!isFieldDecisionResolved(decision)) return false
+  }
+  for (const decision of Object.values(rule.fact_evidence_source_roles)) {
     if (!isFieldDecisionResolved(decision)) return false
   }
   return true
@@ -406,8 +570,10 @@ export type QualificationRuleFieldPath =
   | 'rejection_rule'
   | 'rejection_window'
   | 'deadline_convention'
+  | 'business_day_end_local_time'
   | 'attribution_basis'
   | `evidence_precedence.${string}`
+  | `fact_evidence_source_roles.${string}`
 
 // Confirms EXACTLY one named field and returns a new rule object — every
 // other field's FieldDecision is referentially untouched. This is what
@@ -478,6 +644,9 @@ export function confirmQualificationRuleField(
   if (fieldPath === 'deadline_convention') {
     return { ...rule, deadline_convention: confirmFieldDecision(rule.deadline_convention, { overrideValue: overrideValue as DeadlineConvention | undefined }) }
   }
+  if (fieldPath === 'business_day_end_local_time') {
+    return { ...rule, business_day_end_local_time: confirmFieldDecision(rule.business_day_end_local_time, { overrideValue: overrideValue as BusinessDayEndLocalTime | null | undefined }) }
+  }
   if (fieldPath === 'attribution_basis') {
     return { ...rule, attribution_basis: confirmFieldDecision(rule.attribution_basis, { overrideValue: overrideValue as AttributionBasis | undefined }) }
   }
@@ -490,6 +659,18 @@ export function confirmQualificationRuleField(
       evidence_precedence: {
         ...rule.evidence_precedence,
         [key]: confirmFieldDecision(existing, { overrideValue: overrideValue as EvidencePrecedenceStrategy | undefined }),
+      },
+    }
+  }
+  if (fieldPath.startsWith('fact_evidence_source_roles.')) {
+    const key = fieldPath.slice('fact_evidence_source_roles.'.length)
+    const existing = rule.fact_evidence_source_roles[key]
+    if (!existing) throw new Error(`confirmQualificationRuleField: unknown fact_evidence_source_roles key '${key}'`)
+    return {
+      ...rule,
+      fact_evidence_source_roles: {
+        ...rule.fact_evidence_source_roles,
+        [key]: confirmFieldDecision(existing, { overrideValue: overrideValue as string[] | undefined }),
       },
     }
   }
@@ -512,6 +693,22 @@ export function extractReferencedSourceRoleKeys(rule: BillableUnitQualificationR
   const rejectionRule = rule.rejection_rule.value
   if (rejectionRule) {
     for (const channel of rejectionRule.valid_channels) keys.add(channel)
+    // channel_exception.applies_to_channels are CHANNEL VALUES recorded in
+    // evidence (objection_or_rejection.channel), not source_role keys —
+    // deliberately NOT added here. A rule may name an exception channel
+    // (e.g. 'email') that is never itself a registered source_role, since
+    // it is an ad hoc/manual channel, not a systematic feed with its own
+    // completeness coverage.
+  }
+  // Step 16B.3 — dedupe_rule.discovery_coverage_role_keys must resolve
+  // against real, job-registered source_roles exactly like
+  // rejection_rule.valid_channels and every evidence_precedence source
+  // above; folding it into this same set means
+  // assertReferencedSourceRolesRegistered (service layer) validates it for
+  // free, with no separate check needed.
+  const dedupeRule = rule.dedupe_rule.value
+  if (dedupeRule) {
+    for (const key of dedupeRule.discovery_coverage_role_keys) keys.add(key)
   }
   for (const decision of Object.values(rule.evidence_precedence)) {
     const strategy = decision.value
@@ -521,6 +718,13 @@ export function extractReferencedSourceRoleKeys(rule: BillableUnitQualificationR
     } else if (strategy.kind === 'source_precedence') {
       for (const source of strategy.order) keys.add(source)
     }
+  }
+  // Step 16B.3 hardening — fact_evidence_source_roles names the typed
+  // universe of sources capable of affecting a fact's final resolution;
+  // every role_key it lists must be job-registered exactly like every
+  // other role_key reference above.
+  for (const decision of Object.values(rule.fact_evidence_source_roles)) {
+    for (const key of decision.value ?? []) keys.add(key)
   }
   return Array.from(keys)
 }
@@ -616,18 +820,145 @@ export function validateQualificationRuleFieldReferences(rule: BillableUnitQuali
     }
   }
 
+  // Step 16B.3 — rejection_rule.channel_exception's two fact references,
+  // checked with the exact same discipline as qualified_contact_role's
+  // attestation_fact_key above: must exist, and must be the specific type
+  // the evaluator (lib/billable-unit-candidate-finality.ts) actually
+  // requires for the check it runs ('field is a non-empty string' /
+  // 'field == true').
+  const rejection = rule.rejection_rule.value
+  if (rejection?.channel_exception) {
+    const refKey = rejection.channel_exception.evidence_reference_fact_key
+    const refFact = rule.fact_schema[refKey]
+    if (!refFact) {
+      errors.push({ path: 'rejection_rule.channel_exception.evidence_reference_fact_key', reason: `references undeclared fact_schema key '${refKey}'` })
+    } else if (refFact.type !== 'string') {
+      errors.push({ path: 'rejection_rule.channel_exception.evidence_reference_fact_key', reason: `references fact_schema key '${refKey}' of type '${refFact.type}', but the exception check requires a non-empty 'string' fact` })
+    }
+
+    const attKey = rejection.channel_exception.attestation_fact_key
+    const attFact = rule.fact_schema[attKey]
+    if (!attFact) {
+      errors.push({ path: 'rejection_rule.channel_exception.attestation_fact_key', reason: `references undeclared fact_schema key '${attKey}'` })
+    } else if (attFact.type !== 'boolean') {
+      errors.push({ path: 'rejection_rule.channel_exception.attestation_fact_key', reason: `references fact_schema key '${attKey}' of type '${attFact.type}', but the attestation check is evaluated as 'field == true' and requires a 'boolean' fact` })
+    }
+  }
+
+  // Step 16B.3 hardening — a rejection reason label is not proof; every
+  // valid_reasons entry must have a substantiating predicate (else it
+  // could be claimed with nothing to validate it against), and every
+  // predicate's own fact references must themselves be declared and
+  // correctly typed.
+  if (rejection) {
+    for (const reasonCode of rejection.valid_reasons) {
+      if (!rejection.reason_predicates[reasonCode]) {
+        errors.push({ path: `rejection_rule.reason_predicates.${reasonCode}`, reason: `valid_reasons entry '${reasonCode}' has no corresponding reason_predicates entry — a claimed reason must be substantiated, not merely labeled` })
+      }
+    }
+    for (const [reasonCode, predicate] of Object.entries(rejection.reason_predicates)) {
+      for (const e of validateReasonPredicate(predicate, rule.fact_schema)) {
+        errors.push({ path: `rejection_rule.reason_predicates.${reasonCode}.${e.path}`, reason: e.reason })
+      }
+    }
+  }
+
+  // Step 16B.3 hardening — fact_evidence_source_roles keys must be
+  // declared fact_schema keys, exactly like evidence_precedence keys.
+  // (The role_key VALUES are validated separately, at activation time
+  // against real job registration — see extractReferencedSourceRoleKeys/
+  // assertReferencedSourceRolesRegistered.)
+  for (const key of Object.keys(rule.fact_evidence_source_roles)) {
+    if (!rule.fact_schema[key]) {
+      errors.push({ path: `fact_evidence_source_roles.${key}`, reason: `references undeclared fact_schema key '${key}'` })
+    }
+  }
+
+  // Step 16B.3 hardening — the converse direction: every fact key an
+  // EXECUTABLE decision path can actually consult (criteria,
+  // qualified_contact_role.base, dedupe_rule.key_fields/scope, and every
+  // reason_predicates fact reference) must have a fact_evidence_source_
+  // roles entry, or fact-evidence finality (lib/billable-unit-candidate-
+  // finality.ts's evaluateFactFinality) can only ever return 'unknown' for
+  // it — silently, permanently blocking that decision path from ever
+  // reaching a terminal outcome. Caught here, at activation time, exactly
+  // like every other "references an undeclared/unconfigured field" defect
+  // in this function, rather than surfacing only as "candidates never
+  // finalize" much later.
+  const executableFactKeys = new Set<string>()
+  const walkForKeys = (e: QualificationExpression): void => {
+    if (e.kind === 'condition') executableFactKeys.add(e.condition.field)
+    else e.expressions.forEach(walkForKeys)
+  }
+  if (rule.criteria.value) walkForKeys(rule.criteria.value)
+  if (roleCondition) executableFactKeys.add(roleCondition.field)
+  if (attestationFactKey) executableFactKeys.add(attestationFactKey)
+  if (dedupe) {
+    for (const key of dedupe.key_fields) executableFactKeys.add(key)
+    for (const condition of dedupe.scope) executableFactKeys.add(condition.field)
+  }
+  if (rejection) {
+    for (const predicate of Object.values(rejection.reason_predicates)) {
+      for (const key of collectReasonPredicateFactKeys(predicate)) executableFactKeys.add(key)
+    }
+    if (rejection.channel_exception) {
+      executableFactKeys.add(rejection.channel_exception.evidence_reference_fact_key)
+      executableFactKeys.add(rejection.channel_exception.attestation_fact_key)
+    }
+  }
+  for (const key of executableFactKeys) {
+    if (!rule.fact_evidence_source_roles[key]) {
+      errors.push({ path: `fact_evidence_source_roles.${key}`, reason: `fact '${key}' is referenced by an executable decision path but has no fact_evidence_source_roles entry — its finality can never be established` })
+    }
+  }
+
+  return errors
+}
+
+// Walks a QualificationReasonPredicate's own fact references — same
+// structural discipline as validateQualificationExpression, just for the
+// wider closed predicate vocabulary (expression / qualified_contact_role /
+// dedupe_observation / temporal_relation / all_of).
+function validateReasonPredicate(
+  predicate: QualificationReasonPredicate,
+  factSchema: Record<string, QualificationFactDefinition>,
+): QualificationValidationError[] {
+  const errors: QualificationValidationError[] = []
+  switch (predicate.kind) {
+    case 'expression':
+      errors.push(...validateQualificationExpression(predicate.expression, factSchema))
+      break
+    case 'qualified_contact_role':
+    case 'dedupe_observation':
+      break
+    case 'temporal_relation': {
+      const left = factSchema[predicate.left_field]
+      if (!left) errors.push({ path: predicate.left_field, reason: `references undeclared fact_schema key '${predicate.left_field}'` })
+      else if (left.type !== 'timestamp') errors.push({ path: predicate.left_field, reason: `temporal_relation requires a 'timestamp' fact; '${predicate.left_field}' is '${left.type}'` })
+      const right = factSchema[predicate.right_field]
+      if (!right) errors.push({ path: predicate.right_field, reason: `references undeclared fact_schema key '${predicate.right_field}'` })
+      else if (right.type !== 'timestamp') errors.push({ path: predicate.right_field, reason: `temporal_relation requires a 'timestamp' fact; '${predicate.right_field}' is '${right.type}'` })
+      break
+    }
+    case 'all_of':
+      for (const child of predicate.predicates) errors.push(...validateReasonPredicate(child, factSchema))
+      break
+  }
   return errors
 }
 
 // ── Deferred design notes (NOT implemented in this slice) ────────────────
 //
-// 16B.3 TODO — SourceCoverage (not implemented here) must include an
-// evidence-ESTABLISHMENT timestamp, e.g. `established_at`, distinct from
-// the covered_from/covered_through interval itself. Historical evaluation
-// may use a coverage assertion only when `established_at <= billingAsOf` —
-// otherwise a coverage row created/extended AFTER the historical asOf being
-// replayed could leak future knowledge into that replay (the same
-// "asOf must not time-travel" invariant already enforced on
-// BillableUnitCandidate.decided_at applies equally to coverage proofs, and
-// needs its own timestamp to enforce). Recorded here as a note for 16B.3's
-// design, not implemented — SourceCoverage does not exist yet.
+// 16B.3 implemented SourceCoverage (lib/source-coverage.ts — established_at
+// gating exactly as anticipated below), business-day/deadline arithmetic
+// (lib/business-days.ts), and the completeness + terminal finality layer
+// (lib/billable-unit-candidate-finality.ts + -service.ts). This module
+// (16B.1) itself only grew the CONFIGURATION those consume — dedupe_rule.
+// discovery_coverage_role_keys, rejection_rule.channel_exception,
+// rejection_window.reference_time — never any evaluation logic; that
+// discipline (rule model vs evaluator) is unchanged from 16B.1's original
+// split.
+//
+// 16B.4 TODO — computeQualifiedUnitCount, usage-pull integration,
+// scheduler changes, and wiring a terminal qualified unit into the meter
+// still depend on 16B.3's terminal decision, which now exists.

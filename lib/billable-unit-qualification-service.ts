@@ -31,8 +31,10 @@ function rowToRule(row: Record<string, unknown>): BillableUnitQualificationRule 
     rejection_rule: row.rejection_rule as BillableUnitQualificationRule['rejection_rule'],
     rejection_window: row.rejection_window as BillableUnitQualificationRule['rejection_window'],
     deadline_convention: row.deadline_convention as BillableUnitQualificationRule['deadline_convention'],
+    business_day_end_local_time: row.business_day_end_local_time as BillableUnitQualificationRule['business_day_end_local_time'],
     attribution_basis: row.attribution_basis as BillableUnitQualificationRule['attribution_basis'],
     evidence_precedence: row.evidence_precedence as BillableUnitQualificationRule['evidence_precedence'],
+    fact_evidence_source_roles: row.fact_evidence_source_roles as BillableUnitQualificationRule['fact_evidence_source_roles'],
     field_sources: row.field_sources as Record<string, string[]>,
     version: row.version as number,
     revision: row.revision as number,
@@ -65,8 +67,10 @@ export async function createDraftQualificationRule(rule: NewRuleInput): Promise<
     rejection_rule: rule.rejection_rule,
     rejection_window: rule.rejection_window,
     deadline_convention: rule.deadline_convention,
+    business_day_end_local_time: rule.business_day_end_local_time,
     attribution_basis: rule.attribution_basis,
     evidence_precedence: rule.evidence_precedence,
+    fact_evidence_source_roles: rule.fact_evidence_source_roles,
     field_sources: rule.field_sources,
     version: rule.version ?? 1,
     supersedes_rule_id: rule.supersedes_rule_id ?? null,
@@ -162,12 +166,24 @@ export async function confirmQualificationRuleFieldAndPersist(
     return rowToRule(row)
   }
 
+  if (fieldPath.startsWith('fact_evidence_source_roles.')) {
+    const key = fieldPath.slice('fact_evidence_source_roles.'.length)
+    const { data, error } = await supabaseServer.rpc('set_qualification_rule_fact_evidence_source_roles_key', {
+      p_rule_id: id, p_key: key, p_value: updated.fact_evidence_source_roles[key],
+    })
+    if (error) throw new Error(`confirmQualificationRuleFieldAndPersist failed: ${error.message}`)
+    const row = Array.isArray(data) ? data[0] : data
+    if (!row) throw new Error(`confirmQualificationRuleFieldAndPersist: rule ${id} was not updated — it may have been activated or superseded concurrently`)
+    return rowToRule(row)
+  }
+
   const independentColumnValues: Record<string, unknown> = {
     criteria: updated.criteria,
     dedupe_rule: updated.dedupe_rule,
     rejection_rule: updated.rejection_rule,
     rejection_window: updated.rejection_window,
     deadline_convention: updated.deadline_convention,
+    business_day_end_local_time: updated.business_day_end_local_time,
     attribution_basis: updated.attribution_basis,
   }
   if (!(fieldPath in independentColumnValues)) throw new Error(`confirmQualificationRuleFieldAndPersist: unrecognized field path '${fieldPath}'`)

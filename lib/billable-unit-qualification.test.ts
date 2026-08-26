@@ -150,12 +150,18 @@ describe('validateQualificationRuleFieldReferences', () => {
         extensions: { value: [], state: 'decision_required', provenance: null },
         attestation_fact_key: { value: null, state: 'decision_required', provenance: null },
       },
-      dedupe_rule: { value: { key_fields: ['account.id'], lookback: { days: 30, unit: 'calendar' }, scope: [] }, state: 'clear_from_source', provenance: null },
+      dedupe_rule: { value: { key_fields: ['account.id'], lookback: { days: 30, unit: 'calendar' }, scope: [], discovery_coverage_role_keys: [] }, state: 'clear_from_source', provenance: null },
       rejection_rule: { value: null, state: 'decision_required', provenance: null },
       rejection_window: { value: null, state: 'decision_required', provenance: null },
       deadline_convention: { value: null, state: 'decision_required', provenance: null },
+      business_day_end_local_time: { value: null, state: 'decision_required', provenance: null },
       attribution_basis: { value: null, state: 'decision_required', provenance: null },
       evidence_precedence: {},
+      fact_evidence_source_roles: {
+        amount: { value: ['crm'], state: 'clear_from_source', provenance: null },
+        role: { value: ['crm'], state: 'clear_from_source', provenance: null },
+        'account.id': { value: ['crm'], state: 'clear_from_source', provenance: null },
+      },
       field_sources: {},
       version: 1, revision: 1, supersedes_rule_id: null,
       effective_from: '2026-01-01T00:00:00Z', effective_to: null, status: 'draft',
@@ -186,7 +192,16 @@ describe('validateQualificationRuleFieldReferences', () => {
   })
 
   it('accepts a declared BOOLEAN qualified_contact_role.attestation_fact_key', () => {
-    const withKey = baseRule({ fact_schema: { ...validFactSchema, approved: { type: 'boolean', reference_time: 'occurred_at' } }, qualified_contact_role: { base: { value: { field: 'role', operator: 'in', value: ['A'] }, state: 'clear_from_source', provenance: null }, extensions: { value: [], state: 'decision_required', provenance: null }, attestation_fact_key: { value: 'approved', state: 'decision_required', provenance: null } } })
+    const withKey = baseRule({
+      fact_schema: { ...validFactSchema, approved: { type: 'boolean', reference_time: 'occurred_at' } },
+      qualified_contact_role: { base: { value: { field: 'role', operator: 'in', value: ['A'] }, state: 'clear_from_source', provenance: null }, extensions: { value: [], state: 'decision_required', provenance: null }, attestation_fact_key: { value: 'approved', state: 'decision_required', provenance: null } },
+      fact_evidence_source_roles: {
+        amount: { value: ['crm'], state: 'clear_from_source', provenance: null },
+        role: { value: ['crm'], state: 'clear_from_source', provenance: null },
+        'account.id': { value: ['crm'], state: 'clear_from_source', provenance: null },
+        approved: { value: ['reviewer_attestation'], state: 'clear_from_source', provenance: null },
+      },
+    })
     expect(validateQualificationRuleFieldReferences(withKey)).toEqual([])
   })
 
@@ -208,18 +223,18 @@ describe('validateQualificationRuleFieldReferences', () => {
   })
 
   it('rejects dedupe_rule.key_fields referencing an undeclared fact — the exact OS-2026-09 gap', () => {
-    const rule = baseRule({ dedupe_rule: { value: { key_fields: ['undeclared_key'], lookback: { days: 30, unit: 'calendar' }, scope: [] }, state: 'clear_from_source', provenance: null } })
+    const rule = baseRule({ dedupe_rule: { value: { key_fields: ['undeclared_key'], lookback: { days: 30, unit: 'calendar' }, scope: [], discovery_coverage_role_keys: [] }, state: 'clear_from_source', provenance: null } })
     const errors = validateQualificationRuleFieldReferences(rule)
     expect(errors.some(e => e.path === 'dedupe_rule.key_fields.undeclared_key')).toBe(true)
   })
 
   it('accepts a declared dedupe_rule.key_fields entry', () => {
-    const rule = baseRule({ dedupe_rule: { value: { key_fields: ['account.id'], lookback: { days: 30, unit: 'calendar' }, scope: [] }, state: 'clear_from_source', provenance: null } })
+    const rule = baseRule({ dedupe_rule: { value: { key_fields: ['account.id'], lookback: { days: 30, unit: 'calendar' }, scope: [], discovery_coverage_role_keys: [] }, state: 'clear_from_source', provenance: null } })
     expect(validateQualificationRuleFieldReferences(rule)).toEqual([])
   })
 
   it('rejects a dedupe_rule.scope condition referencing an undeclared fact', () => {
-    const rule = baseRule({ dedupe_rule: { value: { key_fields: ['account.id'], lookback: { days: 30, unit: 'calendar' }, scope: [{ field: 'undeclared_scope_field', operator: 'eq', value: true }] }, state: 'clear_from_source', provenance: null } })
+    const rule = baseRule({ dedupe_rule: { value: { key_fields: ['account.id'], lookback: { days: 30, unit: 'calendar' }, scope: [{ field: 'undeclared_scope_field', operator: 'eq', value: true }], discovery_coverage_role_keys: [] }, state: 'clear_from_source', provenance: null } })
     const errors = validateQualificationRuleFieldReferences(rule)
     expect(errors.some(e => e.path.startsWith('dedupe_rule.scope.'))).toBe(true)
   })
@@ -271,8 +286,8 @@ describe('OS-2026-09 fixture — before any reviewer confirmation', () => {
   it('qualified_contact_role.extensions starts empty and does not by itself block readiness', () => {
     expect(rule.qualified_contact_role.extensions.value).toEqual([])
   })
-  it('extractReferencedSourceRoleKeys finds every role_key the rule actually references — crm, portal (rejection channels), conferencing, calendar (evidence precedence) — deduplicated', () => {
-    expect(extractReferencedSourceRoleKeys(rule).sort()).toEqual(['calendar', 'conferencing', 'crm', 'portal'])
+  it('extractReferencedSourceRoleKeys finds every role_key the rule actually references — crm, portal (rejection channels), conferencing, calendar (evidence precedence), plus every fact_evidence_source_roles capable source (enrichment, public_materials, reviewer_attestation) — deduplicated', () => {
+    expect(extractReferencedSourceRoleKeys(rule).sort()).toEqual(['calendar', 'conferencing', 'crm', 'enrichment', 'portal', 'public_materials', 'reviewer_attestation'])
   })
 })
 
@@ -293,10 +308,14 @@ describe('OS-2026-09 fixture — after confirming only the unresolved/recommende
     // whole group in the UI, while the executable rule representation
     // stays fact-key-specific (see the grouped-decision test below).
     rule = confirmQualificationRuleField(rule, 'deadline_convention', 'end_of_business_day')
+    rule = confirmQualificationRuleField(rule, 'business_day_end_local_time', '17:00:00')
     rule = confirmQualificationRuleField(rule, 'attribution_basis')  // accept the recommendation as-is
     rule = confirmQualificationRuleField(rule, 'qualified_contact_role.attestation_fact_key')  // accept the recommended mechanism/key as-is
     for (const key of UNRESOLVED_ICP_PRECEDENCE_KEYS) {
       rule = confirmQualificationRuleField(rule, `evidence_precedence.${key}`, { kind: 'source_precedence', order: ['crm', 'enrichment'] })
+    }
+    for (const key of Object.keys(rule.fact_evidence_source_roles)) {
+      rule = confirmQualificationRuleField(rule, `fact_evidence_source_roles.${key}`)
     }
 
     expect(rule.deadline_convention).toEqual({ value: 'end_of_business_day', state: 'decision_required', provenance: 'reviewer_policy' })
