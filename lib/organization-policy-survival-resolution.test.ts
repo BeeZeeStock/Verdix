@@ -9,10 +9,11 @@
 // scenario below (including the draft/scheduled-policy ones) is provable
 // from these two pure functions alone.
 import { describe, it, expect } from 'vitest'
-import { resolveProductionOrganizationField } from './rulebook/organization-rulebook-production'
+import { resolveProductionOrganizationField, organizationPolicyAvailableForUnresolvedReason, resolveAuthoritativeUnresolvedReason } from './rulebook/organization-rulebook-production'
 import { buildCreditApplicationRule } from './credit-application-rule'
 import type { OrganizationRuleRecord } from './rulebook/organization-rules'
 import type { CurrentFieldState } from './rulebook/organization-rulebook-shadow'
+import type { UnresolvedReason } from './rule-interpretation'
 
 function rebateRule(overrides: Partial<OrganizationRuleRecord> = {}): OrganizationRuleRecord {
   return {
@@ -184,5 +185,125 @@ describe('a disabled policy never auto-resolves either', () => {
   it('status=disabled is excluded the same way draft is', () => {
     const resolution = resolveFor('rebate', [rebateRule({ status: 'disabled' })])
     expect(resolution.status).toBe('not_applicable')
+  })
+})
+
+// Step 16A (amended) — the organization-policy availability/application
+// predicate (lib/rulebook/organization-rulebook-production.ts). Mirrors the
+// exact TWO-STAGE composition both propose-rule/route.ts and
+// confirm-rule/route.ts use: resolveAuthoritativeUnresolvedReason turns a
+// possibly-missing cached reason + the real source clause into a definite
+// UnresolvedReason FIRST, and only that definite value is ever handed to
+// organizationPolicyAvailableForUnresolvedReason — the predicate itself
+// never sees a stored value or a source clause directly.
+function resolveWithUnresolvedReasonGate(
+  ruleType: string,
+  rules: OrganizationRuleRecord[],
+  storedReason: UnresolvedReason | undefined,
+  sourceClause: string | null = null,
+  current: CurrentFieldState = { value: 'unclear', provenance: null },
+) {
+  const authoritativeReason = resolveAuthoritativeUnresolvedReason(storedReason, sourceClause, 'survival')
+  if (!organizationPolicyAvailableForUnresolvedReason(authoritativeReason)) {
+    return { status: 'not_applicable' as const, reason: 'suppressed by explicit contractual non-agreement' }
+  }
+  return resolveFor(ruleType, rules, current)
+}
+
+describe('organizationPolicyAvailableForUnresolvedReason — Step 16A predicate', () => {
+  it('is available when unresolved_reason is "silent"', () => {
+    expect(organizationPolicyAvailableForUnresolvedReason('silent')).toBe(true)
+  })
+
+  it('is NOT available when unresolved_reason is "explicit_non_agreement"', () => {
+    expect(organizationPolicyAvailableForUnresolvedReason('explicit_non_agreement')).toBe(false)
+  })
+})
+
+describe('resolveAuthoritativeUnresolvedReason — Step 16A amendment, item 3: legacy proposal caches must be safe', () => {
+  it('a stored "silent" plus a genuinely silent source clause stays "silent"', () => {
+    expect(resolveAuthoritativeUnresolvedReason('silent', 'Customer receives a rebate equal to 5% of transaction-processing fees.', 'survival')).toBe('silent')
+  })
+
+  it('a stored "explicit_non_agreement" is trusted (validated by construction: any fresh proposal that set it already ran the source-clause check)', () => {
+    expect(resolveAuthoritativeUnresolvedReason('explicit_non_agreement', null, 'survival')).toBe('explicit_non_agreement')
+  })
+
+  it('legacy cache (no stored reason at all) + a source clause that explicitly establishes non-agreement -> derives explicit_non_agreement, never silently defaults to silent', () => {
+    expect(resolveAuthoritativeUnresolvedReason(undefined, 'The parties do not agree in this Agreement whether an unused rebate credit survives termination.', 'survival')).toBe('explicit_non_agreement')
+  })
+
+  it('legacy cache (no stored reason at all) + genuine silence in the source clause -> silent, org policy remains available', () => {
+    expect(resolveAuthoritativeUnresolvedReason(undefined, 'Customer receives a rebate equal to 5% of transaction-processing fees paid in the prior Contract Year.', 'survival')).toBe('silent')
+  })
+
+  it('legacy cache + no source clause captured at all -> silent (nothing to ground a claim of non-agreement in)', () => {
+    expect(resolveAuthoritativeUnresolvedReason(undefined, null, 'survival')).toBe('silent')
+  })
+
+  // Step 16A second amendment — field specificity must hold through this
+  // path too: a legacy cache for a credit whose clause states non-agreement
+  // about CASH only must not suppress the org policy, which only ever
+  // concerns survival.carry_forward.
+  it('legacy cache (no stored reason) + a source clause whose non-agreement language concerns cash, not survival -> survival still resolves to "silent", org policy remains available', () => {
+    expect(resolveAuthoritativeUnresolvedReason(undefined, 'Unused credits carry forward until fully used. The parties do not agree whether the credit is redeemable for cash.', 'survival')).toBe('silent')
+  })
+})
+
+describe('J. true silence + active org policy -> policy still available/applied, exactly as before Step 16A', () => {
+  it('resolves normally when unresolved_reason is "silent"', () => {
+    const resolution = resolveWithUnresolvedReasonGate('rebate', [rebateRule()], 'silent', 'Customer receives a rebate equal to 5% of transaction-processing fees.')
+    expect(resolution.status).toBe('resolved')
+
+    const result = buildCreditApplicationRule(baseApproved('unclear'), null, { eligibility: 'contract_derived', survival: undefined }, resolution)
+    expect(result?.survival_provenance).toBe('organization_rulebook')
+    expect(result?.carry_forward).toBe(true)
+    expect(result?.requires_confirmation).toBe(false)
+  })
+
+  it('legacy cache (unresolved_reason undefined) + a genuinely silent source clause -> policy remains available, resolves normally', () => {
+    const resolution = resolveWithUnresolvedReasonGate('rebate', [rebateRule()], undefined, 'Customer receives a rebate equal to 5% of transaction-processing fees paid in the prior Contract Year.')
+    expect(resolution.status).toBe('resolved')
+  })
+})
+
+describe('K. explicit contractual unresolvedness (OS-2026-09 Annual Rebate) + active org policy -> policy suppressed, Decision Required remains', () => {
+  it('never even reaches resolveProductionOrganizationField — status stays not_applicable regardless of a real matching, resolved-eligible org policy', () => {
+    const resolution = resolveWithUnresolvedReasonGate('rebate', [rebateRule()], 'explicit_non_agreement', null)
+    expect(resolution.status).toBe('not_applicable')
+
+    const result = buildCreditApplicationRule(baseApproved('unclear'), null, { eligibility: 'contract_derived', survival: undefined }, resolution)
+    expect(result?.survival_provenance).toBeNull()
+    expect(result?.carry_forward).toBe('unclear')
+    expect(result?.survival_organization_rule_id).toBeNull()
+    // The Decision Required gate stays up — the org policy is never
+    // silently substituted for the agreement's own explicit unresolvedness.
+    expect(result?.requires_confirmation).toBe(true)
+  })
+
+  it('legacy cache (unresolved_reason undefined) + a source clause that explicitly establishes non-agreement -> policy suppressed just the same, without needing the cache entry recomputed first', () => {
+    const resolution = resolveWithUnresolvedReasonGate('rebate', [rebateRule()], undefined, 'The parties do not agree in this Agreement whether an unused rebate credit survives termination.')
+    expect(resolution.status).toBe('not_applicable')
+  })
+
+  it('the underlying org policy itself is completely unaffected — same active rule still resolves normally for a different, genuinely silent agreement', () => {
+    const rule = rebateRule()
+    const suppressed = resolveWithUnresolvedReasonGate('rebate', [rule], 'explicit_non_agreement', null)
+    expect(suppressed.status).toBe('not_applicable')
+
+    const stillActiveElsewhere = resolveWithUnresolvedReasonGate('rebate', [rule], 'silent', 'Customer receives a rebate equal to 5% of transaction-processing fees.')
+    expect(stillActiveElsewhere.status).toBe('resolved')
+    expect(rule.status).toBe('active')
+  })
+})
+
+describe('L. explicit contract answer always wins over org policy, independent of unresolved_reason (unreachable in practice since state would not be decision_required, exercised directly for completeness)', () => {
+  it('an already contract_derived value is untouched even when unresolved_reason would otherwise have permitted org-policy resolution', () => {
+    const resolution = resolveWithUnresolvedReasonGate('rebate', [rebateRule()], 'silent', null, { value: false, provenance: 'contract_derived' })
+    expect(resolution.status).toBe('not_applicable')
+
+    const result = buildCreditApplicationRule(baseApproved(false), null, { eligibility: 'contract_derived', survival: 'contract_derived' }, resolution)
+    expect(result?.carry_forward).toBe(false)
+    expect(result?.survival_provenance).toBe('contract_derived')
   })
 })

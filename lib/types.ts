@@ -430,7 +430,23 @@ export interface ServiceCreditInterpretation {
    *  cash_redeemable_provenance and lib/commercial-rule-status.ts's
    *  isServiceCreditUnresolved, which now gates readiness on it). A
    *  concrete true/false here does NOT by itself mean this field is
-   *  resolved — only cash_redeemable_provenance does. */
+   *  resolved — only cash_redeemable_provenance does.
+   *  Step 16A amendment, known scope gap (documented, not fixed here per
+   *  explicit instruction not to redesign this type in this amendment):
+   *  this is a single flat field with no before/after-termination (or any
+   *  other temporal/circumstantial) dimension. A contract can state
+   *  redeemability is clear during the active term while leaving
+   *  redeemability specifically after termination unresolved (OS-2026-09's
+   *  Annual Rebate: "...whether it is redeemable for cash after
+   *  termination") — this field cannot distinguish that narrower
+   *  uncertainty from "redeemability is unresolved in general." Grading
+   *  this 'unclear'/decision_required for such a clause is conservative
+   *  and safe (it never wrongly resolves a genuinely open question), but
+   *  is broader than the actual contractual uncertainty. A future change
+   *  that needs to express post-termination cash treatment as a distinct
+   *  question from ordinary-term cash treatment should add a new field
+   *  (e.g. alongside CreditApplicationRule's survival concept), not
+   *  overload this one. */
   cash_redeemable: boolean | 'unclear'
   /** Provenance for cash_redeemable specifically — same FieldProvenance
    *  discipline as CreditApplicationRule's eligibility_provenance/

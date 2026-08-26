@@ -1,8 +1,8 @@
-// Private Organization Rulebook — DB-touching orchestration (Step 5A/5B.5,
-// shadow mode only). Pure matching/validation logic lives in
-// organization-rules.ts; this file is the read/write glue around it,
-// mirroring the split already established between lib/credit-ledger.ts
-// (pure) and lib/credit-ledger-service.ts (DB-touching).
+// Private Organization Rulebook — DB-touching orchestration (Step 5A/5B.5).
+// Pure matching/validation logic lives in organization-rules.ts; this file
+// is the read/write glue around it, mirroring the split already
+// established between lib/credit-ledger.ts (pure) and
+// lib/credit-ledger-service.ts (DB-touching).
 //
 // Every function here takes organizationId as an explicit parameter and
 // filters every query by it — this module never trusts a caller-supplied
@@ -18,17 +18,20 @@
 // row-matching against a Supabase Auth session (this app doesn't issue
 // per-user Supabase sessions at all).
 //
-// IMPORTANT for whoever wires a route handler to this module later (no
-// production route exists yet): organizationId must always come from
-// requireOrg()'s trusted OrgContext.orgId (derived from the authenticated
-// session's org_memberships row), NEVER from a client-supplied request
-// body/query-param org id. This module has no way to enforce that itself —
-// it trusts whatever organizationId it's called with — so that discipline
-// belongs entirely to the future route handler, exactly like every other
-// org-scoped module in this codebase (e.g. app/api/jobs/[id]/*/route.ts
-// always calls requireOrg() first and uses its orgId, never a body field).
+// IMPORTANT for every route handler wired to this module: organizationId
+// must always come from requireOrg()'s trusted OrgContext.orgId (derived
+// from the authenticated session's org_memberships row), NEVER from a
+// client-supplied request body/query-param org id. This module has no way
+// to enforce that itself — it trusts whatever organizationId it's called
+// with — so that discipline belongs entirely to the route handler, exactly
+// like every other org-scoped module in this codebase (e.g.
+// app/api/jobs/[id]/*/route.ts always calls requireOrg() first and uses
+// its orgId, never a body field).
 //
-// Nothing in app/api or app/(dashboard) imports this module yet.
+// Production authority: app/api/org/rulebook/**/route.ts (rule
+// CRUD/activation/promotion) and app/api/jobs/[id]/propose-rule|confirm-rule
+// (organization-policy resolution during commercial-rule review) all import
+// this module.
 import { randomUUID } from 'node:crypto'
 import { supabaseServer } from '@/lib/supabase'
 import { validateOrganizationRuleShape } from './organization-rules'

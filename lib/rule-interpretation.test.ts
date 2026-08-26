@@ -13,6 +13,7 @@ import {
   buildServiceCreditPrompt,
   buildCreditSurvivalPrompt,
   validateProposalState,
+  sourceClauseStatesExplicitNonAgreement,
   parseRuleInterpretationResponse,
   describeMissingFieldQuestions,
   describeWhatWillChange,
@@ -687,6 +688,199 @@ describe('buildPartialPeriodProposalPrompt — scenario: contract silent on part
   })
 })
 
+describe('buildServiceCreditProposalPrompt — Step 16A: explicit unresolvedness schema (survival_state/cash_redeemable_state only)', () => {
+  it('emits the _unresolved_reason schema field and silent-vs-explicit-non-agreement guidance for survival_state and cash_redeemable_state', () => {
+    const prompt = buildServiceCreditProposalPrompt({
+      sourceClause: 'The parties do not agree in this Agreement whether an unused rebate credit survives termination.',
+      description: 'Annual Rebate', creditType: 'rebate', statedPct: 5, statedAmount: null, currency: 'SEK',
+    })
+    expect(prompt).toContain('"survival_state_unresolved_reason": "silent" | "explicit_non_agreement" | null,')
+    expect(prompt).toContain('"cash_redeemable_state_unresolved_reason": "silent" | "explicit_non_agreement" | null,')
+    expect(prompt).toMatch(/never infer "explicit_non_agreement" just because the field would otherwise be null/)
+  })
+
+  it('does not extend the _unresolved_reason schema to application_state — smallest structured distinction necessary, not applied everywhere', () => {
+    const prompt = buildServiceCreditProposalPrompt({
+      sourceClause: 'A Growth Credit is earned upon processing more than 2,000,000 transactions.',
+      description: 'Growth Credit', creditType: 'earned', statedPct: null, statedAmount: 110_000, currency: 'SEK',
+    })
+    expect(prompt).not.toContain('"application_state_unresolved_reason"')
+  })
+})
+
+describe('sourceClauseStatesExplicitNonAgreement — Step 16A(amended) detector, grounded in the actual contract clause, never AI reasoning', () => {
+  it('detects "the parties do not agree ... whether" for the survival field', () => {
+    expect(sourceClauseStatesExplicitNonAgreement('The parties do not agree in this Agreement whether an unused rebate credit survives termination.', 'survival')).toBe(true)
+  })
+
+  it('detects "does not agree ... whether it is redeemable for cash" (the live OS-2026-09 incident phrasing) for the cash field', () => {
+    expect(sourceClauseStatesExplicitNonAgreement('The parties do not agree whether it is redeemable for cash after termination.', 'cash_redeemability')).toBe(true)
+  })
+
+  it('detects "leaves ... unresolved" when tied to the target field', () => {
+    expect(sourceClauseStatesExplicitNonAgreement('The Agreement intentionally leaves the survival of unused credits after termination unresolved.', 'survival')).toBe(true)
+  })
+
+  it('detects "does not specify whether" when tied to the target field', () => {
+    expect(sourceClauseStatesExplicitNonAgreement('The Agreement does not specify whether the credit may be redeemed for cash.', 'cash_redeemability')).toBe(true)
+  })
+
+  it('does NOT treat plain silence (no non-agreement language at all) as explicit non-agreement', () => {
+    expect(sourceClauseStatesExplicitNonAgreement('Customer receives a 5% rebate of transaction-processing fees paid in the prior Contract Year.', 'survival')).toBe(false)
+    expect(sourceClauseStatesExplicitNonAgreement('Customer receives a 5% rebate of transaction-processing fees paid in the prior Contract Year.', 'cash_redeemability')).toBe(false)
+  })
+
+  it('does NOT treat an unambiguous one-directional statement as explicit non-agreement', () => {
+    expect(sourceClauseStatesExplicitNonAgreement('This credit may not be redeemed for cash.', 'cash_redeemability')).toBe(false)
+  })
+
+  it('returns false for a null/undefined source clause — no clause to ground a claim in', () => {
+    expect(sourceClauseStatesExplicitNonAgreement(null, 'survival')).toBe(false)
+    expect(sourceClauseStatesExplicitNonAgreement(undefined, 'cash_redeemability')).toBe(false)
+  })
+
+  // Step 16A second amendment — field specificity. Non-agreement language
+  // about ONE field must never bleed into an unrelated field just because
+  // both are mentioned somewhere in the same source_clause string.
+  describe('field specificity — one field\'s non-agreement language must not attach to a different field', () => {
+    const survivalOnly = 'The parties do not agree whether unused credits survive termination. The credit may not be redeemed for cash.'
+    it('"survival unresolved, cash stated false" — survival is explicit_non_agreement', () => {
+      expect(sourceClauseStatesExplicitNonAgreement(survivalOnly, 'survival')).toBe(true)
+    })
+    it('"survival unresolved, cash stated false" — cash is NOT explicit_non_agreement (the directional "may not be redeemed" sentence has no non-agreement language of its own)', () => {
+      expect(sourceClauseStatesExplicitNonAgreement(survivalOnly, 'cash_redeemability')).toBe(false)
+    })
+
+    const cashOnly = 'Unused credits carry forward until fully used. The parties do not agree whether the credit is redeemable for cash.'
+    it('"survival stated carry-forward, cash unresolved" — survival is NOT explicit_non_agreement (the carry-forward sentence has no non-agreement language of its own)', () => {
+      expect(sourceClauseStatesExplicitNonAgreement(cashOnly, 'survival')).toBe(false)
+    })
+    it('"survival stated carry-forward, cash unresolved" — cash is explicit_non_agreement', () => {
+      expect(sourceClauseStatesExplicitNonAgreement(cashOnly, 'cash_redeemability')).toBe(true)
+    })
+
+    const bothUnresolved = 'The parties do not agree whether an unused rebate credit survives termination or whether it is redeemable for cash after termination.'
+    it('a single compound sentence genuinely addressing both fields together — both are explicit_non_agreement', () => {
+      expect(sourceClauseStatesExplicitNonAgreement(bothUnresolved, 'survival')).toBe(true)
+      expect(sourceClauseStatesExplicitNonAgreement(bothUnresolved, 'cash_redeemability')).toBe(true)
+    })
+
+    const cashOnlyDirectional = 'The credit may not be redeemed for cash.'
+    it('a clause addressing only cash, with no non-agreement language at all — neither field is explicit_non_agreement', () => {
+      expect(sourceClauseStatesExplicitNonAgreement(cashOnlyDirectional, 'survival')).toBe(false)
+      expect(sourceClauseStatesExplicitNonAgreement(cashOnlyDirectional, 'cash_redeemability')).toBe(false)
+    })
+  })
+})
+
+// Step 16A amendment, item 1/2 — the regression this whole amendment
+// exists to prevent: reasoning text is model-generated explanatory prose
+// and must never be authoritative on its own for something that gates an
+// organization policy, even when it uses exactly the qualifying phrasing.
+describe('validateProposalState — AI reasoning alone can never establish explicit_non_agreement (Step 16A amendment)', () => {
+  it('reasoning claims "the parties do not agree" but the real source clause does not — state/value are NOT forced to decision_required/unclear, and unresolved_reason is "silent"', () => {
+    const result = validateProposalState(proposal({
+      state: 'clear_from_source',
+      survival_state: 'clear_from_source',
+      proposed_interpretation: { trigger_type: 'usage_threshold', application_rule: { eligible_component_keys: 'all', carry_forward: true, one_time: false } },
+      // The model's own (here, hallucinated/misattributed) reasoning —
+      // must NOT be trusted on its own.
+      reasoning: 'The parties do not agree whether this survives termination.',
+    }), true, 'Customer receives a 5% rebate of transaction-processing fees paid in the prior Contract Year, credited within 45 days.')
+    expect(result.survival_state).toBe('clear_from_source')
+    expect(result.survival_unresolved_reason).toBeUndefined()
+    const appRule = (result.proposed_interpretation as Record<string, unknown>).application_rule as Record<string, unknown>
+    expect(appRule.carry_forward).toBe(true)
+  })
+
+  it('the same reasoning text, but the real source clause DOES state non-agreement — forced to decision_required/explicit_non_agreement, exactly as before', () => {
+    const result = validateProposalState(proposal({
+      state: 'clear_from_source',
+      survival_state: 'clear_from_source',
+      proposed_interpretation: { trigger_type: 'usage_threshold', application_rule: { eligible_component_keys: 'all', carry_forward: true, one_time: false } },
+      reasoning: 'The parties do not agree whether this survives termination.',
+    }), true, 'The parties do not agree in this Agreement whether an unused rebate credit survives termination.')
+    expect(result.survival_state).toBe('decision_required')
+    expect(result.survival_unresolved_reason).toBe('explicit_non_agreement')
+  })
+})
+
+// Step 16A second amendment, end to end — the same source_clause is
+// passed to validateProposalState once per credit, and survival/cash are
+// graded from the SAME string. Field scoping must hold through the real
+// call path, not just in the pure detector.
+describe('validateProposalState — field-specific explicit unresolvedness end to end (mixed-clause scenarios)', () => {
+  it('"survival unresolved, cash stated false" — survival becomes decision_required/explicit_non_agreement while cash stays a concrete false/clear_from_source', () => {
+    const mixedClause = 'The parties do not agree whether unused credits survive termination. The credit may not be redeemed for cash.'
+    const result = validateProposalState(proposal({
+      state: 'clear_from_source',
+      survival_state: 'clear_from_source',
+      cash_redeemable_state: 'clear_from_source',
+      proposed_interpretation: {
+        trigger_type: 'usage_threshold', cash_redeemable: false,
+        application_rule: { eligible_component_keys: 'all', carry_forward: true, one_time: false },
+      },
+      reasoning: 'The clause addresses both survival and cash redemption.',
+    }), true, mixedClause)
+    expect(result.survival_state).toBe('decision_required')
+    expect(result.survival_unresolved_reason).toBe('explicit_non_agreement')
+    expect(result.cash_redeemable_state).toBe('clear_from_source')
+    expect(result.cash_redeemable_unresolved_reason).toBeUndefined()
+    expect((result.proposed_interpretation as Record<string, unknown>).cash_redeemable).toBe(false)
+  })
+
+  it('"survival stated carry-forward, cash unresolved" — survival stays a concrete carry-forward/clear_from_source while cash becomes decision_required/explicit_non_agreement', () => {
+    const mixedClause = 'Unused credits carry forward until fully used. The parties do not agree whether the credit is redeemable for cash.'
+    const result = validateProposalState(proposal({
+      state: 'clear_from_source',
+      survival_state: 'clear_from_source',
+      cash_redeemable_state: 'clear_from_source',
+      proposed_interpretation: {
+        trigger_type: 'usage_threshold', cash_redeemable: true,
+        application_rule: { eligible_component_keys: 'all', carry_forward: true, one_time: false },
+      },
+      reasoning: 'The clause addresses both survival and cash redemption.',
+    }), true, mixedClause)
+    expect(result.survival_state).toBe('clear_from_source')
+    expect(result.survival_unresolved_reason).toBeUndefined()
+    const appRule = (result.proposed_interpretation as Record<string, unknown>).application_rule as Record<string, unknown>
+    expect(appRule.carry_forward).toBe(true)
+    expect(result.cash_redeemable_state).toBe('decision_required')
+    expect(result.cash_redeemable_unresolved_reason).toBe('explicit_non_agreement')
+  })
+
+  it('a single compound sentence genuinely addressing both survival and cash together — both become decision_required/explicit_non_agreement', () => {
+    const mixedClause = 'The parties do not agree whether an unused rebate credit survives termination or whether it is redeemable for cash after termination.'
+    const result = validateProposalState(proposal({
+      state: 'clear_from_source',
+      survival_state: 'clear_from_source',
+      cash_redeemable_state: 'clear_from_source',
+      proposed_interpretation: {
+        trigger_type: 'usage_threshold', cash_redeemable: false,
+        application_rule: { eligible_component_keys: 'all', carry_forward: true, one_time: false },
+      },
+      reasoning: 'The clause leaves both survival and cash redemption open.',
+    }), true, mixedClause)
+    expect(result.survival_state).toBe('decision_required')
+    expect(result.survival_unresolved_reason).toBe('explicit_non_agreement')
+    expect(result.cash_redeemable_state).toBe('decision_required')
+    expect(result.cash_redeemable_unresolved_reason).toBe('explicit_non_agreement')
+  })
+
+  it('a clause addressing only cash, directionally, with no non-agreement language — cash is a concrete false, survival is untouched (not asked for on this proposal)', () => {
+    const result = validateProposalState(proposal({
+      state: 'clear_from_source',
+      cash_redeemable_state: 'clear_from_source',
+      proposed_interpretation: { trigger_type: 'usage_threshold', cash_redeemable: false },
+      reasoning: 'The clause states this credit may not be redeemed for cash.',
+    }), true, 'The credit may not be redeemed for cash.')
+    expect(result.cash_redeemable_state).toBe('clear_from_source')
+    expect(result.cash_redeemable_unresolved_reason).toBeUndefined()
+    expect((result.proposed_interpretation as Record<string, unknown>).cash_redeemable).toBe(false)
+    expect(result.survival_unresolved_reason).toBeUndefined()
+  })
+})
+
 describe('validateProposalState — safety net, only ever downgrades', () => {
   it('leaves a well-formed clear_from_source proposal untouched when a source clause is available', () => {
     const result = validateProposalState(proposal({ state: 'clear_from_source' }), true)
@@ -874,6 +1068,47 @@ describe('validateProposalState — safety net, only ever downgrades', () => {
       const result = validateProposalState(proposal({ state: 'clear_from_source' }), true)
       expect(result.survival_state).toBeUndefined()
     })
+
+    // Step 16A
+    describe('survival_unresolved_reason (silent vs. explicit_non_agreement)', () => {
+      it('OS-2026-09 Annual Rebate: source clause states "the parties do not agree ... whether survives termination" — forces survival_state decision_required with unresolved_reason explicit_non_agreement, even when the model claimed clear_from_source', () => {
+        const result = validateProposalState(proposal({
+          state: 'clear_from_source',
+          survival_state: 'clear_from_source',
+          proposed_interpretation: { trigger_type: 'usage_threshold', application_rule: { eligible_component_keys: 'all', carry_forward: true, one_time: false } },
+          reasoning: 'The clause states a 5% rebate; the survival question is addressed separately in the agreement.',
+        }), true, 'The parties do not agree in this Agreement whether an unused rebate credit survives termination.')
+        expect(result.survival_state).toBe('decision_required')
+        expect(result.survival_unresolved_reason).toBe('explicit_non_agreement')
+      })
+
+      it('true silence (no non-agreement language in the source clause) still grades survival_unresolved_reason "silent"', () => {
+        const result = validateProposalState(proposal({
+          state: 'clear_from_source',
+          application_state: 'decision_required',
+          survival_state: 'decision_required',
+          proposed_interpretation: { trigger_type: 'usage_threshold', application_rule: { eligible_component_keys: null, carry_forward: 'unclear', one_time: 'unclear' } },
+          reasoning: 'The clause states a 5% rebate but never says what it may offset or how long it survives unused.',
+        }), true, 'Customer receives a rebate equal to 5% of transaction-processing fees paid in the prior Contract Year.')
+        expect(result.survival_state).toBe('decision_required')
+        expect(result.survival_unresolved_reason).toBe('silent')
+      })
+
+      it('is undefined whenever survival_state resolves to something other than decision_required', () => {
+        const result = validateProposalState(proposal({
+          state: 'clear_from_source',
+          survival_state: 'clear_from_source',
+          proposed_interpretation: { trigger_type: 'usage_threshold', application_rule: { eligible_component_keys: ['transaction_processing'], carry_forward: true, one_time: true } },
+          reasoning: 'The clause states the credit is one-time and carries forward until consumed.',
+        }), true, 'This credit is one-time and carries forward until consumed.')
+        expect(result.survival_unresolved_reason).toBeUndefined()
+      })
+
+      it('is undefined for rule types that never asked for survival_state at all', () => {
+        const result = validateProposalState(proposal({ state: 'clear_from_source' }), true)
+        expect(result.survival_unresolved_reason).toBeUndefined()
+      })
+    })
   })
 
   describe('cash_redeemable_state (Step 1.5 — fourth independent grade, cash_redeemable only)', () => {
@@ -930,6 +1165,65 @@ describe('validateProposalState — safety net, only ever downgrades', () => {
     it('is undefined for rule types that never asked for it', () => {
       const result = validateProposalState(proposal({ state: 'clear_from_source' }), true)
       expect(result.cash_redeemable_state).toBeUndefined()
+    })
+
+    // Step 16A — the actual OS-2026-09 bug fix: "the parties do not agree
+    // ... whether it is redeemable for cash" was persisted as
+    // cash_redeemable: false, cash_redeemable_state: clear_from_source.
+    describe('cash_redeemable_unresolved_reason (silent vs. explicit_non_agreement) — Step 16A', () => {
+      it('source clause "do not agree whether redeemable for cash after termination" must NOT become false — forces decision_required/explicit_non_agreement even when the model claimed a confident false', () => {
+        const result = validateProposalState(proposal({
+          state: 'clear_from_source',
+          cash_redeemable_state: 'clear_from_source',
+          proposed_interpretation: { trigger_type: 'usage_threshold', cash_redeemable: false, application_rule: { eligible_component_keys: 'all' } },
+          reasoning: 'The clause states a 5% rebate; cash treatment after termination is addressed separately.',
+        }), true, 'The parties do not agree in this Agreement whether it is redeemable for cash after termination.')
+        expect(result.cash_redeemable_state).toBe('decision_required')
+        expect(result.cash_redeemable_unresolved_reason).toBe('explicit_non_agreement')
+        expect((result.proposed_interpretation as Record<string, unknown>).cash_redeemable).toBe('unclear')
+      })
+
+      it('source clause "may not be redeemed for cash" is an unambiguous one-directional statement and still becomes a concrete false, clear_from_source, with no unresolved_reason', () => {
+        const result = validateProposalState(proposal({
+          state: 'clear_from_source',
+          cash_redeemable_state: 'clear_from_source',
+          proposed_interpretation: { trigger_type: 'usage_threshold', cash_redeemable: false, application_rule: { eligible_component_keys: 'all' } },
+          reasoning: 'The clause states this credit may not be redeemed for cash.',
+        }), true, 'This credit may not be redeemed for cash.')
+        expect(result.cash_redeemable_state).toBe('clear_from_source')
+        expect((result.proposed_interpretation as Record<string, unknown>).cash_redeemable).toBe(false)
+        expect(result.cash_redeemable_unresolved_reason).toBeUndefined()
+      })
+
+      it('true silence (no non-agreement language in the source clause) still grades cash_redeemable_unresolved_reason "silent"', () => {
+        const result = validateProposalState(proposal({
+          state: 'clear_from_source',
+          cash_redeemable_state: 'decision_required',
+          proposed_interpretation: { trigger_type: 'sla_breach', cash_redeemable: 'unclear' },
+          reasoning: 'The clause states a 10% monthly service credit against the platform fee, capped at 25%.',
+        }), true, 'A 10% monthly service credit against the platform fee applies, capped at 25%.')
+        expect(result.cash_redeemable_unresolved_reason).toBe('silent')
+      })
+
+      // Step 16A amendment, item 2 — reasoning alone (even with the exact
+      // qualifying phrase) must never suppress an organization policy;
+      // only the real source clause is authoritative.
+      it('reasoning claims "do not agree ... whether redeemable for cash" but the real source clause is silent — does NOT become explicit_non_agreement, and the model-proposed false is preserved', () => {
+        const result = validateProposalState(proposal({
+          state: 'clear_from_source',
+          cash_redeemable_state: 'clear_from_source',
+          proposed_interpretation: { trigger_type: 'usage_threshold', cash_redeemable: false, application_rule: { eligible_component_keys: 'all' } },
+          reasoning: 'The parties do not agree whether it is redeemable for cash after termination.',
+        }), true, 'This credit may not be redeemed for cash.')
+        expect(result.cash_redeemable_state).toBe('clear_from_source')
+        expect((result.proposed_interpretation as Record<string, unknown>).cash_redeemable).toBe(false)
+        expect(result.cash_redeemable_unresolved_reason).toBeUndefined()
+      })
+
+      it('is undefined for rule types that never asked for cash_redeemable_state at all', () => {
+        const result = validateProposalState(proposal({ state: 'clear_from_source' }), true)
+        expect(result.cash_redeemable_unresolved_reason).toBeUndefined()
+      })
     })
   })
 })

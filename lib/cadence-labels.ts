@@ -27,6 +27,18 @@ export function partialPeriodLabel(period: string | null | undefined): string {
   return `Partial-${cadenceNoun(period)} treatment`
 }
 
+// Step 16A — the volume-tier-method explanatory copy, generalized by the
+// contract's own unitType instead of hardcoded to "transaction". This
+// string previously appeared verbatim in three places (two in
+// configure/[id]/page.tsx, one in RevenueModelTab.tsx) and always said
+// "total monthly transaction volume ... every transaction", which is wrong
+// for any contract priced on a different unit (e.g. OS-2026-09's SQMs).
+// No pricing semantics here — copy only.
+export function volumeTierCopy(unitType: string | null | undefined): string {
+  const unit = unitType?.trim() || 'unit'
+  return `The rate corresponding to total monthly ${unit} volume applies to every ${unit} in that calendar month; tiers are not progressive.`
+}
+
 function ordinal(day: number): string {
   const j = day % 10, k = day % 100
   if (j === 1 && k !== 11) return `${day}st`

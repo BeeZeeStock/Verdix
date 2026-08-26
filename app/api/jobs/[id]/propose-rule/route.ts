@@ -58,7 +58,7 @@ import {
   type RuleInteractionContext,
 } from '@/lib/rule-interpretation'
 import { listMatchableOrganizationRules } from '@/lib/rulebook/organization-rules-service'
-import { resolveProductionOrganizationField } from '@/lib/rulebook/organization-rulebook-production'
+import { resolveProductionOrganizationField, organizationPolicyAvailableForUnresolvedReason, resolveAuthoritativeUnresolvedReason } from '@/lib/rulebook/organization-rulebook-production'
 
 type TierRow = {
   tier_label: string
@@ -98,10 +98,34 @@ function sourceClauseFor(extracted: string | null | undefined, clientSupplied: s
 // explicit or recommended AI value. Returns the SAME proposal object
 // (referentially) when nothing applies, so callers can pass it straight
 // through without a defensive null-check.
+//
+// Step 16A — 'decision_required' alone is not enough: it collapses two
+// different facts (see UnresolvedReason's own comment) — the contract
+// simply never raising this question, versus the contract affirmatively
+// stating the parties did NOT reach agreement on it. A real negotiated
+// non-agreement is stronger, still-contract-derived evidence than
+// ordinary silence, and an organization-wide default must never silently
+// stand in for it — the authority hierarchy is contract-derived > reviewer
+// policy > organization policy > Verdix rulebook > Verdix recommendation,
+// and an explicit (if unresolved) contract fact outranks an organization
+// default. Confirmed live: OS-2026-09's Annual Rebate states "The parties
+// do not agree in this Agreement whether an unused rebate credit survives
+// termination" — that must surface as a contract-level Decision Required
+// for THIS agreement, never auto-filled from an unrelated org-wide
+// carry-forward default.
+// sourceClause: the credit's actual persisted source_clause text (the
+// same resolvedSourceClause this proposal's own prompt was built from,
+// whichever call site — fresh compute or cache-hit — is invoking this).
+// Step 16A amendment (item 3): a cached proposal's survival_unresolved_reason
+// may be `undefined` (any cache entry written before this field existed),
+// which must never be silently treated as 'silent' — resolveAuthoritative
+// UnresolvedReason re-derives it from the real clause text instead.
 async function withOrganizationPolicyAvailability(
-  proposal: RuleProposal, orgId: string, creditType: string,
+  proposal: RuleProposal, orgId: string, creditType: string, sourceClause: string | null,
 ): Promise<RuleProposal> {
   if (proposal.survival_state !== 'decision_required') return proposal
+  const unresolvedReason = resolveAuthoritativeUnresolvedReason(proposal.survival_unresolved_reason, sourceClause, 'survival')
+  if (!organizationPolicyAvailableForUnresolvedReason(unresolvedReason)) return proposal
   const orgRules = await listMatchableOrganizationRules(orgId)
   const resolution = resolveProductionOrganizationField('survival.carry_forward', {
     organizationId: orgId,
@@ -422,7 +446,7 @@ export async function POST(
     // this check is a cheap deterministic DB read, not an AI call, so
     // there is no cost reason to let it go stale for the life of the cache.
     const cachedProposal = ruleType === 'service_credit' && serviceCreditType
-      ? await withOrganizationPolicyAvailability(cached.proposal, org.orgId, serviceCreditType)
+      ? await withOrganizationPolicyAvailability(cached.proposal, org.orgId, serviceCreditType, resolvedSourceClause)
       : cached.proposal
     return NextResponse.json({ ok: true, proposal: cachedProposal, cached: true })
   }
@@ -520,7 +544,7 @@ export async function POST(
     cash_redeemable_state: parsedRaw.cash_redeemable_state as RuleProposal['cash_redeemable_state'],
   }
 
-  const proposal = validateProposalState(rawProposal, sourceClauseAvailable)
+  const proposal = validateProposalState(rawProposal, sourceClauseAvailable, resolvedSourceClause)
 
   // Best-effort — a failed cache write just means the next open recomputes
   // rather than reusing, never a correctness issue worth failing the request over.
@@ -538,7 +562,7 @@ export async function POST(
   }
 
   const returnedProposal = ruleType === 'service_credit' && serviceCreditType
-    ? await withOrganizationPolicyAvailability(proposal, org.orgId, serviceCreditType)
+    ? await withOrganizationPolicyAvailability(proposal, org.orgId, serviceCreditType, resolvedSourceClause)
     : proposal
 
   return NextResponse.json({ ok: true, proposal: returnedProposal })

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { computeUserOverage, computeMetricOverage, resolveMinimumCommitment, computeMinimumCommitmentSchedule, monthCursor, type CadenceAnchorMode } from '@/lib/tariff'
 import { isEscalatorUnresolved } from '@/lib/escalator-status'
+import { volumeTierCopy } from '@/lib/cadence-labels'
 import type { OverageTier } from '@/lib/types'
 import { FinancialAmount } from './FinancialAmount'
 
@@ -1879,7 +1880,7 @@ export function RevenueModelTab({ terms, items, cur, jobId, onSaved, onRepush, b
                     <p className="text-[13px] font-medium text-ink leading-tight">{TIER_METHOD_DISPLAY[confirmedGenericTierMethod] ?? confirmedGenericTierMethod}</p>
                     <p className="text-[10px] text-stone/60 mt-0.5">
                       {confirmedGenericTierMethod === 'volume'
-                        ? 'The rate corresponding to total monthly transaction volume applies to all transactions in that calendar month; tiers are not progressive.'
+                        ? volumeTierCopy(genericMetricLabel)
                         : confirmedGenericTierMethod === 'graduated'
                           ? 'Each band’s rate applies only to the units within that band.'
                           : confirmedGenericTierMethod === 'block'

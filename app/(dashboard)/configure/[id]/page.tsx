@@ -12,7 +12,7 @@ import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCard'
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, computeCommittedFixedFees, computeConditionalFixedFees, contractLifecycleStatus, type BaseTcvItem } from '@/lib/contract-tcv-calc'
-import { ruleCadenceLabel, cadenceNoun, contractMonthLabel } from '@/lib/cadence-labels'
+import { ruleCadenceLabel, cadenceNoun, contractMonthLabel, volumeTierCopy } from '@/lib/cadence-labels'
 import { optionsForRuleType, optionsForEdit, deriveSelectedOption, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, isProvenanceResolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
@@ -2129,7 +2129,17 @@ function RuleInterpretationCard({
                 {aiProposal.survival_organization_policy.value ? 'Carry forward until fully used' : 'Expires after next invoice'}
               </p>
               <p className="text-[11px]" style={{ color: '#1E3A5F' }}>
-                Applied automatically because the agreement is silent.
+                {/* Step 16A — this card can only ever render for genuine
+                    contract silence in the first place (both
+                    withOrganizationPolicyAvailability and confirm-rule's
+                    own resolution skip explicit_non_agreement entirely, so
+                    survival_organization_policy is never even set for that
+                    case) — but the copy itself stays conditional on the
+                    structured reason too, rather than assuming that
+                    upstream gate is the only thing keeping it accurate. */}
+                {aiProposal.survival_unresolved_reason === 'silent' || !aiProposal.survival_unresolved_reason
+                  ? 'Applied automatically because the agreement is silent.'
+                  : 'Applied automatically.'}
                 {aiProposal.survival_organization_policy.rule_name && ` Policy: ${aiProposal.survival_organization_policy.rule_name}.`}
               </p>
               <button
@@ -2154,11 +2164,20 @@ function RuleInterpretationCard({
               // organization default itself is already shown/available via
               // the applied-policy card above whenever they back out.
               ? 'Choose a treatment for this agreement only — the organization policy itself is unchanged.'
-              : survivalCarryForwardOpen && !survivalOneTimeOpen
-                ? 'Contract is silent on unused-balance treatment.'
-                : survivalOneTimeOpen && !survivalCarryForwardOpen
-                  ? 'Contract is silent on whether this credit can be earned more than once.'
-                  : 'Contract is silent on survival and repeatability.'
+              // Step 16A — the agreement doesn't merely fail to raise this
+              // question, it affirmatively states the parties did not
+              // reach agreement on it (see UnresolvedReason's own comment
+              // in lib/rule-interpretation.ts). No organization policy
+              // reaches this branch at all for this reason (withOrganizationPolicyAvailability/
+              // confirm-rule's own resolution both skip it), so this is
+              // always a genuine, agreement-specific reviewer decision.
+              : aiProposal.survival_unresolved_reason === 'explicit_non_agreement'
+                ? 'The agreement explicitly leaves this unresolved. Choose a treatment for this agreement.'
+                : survivalCarryForwardOpen && !survivalOneTimeOpen
+                  ? 'Contract is silent on unused-balance treatment.'
+                  : survivalOneTimeOpen && !survivalCarryForwardOpen
+                    ? 'Contract is silent on whether this credit can be earned more than once.'
+                    : 'Contract is silent on survival and repeatability.'
             const resolvedText = survivalNeedsInlinePicker
               ? 'Verdix recommends a treatment below.'
               : 'Verdix recommends a treatment based on the source language.'
@@ -6744,7 +6763,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             semantics so it can't be misread as progressive. */}
                         {needsTierMethod && tierMethodResolved && tierCalc!.method === 'volume' && (
                           <p className="text-[10px] text-stone/60 mb-2 -mt-0.5">
-                            The rate corresponding to total monthly transaction volume applies to all transactions in that calendar month; tiers are not progressive.
+                            {volumeTierCopy(unitType)}
                           </p>
                         )}
                         {/* The tier structure itself (e.g. the 1–500 included allowance below)
@@ -7806,11 +7825,17 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 cards.push({
                   key: `tier:${unitType}`,
                   icon: 'ti-chart-bar',
-                  typeLabel: 'Transaction pricing',
+                  // Step 16A — generic category label, matching every other
+                  // typeLabel in this file (e.g. line 4007's identical
+                  // 'Tier calculation method' for the same concept) — never
+                  // hard-coded to "Transaction," which was wrong for any
+                  // non-transaction unit type (e.g. this contract's SQMs).
+                  // The specific unit type is already named in `title` below.
+                  typeLabel: 'Tier calculation method',
                   title: `${TIER_METHOD_DISPLAY[tierCalc.method] ?? tierCalc.method} · ${unitType}`,
                   sourceClause: tierCalc.source_clause,
                   interpretation: tierCalc.method === 'volume'
-                    ? 'The rate selected by total monthly volume applies to all transactions in that calendar month; tiers are not progressive.'
+                    ? volumeTierCopy(unitType)
                     : tierCalc.method === 'graduated'
                       ? 'Each unit is billed at the rate for the tier it falls into — rates apply progressively as usage crosses each threshold.'
                       : tierCalc.method === 'block'

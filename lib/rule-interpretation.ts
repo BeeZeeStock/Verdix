@@ -852,6 +852,35 @@ export function describeWhatWillChange(
 
 export type ProposalState = 'clear_from_source' | 'verdix_recommends' | 'decision_required'
 
+// Additive, not a redesign of ProposalState itself — every existing
+// consumer of 'decision_required' (readiness gates, badge rendering,
+// confirm-rule) is completely unaffected by this field's existence or
+// absence. Answers a genuinely different question than ProposalState:
+// ProposalState says "how confident is Verdix in a value"; this says "why
+// is there no value at all," and ONLY when the answer to that is
+// 'decision_required'.
+//   'silent' — the contract simply never addresses the question. The
+//     ordinary, common case. Eligible for an organization-policy default.
+//   'explicit_non_agreement' — the contract affirmatively states that the
+//     parties did NOT reach agreement on this question (e.g. "The parties
+//     do not agree in this Agreement whether X..."). This is a stronger,
+//     contract-derived fact than mere silence — it is grounded evidence
+//     that a real negotiation touched this exact question and deliberately
+//     left it open, not just an unaddressed gap. An organization-wide
+//     default must never silently paper over a real negotiated
+//     non-agreement — see withOrganizationPolicyAvailability's own guard
+//     in propose-rule/route.ts.
+// Never inferred merely because a field is null/unset — validateProposalState
+// only ever sets 'explicit_non_agreement' when the actual contract clause
+// text itself contains grounding language to that effect
+// (sourceClauseStatesExplicitNonAgreement), exactly the same "must be
+// grounded, never guessed" discipline every other field in this module
+// already follows. Grounded in the clause, deliberately not in the AI's
+// reasoning text — reasoning is model-generated explanatory prose and
+// cannot itself establish contractual authority for something that gates
+// organization-policy resolution (Step 16A amendment).
+export type UnresolvedReason = 'silent' | 'explicit_non_agreement'
+
 export type RuleProposal = {
   state: ProposalState
   // Null ONLY when state is 'decision_required' and nothing defensible
@@ -878,6 +907,14 @@ export type RuleProposal = {
   // unused (survival_state) — three genuinely separate questions, none of
   // which should drag the others down. Undefined for every other rule type.
   survival_state?: ProposalState
+  // Only meaningful when survival_state === 'decision_required' — see
+  // UnresolvedReason's own comment. undefined for every other survival_state
+  // value, and undefined for legacy/pre-existing cached proposals computed
+  // before this field existed (treated as 'silent' by every reader, i.e.
+  // today's exact prior behavior — a deliberately permissive default so
+  // this addition never retroactively blocks an org policy that was
+  // already correctly applying to genuine silence).
+  survival_unresolved_reason?: UnresolvedReason
   // service_credit only (Step 1.5) — grades cash_redeemable specifically:
   // whether the credit may be paid/refunded in cash rather than applied
   // against future invoices. A FOURTH independent grade, same reasoning as
@@ -888,6 +925,13 @@ export type RuleProposal = {
   // this one, usually-unaddressed, boilerplate-adjacent question is open.
   // Undefined for every other rule type.
   cash_redeemable_state?: ProposalState
+  // Same UnresolvedReason split as survival_unresolved_reason above, for
+  // cash_redeemable_state specifically. Exists because "the parties do not
+  // agree whether X is redeemable for cash" and "true silence about cash"
+  // are different facts, and a real bug (fixed alongside this field) once
+  // let reasoning containing the former get graded clear_from_source:false
+  // — see the symmetric-non-agreement-language check in validateProposalState.
+  cash_redeemable_unresolved_reason?: UnresolvedReason
   // service_credit only (Step 5C) — present when survival_state came back
   // 'decision_required' (the contract itself is genuinely silent on
   // carry_forward) AND an active, applicable private Organization
@@ -936,11 +980,24 @@ export type RuleProposal = {
 // "verdix_recommends" purely because a genuinely separate question
 // (eligibility, or survival/expiry) was still open. Every other rule type
 // passes an empty array and gets the original single-state schema, unchanged.
-function proposalSchemaBlock(fields: string, extraStateFields: Array<{ name: string; label: string }> = []): string {
-  const extraStateJson = extraStateFields.map(f => `\n  "${f.name}": "clear_from_source" | "verdix_recommends" | "decision_required",`).join('')
-  const extraStateGuidance = extraStateFields.map(f =>
-    `\n- "${f.name}" grades ONLY ${f.label}, using the exact same three-state definitions above, but graded INDEPENDENTLY of "state" and of every other extra state field — do not let uncertainty in one drag another down, and do not let clarity in one inflate another. A clause can be fully explicit about its trigger and value while remaining completely silent on ${f.label}, or vice versa.`
+// withUnresolvedReason — opt-in per field (only survival_state and
+// cash_redeemable_state request it today; see buildServiceCreditProposalPrompt).
+// Deliberately NOT automatic for every extraStateField: this distinction
+// only matters where an organization-policy (or future) fallback mechanism
+// could act on 'decision_required', and forcing every rule type to answer
+// a question most of them have no use for would just be prompt noise.
+function proposalSchemaBlock(fields: string, extraStateFields: Array<{ name: string; label: string; withUnresolvedReason?: boolean }> = []): string {
+  const extraStateJson = extraStateFields.map(f =>
+    `\n  "${f.name}": "clear_from_source" | "verdix_recommends" | "decision_required",`
+    + (f.withUnresolvedReason ? `\n  "${f.name}_unresolved_reason": "silent" | "explicit_non_agreement" | null,` : ''),
   ).join('')
+  const extraStateGuidance = extraStateFields.map(f => {
+    const base = `\n- "${f.name}" grades ONLY ${f.label}, using the exact same three-state definitions above, but graded INDEPENDENTLY of "state" and of every other extra state field — do not let uncertainty in one drag another down, and do not let clarity in one inflate another. A clause can be fully explicit about its trigger and value while remaining completely silent on ${f.label}, or vice versa.`
+    const reasonGuidance = f.withUnresolvedReason
+      ? `\n- "${f.name}_unresolved_reason" is set ONLY when "${f.name}" is "decision_required", otherwise null. Two genuinely different kinds of "the contract doesn't answer this": "silent" means the contract simply never raises the question at all — the ordinary case. "explicit_non_agreement" means the contract affirmatively states that the parties did NOT reach agreement on this specific question — e.g. "the parties do not agree whether X", "this Agreement leaves X unresolved", "does not specify whether X". This is a STRONGER, still fully contract-derived fact than silence — ground it ONLY in language that says so; never infer "explicit_non_agreement" just because the field would otherwise be null, and never use it as a place to express general uncertainty. CRITICAL: language stating the parties do not agree on / leaves unresolved / does not specify whether X is TRUE is never itself grounds for concluding X is true, and is never itself grounds for concluding X is false — "the parties do not agree whether it is redeemable for cash" means the redeemability question is unresolved, not that redemption is prohibited. Only an affirmative statement in one direction (e.g. "may not be redeemed for cash", "is redeemable for cash") grounds a concrete true/false "${f.name}" value; symmetric non-agreement/silence language about a yes/no question must always produce "decision_required" with "explicit_non_agreement", never a confident answer in either direction.`
+      : ''
+    return base + reasonGuidance
+  }).join('')
   return `Respond with a structured JSON object with EXACTLY these fields:
 {
   "state": "clear_from_source" | "verdix_recommends" | "decision_required",${extraStateJson}
@@ -1070,8 +1127,8 @@ ${proposalSchemaBlock(
   '{"trigger_type": "sla_breach"|"usage_threshold"|"promotional"|"earned_milestone"|"other", "trigger_description": "<plain-English condition>", "credit_basis": "pct_of_period_fee"|"pct_of_affected_component"|"fixed_amount_per_unit"|"flat_amount"|"usage_units", "basis_component": "<what the value is computed from>", "credit_value": <number>, "cap_amount": <number or null>, "cap_pct": <number or null>, "settlement_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"per_incident"|null, "cash_redeemable": true|false|"unclear", "earn_rule": {"trigger_metric_key": "<metric name, e.g. transactions>", "trigger_quantity": <number>, "trigger_comparator": "gt"|"gte"|"lt"|"lte"|"eq", "trigger_window": "calendar_month"|"billing_period"|"contract_year"|"per_incident", "consecutive_windows_required": <number, 1 if the clause does not require a streak>, "window_anchor": "contract_start"|"calendar", "finalization_deadline_days": <number or null>, "quantity_treatment": "exact"|"complete_units"}, "application_rule": {"computed_from_component_keys": [<string>]|null, "eligible_component_keys": [<string>]|"all"|null, "excluded_component_keys": [<string>], "one_time": true|false|"unclear", "carry_forward": true|false|"unclear"}, "calculation_summary": "<one sentence>"}',
   [
     { name: 'application_state', label: 'application_rule.eligible_component_keys ONLY — WHAT future charges this credit may reduce (never carry-forward/expiry, which survival_state covers below, and never the trigger, rate, cap, or settlement timing, which "state" already covers)' },
-    { name: 'survival_state', label: 'application_rule.carry_forward and application_rule.one_time ONLY — whether an earned-but-unused credit persists or expires, and whether it can be earned more than once (never eligibility/scope, which application_state covers, and never trigger/rate/cap/settlement timing)' },
-    { name: 'cash_redeemable_state', label: 'cash_redeemable ONLY — whether the credit may be paid/refunded in cash rather than applied against future invoices (never trigger, value, cap, settlement timing, application scope, or survival, which are graded separately)' },
+    { name: 'survival_state', label: 'application_rule.carry_forward and application_rule.one_time ONLY — whether an earned-but-unused credit persists or expires, and whether it can be earned more than once (never eligibility/scope, which application_state covers, and never trigger/rate/cap/settlement timing)', withUnresolvedReason: true },
+    { name: 'cash_redeemable_state', label: 'cash_redeemable ONLY — whether the credit may be paid/refunded in cash rather than applied against future invoices (never trigger, value, cap, settlement timing, application scope, or survival, which are graded separately)', withUnresolvedReason: true },
   ],
 )}
 
@@ -1081,7 +1138,7 @@ Specific guidance, by field:
 - credit_basis "fixed_amount_per_unit" vs "flat_amount": use fixed_amount_per_unit whenever the clause states a rate multiplied by however many qualifying units occurred (e.g. "SEK 5,500 for each complete hour of excess unavailability"); this is "clear_from_source" the moment the per-unit rate and qualifying unit are both stated, exactly like any other explicit figure — it is NOT an unresolved basis question just because the rate is per-unit rather than a single sum. Reserve flat_amount for an actual single lump-sum credit with no per-unit multiplier.
 - earn_rule.trigger_comparator must come from the source's own comparison direction, never inferred from the metric's name or rewritten into a different but "equivalent" comparison. A clause reading "availability falls below 99.5%" is trigger_comparator "lt" against a metric named for availability itself (e.g. "platform_availability") — do NOT invert it into a complementary "unavailability >= 0.5%" framing; represent the metric and comparator exactly as the source states them.
 - earn_rule.quantity_treatment: use "complete_units" only when the clause states the qualifying measurement in whole/complete terms (e.g. "per complete hour", "per full day", "each whole incident") — this is a generic whole-unit-only treatment, not specific to hours, and applies to whatever unit the clause names. Use "exact" (or omit the field entirely) when the clause states no such whole-unit qualifier, or when the measured quantity is inherently a count with no fractional reading in the first place (e.g. a transaction count).
-- cash_redeemable_state grades ONLY whether the credit may be paid/refunded in cash: "clear_from_source" when the clause explicitly allows or explicitly prohibits cash payment; "decision_required" (cash_redeemable "unclear") when the clause never addresses cash redemption at all — which is the common case, since most service-credit clauses never mention it. Do not grade "clear_from_source" false merely because the clause is silent — silence is "decision_required", never a basis for a confident false. Only use "verdix_recommends" when there is a genuine textual basis worth flagging (e.g. the clause's own framing as "a credit against future invoices" without ever using the word "cash" at all is NOT itself grounds for a recommendation of false — that phrasing describes the credit's normal operation, not a statement about cash redemption).
+- cash_redeemable_state grades ONLY whether the credit may be paid/refunded in cash: "clear_from_source" when the clause explicitly allows or explicitly prohibits cash payment; "decision_required" (cash_redeemable "unclear") when the clause never addresses cash redemption at all — which is the common case, since most service-credit clauses never mention it. Do not grade "clear_from_source" false merely because the clause is silent — silence is "decision_required", never a basis for a confident false. Only use "verdix_recommends" when there is a genuine textual basis worth flagging (e.g. the clause's own framing as "a credit against future invoices" without ever using the word "cash" at all is NOT itself grounds for a recommendation of false — that phrasing describes the credit's normal operation, not a statement about cash redemption). A clause stating the parties "do not agree" or that the Agreement "leaves unresolved" whether the credit is redeemable for cash is ALSO not grounds for a confident false — that language means the redeemability question is itself unresolved, exactly like plain silence, and must be graded "decision_required" with cash_redeemable_unresolved_reason "explicit_non_agreement" (never "clear_from_source" false). Only an unambiguous one-directional statement — e.g. "is not redeemable for cash", "may not be redeemed for cash" — grounds a concrete false; "is redeemable for cash" grounds a concrete true.
 - earn_rule.consecutive_windows_required: only set above 1 when the clause explicitly requires a streak across multiple windows (e.g. "in each of 3 consecutive calendar months") — a single-period threshold is 1, never inferred as a streak just because it recurs.
 - application_rule.eligible_component_keys is the single most commonly UNSTATED field — a clause can state a credit's SIZE (e.g. "5% of transaction-processing fees paid") without ever stating what future charges that resulting credit may reduce. Do not assume it may offset "all amounts payable" or "the same component it was computed from" unless the contract actually says so. But this is a real, gradeable "clear_from_source" case whenever the clause DOES say so explicitly — e.g. "applied against future amounts payable" is explicit textual grounding for eligible_component_keys "all"; "applicable only against future transaction-processing fees" is explicit grounding for eligible_component_keys ["transaction_processing"]. Only set eligible_component_keys to null and grade application_state "decision_required" when the clause is genuinely silent on what the credit may be applied against — do not confuse silence on eligibility with silence on calculation basis; a clause stating what a credit is computed FROM (e.g. "5% of transaction-processing fees paid") does not, by itself, state what it may be applied AGAINST — those are different questions, and stating only the former leaves eligible_component_keys null.
   A SEPARATE, standalone sentence stating what a credit "applies only to" / "applies to" / "does not apply to" / "excludes" a named set of fee components is a DIFFERENT signal from the basis sentence, even when it names the SAME components the basis was computed from — a clause that has ALREADY unambiguously stated its basis in one sentence (e.g. "a rebate equal to 5% of the transaction-processing fees paid") gains no new information by a second sentence that MERELY repeats the basis a second time, so the more natural reading of that second, independent sentence — especially one phrased as an affirmative "applies to"/negative "does not apply to" scope rule, and especially when an EXCLUSION list follows ("does not apply to: platform fees; chargeback fees; other fees or charges") — is that it is answering the SEPARATE application-eligibility question, not restating basis for emphasis. Treat such a sentence as resolving eligible_component_keys to the named components (clear_from_source), not as leaving it null, UNLESS the contract's own wording or a directly conflicting later clause makes the basis-only reading the more natural one. This determination does not require the literal words "applied"/"against" — ordinary contract drafting uses "applies to"/"does not apply to" interchangeably with "is applied against"/"may not be applied against".
@@ -1125,9 +1182,116 @@ function looksLikeMalformedReasoning(text: string): boolean {
   return !/[a-zA-Z]{3,}/.test(text.trim())
 }
 
-export function validateProposalState(proposal: RuleProposal, sourceClauseAvailable: boolean): RuleProposal {
+// The one detector this module trusts to ground UnresolvedReason
+// 'explicit_non_agreement' — deliberately code-level, not just a prompt
+// instruction. Step 16A amendment: this MUST run against the actual
+// contract clause text, never the AI's own reasoning. Reasoning is
+// model-generated explanatory prose — it can restate, paraphrase, or
+// (as the live incident below shows) misread the clause, so it cannot
+// itself establish contractual authority for something that gates
+// organization-policy resolution. The earlier version of this detector
+// ran against `reasoning`; that was corrected here because "the model
+// said the contract says X" is not the same fact as "the contract says
+// X," even when the model happens to be right most of the time.
+// Live incident this still fixes (Annual Rebate, OS-2026-09): the source
+// clause states "the parties do not agree ... whether it is redeemable
+// for cash" and was graded cash_redeemable: false, clear_from_source —
+// reading "the question is unresolved" as proof of a one-directional
+// answer. Running against the real clause text (not a paraphrase of it)
+// corrects that failure mode regardless of what the model claims — same
+// "never fully trust the model's own claim" discipline as
+// looksLikeMalformedReasoning and the clear_from_source/
+// sourceClauseAvailable check below.
+// Deliberately narrow (a short, specific phrase list) rather than a vague
+// "sounds uncertain" heuristic — matches the "must be grounded in source
+// language, never inferred from a null field" requirement: a false
+// negative (missing a real non-agreement statement) just leaves the
+// existing silence-handling behavior in place, which was already safe;
+// a false positive would incorrectly downgrade a genuinely clear_from_source
+// answer, which this narrow phrasing is built to avoid. Preferring a false
+// negative here is a deliberate choice, not an oversight: understating a
+// negotiated non-agreement as silence leaves the field open to
+// organization-policy fallback (recoverable — a reviewer can still object
+// to what auto-applied); falsely declaring a negotiated non-agreement that
+// was never actually stated would wrongly block a legitimate policy
+// default and cannot be justified by narrow phrase-matching alone.
+// Second amendment (source-grounding, field-specificity) — the same clause
+// can address multiple independent questions (e.g. "the parties do not
+// agree whether unused credits survive termination. The credit may not be
+// redeemed for cash.") and a whole-clause match let non-agreement language
+// about ONE field (survival) bleed into an unrelated field (cash) simply
+// because both sentences shared one source_clause string. This must be
+// field-specific: only return true when the non-agreement wording is
+// itself semantically tied to the target field, never merely because both
+// happen to appear somewhere in the same clause.
+export type UnresolvedReasonField = 'survival' | 'cash_redeemability'
+
+// Deliberately narrow per-field vocabulary, not a broad "sounds related"
+// heuristic — same false-negative-preferring discipline as the
+// non-agreement phrase list itself below: missing an unanticipated
+// field-specific word just leaves silence-handling in place (safe);
+// matching too broadly would let one field's unresolvedness wrongly
+// attach to another, which is exactly the bug this amendment fixes.
+const UNRESOLVED_REASON_FIELD_KEYWORDS: Record<UnresolvedReasonField, RegExp> = {
+  survival: /\b(?:surviv\w*|carr(?:y|ies)\s+forward|expir\w*|terminat\w*|unused\s+(?:credit|balance|rebate)s?|forfeit\w*)\b/,
+  cash_redeemability: /\bcash\b/,
+}
+
+// Rough sentence-level segmentation — deliberately simple (split on a
+// sentence-ending period/semicolon followed by whitespace), not a full NLP
+// sentence splitter. This is enough to separate "The parties do not agree
+// whether X survives termination. The credit may not be redeemed for
+// cash." into two segments, so field-specific matching below can't let one
+// sentence's non-agreement language attach to a different field addressed
+// only in a different sentence. A single compound sentence that
+// genuinely addresses two fields together ("...whether it survives
+// termination or whether it is redeemable for cash...") is deliberately
+// NOT split further — both fields really are semantically tied together
+// there, so matching the whole sentence for both is correct, not a bug.
+function splitIntoClauseSegments(sourceClause: string): string[] {
+  return sourceClause.split(/(?<=[.;])\s+/).filter(s => s.trim().length > 0)
+}
+
+export function sourceClauseStatesExplicitNonAgreement(
+  sourceClause: string | null | undefined,
+  field: UnresolvedReasonField,
+): boolean {
+  if (!sourceClause) return false
+  const fieldKeyword = UNRESOLVED_REASON_FIELD_KEYWORDS[field]
+  return splitIntoClauseSegments(sourceClause).some(segment => {
+    const text = segment.toLowerCase()
+    // Both conditions must hold in the SAME segment — co-occurrence, not
+    // independent presence anywhere in the whole clause. This is the
+    // actual fix: the old whole-clause check treated "does this clause
+    // contain non-agreement language" and "does this clause mention cash"
+    // as independent facts, which is what let survival's non-agreement
+    // wording wrongly flag an unrelated cash sentence.
+    if (!fieldKeyword.test(text)) return false
+    return /\b(?:do|does|did|have|has)\s+not\s+agree\b/.test(text)
+      || /\bleaves?\b[^.]{0,60}\bunresolved\b/.test(text)
+      || /\bunresolved\b[^.]{0,60}\bleaves?\b/.test(text)
+      || /\bdoes\s+not\s+specify\s+whether\b/.test(text)
+      || /\bintentionally\s+leaves?\b/.test(text)
+      || /\bno\s+agreement\b[^.]{0,40}\bwhether\b/.test(text)
+  })
+}
+
+// sourceClause: the actual contract clause text captured for this field
+// (e.g. a credit's source_clause) — used ONLY to ground
+// sourceClauseStatesExplicitNonAgreement below. `proposal.reasoning` is
+// preserved and returned unchanged as the model's own explanation (shown
+// to the reviewer as-is), but — per the Step 16A amendment — is no longer
+// consulted to decide state/unresolved_reason: reasoning text alone must
+// never be able to suppress an organization policy.
+export function validateProposalState(proposal: RuleProposal, sourceClauseAvailable: boolean, sourceClause?: string | null): RuleProposal {
   let { reasoning } = proposal
   let { state, proposed_interpretation, application_state, survival_state, cash_redeemable_state } = proposal
+  // survival_unresolved_reason/cash_redeemable_unresolved_reason are
+  // deliberately NOT read from `proposal` — always fully re-derived below
+  // (each assigned exactly once, at its single computation site) from the
+  // final state + the actual source clause text, never trusted from the
+  // model's own raw self-report, and never derived from reasoning (see
+  // sourceClauseStatesExplicitNonAgreement's own comment).
 
   // Never render malformed/trivial reasoning text — downgrade to
   // decision_required with an honest placeholder rather than show a
@@ -1243,7 +1407,40 @@ export function validateProposalState(proposal: RuleProposal, sourceClauseAvaila
     if (survival_state !== 'decision_required' && !survivalResolved) {
       survival_state = 'decision_required'
     }
+
+    // Symmetric-non-agreement-language guard (same bug class as
+    // cash_redeemable below, applied here defensively even though the
+    // live incident was on cash specifically) — clause text stating the
+    // parties do not agree / leaves this unresolved can never itself
+    // ground a confident carry_forward/one_time value in either
+    // direction. If the model still claimed a confident survival_state
+    // despite that language being present in the actual clause, correct
+    // it here rather than trust the self-report. Grounded in
+    // `sourceClause` (the real contract text), never `reasoning` — see
+    // sourceClauseStatesExplicitNonAgreement's own comment.
+    if (survival_state !== 'decision_required' && sourceClauseStatesExplicitNonAgreement(sourceClause, 'survival')) {
+      survival_state = 'decision_required'
+      if (applicationRule) {
+        applicationRule.carry_forward = 'unclear'
+        applicationRule.one_time = 'unclear'
+      }
+    }
   }
+
+  // survival_unresolved_reason — derived entirely from the FINAL
+  // survival_state (after every correction above) and the actual source
+  // clause text, never trusted from the model's own raw self-report for
+  // this field specifically and never derived from reasoning:
+  // sourceClauseStatesExplicitNonAgreement is a narrow, deterministic,
+  // code-level check, so re-deriving from it is simpler and more robust
+  // than reconciling "what the model claimed" against "what the detector
+  // found." Only ever set when the final state is genuinely
+  // decision_required; 'silent' is the default (never 'explicit_non_agreement'
+  // without matching clause language) — the safe, permissive fallback that
+  // preserves today's exact org-policy-eligible behavior for ordinary silence.
+  const survival_unresolved_reason: UnresolvedReason | undefined = survival_state === 'decision_required'
+    ? (sourceClauseStatesExplicitNonAgreement(sourceClause, 'survival') ? 'explicit_non_agreement' : 'silent')
+    : undefined
 
   // cash_redeemable_state (service_credit only, Step 1.5) — same
   // independent safety-check pattern as application_state/survival_state
@@ -1264,7 +1461,41 @@ export function validateProposalState(proposal: RuleProposal, sourceClauseAvaila
     if (cash_redeemable_state !== 'decision_required' && cashValue !== true && cashValue !== false) {
       cash_redeemable_state = 'decision_required'
     }
+
+    // The actual bug fix (confirmed live on OS-2026-09's Annual Rebate):
+    // "the parties do not agree ... whether it is redeemable for cash"
+    // was graded cash_redeemable: false, cash_redeemable_state:
+    // clear_from_source — reading "the question is unresolved" as proof
+    // of a one-directional answer. This can never be correct: symmetric
+    // non-agreement/unresolved language is evidence FOR decision_required,
+    // never for a concrete true or false. Applied regardless of what
+    // state the model claimed — this is a hard override, not a
+    // best-effort nudge, because a wrong confident false is worse than an
+    // honest gap. Grounded in `sourceClause`, never `reasoning` — the AI's
+    // own reasoning text was exactly what produced this bug in the first
+    // place, so it cannot also be the thing that corrects it.
+    //
+    // Known scope gap (see cash_redeemable's own comment in lib/types.ts):
+    // OS-2026-09's actual clause is scoped to cash treatment specifically
+    // AFTER TERMINATION, but cash_redeemable is a single flat field with
+    // no such dimension — decision_required here is broader than the
+    // real contractual uncertainty (it can't separately express "clear
+    // during the term, unresolved after termination"). Conservatively
+    // correct either way; not redesigned in this amendment.
+    if (cash_redeemable_state !== 'decision_required' && sourceClauseStatesExplicitNonAgreement(sourceClause, 'cash_redeemability')) {
+      cash_redeemable_state = 'decision_required'
+      interp.cash_redeemable = 'unclear'
+    }
   }
 
-  return { state, proposed_interpretation, reasoning, application_state, survival_state, cash_redeemable_state }
+  // cash_redeemable_unresolved_reason — same derivation discipline as
+  // survival_unresolved_reason above.
+  const cash_redeemable_unresolved_reason: UnresolvedReason | undefined = cash_redeemable_state === 'decision_required'
+    ? (sourceClauseStatesExplicitNonAgreement(sourceClause, 'cash_redeemability') ? 'explicit_non_agreement' : 'silent')
+    : undefined
+
+  return {
+    state, proposed_interpretation, reasoning, application_state, survival_state, cash_redeemable_state,
+    survival_unresolved_reason, cash_redeemable_unresolved_reason,
+  }
 }

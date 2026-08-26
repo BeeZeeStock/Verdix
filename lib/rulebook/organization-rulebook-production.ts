@@ -18,6 +18,7 @@
 // applies), and 'conflict' stays 'conflict' — never silently resolved to
 // any value. Still pure: no database access of its own.
 import { resolveOrganizationRulebookShadow, type OrganizationRulebookShadowInput } from './organization-rulebook-shadow'
+import { sourceClauseStatesExplicitNonAgreement, type UnresolvedReason, type UnresolvedReasonField } from '../rule-interpretation'
 
 // Start with only the one field the Step 5C spec calls out as safe to
 // activate first. 'partial_period_treatment' was evaluated and deferred —
@@ -161,4 +162,64 @@ export function isOrganizationPolicyStale(
     fresh.ruleVersion === seen.ruleVersion &&
     fresh.value === seen.value
   )
+}
+
+// Step 16A — the organization-policy availability/application predicate.
+// A field graded 'decision_required' collapses two different facts: the
+// contract simply never raising the question (silence — organization
+// policy MAY fill it in), versus the contract affirmatively stating the
+// parties did NOT reach agreement on it (explicit unresolvedness — a
+// stronger, still-contract-derived fact that outranks an org-wide default
+// under the same authority hierarchy that already puts contract-derived
+// above organization policy: contract-derived > reviewer policy >
+// organization policy > Verdix rulebook > Verdix recommendation). This is
+// the single shared gate both propose-rule (advisory preview) and
+// confirm-rule (the sole authoritative resolution point) call before ever
+// attempting an organization-policy resolution — never duplicated ad hoc
+// at either call site. Takes a definite UnresolvedReason, never `undefined`
+// directly — see resolveAuthoritativeUnresolvedReason below, which is what
+// every caller must run first to turn a possibly-missing cached value into
+// one of the two real classifications before this predicate ever sees it.
+export function organizationPolicyAvailableForUnresolvedReason(
+  unresolvedReason: UnresolvedReason,
+): boolean {
+  return unresolvedReason !== 'explicit_non_agreement'
+}
+
+// Step 16A amendment (item 3 — legacy proposal caches must be safe).
+// `storedReason` is whatever a cached RuleProposal happens to carry for
+// this field — which may be `undefined` for any cache entry written
+// before this field existed at all. Never treat `undefined` as 'silent'
+// by default: that would let a pre-existing cache for an agreement that
+// genuinely states explicit non-agreement silently start auto-applying
+// organization policy the moment this code shipped, purely because the
+// field didn't exist yet when the cache was written — exactly the
+// regression this function exists to prevent.
+//
+// A stored 'explicit_non_agreement' is still independently validated
+// against the real source clause (never trusted on its own) — a cache
+// entry could in principle have been written by a since-corrected code
+// path, and per item 2, reasoning-derived signals must never be the last
+// word on something that gates an organization policy. The two checks are
+// combined with OR, not "prefer the fresher one": either signal finding
+// explicit non-agreement is enough to keep the field Decision Required,
+// consistent with this codebase's existing fail-closed convention
+// (resolveProductionOrganizationField's own 'conflict' handling never
+// picks a value either) — wrongly blocking an org-policy default for one
+// extra reviewer decision is recoverable; wrongly auto-applying one over a
+// real negotiated non-agreement is the bug this feature exists to fix.
+// A stored 'silent' does not short-circuit the source-clause check either,
+// for the same reason.
+// field: which question the caller is resolving — required, not defaulted,
+// so this can never silently reuse one field's clause-level match for a
+// different field (the second amendment's own fix — see
+// sourceClauseStatesExplicitNonAgreement's own comment for why field
+// scoping matters).
+export function resolveAuthoritativeUnresolvedReason(
+  storedReason: UnresolvedReason | undefined,
+  sourceClause: string | null | undefined,
+  field: UnresolvedReasonField,
+): UnresolvedReason {
+  if (storedReason === 'explicit_non_agreement') return 'explicit_non_agreement'
+  return sourceClauseStatesExplicitNonAgreement(sourceClause, field) ? 'explicit_non_agreement' : 'silent'
 }

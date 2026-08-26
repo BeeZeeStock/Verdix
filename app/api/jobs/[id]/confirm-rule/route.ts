@@ -23,13 +23,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
-import type { RuleType } from '@/lib/rule-interpretation'
+import type { RuleType, UnresolvedReason } from '@/lib/rule-interpretation'
 import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation, PeriodProrationRule, AdditionalRecurringFee, FieldProvenance, OneTimeFee } from '@/lib/types'
 import { buildCreditApplicationRule } from '@/lib/credit-application-rule'
 import { buildServiceCreditInterpretation } from '@/lib/service-credit-interpretation'
 import { buildOneTimeFeeConfirmation, OneTimeFeeCapabilityBlockedError, OneTimeFeeValueMutationRejectedError } from '@/lib/one-time-fee'
 import { listMatchableOrganizationRules } from '@/lib/rulebook/organization-rules-service'
-import { resolveProductionOrganizationField, isOrganizationPolicyStale, type ProductionOrganizationResolution, type SeenOrganizationPolicy } from '@/lib/rulebook/organization-rulebook-production'
+import { resolveProductionOrganizationField, isOrganizationPolicyStale, organizationPolicyAvailableForUnresolvedReason, resolveAuthoritativeUnresolvedReason, type ProductionOrganizationResolution, type SeenOrganizationPolicy } from '@/lib/rulebook/organization-rulebook-production'
 import { resolveOrganizationPolicyRevert } from '@/lib/organization-policy-revert'
 
 // Several sequential writes (audit row, contract_terms, sometimes
@@ -317,7 +317,15 @@ export async function POST(
     : ruleType === 'rule_interaction' ? `rule_interaction:${interactionKey}`
     : ruleType === 'escalator' ? 'escalator'
     : `${ruleType}:${contractUnitType}`
-  const proposalCache = (termsRow?.ai_proposal_cache as Record<string, { proposal?: { state?: string; proposed_interpretation?: unknown; reasoning?: string; calculation_preview?: unknown } } > | null) ?? {}
+  const proposalCache = (termsRow?.ai_proposal_cache as Record<string, { proposal?: {
+    state?: string; proposed_interpretation?: unknown; reasoning?: string; calculation_preview?: unknown
+    // Step 16A — read here (the server's own cached proposal, never a
+    // client-submitted value) so the organization-policy resolution below
+    // can tell explicit contractual non-agreement apart from ordinary
+    // silence using the SAME authoritative source propose-rule computed
+    // it from, rather than trusting anything the client claims.
+    survival_unresolved_reason?: UnresolvedReason
+  } } > | null) ?? {}
   const cachedProposal = proposalCache[proposalCacheKey]?.proposal ?? null
 
   // partial_period is always a reviewer's own policy decision by definition
@@ -633,8 +641,29 @@ export async function POST(
     // revert case is now handled entirely by organizationRevertResolution
     // (computed above, gated by its own eligibility + TOCTOU checks)
     // before this branch is ever reached.
+    //
+    // Step 16A — THIS is the authoritative enforcement point (propose-rule's
+    // equivalent check is advisory only, per its own comment), so this is
+    // where explicit contractual non-agreement must actually be blocked
+    // from organization-policy fallback, not just in the review panel's
+    // preview. Read from the server's OWN cached proposal for this exact
+    // credit (proposalCache/cachedProposal, computed above from
+    // termsRow.ai_proposal_cache) — never from a client-submitted value —
+    // so a crafted request can't claim 'silent' to bypass this.
+    //
+    // Step 16A amendment (item 3) — a cache entry with NO stored
+    // survival_unresolved_reason at all (any cache written before this
+    // field existed) must never be silently treated as 'silent'. Instead
+    // resolveAuthoritativeUnresolvedReason re-derives the real answer from
+    // currentCredit.source_clause — the server's own persisted contract
+    // text for this exact credit — so a pre-existing cache for an
+    // agreement that genuinely states explicit non-agreement still blocks
+    // organization-policy fallback correctly, without needing its cache
+    // entry recomputed first.
+    const currentCreditSourceClause = typeof currentCredit?.source_clause === 'string' ? currentCredit.source_clause : null
+    const survivalUnresolvedReason = resolveAuthoritativeUnresolvedReason(cachedProposal?.survival_unresolved_reason, currentCreditSourceClause, 'survival')
     let organizationResolution: ProductionOrganizationResolution | undefined
-    if (!existingAppRule || existingAppRule.carry_forward === 'unclear') {
+    if ((!existingAppRule || existingAppRule.carry_forward === 'unclear') && organizationPolicyAvailableForUnresolvedReason(survivalUnresolvedReason)) {
       const organizationRules = await listMatchableOrganizationRules(org.orgId)
       const freshResolution = resolveProductionOrganizationField('survival.carry_forward', {
         organizationId: org.orgId,

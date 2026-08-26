@@ -1,12 +1,18 @@
-// Private Organization Rulebook — pure domain (Step 5A, shadow mode only).
+// Private Organization Rulebook — pure domain (Step 5A).
 //
-// A tenant-private rule source that will eventually sit between contract-
-// specific decisions and the Verdix Global Rulebook in field-authority
-// precedence (lib/rulebook/resolution.ts). Step 5A gives it real,
-// tenant-isolated storage (see organization-rules-service.ts and
+// A tenant-private rule source that sits between contract-specific
+// decisions and the Verdix Global Rulebook in field-authority precedence
+// (lib/rulebook/resolution.ts). Step 5A gave it real, tenant-isolated
+// storage (see organization-rules-service.ts and
 // supabase/migrations/20260822000001_organization_rulebook_rules.sql) and
-// a deterministic matcher, but ZERO production authority: nothing in
-// app/api or app/(dashboard) reads this module or the table it backs.
+// a deterministic matcher. It now has real production authority: both
+// app/api/jobs/[id]/propose-rule/route.ts (advisory preview) and
+// app/api/jobs/[id]/confirm-rule/route.ts (the authoritative, write-time
+// resolution) read this module and the table it backs. As of Step 16A,
+// a field the contract explicitly leaves unresolved (as opposed to one
+// it is merely silent on) is excluded from organization-policy autofill
+// at both call sites — see RuleProposal's *_unresolved_reason in
+// lib/rule-interpretation.ts.
 //
 // Core safety rules this file enforces structurally, not just by
 // convention:
