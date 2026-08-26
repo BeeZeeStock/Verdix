@@ -724,7 +724,7 @@ export async function POST(
             organizationRevertResolution,
           ),
         }
-      : buildServiceCreditInterpretation(approvedInterpretation, currentCredit?.interpretation, applicationRuleProvenance, cashRedeemableProvenance, organizationResolution, earnRuleProvenance)
+      : buildServiceCreditInterpretation(approvedInterpretation, currentCredit?.interpretation, applicationRuleProvenance, cashRedeemableProvenance, organizationResolution, earnRuleProvenance, currentCreditSourceClause)
     const targetIndex = credits.findIndex(c => c.credit_rule_id === creditId)
     const fallbackIndex = targetIndex === -1 && Number.isInteger(Number(creditId)) ? Number(creditId) : -1
     let newCredits: Credit[]

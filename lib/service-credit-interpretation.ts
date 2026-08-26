@@ -22,6 +22,7 @@ import type { FieldProvenance, ServiceCreditInterpretation } from './types'
 import { buildCreditApplicationRule, sanitizeAssertedProvenance } from './credit-application-rule'
 import { buildCreditEarnRule } from './credit-earn-rule'
 import { resolveMonetaryBasisRecognition } from './monetary-basis-recognition'
+import { sourceClauseStatesExplicitNonAgreement } from './rule-interpretation'
 import type { ProductionOrganizationResolution } from './rulebook/organization-rulebook-production'
 
 // cash_redeemable (Step 1.5): a three-way value (true / false / 'unclear'),
@@ -38,8 +39,16 @@ export function resolveCashRedeemable(
   approved: Record<string, unknown>,
   existing: ServiceCreditInterpretation | null | undefined,
   cashRedeemableProvenance: FieldProvenance | undefined,
+  // Step 16A.1 — the credit's own persisted, extraction-derived
+  // source_clause (contract_terms.service_credits[].source_clause), passed
+  // by the caller. Never approved.source_clause/existing.source_clause —
+  // this must be the one authoritative, unconfirmable-by-a-client text,
+  // exactly the same value confirm-rule/route.ts's survival guard already
+  // uses (currentCreditSourceClause), not something a request body can
+  // shape.
+  sourceClause: string | null | undefined,
 ): { cash_redeemable: ServiceCreditInterpretation['cash_redeemable']; cash_redeemable_provenance: FieldProvenance | null } {
-  const cash_redeemable: ServiceCreditInterpretation['cash_redeemable'] =
+  let cash_redeemable: ServiceCreditInterpretation['cash_redeemable'] =
     typeof approved.cash_redeemable === 'boolean' ? approved.cash_redeemable
       : approved.cash_redeemable === 'unclear' ? 'unclear'
       : existing?.cash_redeemable ?? 'unclear'
@@ -47,7 +56,27 @@ export function resolveCashRedeemable(
   // (not in PRODUCTION_ORGANIZATION_RULEBOOK_ALLOWLIST), so a client
   // claiming 'organization_rulebook' here would be entirely unfounded —
   // same sanitizeAssertedProvenance guard buildCreditApplicationRule uses.
-  const cash_redeemable_provenance = sanitizeAssertedProvenance(cashRedeemableProvenance) ?? existing?.cash_redeemable_provenance ?? null
+  let cash_redeemable_provenance = sanitizeAssertedProvenance(cashRedeemableProvenance) ?? existing?.cash_redeemable_provenance ?? null
+
+  // Step 16A.1 — authoritative, source-grounded re-validation. Everything
+  // above this point trusts client input (today's only reachable path for
+  // this field — no reviewer picker exists for cash_redeemable in the UI,
+  // unlike survival's explicit carry-forward picker), which means a stale
+  // browser tab, a lost proposal-cache write, or any future bug that
+  // leaves a stale concrete true/false in a client's in-memory proposal
+  // could otherwise get silently and permanently persisted as
+  // cash_redeemable: false/true, cash_redeemable_provenance:
+  // 'contract_derived' — exactly the original bug this whole effort exists
+  // to prevent, just reachable through a different, previously-unguarded
+  // door. A reviewer's OWN explicit choice (cash_redeemable_provenance
+  // already 'reviewer_policy') is exempt — a human decision resolving a
+  // decision_required field is the intended outcome, not something to
+  // block; this exemption is forward-looking since no UI path submits
+  // 'reviewer_policy' for cash today.
+  if (cash_redeemable_provenance !== 'reviewer_policy' && sourceClauseStatesExplicitNonAgreement(sourceClause, 'cash_redeemability')) {
+    cash_redeemable = 'unclear'
+    cash_redeemable_provenance = null
+  }
   return { cash_redeemable, cash_redeemable_provenance }
 }
 
@@ -65,8 +94,13 @@ export function buildServiceCreditInterpretation(
   // cashRedeemableProvenance. Only ever 'reviewer_policy' in practice — there
   // is no AI proposal pipeline for this question (see lib/credit-earn-rule.ts).
   earnRuleProvenance?: { paidBasisFinalization?: FieldProvenance },
+  // Step 16A.1 — the credit's own persisted source_clause, threaded to
+  // resolveCashRedeemable's authoritative re-validation. See that
+  // function's own comment for why this must be the caller's
+  // server-fetched value, never derived from `approved`.
+  sourceClause?: string | null,
 ): ServiceCreditInterpretation {
-  const { cash_redeemable, cash_redeemable_provenance } = resolveCashRedeemable(approved, existing, cashRedeemableProvenance)
+  const { cash_redeemable, cash_redeemable_provenance } = resolveCashRedeemable(approved, existing, cashRedeemableProvenance, sourceClause)
   const credit_basis = (approved.credit_basis as ServiceCreditInterpretation['credit_basis']) ?? existing?.credit_basis ?? 'flat_amount'
   const basis_component = (approved.basis_component as string | null) ?? existing?.basis_component ?? null
   // 2026-08-30 correction, widened by the follow-up audit — monetary_basis_

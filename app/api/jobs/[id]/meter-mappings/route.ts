@@ -325,11 +325,29 @@ export async function GET(
   if (cacheColumnAvailable && Object.keys(freshCacheWrites).length > 0 && terms?.id) {
     // Best-effort — a failed cache write just means the next GET recomputes
     // rather than reusing, never a correctness issue worth failing over.
-    await supabaseServer
-      .from('contract_terms')
-      .update({ ai_proposal_cache: { ...existingCache, ...freshCacheWrites } })
-      .eq('id', terms.id)
-      .then(({ error }) => { if (error) console.warn(`[meter-mappings] cache write failed for job ${jobId}:`, error.message) })
+    //
+    // Step 16A.1 — was previously a whole-column read-modify-write
+    // (`{ ...existingCache, ...freshCacheWrites }`), sharing the exact same
+    // ai_proposal_cache column as propose-rule/route.ts's own cache and the
+    // same lost-update race: this route's write could just as easily
+    // revert a concurrent propose-rule write (or vice versa), since both
+    // used a stale in-JS snapshot of the whole column. Each key now goes
+    // through the same atomic per-key RPC propose-rule uses
+    // (set_proposal_cache_entry — supabase/migrations/
+    // 20260830000006_proposal_cache_atomic_upsert.sql); one entry here
+    // rarely means more than one or two unmapped metrics, so N independent
+    // atomic single-key updates (each already row-locked/serialized by
+    // Postgres against any other concurrent writer to this row) is simpler
+    // than adding a second, multi-key RPC variant for this.
+    await Promise.all(
+      Object.entries(freshCacheWrites).map(([key, entry]) =>
+        supabaseServer.rpc('set_proposal_cache_entry', {
+          p_contract_terms_id: terms.id,
+          p_cache_key: key,
+          p_cache_entry: entry,
+        }).then(({ error }) => { if (error) console.warn(`[meter-mappings] cache write failed for job ${jobId}, key ${key}:`, error.message) }),
+      ),
+    )
   }
 
   return NextResponse.json({

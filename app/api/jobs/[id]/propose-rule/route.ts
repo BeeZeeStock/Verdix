@@ -546,19 +546,43 @@ export async function POST(
 
   const proposal = validateProposalState(rawProposal, sourceClauseAvailable, resolvedSourceClause)
 
-  // Best-effort — a failed cache write just means the next open recomputes
-  // rather than reusing, never a correctness issue worth failing the request over.
+  // Best-effort, and — since Step 16A.1 — atomic at the database level.
+  // A failed cache write just means the next open recomputes rather than
+  // reusing, never a correctness issue worth failing the request over: no
+  // downstream logic (confirm-rule's org-policy gate, this route's own
+  // cash-redeemable path) assumes this write is guaranteed to have landed
+  // — both independently re-derive from the credit's persisted
+  // source_clause when the cache is missing or stale. See this route's
+  // own cache-hit branch above and confirm-rule/route.ts's
+  // resolveAuthoritativeUnresolvedReason.
+  //
   // Caches the UNAUGMENTED proposal deliberately — organization-policy
   // availability is re-checked fresh on every request (see the cache-hit
   // branch above), so a rule added/activated after this proposal was first
   // cached still takes effect on the very next open, without needing the
   // AI cache itself to be invalidated.
+  //
+  // Step 16A.1 — was previously a whole-column read-modify-write
+  // (`{ ...existingCache, [cacheKey]: ... }`), which lost updates when two
+  // rule cards on the same job proposed concurrently: each request read
+  // the column before either write landed, so whichever write committed
+  // second silently reverted the other's key. set_proposal_cache_entry
+  // (supabase/migrations/20260830000006_proposal_cache_atomic_upsert.sql)
+  // does the merge in a single atomic UPDATE ... jsonb_set against the
+  // CURRENT row value, so concurrent writes to different keys can no
+  // longer clobber each other — Postgres's own row-level locking
+  // serializes them instead of JS holding a stale snapshot.
   if (!cacheReadError) {
-    await supabaseServer
-      .from('contract_terms')
-      .update({ ai_proposal_cache: { ...existingCache, [cacheKey]: { promptFingerprint: prompt, proposal, computedAt: new Date().toISOString() } } })
-      .eq('id', terms.id)
-      .then(({ error }) => { if (error) console.warn(`[propose-rule] cache write failed for job ${jobId}:`, error.message) })
+    const { error: cacheWriteError } = await supabaseServer.rpc('set_proposal_cache_entry', {
+      p_contract_terms_id: terms.id,
+      p_cache_key: cacheKey,
+      p_cache_entry: { promptFingerprint: prompt, proposal, computedAt: new Date().toISOString() },
+    })
+    // Explicit, not silent — never claim a persisted write succeeded when
+    // it didn't. The client still gets the freshly-computed proposal
+    // either way (returned below); this only affects whether the NEXT
+    // request gets to reuse it from cache.
+    if (cacheWriteError) console.warn(`[propose-rule] cache write failed for job ${jobId}:`, cacheWriteError.message)
   }
 
   const returnedProposal = ruleType === 'service_credit' && serviceCreditType
