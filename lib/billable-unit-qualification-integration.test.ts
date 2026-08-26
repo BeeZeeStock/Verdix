@@ -55,6 +55,13 @@ function minimalDraftInput(jobId: string, orgId: string, unitType: string, opts?
   }
 }
 
+// Shared later-date fixture for successor tests. minimalDraftInput()
+// defaults effective_from to 2026-08-25T00:00:00Z (the predecessor's
+// date below); the accepted invariant is
+// successor.effective_from > predecessor.effective_from, so every
+// successor draft in this file must override it to something later.
+const SUCCESSOR_EFFECTIVE_FROM = '2026-09-01T00:00:00Z'
+
 function rejectionRuleValue(validChannel: string) {
   return { valid_reasons: [], valid_channels: [validChannel], requires_timestamp: true, requires_identification: true, email_alone_valid: false, email_exception: 'none' as const, late_rejection_behavior: 'ignored_for_initial_qualification' as const }
 }
@@ -279,7 +286,7 @@ describeIf('billable_unit_qualification_rules / source_roles — real Postgres r
   describe('successor lifecycle transactionality', () => {
     it('draft successor creation leaves the predecessor active — the bug this audit found and fixed', async () => {
       const v1 = await makeAndActivateReadyRule(jobId, orgId, 'SQM_SUCCESSOR_LEAVES_ACTIVE')
-      const v2 = await createSuccessorDraft(v1.id, minimalDraftInput(jobId, orgId, v1.unit_type))
+      const v2 = await createSuccessorDraft(v1.id, { ...minimalDraftInput(jobId, orgId, v1.unit_type), effective_from: SUCCESSOR_EFFECTIVE_FROM })
       expect(v2.status).toBe('draft')
       expect(v2.supersedes_rule_id).toBe(v1.id)
 
@@ -290,7 +297,7 @@ describeIf('billable_unit_qualification_rules / source_roles — real Postgres r
 
     it('an unresolved successor cannot activate', async () => {
       const v1 = await makeAndActivateReadyRule(jobId, orgId, 'SQM_SUCCESSOR_UNRESOLVED')
-      const v2 = await createSuccessorDraft(v1.id, minimalDraftInput(jobId, orgId, v1.unit_type))
+      const v2 = await createSuccessorDraft(v1.id, { ...minimalDraftInput(jobId, orgId, v1.unit_type), effective_from: SUCCESSOR_EFFECTIVE_FROM })
       await expect(activateQualificationRuleSuccessor(v2.id)).rejects.toThrow(/not ready/)
       const rereadV1 = await getQualificationRule(v1.id)
       expect(rereadV1?.status).toBe('active')
@@ -312,7 +319,7 @@ describeIf('billable_unit_qualification_rules / source_roles — real Postgres r
 
     it('a failed activation attempt (predecessor no longer active) leaves both rows exactly as they were — no partial supersession, no accidental promotion', async () => {
       const v1 = await makeAndActivateReadyRule(jobId, orgId, 'SQM_SUCCESSOR_ROLLBACK')
-      const v2Draft = await createSuccessorDraft(v1.id, minimalDraftInput(jobId, orgId, v1.unit_type))
+      const v2Draft = await createSuccessorDraft(v1.id, { ...minimalDraftInput(jobId, orgId, v1.unit_type), effective_from: SUCCESSOR_EFFECTIVE_FROM })
       await confirmAllFields(v2Draft.id)
 
       // Simulate the predecessor no longer being active by the time
@@ -336,11 +343,16 @@ describeIf('billable_unit_qualification_rules / source_roles — real Postgres r
     })
 
     it('concurrent successor activation cannot create two active versions — only one wins, the other fails cleanly', async () => {
+      // Two real, concurrent network round trips against production
+      // Postgres — the second genuinely blocks behind the first's row
+      // lock until it commits/rolls back, which can exceed vitest's
+      // default 5000ms test timeout. Timeout only; body/assertions
+      // unchanged.
       const v1 = await makeAndActivateReadyRule(jobId, orgId, 'SQM_SUCCESSOR_CONCURRENT')
       // Two different draft successors against the SAME predecessor
       // (distinct version numbers, so creation itself doesn't collide).
-      const v2a = await createDraftQualificationRule({ ...minimalDraftInput(jobId, orgId, v1.unit_type), version: v1.version + 1, supersedes_rule_id: v1.id })
-      const v2b = await createDraftQualificationRule({ ...minimalDraftInput(jobId, orgId, v1.unit_type), version: v1.version + 2, supersedes_rule_id: v1.id })
+      const v2a = await createDraftQualificationRule({ ...minimalDraftInput(jobId, orgId, v1.unit_type), version: v1.version + 1, supersedes_rule_id: v1.id, effective_from: SUCCESSOR_EFFECTIVE_FROM })
+      const v2b = await createDraftQualificationRule({ ...minimalDraftInput(jobId, orgId, v1.unit_type), version: v1.version + 2, supersedes_rule_id: v1.id, effective_from: SUCCESSOR_EFFECTIVE_FROM })
       await confirmAllFields(v2a.id)
       await confirmAllFields(v2b.id)
 
@@ -359,14 +371,14 @@ describeIf('billable_unit_qualification_rules / source_roles — real Postgres r
       const rereadV2b = await getQualificationRule(v2b.id)
       const activeCount = [rereadV2a, rereadV2b].filter(r => r?.status === 'active').length
       expect(activeCount).toBe(1) // exactly one successor became active, never both, never neither
-    })
+    }, 20_000)
   })
 
   // ── Activation TOCTOU hardening: optimistic revision guard ──────────────
   describe('activation-TOCTOU hardening (optimistic revision guard)', () => {
     it('exact scenario: activation with a stale expected_revision fails; re-reading, re-validating, and activating against the CURRENT revision succeeds', async () => {
       const v1 = await makeAndActivateReadyRule(jobId, orgId, 'SQM_REVISION_EXACT')
-      const v2 = await createSuccessorDraft(v1.id, minimalDraftInput(jobId, orgId, v1.unit_type))
+      const v2 = await createSuccessorDraft(v1.id, { ...minimalDraftInput(jobId, orgId, v1.unit_type), effective_from: SUCCESSOR_EFFECTIVE_FROM })
       const ready = await confirmAllFields(v2.id)
 
       // "1. read successor including revision N. 2. validate
@@ -430,7 +442,7 @@ describeIf('billable_unit_qualification_rules / source_roles — real Postgres r
 
     it('a concurrent evidence_precedence change referencing a newly UNREGISTERED role cannot slip through activation using the old, already-validated revision', async () => {
       const v1 = await makeAndActivateReadyRule(jobId, orgId, 'SQM_REVISION_ROLE_SWAP')
-      const v2 = await createSuccessorDraft(v1.id, minimalDraftInput(jobId, orgId, v1.unit_type))
+      const v2 = await createSuccessorDraft(v1.id, { ...minimalDraftInput(jobId, orgId, v1.unit_type), effective_from: SUCCESSOR_EFFECTIVE_FROM })
       const ready = await confirmAllFields(v2.id)
       const validatedRevision = ready.revision
       // Validation AS OF validatedRevision genuinely passed — both 'crm'
@@ -531,8 +543,13 @@ describeIf('billable_unit_qualification_rules / source_roles — anon key must n
     })
     expect(e2).toBeTruthy()
     const { error: e3 } = await anon.rpc('activate_qualification_rule_successor', {
-      p_successor_id: '00000000-0000-0000-0000-000000000000',
+      p_successor_id: '00000000-0000-0000-0000-000000000000', p_expected_revision: 1,
     })
     expect(e3).toBeTruthy()
+    // A well-formed call (correct arg shape) must be rejected on privilege
+    // grounds specifically — not merely "some error occurred", which could
+    // also be a function-signature mismatch masking a real grant gap.
+    expect(e3?.code).toBe('42501')
+    expect(e3?.message).toMatch(/permission denied/i)
   })
 })
