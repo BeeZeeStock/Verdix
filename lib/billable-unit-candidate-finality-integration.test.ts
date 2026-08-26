@@ -7,6 +7,7 @@ import { createOrGetCandidate, recordCandidateEvidence, getCandidate } from './b
 import { recordSourceCoverage, revokeSourceCoverage } from './source-coverage-service'
 import { evaluateAndFinalizeCandidate } from './billable-unit-candidate-finality-service'
 import { OBJECTION_REASON_FACT_KEY, OBJECTION_CHANNEL_FACT_KEY, OBJECTION_TIMESTAMP_FACT_KEY, OBJECTION_SUBJECT_EXTERNAL_ID_FACT_KEY } from './billable-unit-candidate-finality'
+import { computeBusinessDayDeadline } from './business-days'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Integration tests for source_coverage / the widened billable_unit_candidates
@@ -85,6 +86,82 @@ function minimalRuleInput(jobId: string, orgId: string, unitType: string, effect
   }
 }
 
+function multiSourceRuleInput(jobId: string, orgId: string, unitType: string, effectiveFrom: string) {
+  const base = minimalRuleInput(jobId, orgId, unitType, effectiveFrom)
+  return {
+    ...base,
+    // Real-Postgres verification (closeout pass) — a second, multi-capable-
+    // source rule variant, mirroring lib/billable-unit-candidate-
+    // finality.test.ts's own buildDedupeInstabilityRule: 'account.id' can
+    // resolve from EITHER 'crm' or 'enrichment', with an explicit
+    // source_precedence ['crm', 'enrichment'] — lets the fact-finality/
+    // dedupe-instability tests below exercise a genuinely unstable
+    // resolution (lower-priority source resolves while the higher-priority
+    // source's own completeness is unproven) against real Postgres.
+    evidence_precedence: {
+      'account.id': { value: { kind: 'source_precedence' as const, order: ['crm', 'enrichment'] }, state: 'clear_from_source' as const, provenance: 'contract_derived' as const },
+    },
+    fact_evidence_source_roles: {
+      ...base.fact_evidence_source_roles,
+      'account.id': { value: ['crm', 'enrichment'], state: 'clear_from_source' as const, provenance: 'contract_derived' as const },
+    },
+  }
+}
+
+// Isolated job/org for the multi-source (crm + enrichment) dedupe-
+// instability / fact-precedence tests — deliberately NOT sharing the main
+// describe block's job. Real-Postgres discovery: source_coverage is
+// job+source_binding scoped, not per-candidate or per-test — the main
+// suite's many other tests each record broad, wide-dated 'fact_evidence'
+// coverage on the shared crmBindingId (some from '2020-01-01' onward),
+// which silently satisfied these two tests' "crm is deliberately
+// unproven" precondition when they shared that job, making them assert
+// the OPPOSITE of what they were written to prove. A dedicated job/org
+// removes any possibility of cross-test coverage contamination.
+async function createIsolatedMultiSourceJob() {
+  const slug = `buq-finality-multisource-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const { data: org, error: orgError } = await supabaseServer.from('organizations').insert({ name: 'buq-finality-multisource-org', slug }).select('id').single()
+  if (orgError) throw new Error(`organizations insert failed: ${orgError.message}`)
+  const orgId = org!.id
+  const { data: job, error: jobError } = await supabaseServer.from('jobs').insert({
+    org_id: orgId, name: 'buq-finality-multisource-job', module: 'AUTO_CONFIGURE', status: 'PENDING',
+  }).select('id').single()
+  if (jobError) throw new Error(`jobs insert failed: ${jobError.message}`)
+  const jobId = job!.id
+
+  const crmRole = await registerSourceRole(jobId, orgId, 'crm')
+  const crmBinding = await createSourceBinding(crmRole.id, jobId, orgId, 'CRM', '2026-01-01T00:00:00Z')
+  const enrichmentRole = await registerSourceRole(jobId, orgId, 'enrichment')
+  const enrichmentBinding = await createSourceBinding(enrichmentRole.id, jobId, orgId, 'ENRICHMENT', '2026-01-01T00:00:00Z')
+
+  const draft = await createDraftQualificationRule(multiSourceRuleInput(jobId, orgId, 'FINALITY_TEST_UNIT_MULTI_SOURCE', '2026-01-01T00:00:00Z'))
+  await confirmQualificationRuleFieldAndPersist(draft.id, 'criteria')
+  await confirmQualificationRuleFieldAndPersist(draft.id, 'qualified_contact_role.base', { field: 'amount', operator: 'in', value: [25, 3] })
+  await confirmQualificationRuleFieldAndPersist(draft.id, 'qualified_contact_role.attestation_fact_key', null)
+  await confirmQualificationRuleFieldAndPersist(draft.id, 'dedupe_rule')
+  await confirmQualificationRuleFieldAndPersist(draft.id, 'rejection_rule')
+  await confirmQualificationRuleFieldAndPersist(draft.id, 'rejection_window')
+  await confirmQualificationRuleFieldAndPersist(draft.id, 'deadline_convention', 'end_of_business_day')
+  await confirmQualificationRuleFieldAndPersist(draft.id, 'business_day_end_local_time', '17:00:00')
+  await confirmQualificationRuleFieldAndPersist(draft.id, 'attribution_basis')
+  await confirmQualificationRuleFieldAndPersist(draft.id, 'fact_evidence_source_roles.amount', ['crm'])
+  await confirmQualificationRuleFieldAndPersist(draft.id, 'fact_evidence_source_roles.independent_flag', ['crm'])
+  await activateQualificationRule(draft.id)
+
+  return { orgId, jobId, crmBindingId: crmBinding.id, enrichmentBindingId: enrichmentBinding.id }
+}
+
+async function cleanupIsolatedJob(jobId: string, orgId: string) {
+  await supabaseServer.from('source_coverage').delete().eq('job_id', jobId)
+  await supabaseServer.from('candidate_unit_evidence').delete().eq('job_id', jobId)
+  await supabaseServer.from('billable_unit_candidates').delete().eq('job_id', jobId)
+  await supabaseServer.from('billable_unit_qualification_rules').delete().eq('job_id', jobId)
+  await supabaseServer.from('source_bindings').delete().eq('job_id', jobId)
+  await supabaseServer.from('source_roles').delete().eq('job_id', jobId)
+  await supabaseServer.from('jobs').delete().eq('id', jobId)
+  await supabaseServer.from('organizations').delete().eq('id', orgId)
+}
+
 describeIf('source_coverage / billable_unit_candidates finality — real Postgres round trip + RLS', () => {
   let orgId: string
   let jobId: string
@@ -105,9 +182,9 @@ describeIf('source_coverage / billable_unit_candidates finality — real Postgre
     const crmBinding = await createSourceBinding(crmRole.id, jobId, orgId, 'CRM', '2026-01-01T00:00:00Z')
     crmBindingId = crmBinding.id
 
-    const draft = await createDraftQualificationRule(minimalRuleInput(jobId, orgId, 'FINALITY_TEST_UNIT', '2026-08-25T00:00:00Z'))
+    const draft = await createDraftQualificationRule(minimalRuleInput(jobId, orgId, 'FINALITY_TEST_UNIT', '2026-01-01T00:00:00Z'))
     await confirmQualificationRuleFieldAndPersist(draft.id, 'criteria')
-    await confirmQualificationRuleFieldAndPersist(draft.id, 'qualified_contact_role.base', { field: 'amount', operator: 'gte', value: 0 })
+    await confirmQualificationRuleFieldAndPersist(draft.id, 'qualified_contact_role.base', { field: 'amount', operator: 'in', value: [25, 3] })
     await confirmQualificationRuleFieldAndPersist(draft.id, 'qualified_contact_role.attestation_fact_key', null)
     await confirmQualificationRuleFieldAndPersist(draft.id, 'dedupe_rule')
     await confirmQualificationRuleFieldAndPersist(draft.id, 'rejection_rule')
@@ -127,9 +204,9 @@ describeIf('source_coverage / billable_unit_candidates finality — real Postgre
     // construct a candidate with occurred_at present (so amount/criteria
     // can conclusively resolve) while booked_at is null (so the deadline
     // genuinely cannot resolve), without those two needs colliding.
-    const draft2 = await createDraftQualificationRule(minimalRuleInput(jobId, orgId, 'FINALITY_TEST_UNIT_BOOKED_DEADLINE', '2026-08-25T00:00:00Z'))
+    const draft2 = await createDraftQualificationRule(minimalRuleInput(jobId, orgId, 'FINALITY_TEST_UNIT_BOOKED_DEADLINE', '2026-01-01T00:00:00Z'))
     await confirmQualificationRuleFieldAndPersist(draft2.id, 'criteria')
-    await confirmQualificationRuleFieldAndPersist(draft2.id, 'qualified_contact_role.base', { field: 'amount', operator: 'gte', value: 0 })
+    await confirmQualificationRuleFieldAndPersist(draft2.id, 'qualified_contact_role.base', { field: 'amount', operator: 'in', value: [25, 3] })
     await confirmQualificationRuleFieldAndPersist(draft2.id, 'qualified_contact_role.attestation_fact_key', null)
     await confirmQualificationRuleFieldAndPersist(draft2.id, 'dedupe_rule')
     await confirmQualificationRuleFieldAndPersist(draft2.id, 'rejection_rule')
@@ -141,6 +218,33 @@ describeIf('source_coverage / billable_unit_candidates finality — real Postgre
     await confirmQualificationRuleFieldAndPersist(draft2.id, 'fact_evidence_source_roles.account.id', ['crm'])
     await confirmQualificationRuleFieldAndPersist(draft2.id, 'fact_evidence_source_roles.independent_flag', ['crm'])
     await activateQualificationRule(draft2.id)
+
+    // A THIRD rule — attribution_basis 'booked_at' (unlike draft/draft2,
+    // which both use the default 'occurred_at') while
+    // rejection_window stays anchored to occurred_at. Real-Postgres
+    // discovery: attribution_basis governs which rule VERSION pins to a
+    // candidate (lib/billable-unit-candidate.ts's pinQualificationRuleVersion)
+    // — a wholly separate concern from rejection_window.reference_time
+    // (which governs the DEADLINE anchor). A candidate with occurred_at:
+    // null cannot even be CREATED under a rule whose attribution_basis is
+    // 'occurred_at' (pinning has nothing to attribute against), regardless
+    // of what the deadline test intends — this rule decouples the two so
+    // a candidate can pin via booked_at while still exercising an
+    // occurred_at-anchored, genuinely-unresolvable deadline.
+    const draft4 = await createDraftQualificationRule(minimalRuleInput(jobId, orgId, 'FINALITY_TEST_UNIT_BOOKED_ATTRIBUTION', '2026-01-01T00:00:00Z'))
+    await confirmQualificationRuleFieldAndPersist(draft4.id, 'criteria')
+    await confirmQualificationRuleFieldAndPersist(draft4.id, 'qualified_contact_role.base', { field: 'amount', operator: 'in', value: [25, 3] })
+    await confirmQualificationRuleFieldAndPersist(draft4.id, 'qualified_contact_role.attestation_fact_key', null)
+    await confirmQualificationRuleFieldAndPersist(draft4.id, 'dedupe_rule')
+    await confirmQualificationRuleFieldAndPersist(draft4.id, 'rejection_rule')
+    await confirmQualificationRuleFieldAndPersist(draft4.id, 'rejection_window')
+    await confirmQualificationRuleFieldAndPersist(draft4.id, 'deadline_convention', 'end_of_business_day')
+    await confirmQualificationRuleFieldAndPersist(draft4.id, 'business_day_end_local_time', '17:00:00')
+    await confirmQualificationRuleFieldAndPersist(draft4.id, 'attribution_basis', 'booked_at')
+    await confirmQualificationRuleFieldAndPersist(draft4.id, 'fact_evidence_source_roles.amount', ['crm'])
+    await confirmQualificationRuleFieldAndPersist(draft4.id, 'fact_evidence_source_roles.account.id', ['crm'])
+    await confirmQualificationRuleFieldAndPersist(draft4.id, 'fact_evidence_source_roles.independent_flag', ['crm'])
+    await activateQualificationRule(draft4.id)
   })
 
   afterAll(async () => {
@@ -242,7 +346,11 @@ describeIf('source_coverage / billable_unit_candidates finality — real Postgre
     })
     const { error } = await supabaseServer.from('source_coverage').update({ covered_through: '2026-03-01T00:00:00Z' }).eq('id', row.id)
     expect(error).not.toBeNull()
-    expect(error?.message).toMatch(/append-only/)
+    // Real-Postgres discovery: the migration's actual trigger message is
+    // "substantive fields are immutable once inserted", not "append-only"
+    // — this test's own regex was never checked against the real trigger
+    // until this run (the migration was unapplied until now).
+    expect(error?.message).toMatch(/immutable once inserted/)
   })
 
   it('RLS: anon key gets no rows via SELECT and is rejected on INSERT for source_coverage', async () => {
@@ -433,15 +541,18 @@ describeIf('source_coverage / billable_unit_candidates finality — real Postgre
   })
 
   it('duplicate rejection + unresolved deadline -> persists terminal rejected with rejection_deadline = null', async () => {
-    // Uses the DEFAULT 'FINALITY_TEST_UNIT' rule (deadline anchored to
-    // occurred_at) — account.id is booked_at-referenced, so booked_at
-    // stays present on both candidates (dedupe can resolve and match)
+    // Uses the 'FINALITY_TEST_UNIT_BOOKED_ATTRIBUTION' rule — deadline
+    // stays anchored to occurred_at (so it's genuinely unresolvable when
+    // occurred_at is null), but attribution_basis is 'booked_at' (unlike
+    // the default rule) so pinning itself does not also need occurred_at.
+    // account.id is booked_at-referenced, so booked_at stays present on
+    // both candidates (dedupe can resolve and match; pinning succeeds)
     // while occurred_at is null on the current candidate (deadline
     // genuinely unresolvable) — the DB-level mirror of the pure-evaluator
     // "conclusive duplicate + unresolved deadline" regression.
     const priorBookedAt = '2026-09-05T00:00:00Z'
     const prior = await createOrGetCandidate({
-      job_id: jobId, org_id: orgId, unit_type: 'FINALITY_TEST_UNIT', source_binding_id: crmBindingId,
+      job_id: jobId, org_id: orgId, unit_type: 'FINALITY_TEST_UNIT_BOOKED_ATTRIBUTION', source_binding_id: crmBindingId,
       external_id: 'ext-null-deadline-dup-prior', booked_at: priorBookedAt, occurred_at: priorBookedAt,
     })
     await recordCandidateEvidence({
@@ -451,7 +562,7 @@ describeIf('source_coverage / billable_unit_candidates finality — real Postgre
 
     const candidateBookedAt = '2026-10-05T00:00:00Z'
     const candidate = await createOrGetCandidate({
-      job_id: jobId, org_id: orgId, unit_type: 'FINALITY_TEST_UNIT', source_binding_id: crmBindingId,
+      job_id: jobId, org_id: orgId, unit_type: 'FINALITY_TEST_UNIT_BOOKED_ATTRIBUTION', source_binding_id: crmBindingId,
       external_id: 'ext-null-deadline-dup', booked_at: candidateBookedAt, occurred_at: null,
     })
     await recordCandidateEvidence({
@@ -502,5 +613,256 @@ describeIf('source_coverage / billable_unit_candidates finality — real Postgre
     expect(result.decision?.materialDependencies).toContain('rejection_deadline')
     expect(result.candidate.status).toBe('rejected')
     expect(result.candidate.rejection_deadline).not.toBeNull()
+  })
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Real-Postgres verification and closeout — items not yet exercised
+  // through the integration framework above.
+  // ═══════════════════════════════════════════════════════════════════
+
+  it('unstable positive duplicate: current candidate resolves account.id from the lower-priority source while the higher-priority source is unproven -> pending', async () => {
+    const iso = await createIsolatedMultiSourceJob()
+    try {
+      const priorBookedAt = '2026-07-01T09:00:00Z'
+      const prior = await createOrGetCandidate({
+        job_id: iso.jobId, org_id: iso.orgId, unit_type: 'FINALITY_TEST_UNIT_MULTI_SOURCE', source_binding_id: iso.crmBindingId,
+        external_id: 'ext-instab-prior', booked_at: priorBookedAt, occurred_at: priorBookedAt,
+      })
+      await recordCandidateEvidence({
+        candidate_id: prior.id, job_id: iso.jobId, org_id: iso.orgId, source_binding_id: iso.crmBindingId,
+        facts: { 'account.id': 'acct-instab', amount: 25 }, occurred_at: priorBookedAt, recorded_at: priorBookedAt, recorded_by: 'test-harness',
+      })
+      // Prior's own account.id resolves from crm (the higher-priority source
+      // outright) — its own gate is fully provable.
+      await recordSourceCoverage({
+        job_id: iso.jobId, org_id: iso.orgId, source_binding_id: iso.crmBindingId, coverage_kind: 'fact_evidence',
+        covered_from: '2020-01-01T00:00:00Z', covered_through: priorBookedAt, established_at: '2026-12-01T00:00:00Z', completeness_basis: 'connector_high_watermark', established_by: 'test-harness',
+      })
+
+      const bookedAt = '2026-07-15T09:00:00Z'
+      const candidate = await createOrGetCandidate({
+        job_id: iso.jobId, org_id: iso.orgId, unit_type: 'FINALITY_TEST_UNIT_MULTI_SOURCE', source_binding_id: iso.enrichmentBindingId,
+        external_id: 'ext-instab-current', booked_at: bookedAt, occurred_at: bookedAt,
+      })
+      // account.id ONLY observed via enrichment (the LOWER-priority source in
+      // ['crm', 'enrichment']) — matches the prior's value textually, so the
+      // dedupe OBSERVATION is a match. But requiredRoleKeys for finality is
+      // ['crm', 'enrichment'] (both, since enrichment is idx 1) — crm is
+      // never covered for this candidate's own reference time, so the gate
+      // must block.
+      await recordCandidateEvidence({
+        candidate_id: candidate.id, job_id: iso.jobId, org_id: iso.orgId, source_binding_id: iso.enrichmentBindingId,
+        facts: { 'account.id': 'acct-instab', amount: 25 }, occurred_at: bookedAt, recorded_at: bookedAt, recorded_by: 'test-harness',
+      })
+      await recordSourceCoverage({
+        job_id: iso.jobId, org_id: iso.orgId, source_binding_id: iso.enrichmentBindingId, coverage_kind: 'fact_evidence',
+        covered_from: '2020-01-01T00:00:00Z', covered_through: bookedAt, established_at: '2026-12-01T00:00:00Z', completeness_basis: 'connector_high_watermark', established_by: 'test-harness',
+      })
+      // Deliberately NO crm fact_evidence coverage for this candidate.
+
+      const result = await evaluateAndFinalizeCandidate(candidate.id, '2026-12-01T00:00:00Z')
+      expect(result.decision?.outcome).toBe('pending')
+      expect(result.decision?.dedupe.outcome).toBe('duplicate')
+      expect(result.candidate.status).toBe('pending')
+      const accountFinality = result.decision?.factFinality?.find(f => f.factKey === 'account.id')
+      expect(accountFinality?.status).toBe('incomplete')
+      expect(accountFinality?.requiredSources).toEqual(['crm', 'enrichment'])
+    } finally {
+      await cleanupIsolatedJob(iso.jobId, iso.orgId)
+    }
+  }, 20000)
+
+  it('fact-evidence finality with source precedence: lower-priority resolution + unproven higher-priority source -> pending; proving the higher-priority source silent later -> qualifies', async () => {
+    const iso = await createIsolatedMultiSourceJob()
+    try {
+      // Real-Postgres discovery: SourceCoverage is a per-source-binding time
+      // WINDOW, not scoped to a specific fact — a 'fact_evidence' coverage
+      // row recorded for one fact's purposes (amount, referenceTime =
+      // occurred_at) transparently also satisfies any OTHER fact on the
+      // SAME source binding whose own required interval falls inside that
+      // window. occurredAt/bookedAt are deliberately DISTINCT (booked_at
+      // strictly after occurred_at) so crm's amount-oriented coverage
+      // (covering only through occurredAt) does NOT also reach account.id's
+      // own required interval (through the later booked_at) — otherwise
+      // this test's "crm deliberately unproven for account.id" setup would
+      // silently already be satisfied by the amount coverage, exactly the
+      // bug this comment documents finding.
+      const occurredAt = '2026-07-20T09:00:00Z'
+      const bookedAt = '2026-07-21T09:00:00Z'
+      const candidate = await createOrGetCandidate({
+        job_id: iso.jobId, org_id: iso.orgId, unit_type: 'FINALITY_TEST_UNIT_MULTI_SOURCE', source_binding_id: iso.enrichmentBindingId,
+        external_id: 'ext-precedence-1', booked_at: bookedAt, occurred_at: occurredAt,
+      })
+      await recordCandidateEvidence({
+        candidate_id: candidate.id, job_id: iso.jobId, org_id: iso.orgId, source_binding_id: iso.enrichmentBindingId,
+        facts: { 'account.id': 'acct-precedence-only', amount: 25 }, occurred_at: occurredAt, recorded_at: occurredAt, recorded_by: 'test-harness',
+      })
+      // amount's own fact-evidence coverage (fact_evidence_source_roles.amount
+      // stays crm-only on this rule) — covers crm ONLY through occurredAt,
+      // deliberately short of booked_at (account.id's own reference_time).
+      await recordSourceCoverage({
+        job_id: iso.jobId, org_id: iso.orgId, source_binding_id: iso.crmBindingId, coverage_kind: 'fact_evidence',
+        covered_from: '2020-01-01T00:00:00Z', covered_through: occurredAt, established_at: '2026-08-01T00:00:00Z', completeness_basis: 'connector_high_watermark', established_by: 'test-harness',
+      })
+      // dedupe/rejection completeness — via crm, independent of the
+      // account.id precedence question below.
+      await recordSourceCoverage({
+        job_id: iso.jobId, org_id: iso.orgId, source_binding_id: iso.crmBindingId, coverage_kind: 'candidate_discovery',
+        covered_from: '2020-01-01T00:00:00Z', covered_through: '2026-08-01T00:00:00Z', established_at: '2026-08-01T00:00:00Z', completeness_basis: 'connector_high_watermark', established_by: 'test-harness',
+      })
+      await recordSourceCoverage({
+        job_id: iso.jobId, org_id: iso.orgId, source_binding_id: iso.crmBindingId, coverage_kind: 'rejection_source',
+        covered_from: '2020-01-01T00:00:00Z', covered_through: '2026-08-01T00:00:00Z', established_at: '2026-08-01T00:00:00Z', completeness_basis: 'connector_high_watermark', established_by: 'test-harness',
+      })
+      // enrichment (the resolved winner) is itself covered through
+      // booked_at — account.id's own reference_time.
+      await recordSourceCoverage({
+        job_id: iso.jobId, org_id: iso.orgId, source_binding_id: iso.enrichmentBindingId, coverage_kind: 'fact_evidence',
+        covered_from: '2020-01-01T00:00:00Z', covered_through: bookedAt, established_at: '2026-08-01T00:00:00Z', completeness_basis: 'connector_high_watermark', established_by: 'test-harness',
+      })
+      // crm (higher priority) is NOT yet covered through booked_at for
+      // account.id.
+
+      const stillPending = await evaluateAndFinalizeCandidate(candidate.id, '2026-08-02T00:00:00Z')
+      expect(stillPending.decision?.outcome).toBe('pending')
+      const pendingAccountFinality = stillPending.decision?.factFinality?.find(f => f.factKey === 'account.id')
+      expect(pendingAccountFinality?.status).toBe('incomplete')
+
+      // Prove crm was searched and is silent for this candidate's reference
+      // time — a fact_evidence coverage row over crm, established later.
+      await recordSourceCoverage({
+        job_id: iso.jobId, org_id: iso.orgId, source_binding_id: iso.crmBindingId, coverage_kind: 'fact_evidence',
+        covered_from: '2020-01-01T00:00:00Z', covered_through: bookedAt, established_at: '2026-08-10T00:00:00Z', completeness_basis: 'connector_high_watermark', established_by: 'test-harness',
+      })
+
+      const nowQualifies = await evaluateAndFinalizeCandidate(candidate.id, '2026-08-11T00:00:00Z')
+      expect(nowQualifies.decision?.outcome).toBe('qualified')
+      expect(nowQualifies.candidate.status).toBe('qualified')
+    } finally {
+      await cleanupIsolatedJob(iso.jobId, iso.orgId)
+    }
+  }, 20000)
+
+  it('fact_evidence coverage established_at gates historical visibility: invisible for an asOf before established_at, visible after', async () => {
+    const occurredAt = '2026-11-05T09:00:00Z'
+    const candidate = await createOrGetCandidate({
+      job_id: jobId, org_id: orgId, unit_type: 'FINALITY_TEST_UNIT', source_binding_id: crmBindingId,
+      external_id: 'ext-established-gate', booked_at: occurredAt, occurred_at: occurredAt,
+    })
+    // amount below threshold -> criteria fast-rejects; only 'amount' fact
+    // finality is material, isolating the established_at question cleanly.
+    await recordCandidateEvidence({
+      candidate_id: candidate.id, job_id: jobId, org_id: orgId, source_binding_id: crmBindingId,
+      facts: { amount: 3 }, occurred_at: occurredAt, recorded_at: occurredAt, recorded_by: 'test-harness',
+    })
+    const establishedAt = '2026-11-10T00:00:00Z'
+    await recordSourceCoverage({
+      job_id: jobId, org_id: orgId, source_binding_id: crmBindingId, coverage_kind: 'fact_evidence',
+      covered_from: '2020-01-01T00:00:00Z', covered_through: occurredAt, established_at: establishedAt, completeness_basis: 'connector_high_watermark', established_by: 'test-harness',
+    })
+
+    // asOf BEFORE established_at — the coverage row exists in the DB but
+    // must be invisible to this replay; the candidate stays pending and
+    // nothing is persisted (a 'pending' outcome never calls the RPC).
+    const beforeEstablished = await evaluateAndFinalizeCandidate(candidate.id, '2026-11-09T00:00:00Z')
+    expect(beforeEstablished.decision?.outcome).toBe('pending')
+    expect(beforeEstablished.candidate.status).toBe('pending')
+
+    // asOf AFTER established_at — now visible; the SAME candidate resolves
+    // for real and finalizes.
+    const afterEstablished = await evaluateAndFinalizeCandidate(candidate.id, '2026-11-11T00:00:00Z')
+    expect(afterEstablished.decision?.outcome).toBe('rejected')
+    expect(afterEstablished.candidate.status).toBe('rejected')
+    expect(afterEstablished.candidate.decided_at).not.toBeNull()
+  })
+
+  it('revoking fact_evidence coverage makes it invisible for any asOf after the revocation, without disturbing an already-terminal candidate that used it', async () => {
+    const occurredAt = '2026-11-20T09:00:00Z'
+    const candidateUsedBefore = await createOrGetCandidate({
+      job_id: jobId, org_id: orgId, unit_type: 'FINALITY_TEST_UNIT', source_binding_id: crmBindingId,
+      external_id: 'ext-revoke-visibility-before', booked_at: occurredAt, occurred_at: occurredAt,
+    })
+    await recordCandidateEvidence({
+      candidate_id: candidateUsedBefore.id, job_id: jobId, org_id: orgId, source_binding_id: crmBindingId,
+      facts: { amount: 3 }, occurred_at: occurredAt, recorded_at: occurredAt, recorded_by: 'test-harness',
+    })
+    const coverageRow = await recordSourceCoverage({
+      job_id: jobId, org_id: orgId, source_binding_id: crmBindingId, coverage_kind: 'fact_evidence',
+      covered_from: '2020-01-01T00:00:00Z', covered_through: '2026-11-25T00:00:00Z', established_at: '2026-11-21T00:00:00Z', completeness_basis: 'connector_high_watermark', established_by: 'test-harness',
+    })
+
+    // Visible and usable before revocation — finalizes for real.
+    const before = await evaluateAndFinalizeCandidate(candidateUsedBefore.id, '2026-11-22T00:00:00Z')
+    expect(before.decision?.outcome).toBe('rejected')
+    expect(before.candidate.status).toBe('rejected')
+
+    await revokeSourceCoverage(coverageRow.id, '2026-11-23T00:00:00Z', 'reviewer:alice@example.com')
+
+    // A second, distinct candidate — evaluated at an asOf AFTER the
+    // revocation, with no replacement coverage — must find the same
+    // (now-revoked) row invisible.
+    const candidateAfterRevoke = await createOrGetCandidate({
+      job_id: jobId, org_id: orgId, unit_type: 'FINALITY_TEST_UNIT', source_binding_id: crmBindingId,
+      external_id: 'ext-revoke-visibility-after', booked_at: occurredAt, occurred_at: occurredAt,
+    })
+    await recordCandidateEvidence({
+      candidate_id: candidateAfterRevoke.id, job_id: jobId, org_id: orgId, source_binding_id: crmBindingId,
+      facts: { amount: 3 }, occurred_at: occurredAt, recorded_at: occurredAt, recorded_by: 'test-harness',
+    })
+    const after = await evaluateAndFinalizeCandidate(candidateAfterRevoke.id, '2026-11-24T00:00:00Z')
+    expect(after.decision?.outcome).toBe('pending')
+    expect(after.candidate.status).toBe('pending')
+
+    // The already-terminal candidate from before the revocation is
+    // untouched — re-finalizing returns it as-is (item J), proving the
+    // revocation did not retroactively alter an already-decided outcome.
+    const reread = await evaluateAndFinalizeCandidate(candidateUsedBefore.id, '2026-12-01T00:00:00Z')
+    expect(reread.decision).toBeNull()
+    expect(reread.candidate.status).toBe('rejected')
+  })
+
+  it('Stockholm business-day deadline correctly skips a public holiday AND the following weekend, using the configured cutoff local time with no hidden fallback', async () => {
+    // Thursday 2026-12-24, 1 business day later: Fri 12-25 (Christmas Day,
+    // holiday) -> Sat 12-26 (Boxing Day, holiday + weekend) -> Sun 12-27
+    // (weekend) -> Mon 12-28 (first real business day). Exercises a
+    // holiday immediately compounding into a weekend, not just a plain
+    // Friday->Monday roll.
+    const occurredAt = '2026-12-24T09:00:00Z'
+    const candidate = await createOrGetCandidate({
+      job_id: jobId, org_id: orgId, unit_type: 'FINALITY_TEST_UNIT', source_binding_id: crmBindingId,
+      external_id: 'ext-holiday-boundary', booked_at: occurredAt, occurred_at: occurredAt,
+    })
+    await recordCandidateEvidence({
+      candidate_id: candidate.id, job_id: jobId, org_id: orgId, source_binding_id: crmBindingId,
+      facts: { 'account.id': 'acct-holiday-boundary', amount: 25 }, occurred_at: occurredAt, recorded_at: occurredAt, recorded_by: 'test-harness',
+    })
+    await recordSourceCoverage({
+      job_id: jobId, org_id: orgId, source_binding_id: crmBindingId, coverage_kind: 'candidate_discovery',
+      covered_from: '2020-01-01T00:00:00Z', covered_through: '2026-12-29T00:00:00Z', established_at: '2026-12-29T00:00:00Z', completeness_basis: 'connector_high_watermark', established_by: 'test-harness',
+    })
+    await recordSourceCoverage({
+      job_id: jobId, org_id: orgId, source_binding_id: crmBindingId, coverage_kind: 'rejection_source',
+      covered_from: occurredAt, covered_through: '2026-12-29T00:00:00Z', established_at: '2026-12-29T00:00:00Z', completeness_basis: 'connector_high_watermark', established_by: 'test-harness',
+    })
+    await recordSourceCoverage({
+      job_id: jobId, org_id: orgId, source_binding_id: crmBindingId, coverage_kind: 'fact_evidence',
+      covered_from: '2020-01-01T00:00:00Z', covered_through: occurredAt, established_at: '2026-12-29T00:00:00Z', completeness_basis: 'connector_high_watermark', established_by: 'test-harness',
+    })
+
+    const result = await evaluateAndFinalizeCandidate(candidate.id, '2026-12-29T12:00:00Z')
+    expect(result.decision?.outcome).toBe('qualified')
+    expect(result.candidate.rejection_deadline).not.toBeNull()
+
+    const expectedDeadline = computeBusinessDayDeadline({
+      referenceTime: occurredAt, businessDays: 1, calendar: 'SE-stockholm', timezone: 'Europe/Stockholm',
+      convention: 'end_of_business_day', businessDayEndLocalTime: '17:00:00',
+    })
+    // business_day_end_local_time '17:00:00' is interpreted INCLUSIVELY
+    // through that configured second (computeBusinessDayDeadline appends
+    // .999 ms to the configured HH:MM:SS, never rounds down to it) — so
+    // Europe/Stockholm 17:00:00 on Mon 2026-12-28 (CET, UTC+1 in December)
+    // is 16:00:00.999Z, not 16:00:00.000Z.
+    expect(expectedDeadline).toBe('2026-12-28T16:00:00.999Z')
+    expect(new Date(result.candidate.rejection_deadline!).toISOString()).toBe(expectedDeadline)
   })
 })
