@@ -3,10 +3,12 @@ import {
   isFieldDecisionResolved, isQualificationRuleReady,
   confirmFieldDecision, confirmQualificationRuleField, extractReferencedSourceRoleKeys,
   computeQualificationExpressionDepth, validateQualificationExpression, validateQualificationCondition,
+  validateQualificationRuleFieldReferences,
   MAX_QUALIFICATION_EXPRESSION_DEPTH,
   type FieldDecision, type BillableUnitQualificationRule, type QualificationExpression,
   type QualificationFactDefinition,
 } from './billable-unit-qualification'
+import { buildOs202609Rule } from './os-2026-09-fixture'
 
 // ── FieldDecision resolution ─────────────────────────────────────────────
 describe('isFieldDecisionResolved', () => {
@@ -126,158 +128,120 @@ describe('computeQualificationExpressionDepth / validateQualificationExpression'
   })
 })
 
-// ── OS-2026-09 fixture ────────────────────────────────────────────────────
-// Every clause reference below is transcribed from the actual signed
-// OS-2026-09 contract text (§§2.1-3.4, Schedule 1), read directly from the
-// stored PDF during design — not an illustrative/invented fixture.
-function unresolved<T>(): FieldDecision<T> {
-  return { value: null, state: 'decision_required', provenance: null }
-}
-
-function buildOs202609Rule(): BillableUnitQualificationRule {
-  const factSchema: Record<string, QualificationFactDefinition> = {
-    'account.hq_or_commercial_ops_country': { type: 'enum', enumValues: ['SE', 'NO', 'DK', 'FI', 'DE', 'NL', 'BE', 'FR', 'GB'], reference_time: 'booked_at' },
-    'account.employee_count': { type: 'number', reference_time: 'booked_at' },
-    'account.business_category': { type: 'enum', enumValues: ['b2b_software', 'ai', 'developer_tools', 'enterprise_saas', 'fintech_infrastructure', 'deep_tech_b2b'], reference_time: 'booked_at' },
-    'account.quota_carrying_sellers': { type: 'number', reference_time: 'booked_at' },
-    'account.publicly_documented_enterprise_sales': { type: 'boolean', reference_time: 'booked_at' },
-    'account.is_current_paying_customer': { type: 'boolean', reference_time: 'booked_at' },
-    'contact.role': { type: 'enum', reference_time: 'booked_at' },
-    'attendance_minutes': { type: 'number', reference_time: 'occurred_at' },
-    'rejection_reason': {
-      type: 'enum', reference_time: 'occurred_at',
-      enumValues: ['account_outside_icp_at_booking', 'attendee_not_qualified_contact', 'attendance_under_15_minutes', 'duplicate_meeting', 'preexisting_active_opportunity'],
-    },
+// ── Pre-commit hardening audit (16B.2): fact-reference completeness ──────
+// validateQualificationRuleFieldReferences must catch every field slot an
+// EXECUTABLE rule references but fact_schema never declared — the exact
+// class of defect the OS-2026-09 fixture exposed (dedupe_rule.key_fields
+// naming 'account.id', which fact_schema never declared).
+describe('validateQualificationRuleFieldReferences', () => {
+  const validFactSchema: Record<string, QualificationFactDefinition> = {
+    amount: { type: 'number', reference_time: 'occurred_at' },
+    'account.id': { type: 'string', reference_time: 'booked_at' },
+    role: { type: 'enum', enumValues: ['A', 'B'], reference_time: 'booked_at' },
   }
 
-  // §2.1, §2.3 bullet 1, Schedule 1 — flattened into ONE all_of with a
-  // single nested any_of (Schedule 1 bullet 4's genuine OR) to stay within
-  // the approved depth-2 bound: AND is associative, so grouping the
-  // Target-Account bullets into their own labeled sub-all_of (as an
-  // earlier illustrative round did) would have added an unnecessary third
-  // nesting level for no semantic gain.
-  const criteriaExpr: QualificationExpression = {
-    kind: 'all_of', expressions: [
-      { kind: 'condition', condition: { field: 'account.hq_or_commercial_ops_country', operator: 'in', value: ['SE', 'NO', 'DK', 'FI', 'DE', 'NL', 'BE', 'FR', 'GB'] } },
-      { kind: 'condition', condition: { field: 'account.employee_count', operator: 'gte', value: 500 } },
-      { kind: 'condition', condition: { field: 'account.employee_count', operator: 'lte', value: 5000 } },
-      { kind: 'condition', condition: { field: 'account.business_category', operator: 'in', value: ['b2b_software', 'ai', 'developer_tools', 'enterprise_saas', 'fintech_infrastructure', 'deep_tech_b2b'] } },
-      { kind: 'any_of', expressions: [
-        { kind: 'condition', condition: { field: 'account.quota_carrying_sellers', operator: 'gte', value: 10 } },
-        { kind: 'condition', condition: { field: 'account.publicly_documented_enterprise_sales', operator: 'eq', value: true } },
-      ]},
-      { kind: 'condition', condition: { field: 'account.is_current_paying_customer', operator: 'eq', value: false } },
-      // §2.3 bullet 3 — attendance, flattened in alongside the Target
-      // Account bullets (both are single-candidate field predicates).
-      { kind: 'condition', condition: { field: 'attendance_minutes', operator: 'gte', value: 15 } },
-    ],
+  function baseRule(overrides?: Partial<BillableUnitQualificationRule>): BillableUnitQualificationRule {
+    return {
+      id: 'r1', job_id: 'j1', org_id: 'o1', unit_type: 'U',
+      fact_schema: validFactSchema,
+      criteria: { value: { kind: 'condition', condition: { field: 'amount', operator: 'gte', value: 1 } }, state: 'clear_from_source', provenance: null },
+      qualified_contact_role: {
+        base: { value: { field: 'role', operator: 'in', value: ['A'] }, state: 'clear_from_source', provenance: null },
+        extensions: { value: [], state: 'decision_required', provenance: null },
+        attestation_fact_key: { value: null, state: 'decision_required', provenance: null },
+      },
+      dedupe_rule: { value: { key_fields: ['account.id'], lookback: { days: 30, unit: 'calendar' }, scope: [] }, state: 'clear_from_source', provenance: null },
+      rejection_rule: { value: null, state: 'decision_required', provenance: null },
+      rejection_window: { value: null, state: 'decision_required', provenance: null },
+      deadline_convention: { value: null, state: 'decision_required', provenance: null },
+      attribution_basis: { value: null, state: 'decision_required', provenance: null },
+      evidence_precedence: {},
+      field_sources: {},
+      version: 1, revision: 1, supersedes_rule_id: null,
+      effective_from: '2026-01-01T00:00:00Z', effective_to: null, status: 'draft',
+      ...overrides,
+    }
   }
 
-  return {
-    id: 'rule-os-2026-09-sqm',
-    job_id: 'job-os-2026-09',
-    org_id: 'org-lynora',
-    unit_type: 'SQM',
-    fact_schema: factSchema,
-    criteria: { value: criteriaExpr, state: 'clear_from_source', provenance: null },
-    qualified_contact_role: {
-      // §2.2 — the six named roles, explicit in source.
-      base: {
-        value: { field: 'contact.role', operator: 'in', value: ['CRO', 'CSO', 'VP_Sales', 'Head_of_Sales', 'VP_Revenue', 'Head_of_Revenue'] },
-        state: 'clear_from_source', provenance: null,
-      },
-      // §2.2's "...or an equivalent role" — starts empty, reviewer-only,
-      // never blocks initial readiness.
-      extensions: { value: [], state: 'decision_required', provenance: null },
-    },
-    dedupe_rule: {
-      // §2.3 bullet 4 — "preceding 90 days" (no "Business Days" wording
-      // here, unlike the rejection window — calendar days).
-      value: { key_fields: ['account.id'], lookback: { days: 90, unit: 'calendar' }, scope: [] },
-      state: 'clear_from_source', provenance: null,
-    },
-    rejection_rule: {
-      // §2.5's five enumerated reasons, §3.3's channel/timestamp/
-      // identification requirements and email-alone exclusion.
-      value: {
-        valid_reasons: ['account_outside_icp_at_booking', 'attendee_not_qualified_contact', 'attendance_under_15_minutes', 'duplicate_meeting', 'preexisting_active_opportunity'],
-        valid_channels: ['crm', 'portal'],
-        requires_timestamp: true,
-        requires_identification: true,
-        email_alone_valid: false,
-        email_exception: 'candidate_level_reviewer_override',
-        late_rejection_behavior: 'ignored_for_initial_qualification',
-      },
-      state: 'clear_from_source', provenance: null,
-    },
-    rejection_window: {
-      // §2.7 — explicit calendar.
-      value: { business_days: 3, holiday_calendar: 'SE-stockholm', timezone: 'Europe/Stockholm' },
-      state: 'clear_from_source', provenance: null,
-    },
-    // §2.7/§2.5 never state clock-time-vs-end-of-day — genuinely unresolved.
-    deadline_convention: unresolved(),
-    // §5.1's "Monthly SQMs"/"each calendar month" framing reads naturally
-    // as occurrence-month, but the contract never uses the word
-    // "attribution" — a confident inference, not an explicit statement.
-    attribution_basis: { value: 'occurred_at', state: 'verdix_recommends', provenance: null },
-    evidence_precedence: {
-      // Schedule 1's qualification notes — explicit conflict-resolution rule.
-      'account.employee_count': {
-        value: { kind: 'authoritative_if_fresh_else_latest', source: 'crm', freshness_window_days: 90 },
-        state: 'clear_from_source', provenance: null,
-      },
-      // §3.2 — explicit.
-      'attendance_minutes': {
-        value: { kind: 'source_precedence', order: ['conferencing', 'calendar'] },
-        state: 'clear_from_source', provenance: null,
-      },
-      // §3.1 names CRM + enrichment for the OTHER ICP/contact facts but
-      // states no precedence between them — genuinely unresolved, not
-      // invented.
-      'icp_contact_default': unresolved(),
-    },
-    // Verbatim quotes from the actual signed OS-2026-09 PDF (read directly
-    // from the stored contract during design; see
-    // REAL_OS_2026_09_EXCERPT below and the source-grounding-resolution
-    // describe block for a test proving each quote is a real substring of
-    // the actual agreement text, not a paraphrase or a heading reference).
-    field_sources: {
-      'criteria': [
-        '"Target Account" means an organization that satisfies all ICP requirements in Schedule 1 on the date the meeting is booked.',
-        '"Sales Qualified Meeting" or "SQM" means a live meeting sourced and booked by Supplier that satisfies all of the following conditions: the account is a Target Account; the attendee is a Qualified Contact; the prospect attends the scheduled meeting and remains in the meeting for at least 15 minutes;',
-        'A prospect is a Target Account only if all of the following are true when the meeting is booked: Headquarters or primary commercial operations in Sweden, Norway, Denmark, Finland, Germany, Netherlands, Belgium, France, or the United Kingdom.',
-      ],
-      'qualified_contact_role.base': [
-        '"Qualified Contact" means a person employed by a Target Account whose role is Chief Revenue Officer, Chief Sales Officer, VP Sales, Head of Sales, VP Revenue, Head of Revenue, or an equivalent role with material responsibility for the account\'s sales or revenue organization.',
-      ],
-      'dedupe_rule': [
-        'the meeting is not a duplicate of another Supplier-sourced meeting with the same account during the preceding 90 days',
-      ],
-      'rejection_rule': [
-        'Customer may reject a meeting within three (3) Business Days after the meeting occurs only by recording one of the following reasons in the agreed CRM workflow or Supplier portal:',
-        'Customer rejection under Section 2.5 must identify the meeting and rejection reason and must be timestamped in the agreed CRM workflow or Supplier portal. Email alone is not a valid rejection unless the parties expressly agree otherwise in writing for the specific meeting.',
-      ],
-      'rejection_window': [
-        '"Business Day" means Monday through Friday excluding public holidays in Stockholm, Sweden.',
-      ],
-      'evidence_precedence.account.employee_count': [
-        'Company employee count may be established from Customer CRM data, the prospect\'s public materials, or Supplier\'s enrichment provider. If sources conflict materially, Customer CRM data controls if it was updated within the preceding 90 days; otherwise the parties will use the most recent reliable source.',
-      ],
-      'evidence_precedence.attendance_minutes': [
-        'Attendance duration will be evidenced by the calendar or conferencing record for the meeting. If those records conflict, the conferencing record controls.',
-      ],
-      // deadline_convention, attribution_basis, evidence_precedence.icp_contact_default
-      // deliberately absent — no clause grounds them; the absence itself is meaningful.
-    },
-    version: 1,
-    revision: 1,
-    supersedes_rule_id: null,
-    effective_from: '2026-08-25T00:00:00Z',
-    effective_to: null,
-    status: 'draft',
-  }
-}
+  it('a fully well-formed rule (every referenced field declared) validates clean', () => {
+    expect(validateQualificationRuleFieldReferences(baseRule())).toEqual([])
+  })
+
+  it('rejects a criteria condition referencing an undeclared fact', () => {
+    const rule = baseRule({ criteria: { value: { kind: 'condition', condition: { field: 'undeclared_field', operator: 'gte', value: 1 } }, state: 'clear_from_source', provenance: null } })
+    const errors = validateQualificationRuleFieldReferences(rule)
+    expect(errors.some(e => e.path.startsWith('criteria.') && e.reason.includes('undeclared'))).toBe(true)
+  })
+
+  it('rejects qualified_contact_role.base referencing an undeclared fact', () => {
+    const rule = baseRule({ qualified_contact_role: { base: { value: { field: 'undeclared_role_field', operator: 'in', value: ['A'] }, state: 'clear_from_source', provenance: null }, extensions: { value: [], state: 'decision_required', provenance: null }, attestation_fact_key: { value: null, state: 'decision_required', provenance: null } } })
+    const errors = validateQualificationRuleFieldReferences(rule)
+    expect(errors.some(e => e.path.startsWith('qualified_contact_role.base.'))).toBe(true)
+  })
+
+  it('rejects qualified_contact_role.attestation_fact_key referencing an undeclared fact', () => {
+    const rule = baseRule({ qualified_contact_role: { base: { value: { field: 'role', operator: 'in', value: ['A'] }, state: 'clear_from_source', provenance: null }, extensions: { value: [], state: 'decision_required', provenance: null }, attestation_fact_key: { value: 'undeclared_attestation_key', state: 'decision_required', provenance: null } } })
+    const errors = validateQualificationRuleFieldReferences(rule)
+    expect(errors).toContainEqual({ path: 'qualified_contact_role.attestation_fact_key', reason: "references undeclared fact_schema key 'undeclared_attestation_key'" })
+  })
+
+  it('accepts a declared BOOLEAN qualified_contact_role.attestation_fact_key', () => {
+    const withKey = baseRule({ fact_schema: { ...validFactSchema, approved: { type: 'boolean', reference_time: 'occurred_at' } }, qualified_contact_role: { base: { value: { field: 'role', operator: 'in', value: ['A'] }, state: 'clear_from_source', provenance: null }, extensions: { value: [], state: 'decision_required', provenance: null }, attestation_fact_key: { value: 'approved', state: 'decision_required', provenance: null } } })
+    expect(validateQualificationRuleFieldReferences(withKey)).toEqual([])
+  })
+
+  it('rejects a declared attestation_fact_key whose fact_schema type is NOT boolean — the alternate condition is evaluated as field == true', () => {
+    const withStringKey = baseRule({ fact_schema: { ...validFactSchema, approved: { type: 'string', reference_time: 'occurred_at' } }, qualified_contact_role: { base: { value: { field: 'role', operator: 'in', value: ['A'] }, state: 'clear_from_source', provenance: null }, extensions: { value: [], state: 'decision_required', provenance: null }, attestation_fact_key: { value: 'approved', state: 'decision_required', provenance: null } } })
+    const errors = validateQualificationRuleFieldReferences(withStringKey)
+    expect(errors).toContainEqual({ path: 'qualified_contact_role.attestation_fact_key', reason: "references fact_schema key 'approved' of type 'string', but the attestation condition is evaluated as 'field == true' and requires a 'boolean' fact" })
+  })
+
+  it('accepts null attestation_fact_key (no attestation mechanism configured)', () => {
+    expect(validateQualificationRuleFieldReferences(baseRule())).toEqual([]) // null by default in baseRule()
+  })
+
+  it('the canonical OS-2026-09 rule\'s attestation_fact_key validates clean', () => {
+    const rule = buildOs202609Rule()
+    const key = rule.qualified_contact_role.attestation_fact_key.value!
+    expect(rule.fact_schema[key]?.type).toBe('boolean')
+    expect(validateQualificationRuleFieldReferences(rule)).toEqual([])
+  })
+
+  it('rejects dedupe_rule.key_fields referencing an undeclared fact — the exact OS-2026-09 gap', () => {
+    const rule = baseRule({ dedupe_rule: { value: { key_fields: ['undeclared_key'], lookback: { days: 30, unit: 'calendar' }, scope: [] }, state: 'clear_from_source', provenance: null } })
+    const errors = validateQualificationRuleFieldReferences(rule)
+    expect(errors.some(e => e.path === 'dedupe_rule.key_fields.undeclared_key')).toBe(true)
+  })
+
+  it('accepts a declared dedupe_rule.key_fields entry', () => {
+    const rule = baseRule({ dedupe_rule: { value: { key_fields: ['account.id'], lookback: { days: 30, unit: 'calendar' }, scope: [] }, state: 'clear_from_source', provenance: null } })
+    expect(validateQualificationRuleFieldReferences(rule)).toEqual([])
+  })
+
+  it('rejects a dedupe_rule.scope condition referencing an undeclared fact', () => {
+    const rule = baseRule({ dedupe_rule: { value: { key_fields: ['account.id'], lookback: { days: 30, unit: 'calendar' }, scope: [{ field: 'undeclared_scope_field', operator: 'eq', value: true }] }, state: 'clear_from_source', provenance: null } })
+    const errors = validateQualificationRuleFieldReferences(rule)
+    expect(errors.some(e => e.path.startsWith('dedupe_rule.scope.'))).toBe(true)
+  })
+
+  it('rejects an evidence_precedence key that is not a declared fact_schema key', () => {
+    const rule = baseRule({ evidence_precedence: { undeclared_precedence_key: { value: { kind: 'authoritative_source', source: 'crm' }, state: 'clear_from_source', provenance: null } } })
+    const errors = validateQualificationRuleFieldReferences(rule)
+    expect(errors).toContainEqual({ path: 'evidence_precedence.undeclared_precedence_key', reason: "references undeclared fact_schema key 'undeclared_precedence_key'" })
+  })
+
+  it('accepts an evidence_precedence key that IS a declared fact_schema key', () => {
+    const rule = baseRule({ evidence_precedence: { amount: { value: { kind: 'authoritative_source', source: 'crm' }, state: 'clear_from_source', provenance: null } } })
+    expect(validateQualificationRuleFieldReferences(rule)).toEqual([])
+  })
+
+  it('every OS-2026-09 canonical evidence_precedence key exists in fact_schema — the regression this whole audit was about', () => {
+    const rule = buildOs202609Rule()
+    expect(validateQualificationRuleFieldReferences(rule)).toEqual([])
+    // Directly re-asserted: no non-field-scoped placeholder key remains.
+    expect(Object.keys(rule.evidence_precedence).every(key => key in rule.fact_schema)).toBe(true)
+  })
+})
 
 describe('OS-2026-09 fixture — before any reviewer confirmation', () => {
   const rule = buildOs202609Rule()
@@ -313,18 +277,34 @@ describe('OS-2026-09 fixture — before any reviewer confirmation', () => {
 })
 
 describe('OS-2026-09 fixture — after confirming only the unresolved/recommended fields', () => {
-  it('becomes ready once deadline_convention, attribution_basis, and the unstated evidence precedence are confirmed, WITHOUT changing the provenance of any already source-derived field', () => {
+  const UNRESOLVED_ICP_PRECEDENCE_KEYS = [
+    'account.hq_or_commercial_ops_country', 'account.business_category', 'account.quota_carrying_sellers',
+    'account.publicly_documented_enterprise_sales', 'account.is_current_paying_customer', 'contact.role',
+  ] as const
+
+  it('becomes ready once deadline_convention, attribution_basis, and every unstated evidence-precedence field are confirmed, WITHOUT changing the provenance of any already source-derived field', () => {
     let rule = buildOs202609Rule()
     expect(isQualificationRuleReady(rule)).toBe(false)
 
-    // Confirm the three genuinely open fields only.
+    // Confirm the genuinely open fields. The six unresolved
+    // evidence_precedence.<field> entries (§3.1's unresolved CRM/
+    // enrichment note) are confirmed one at a time with the SAME
+    // override value — modeling a reviewer picking one policy for the
+    // whole group in the UI, while the executable rule representation
+    // stays fact-key-specific (see the grouped-decision test below).
     rule = confirmQualificationRuleField(rule, 'deadline_convention', 'end_of_business_day')
     rule = confirmQualificationRuleField(rule, 'attribution_basis')  // accept the recommendation as-is
-    rule = confirmQualificationRuleField(rule, 'evidence_precedence.icp_contact_default', { kind: 'source_precedence', order: ['crm', 'enrichment'] })
+    rule = confirmQualificationRuleField(rule, 'qualified_contact_role.attestation_fact_key')  // accept the recommended mechanism/key as-is
+    for (const key of UNRESOLVED_ICP_PRECEDENCE_KEYS) {
+      rule = confirmQualificationRuleField(rule, `evidence_precedence.${key}`, { kind: 'source_precedence', order: ['crm', 'enrichment'] })
+    }
 
     expect(rule.deadline_convention).toEqual({ value: 'end_of_business_day', state: 'decision_required', provenance: 'reviewer_policy' })
     expect(rule.attribution_basis).toEqual({ value: 'occurred_at', state: 'verdix_recommends', provenance: 'reviewer_policy' })
-    expect(rule.evidence_precedence['icp_contact_default'].provenance).toBe('reviewer_policy')
+    expect(rule.qualified_contact_role.attestation_fact_key).toEqual({ value: 'qualified_contact_role.reviewer_attested_equivalent', state: 'verdix_recommends', provenance: 'reviewer_policy' })
+    for (const key of UNRESOLVED_ICP_PRECEDENCE_KEYS) {
+      expect(rule.evidence_precedence[key].provenance).toBe('reviewer_policy')
+    }
 
     // Still not ready — the clear_from_source fields haven't been
     // confirmed yet (per this codebase's standing HITL discipline, even a
@@ -350,11 +330,32 @@ describe('OS-2026-09 fixture — after confirming only the unresolved/recommende
     expect(rule.rejection_window.provenance).toBe('contract_derived')
     expect(rule.evidence_precedence['account.employee_count'].provenance).toBe('contract_derived')
     expect(rule.evidence_precedence['attendance_minutes'].provenance).toBe('contract_derived')
-    // The two fields that genuinely required a reviewer choice/acceptance
+    // The fields that genuinely required a reviewer choice/acceptance
     // stay reviewer_policy — never silently promoted to contract_derived.
     expect(rule.deadline_convention.provenance).toBe('reviewer_policy')
     expect(rule.attribution_basis.provenance).toBe('reviewer_policy')
-    expect(rule.evidence_precedence['icp_contact_default'].provenance).toBe('reviewer_policy')
+    for (const key of UNRESOLVED_ICP_PRECEDENCE_KEYS) {
+      expect(rule.evidence_precedence[key].provenance).toBe('reviewer_policy')
+    }
+  })
+
+  it('a grouped reviewer decision (the same strategy applied to several unresolved precedence fields) updates ONLY the intended real fact keys, never the already-explicit ones', () => {
+    let rule = buildOs202609Rule()
+    // "Grouping" is purely a caller/UI convenience — confirm two of the
+    // six unresolved fields with one shared decision.
+    rule = confirmQualificationRuleField(rule, 'evidence_precedence.account.business_category', { kind: 'source_precedence', order: ['crm', 'enrichment'] })
+    rule = confirmQualificationRuleField(rule, 'evidence_precedence.contact.role', { kind: 'source_precedence', order: ['crm', 'enrichment'] })
+
+    expect(rule.evidence_precedence['account.business_category'].provenance).toBe('reviewer_policy')
+    expect(rule.evidence_precedence['contact.role'].provenance).toBe('reviewer_policy')
+    // Every OTHER key — including the other four still-unresolved ICP
+    // fields and the two already-explicit contract-stated entries — is
+    // untouched.
+    for (const key of ['account.hq_or_commercial_ops_country', 'account.quota_carrying_sellers', 'account.publicly_documented_enterprise_sales', 'account.is_current_paying_customer']) {
+      expect(rule.evidence_precedence[key].provenance).toBeNull()
+    }
+    expect(rule.evidence_precedence['account.employee_count'].value).toEqual({ kind: 'authoritative_if_fresh_else_latest', source: 'crm', freshness_window_days: 90 })
+    expect(rule.evidence_precedence['attendance_minutes'].value).toEqual({ kind: 'source_precedence', order: ['conferencing', 'calendar'] })
   })
 
   it('confirming deadline_convention alone does not touch criteria\'s provenance', () => {

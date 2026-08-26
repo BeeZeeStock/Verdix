@@ -11,6 +11,7 @@
 import { supabaseServer } from './supabase'
 import {
   confirmQualificationRuleField, isQualificationRuleReady, extractReferencedSourceRoleKeys,
+  validateQualificationRuleFieldReferences,
   type BillableUnitQualificationRule, type QualificationRuleFieldPath,
 } from './billable-unit-qualification'
 import { listSourceRolesForJob } from './source-roles-service'
@@ -139,8 +140,8 @@ export async function confirmQualificationRuleFieldAndPersist(
   }
   const updated = confirmQualificationRuleField(existing, fieldPath, overrideValue)
 
-  if (fieldPath === 'qualified_contact_role.base' || fieldPath === 'qualified_contact_role.extensions') {
-    const subField = fieldPath === 'qualified_contact_role.base' ? 'base' : 'extensions'
+  if (fieldPath === 'qualified_contact_role.base' || fieldPath === 'qualified_contact_role.extensions' || fieldPath === 'qualified_contact_role.attestation_fact_key') {
+    const subField = fieldPath === 'qualified_contact_role.base' ? 'base' : fieldPath === 'qualified_contact_role.extensions' ? 'extensions' : 'attestation_fact_key'
     const { data, error } = await supabaseServer.rpc('set_qualification_rule_contact_role_field', {
       p_rule_id: id, p_field: subField, p_value: updated.qualified_contact_role[subField],
     })
@@ -210,6 +211,22 @@ async function assertReferencedSourceRolesRegistered(rule: BillableUnitQualifica
   }
 }
 
+// Pre-commit hardening audit (16B.2) — fully synchronous/pure (fact_schema
+// membership needs no database read, unlike source-role registration
+// above), so this is a plain assertion over
+// validateQualificationRuleFieldReferences rather than an async DB call.
+// Catches at ACTIVATION time exactly the class of defect the OS-2026-09
+// fixture exposed (dedupe_rule.key_fields naming a fact_schema key that
+// was never declared) — without this, the same defect would only surface
+// later, at candidate-evaluation time, inside
+// lib/billable-unit-candidate.ts's resolveCandidateFact.
+function assertQualificationRuleFieldReferencesResolvable(rule: BillableUnitQualificationRule): void {
+  const errors = validateQualificationRuleFieldReferences(rule)
+  if (errors.length > 0) {
+    throw new Error(`activation blocked: rule ${rule.id} references undeclared fact_schema field(s): ${errors.map(e => `${e.path} (${e.reason})`).join('; ')}`)
+  }
+}
+
 // Activation is a deliberate, separate action from readiness — a fully
 // resolved draft does not auto-activate. Hard-enforces
 // isQualificationRuleReady AND assertReferencedSourceRolesRegistered as
@@ -252,6 +269,7 @@ export async function activateQualificationRule(id: string): Promise<BillableUni
   if (existing.status !== 'draft') throw new Error(`activateQualificationRule: rule ${id} is not in draft status (found '${existing.status}')`)
   if (existing.supersedes_rule_id) throw new Error(`activateQualificationRule: rule ${id} supersedes another rule — use activateQualificationRuleSuccessor instead`)
   if (!isQualificationRuleReady(existing)) throw new Error(`activateQualificationRule: rule ${id} is not ready — unresolved fields remain`)
+  assertQualificationRuleFieldReferencesResolvable(existing)
   await assertReferencedSourceRolesRegistered(existing)
   const { data, error } = await supabaseServer.from(TABLE)
     .update({ status: 'active', updated_at: new Date().toISOString() })
@@ -364,6 +382,7 @@ export async function activateQualificationRuleSuccessor(
   if (successor.status !== 'draft') throw new Error(`activateQualificationRuleSuccessor: rule ${successorId} is not in draft status (found '${successor.status}')`)
   if (!successor.supersedes_rule_id) throw new Error(`activateQualificationRuleSuccessor: rule ${successorId} has no supersedes_rule_id — use activateQualificationRule for a first-ever activation`)
   if (!isQualificationRuleReady(successor)) throw new Error(`activateQualificationRuleSuccessor: rule ${successorId} is not ready — unresolved fields remain`)
+  assertQualificationRuleFieldReferencesResolvable(successor)
   await assertReferencedSourceRolesRegistered(successor)
 
   const { data, error } = await supabaseServer.rpc('activate_qualification_rule_successor', {

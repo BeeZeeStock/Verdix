@@ -40,7 +40,7 @@ function minimalDraftInput(jobId: string, orgId: string, unitType: string, opts?
     job_id: jobId, org_id: orgId, unit_type: unitType,
     fact_schema: { attendance_minutes: { type: 'number', reference_time: 'occurred_at' } },
     criteria: { value: { kind: 'condition', condition: { field: 'attendance_minutes', operator: 'gte', value: 15 } }, state: 'clear_from_source', provenance: null },
-    qualified_contact_role: { base: unresolved(), extensions: unresolved() },
+    qualified_contact_role: { base: unresolved(), extensions: unresolved(), attestation_fact_key: unresolved() },
     dedupe_rule: unresolved(),
     rejection_rule: unresolved(),
     rejection_window: unresolved(),
@@ -69,6 +69,7 @@ function rejectionRuleValue(validChannel: string) {
 async function confirmAllFields(ruleId: string, validChannel = 'crm'): Promise<BillableUnitQualificationRule> {
   await confirmQualificationRuleFieldAndPersist(ruleId, 'criteria')
   await confirmQualificationRuleFieldAndPersist(ruleId, 'qualified_contact_role.base', { field: 'contact.role', operator: 'in', value: ['CRO'] })
+  await confirmQualificationRuleFieldAndPersist(ruleId, 'qualified_contact_role.attestation_fact_key', null)
   await confirmQualificationRuleFieldAndPersist(ruleId, 'dedupe_rule', { key_fields: ['account.id'], lookback: { days: 90, unit: 'calendar' }, scope: [] })
   await confirmQualificationRuleFieldAndPersist(ruleId, 'rejection_rule', rejectionRuleValue(validChannel))
   await confirmQualificationRuleFieldAndPersist(ruleId, 'rejection_window', { business_days: 3, holiday_calendar: 'SE-stockholm', timezone: 'Europe/Stockholm' })

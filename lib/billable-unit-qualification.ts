@@ -232,6 +232,27 @@ export interface QualifiedContactRoleDecision {
   // contract-derived roles look reviewer-authored, and vice versa.
   // Deliberately excluded from rule readiness (see isQualificationRuleReady).
   extensions: FieldDecision<string[]>
+  // Pre-commit hardening audit (16B.2) — names an OPTIONAL fact_schema key
+  // (a boolean fact) that, when resolved true for a specific candidate,
+  // ALSO satisfies this check, independent of base/extensions. This is
+  // configuration, not evaluator logic: lib/billable-unit-candidate.ts's
+  // evaluateCandidateCriteria composes it as one more any_of leaf
+  // condition and has NO special knowledge of what the key represents or
+  // why a rule author chose it — it only ever understands condition/
+  // all_of/any_of/resolved facts, same as everywhere else in this
+  // evaluator. This is how a candidate-specific reviewer judgment (e.g.
+  // "this attendee's title satisfies the contract's equivalent-role
+  // language") gets represented WITHOUT rewriting the factual contact
+  // role and WITHOUT mutating `extensions` (a reusable, rule-level list)
+  // for a one-off case — see OS-2026-09's own fixture for a worked
+  // example. null = this rule has no such mechanism configured (the
+  // common case — most contracts have no "or equivalent role" language at
+  // all). Included in rule readiness (unlike extensions) because,
+  // resolved or not, WHETHER a rule supports this mechanism and WHICH key
+  // it points to is itself a real commercial decision that must go
+  // through the same provenance discipline as every other field here —
+  // never silently defaulted.
+  attestation_fact_key: FieldDecision<string | null>
 }
 
 // ── The rule itself ───────────────────────────────────────────────────────
@@ -333,6 +354,7 @@ export function isQualificationRuleReady(rule: BillableUnitQualificationRule): b
   if (!isFieldDecisionResolved(rule.qualified_contact_role.base)) return false
   // qualified_contact_role.extensions is deliberately NOT checked — an
   // empty or partially-populated extensions list never blocks readiness.
+  if (!isFieldDecisionResolved(rule.qualified_contact_role.attestation_fact_key)) return false
   if (!isFieldDecisionResolved(rule.dedupe_rule)) return false
   if (!isFieldDecisionResolved(rule.rejection_rule)) return false
   if (!isFieldDecisionResolved(rule.rejection_window)) return false
@@ -379,6 +401,7 @@ export type QualificationRuleFieldPath =
   | 'criteria'
   | 'qualified_contact_role.base'
   | 'qualified_contact_role.extensions'
+  | 'qualified_contact_role.attestation_fact_key'
   | 'dedupe_rule'
   | 'rejection_rule'
   | 'rejection_window'
@@ -431,6 +454,15 @@ export function confirmQualificationRuleField(
       qualified_contact_role: {
         ...rule.qualified_contact_role,
         extensions: confirmFieldDecision(rule.qualified_contact_role.extensions, { overrideValue: overrideValue as string[] | undefined }),
+      },
+    }
+  }
+  if (fieldPath === 'qualified_contact_role.attestation_fact_key') {
+    return {
+      ...rule,
+      qualified_contact_role: {
+        ...rule.qualified_contact_role,
+        attestation_fact_key: confirmFieldDecision(rule.qualified_contact_role.attestation_fact_key, { overrideValue: overrideValue as string | null | undefined }),
       },
     }
   }
@@ -491,6 +523,100 @@ export function extractReferencedSourceRoleKeys(rule: BillableUnitQualificationR
     }
   }
   return Array.from(keys)
+}
+
+// ── Fact-reference completeness (activation-time validation) ────────────
+//
+// Pre-commit hardening audit (16B.2) — the OS-2026-09 fixture exposed a
+// genuine production invariant that was never checked: dedupe_rule named
+// key_fields: ['account.id'], but 'account.id' was never declared in
+// fact_schema, and 16B.1 had no validator that would have caught this
+// (validateQualificationExpression only walks the CRITERIA expression
+// tree — it has no visibility into dedupe_rule, qualified_contact_role,
+// or evidence_precedence at all). A rule can reach 'active' with a
+// dedupe/precedence/contact-role field that no fact_schema entry backs,
+// and 16B.2's resolveCandidateFact would then fail at CANDIDATE
+// EVALUATION time instead of at RULE ACTIVATION time — exactly the kind
+// of latent, activation-time-catchable defect this function exists to
+// close.
+//
+// Deliberately pure and structural, same shape as
+// validateQualificationExpression (no I/O, no database) — every field
+// slot an EXECUTABLE rule can reference (16B.2's evaluator actually
+// dereferences these against fact_schema at runtime) is checked here:
+// criteria conditions, qualified_contact_role.base's condition (16B.2's
+// evaluator resolves this exactly like a criteria leaf — see
+// lib/billable-unit-candidate.ts's evaluateCandidateCriteria),
+// dedupe_rule.key_fields, dedupe_rule.scope conditions, and every
+// evidence_precedence key. Unlike source-role references
+// (extractReferencedSourceRoleKeys/assertReferencedSourceRolesRegistered,
+// which need a per-job database read), fact_schema membership is fully
+// determined by the rule's own data — no reason this needs a DB round
+// trip, so unlike source-role checking it stays entirely in this pure
+// module and is called directly from the service layer's activation
+// preconditions rather than needing its own async wrapper.
+//
+// evidence_precedence keys are checked STRICTLY against fact_schema — no
+// exception for a non-field-scoped "general default" placeholder. (An
+// earlier fixture had one such placeholder, 'icp_contact_default'; per
+// explicit product decision it was removed from the canonical OS-2026-09
+// fixture and replaced with fact-scoped entries for the actual affected
+// facts — see lib/os-2026-09-fixture.ts.)
+export interface QualificationRuleFieldReferenceError { path: string; reason: string }
+
+export function validateQualificationRuleFieldReferences(rule: BillableUnitQualificationRule): QualificationRuleFieldReferenceError[] {
+  const errors: QualificationRuleFieldReferenceError[] = []
+
+  if (rule.criteria.value) {
+    for (const e of validateQualificationExpression(rule.criteria.value, rule.fact_schema)) {
+      errors.push({ path: `criteria.${e.path}`, reason: e.reason })
+    }
+  }
+
+  const roleCondition = rule.qualified_contact_role.base.value
+  if (roleCondition) {
+    for (const e of validateQualificationCondition(roleCondition, rule.fact_schema)) {
+      errors.push({ path: `qualified_contact_role.base.${e.path}`, reason: e.reason })
+    }
+  }
+
+  // null is valid (no reviewer-attestation alternate path configured).
+  // When set, evaluateCandidateCriteria composes it as `field == true`
+  // (lib/billable-unit-candidate.ts) — so the referenced fact must exist
+  // AND be declared boolean; anything else would be a condition that can
+  // never meaningfully evaluate to the eq-true check it's actually run
+  // through.
+  const attestationFactKey = rule.qualified_contact_role.attestation_fact_key.value
+  if (attestationFactKey) {
+    const attestationFact = rule.fact_schema[attestationFactKey]
+    if (!attestationFact) {
+      errors.push({ path: 'qualified_contact_role.attestation_fact_key', reason: `references undeclared fact_schema key '${attestationFactKey}'` })
+    } else if (attestationFact.type !== 'boolean') {
+      errors.push({ path: 'qualified_contact_role.attestation_fact_key', reason: `references fact_schema key '${attestationFactKey}' of type '${attestationFact.type}', but the attestation condition is evaluated as 'field == true' and requires a 'boolean' fact` })
+    }
+  }
+
+  const dedupe = rule.dedupe_rule.value
+  if (dedupe) {
+    for (const key of dedupe.key_fields) {
+      if (!rule.fact_schema[key]) {
+        errors.push({ path: `dedupe_rule.key_fields.${key}`, reason: `references undeclared fact_schema key '${key}'` })
+      }
+    }
+    for (const condition of dedupe.scope) {
+      for (const e of validateQualificationCondition(condition, rule.fact_schema)) {
+        errors.push({ path: `dedupe_rule.scope.${e.path}`, reason: e.reason })
+      }
+    }
+  }
+
+  for (const key of Object.keys(rule.evidence_precedence)) {
+    if (!rule.fact_schema[key]) {
+      errors.push({ path: `evidence_precedence.${key}`, reason: `references undeclared fact_schema key '${key}'` })
+    }
+  }
+
+  return errors
 }
 
 // ── Deferred design notes (NOT implemented in this slice) ────────────────
