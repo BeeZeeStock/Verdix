@@ -157,13 +157,20 @@ export function buildRemembillFixtureTerms(): ContractTerms {
         required_operational_inputs: ['total_invoice_value_for_issued_requests'],
         unresolved_kind: 'unsupported_semantics',
         source_clause: 'Betalgrad efter uppföljning är utfallet, mätt värdeviktat.',
-        // Step 17B0.2, item 6 — this fee's evidence genuinely spans three
-        // parts of Bilaga 1 (the rate itself, the calculation formula, and
-        // the rate schedule/step table) — each keeps its own independently-
-        // navigable locator rather than one heading standing in for all
-        // three (see lib/types.ts's AdditionalRecurringFee.source_sections
-        // and the extraction prompt's MULTI-SECTION EVIDENCE rule).
-        source_sections: ['Bilaga 1, avsnitt 2', 'Bilaga 1, avsnitt 3', 'Bilaga 1, avsnitt 5'],
+        // Step 17B0.2, item 6 (revised Step 17B0.4) — this fee's evidence
+        // genuinely spans three parts of Bilaga 1 (the rate itself, the
+        // calculation formula, and the rate schedule/step table) — each
+        // keeps its own independently-navigable locator rather than one
+        // heading standing in for all three. exact_source_heading is the
+        // REAL heading text as it appears in the document (verbatim, no
+        // invented "Section N" label — a real, confirmed live bug fixed
+        // this step; see lib/types.ts's SourceLocator doc); display_label
+        // is a friendlier UI caption only, never passed to the PDF viewer.
+        source_sections: [
+          { exact_source_heading: '2. Pilot och affärsmodell', display_label: 'Bilaga 1, Source 1' },
+          { exact_source_heading: '3. Modellen i korthet', display_label: 'Bilaga 1, Source 2' },
+          { exact_source_heading: '5. Resultatdel efter värdeviktad betalgrad', display_label: 'Bilaga 1, Source 3' },
+        ],
       },
     ],
     // Hardening item 4 (corrected in the second pass — see item 2 of that
@@ -184,13 +191,20 @@ export function buildRemembillFixtureTerms(): ContractTerms {
       {
         kind: 'rolling_volume_pricing_transition',
         description: 'If the rolling three-month average of issued payment requests exceeds the contracted/agreed volume, the platform-fee band migrates to the corresponding higher level from the next contract period onward.',
-        source_clause: 'Om tremånaderssnittet överstiger avtalad volym övergår leverantören till motsvarande nivå från nästa avtalsperiod.',
-        // Step 17B0.3, item 3 — this mechanism's own independent locator,
-        // set directly on the item (not only via the per-FIELD
-        // field_sources.unsupported_commercial_mechanisms fallback, which
-        // only ever names one heading shared across the whole array — see
-        // AdditionalRecurringFee.source_sections' identical rationale).
-        source_sections: ['Bilaga 1, avsnitt 4'],
+        source_clause: 'Main agreement, 4. Avtalad volym: Ändring av nivå på grund av tremånaderssnitt hanteras enligt Bilaga 1. | Bilaga 1, 4. Fast plattform efter avtalad volym: Om tremånaderssnittet överstiger avtalad volym övergår leverantören till motsvarande nivå från nästa avtalsperiod.',
+        // Step 17B0.3, item 3 (revised Step 17B0.4) — this mechanism's
+        // evidence is genuinely split across TWO documents: a short
+        // cross-reference in the main agreement's own "4. Avtalad volym"
+        // clause, and the actual migration mechanics in Bilaga 1's
+        // "4. Fast plattform efter avtalad volym". Both are real, verbatim
+        // headings (no invented "Section N" label) — set directly on the
+        // item, not only via the per-FIELD field_sources.
+        // unsupported_commercial_mechanisms fallback, which only ever
+        // names one heading shared across the whole array.
+        source_sections: [
+          { exact_source_heading: '4. Avtalad volym', display_label: 'Main agreement' },
+          { exact_source_heading: '4. Fast plattform efter avtalad volym', display_label: 'Bilaga 1' },
+        ],
         required_operational_inputs: ['issued_payment_request_count'],
         execution_status: 'unsupported',
       },
@@ -202,13 +216,18 @@ export function buildRemembillFixtureTerms(): ContractTerms {
     // VALUES they're attached to. One from the main agreement (base fee)
     // and one from Bilaga 1 (the rolling-transition mechanism), per the
     // regression's own explicit requirement.
+    // Step 17B0.4 — real headings from the actual Remembill_Kundavtal_SV.pdf
+    // (previously this map used invented example headings — "1. Plattformsavgift",
+    // "1.3 Pilotperiod", "8. Avtalstid och uppsägning", etc. — that never
+    // existed in the real document and could never match its text layer;
+    // see this step's report for the confirmed live-DB evidence).
     field_sources: {
-      base_monthly_fee: '1. Plattformsavgift',
-      discounts: '1.3 Pilotperiod',
-      overage_tiers: '2. Överskjutande förfrågningar',
-      renewal_notice_months: '8. Avtalstid och uppsägning',
-      customer_org_number: 'Parter',
-      unsupported_commercial_mechanisms: 'Bilaga 1, avsnitt 4',
+      base_monthly_fee: '4. Fast plattform efter avtalad volym',
+      discounts: '2. Pilot och affärsmodell',
+      overage_tiers: '4. Fast plattform efter avtalad volym',
+      renewal_notice_months: '3. Avtalstid och pilot',
+      customer_org_number: '1. Parter',
+      unsupported_commercial_mechanisms: '4. Fast plattform efter avtalad volym',
     },
     extraction_confidence: 'medium',
     extraction_notes: null,

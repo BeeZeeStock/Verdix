@@ -50,7 +50,13 @@ describe('17B0.3 item 3 — both unsupported mechanisms carry their own independ
   it('the rolling three-month volume transition now also has its own source_sections, not only the shared per-field fallback', () => {
     const terms = buildRemembillFixtureTerms()
     const rolling = terms.unsupported_commercial_mechanisms!.find(m => m.kind === 'rolling_volume_pricing_transition')!
-    expect(rolling.source_sections).toEqual(['Bilaga 1, avsnitt 4'])
+    // Step 17B0.4: these are now real, verbatim PDF headings (main
+    // agreement + Bilaga 1), not the invented "Bilaga 1, avsnitt 4" label
+    // this test previously asserted — see lib/types.ts's SourceLocator doc.
+    expect(rolling.source_sections).toEqual([
+      { exact_source_heading: '4. Avtalad volym', display_label: 'Main agreement' },
+      { exact_source_heading: '4. Fast plattform efter avtalad volym', display_label: 'Bilaga 1' },
+    ])
   })
 
   it('both survive merge and reach the persisted payload intact', () => {
@@ -60,6 +66,9 @@ describe('17B0.3 item 3 — both unsupported mechanisms carry their own independ
     const perf = payload.additional_recurring_fees!.find(f => f.unresolved_kind === 'unsupported_semantics')!
     const rolling = payload.unsupported_commercial_mechanisms!.find(m => m.kind === 'rolling_volume_pricing_transition')!
     expect(perf.source_sections?.length).toBeGreaterThanOrEqual(2)
-    expect(rolling.source_sections).toEqual(['Bilaga 1, avsnitt 4'])
+    expect(rolling.source_sections).toEqual([
+      { exact_source_heading: '4. Avtalad volym', display_label: 'Main agreement' },
+      { exact_source_heading: '4. Fast plattform efter avtalad volym', display_label: 'Bilaga 1' },
+    ])
   })
 })

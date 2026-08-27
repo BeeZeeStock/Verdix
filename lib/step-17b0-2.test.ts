@@ -188,12 +188,15 @@ describe('17B0.2 item 6 — clause reference retains its locator through extract
   it('the full fixture — base fee, discount, overage, renewal, org number, rolling transition — all keep their own locator after merge', () => {
     const terms = buildRemembillFixtureTerms()
     const merged = mergeExtractions([terms])
-    expect(merged.field_sources.base_monthly_fee).toBe('1. Plattformsavgift')
-    expect(merged.field_sources.discounts).toBe('1.3 Pilotperiod')
-    expect(merged.field_sources.overage_tiers).toBe('2. Överskjutande förfrågningar')
-    expect(merged.field_sources.renewal_notice_months).toBe('8. Avtalstid och uppsägning')
-    expect(merged.field_sources.customer_org_number).toBe('Parter')
-    expect(merged.field_sources.unsupported_commercial_mechanisms).toBe('Bilaga 1, avsnitt 4')
+    // Step 17B0.4: field_sources values are now the real, verbatim PDF
+    // headings (not the earlier invented placeholders this test asserted)
+    // — see lib/remembill-fixture.ts.
+    expect(merged.field_sources.base_monthly_fee).toBe('4. Fast plattform efter avtalad volym')
+    expect(merged.field_sources.discounts).toBe('2. Pilot och affärsmodell')
+    expect(merged.field_sources.overage_tiers).toBe('4. Fast plattform efter avtalad volym')
+    expect(merged.field_sources.renewal_notice_months).toBe('3. Avtalstid och pilot')
+    expect(merged.field_sources.customer_org_number).toBe('1. Parter')
+    expect(merged.field_sources.unsupported_commercial_mechanisms).toBe('4. Fast plattform efter avtalad volym')
   })
 
   it('reaches the actual persisted upsert payload (buildContractTermsUpsertPayload), not just the in-memory merged object', () => {
@@ -234,12 +237,15 @@ describe('17B0.2 item 6 — multiple independent locators for multi-section evid
     const terms = buildRemembillFixtureTerms()
     const perf = terms.additional_recurring_fees!.find(f => f.unresolved_kind === 'unsupported_semantics')!
     expect(perf.source_sections).toEqual([
-      'Bilaga 1, avsnitt 2', 'Bilaga 1, avsnitt 3', 'Bilaga 1, avsnitt 5',
+      { exact_source_heading: '2. Pilot och affärsmodell', display_label: 'Bilaga 1, Source 1' },
+      { exact_source_heading: '3. Modellen i korthet', display_label: 'Bilaga 1, Source 2' },
+      { exact_source_heading: '5. Resultatdel efter värdeviktad betalgrad', display_label: 'Bilaga 1, Source 3' },
     ])
-    // Each is independently addressable — not a ";"/"/"-joined compound
-    // string a click handler would have to split apart itself.
+    // Each locator's exact_source_heading is independently addressable —
+    // not a ";"/"/"-joined compound string a click handler would have to
+    // split apart itself.
     for (const section of perf.source_sections!) {
-      expect(section).not.toMatch(/[;/]/)
+      expect(section.exact_source_heading).not.toMatch(/[;/]/)
     }
   })
 
@@ -249,7 +255,9 @@ describe('17B0.2 item 6 — multiple independent locators for multi-section evid
     const payload = buildContractTermsUpsertPayload('job-x', merged)
     const perf = payload.additional_recurring_fees!.find(f => f.unresolved_kind === 'unsupported_semantics')!
     expect(perf.source_sections).toEqual([
-      'Bilaga 1, avsnitt 2', 'Bilaga 1, avsnitt 3', 'Bilaga 1, avsnitt 5',
+      { exact_source_heading: '2. Pilot och affärsmodell', display_label: 'Bilaga 1, Source 1' },
+      { exact_source_heading: '3. Modellen i korthet', display_label: 'Bilaga 1, Source 2' },
+      { exact_source_heading: '5. Resultatdel efter värdeviktad betalgrad', display_label: 'Bilaga 1, Source 3' },
     ])
   })
 

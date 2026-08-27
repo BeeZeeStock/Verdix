@@ -201,6 +201,15 @@ type PeriodProrationRule = {
   confirmation_reason?: string | null
   source_clause?: string | null
 }
+// Step 17B0.4 — see lib/types.ts's identical SourceLocator for the full
+// rationale: exact_source_heading is the ONLY value ever passed to the PDF
+// viewer (copied verbatim from the original document — never translated,
+// never given an invented "Section N" label); display_label is a friendlier
+// UI caption only.
+type SourceLocator = {
+  exact_source_heading: string
+  display_label?: string | null
+}
 type AdditionalRecurringFee = {
   fee_label: string; amount: number; description?: string | null
   billing_frequency?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
@@ -214,17 +223,18 @@ type AdditionalRecurringFee = {
   required_operational_inputs?: string[] | null
   unresolved_kind?: 'unsupported_semantics' | null
   source_clause?: string | null
-  // Step 17B0.2, item 6 — see lib/types.ts's identical field for the full
-  // rationale (multi-section evidence gets its own array of locators,
-  // never one combined/compound heading standing in for all of them).
-  source_sections?: string[] | null
+  // Step 17B0.2, item 6 (revised Step 17B0.4) — see lib/types.ts's
+  // identical field for the full rationale (multi-section evidence gets
+  // its own array of locators, never one combined/compound heading
+  // standing in for all of them).
+  source_sections?: SourceLocator[] | null
   derived_metric?: { metric_name: string; formula: string; raw_inputs: string[] } | null
 }
 type UnsupportedCommercialMechanism = {
   kind: string
   description: string
   source_clause?: string | null
-  source_sections?: string[] | null
+  source_sections?: SourceLocator[] | null
   required_operational_inputs?: string[] | null
   execution_status: 'unsupported'
 }
@@ -918,12 +928,15 @@ function SectionChip({ heading, onClick }: { heading?: string; onClick: () => vo
 function SourceClauseLink({
   section, sections, onViewSource, hasClauseText,
 }: {
+  // Single-locator call sites (the common case, e.g. an escalator or the
+  // base fee) still just pass a plain heading string here — wrapped into
+  // one SourceLocator below so there's only one code path either way.
   section?: string
-  sections?: string[] | null
+  sections?: SourceLocator[] | null
   onViewSource?: (section: string) => void
   hasClauseText?: boolean
 }) {
-  const list = sections?.length ? sections : (section ? [section] : [])
+  const list: SourceLocator[] = sections?.length ? sections : (section ? [{ exact_source_heading: section }] : [])
   if (list.length === 0) {
     if (hasClauseText) {
       return (
@@ -941,7 +954,10 @@ function SourceClauseLink({
   if (list.length === 1) {
     return (
       <button
-        onClick={() => onViewSource(list[0])}
+        // Step 17B0.4 — exact_source_heading only, NEVER display_label —
+        // the viewer searches the original document's text layer for
+        // exactly this string.
+        onClick={() => onViewSource(list[0].exact_source_heading)}
         className="text-[10px] font-medium text-forest hover:underline whitespace-nowrap flex-shrink-0"
       >
         View source clause ↗
@@ -950,13 +966,13 @@ function SourceClauseLink({
   }
   return (
     <span className="flex items-center gap-2 flex-wrap justify-end">
-      {list.map((s, i) => (
+      {list.map((loc, i) => (
         <button
           key={i}
-          onClick={() => onViewSource(s)}
+          onClick={() => onViewSource(loc.exact_source_heading)}
           className="text-[10px] font-medium text-forest hover:underline whitespace-nowrap flex-shrink-0"
         >
-          Source {i + 1} ↗
+          {loc.display_label ?? `Source ${i + 1}`} ↗
         </button>
       ))}
     </span>

@@ -23,18 +23,49 @@ import type { PDFDocumentProxy } from 'pdfjs-dist'
 // through to the loose fallback pass on every multi-word heading. Found
 // while writing the regression test for the compound-heading fix below —
 // a genuine, independent bug from the same normalization mismatch.
-const STRIP_RE = /[€$£¥,\s\-–—]/
-const STRIP_RE_G = /[€$£¥,\s\-–—]/g
+// Step 17B0.4, item 4 — widened to explicitly cover the harmless PDF-
+// extraction differences a real document's text layer routinely produces:
+// U+00A0 (non-breaking space, listed explicitly even though plain \s
+// already matches it in this engine — explicit removes any doubt across
+// runtimes) and every common Unicode dash variant (U+2010 hyphen, U+2011
+// non-breaking hyphen, U+2012 figure dash, U+2013 en dash, U+2014 em dash,
+// U+2015 horizontal bar, U+2212 minus sign) alongside the plain ASCII
+// hyphen. This is still a bounded, enumerated character class — not
+// fuzzy/semantic matching of any kind; it only ever strips characters
+// that vary for cosmetic/typesetting reasons, never letters or digits.
+const STRIP_RE = /[€$£¥,\s \-‐‑‒–—―−]/
+const STRIP_RE_G = /[€$£¥,\s \-‐‑‒–—―−]/g
+
+// Step 17B0.4, item 4 — Unicode-normalize (NFC) before comparing, so a
+// needle composed differently at the byte level than the PDF's own text
+// layer (e.g. a precomposed "ö" U+00F6 vs. "o" + combining diaeresis
+// U+0308 — genuinely possible between however source_sections was typed
+// and however a given PDF's font/encoding emits its glyphs) still compares
+// equal. Deliberately applied to the NEEDLE only (norm(), below), never to
+// the raw DOM/PDF text walked by normWithMap: NFC composition can change a
+// string's LENGTH (decomposed 2-code-unit sequences collapsing to 1), and
+// normWithMap's rawIndex mapping must stay a stable 1:1 correspondence to
+// the ORIGINAL raw text's own character offsets — paintSection anchors the
+// marker with `range.setStart(firstNode, startOffset)` against that exact
+// original DOM text node, so shifting those offsets by normalizing the raw
+// side first would misplace or fail to place the marker. The loose
+// fallback pass already handles this same class of difference on the raw
+// side safely, via full diacritic folding (foldDiacritics) rather than
+// whole-string NFC.
+function unicodeNormalize(s: string): string {
+  return s.normalize('NFC')
+}
 
 // Exported for testing — this is the same normalization pickMatch's own
 // `c.includes(needle)` check runs against real PDF text.
 export function norm(s: string) {
-  return s.replace(STRIP_RE_G, '').toLowerCase()
+  return unicodeNormalize(s).replace(STRIP_RE_G, '').toLowerCase()
 }
 
 // Like norm(), but also returns a map from each normalized-string index back to
 // the index in the raw (un-normalized) string it came from — needed to translate
-// a match position found in normalized text back to a real DOM offset.
+// a match position found in normalized text back to a real DOM offset. Must
+// NOT Unicode-normalize `raw` first — see unicodeNormalize's own comment.
 function normWithMap(raw: string): { normalized: string; rawIndex: number[] } {
   let normalized = ''
   const rawIndex: number[] = []

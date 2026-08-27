@@ -880,18 +880,32 @@ export interface AdditionalRecurringFee {
    *  clause — mirrors OneTimeFee/Discount/ServiceCredit's own
    *  source_clause convention. */
   source_clause?: string | null
-  /** Step 17B0.2, item 6 — when source_clause combines evidence from more
-   *  than one section (e.g. a performance-share fee whose rate, formula,
-   *  and rate-schedule are each stated in a different part of an
-   *  appendix), each section's own PDF-locator heading, in the same order
-   *  the evidence appears in source_clause — never one heading standing in
-   *  for a concatenated multi-clause string. Same heading-string locator
-   *  convention as ContractTerms.field_sources (masking-safe, no stored
-   *  coordinates — see PDFViewer.tsx), just plural for the fields that
-   *  genuinely need more than one. Absent/empty means this fee's evidence
-   *  came from a single section (the common case) — callers fall back to
-   *  field_sources.additional_recurring_fees exactly as before. */
-  source_sections?: string[] | null
+  /** Step 17B0.2, item 6 (revised Step 17B0.4) — when source_clause
+   *  combines evidence from more than one section (e.g. a performance-
+   *  share fee whose rate, formula, and rate-schedule are each stated in a
+   *  different part of an appendix), each section's own SourceLocator, in
+   *  the same order the evidence appears in source_clause — never one
+   *  locator standing in for a concatenated multi-clause string. Absent/
+   *  empty means this fee's evidence came from a single section (the
+   *  common case) — callers fall back to field_sources.
+   *  additional_recurring_fees exactly as before. */
+  source_sections?: SourceLocator[] | null
+}
+
+// Step 17B0.4 — a PDF clause locator is not the same thing as what a
+// reviewer reads as its caption. exact_source_heading is the ONLY value
+// PDFViewer.tsx's text-layer search may ever receive: copied verbatim from
+// the original document (own language, own numbering, own punctuation) —
+// never translated, paraphrased, or given an invented "Section N" label
+// (a real, confirmed live bug: extraction was writing values like "Bilaga
+// 1 – Pris och kommersiell modell, Section 2" for a document whose actual
+// heading is "2. Pilot och affärsmodell" — that invented compound string
+// can never match real PDF text, so no marker was ever drawn).
+// display_label is a friendlier caption for the UI ONLY — e.g. "Bilaga 1,
+// Source 2" — and must never be passed to the PDF viewer as a locator.
+export interface SourceLocator {
+  exact_source_heading: string
+  display_label?: string | null
 }
 
 // Step 17A hardening item 4 — a commercial MECHANISM that is not itself a
@@ -906,10 +920,11 @@ export interface UnsupportedCommercialMechanism {
   kind: string
   description: string
   source_clause?: string | null
-  /** Step 17B0.2, item 6 — see AdditionalRecurringFee.source_sections'
-   *  own doc; identical convention, for a mechanism whose evidence spans
-   *  more than one section. */
-  source_sections?: string[] | null
+  /** Step 17B0.2, item 6 (revised Step 17B0.4) — see
+   *  AdditionalRecurringFee.source_sections' own doc; identical
+   *  convention, for a mechanism whose evidence spans more than one
+   *  section. */
+  source_sections?: SourceLocator[] | null
   required_operational_inputs?: string[] | null
   execution_status: 'unsupported'
 }
