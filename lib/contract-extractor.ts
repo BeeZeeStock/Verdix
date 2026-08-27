@@ -126,7 +126,8 @@ Rules:
   - due_date should be kept consistent with billability_condition when you set one: fixed_date -> due_date = billability_condition.date; event or immediate -> due_date = null. Verdix's own normalization is the actual source of truth for due_date, so this consistency matters less than getting billability_condition itself right.
   - Do NOT include recurring fees here.
 - contract_id: the contract reference, PO number, order number, or agreement ID printed on the document (e.g. "CLR-2024-0001", "PO-12345"). Use null if no reference number is found.
-- field_sources: object mapping each extracted field to the section heading it was taken from (e.g. {"base_monthly_fee": "1.1 Base Platform Fee", "escalators": "1.2 Annual Price Escalator"})
+- field_sources: object mapping each extracted field to the section heading it was taken from (e.g. {"base_monthly_fee": "1.1 Base Platform Fee", "escalators": "1.2 Annual Price Escalator"}). This is used to jump to and highlight the exact clause in the original PDF — a wrong or missing heading here means that navigation silently fails or lands on the wrong text, so populate it for every field you can, using the heading EXACTLY as printed (verbatim, including its number).
+  MULTI-SECTION EVIDENCE — do not concatenate into one field_sources string: when a single additional_recurring_fees[] entry or unsupported_commercial_mechanisms[] entry combines evidence from MORE THAN ONE section (e.g. a performance-share fee whose rate is stated in one section, its calculation formula in another, and its rate schedule/table in a third — a common shape for evidence spread across a Bilaga/appendix), do NOT invent one combined field_sources heading (e.g. "Section 2 / Section 3", or "Bilaga 1") standing in for all of them — that produces exactly one non-functional or misleading source link for what is really several distinct, independently-navigable clauses. Instead, populate that entry's own source_sections: [<heading 1>, <heading 2>, ...] with each section's real heading as its own array element, in the order the evidence appears in source_clause. Leave source_sections absent/null when the entry's evidence genuinely came from a single section (the common case) — field_sources (this field, keyed by the field name) remains authoritative for every other field on the contract.
 - number_format: detect the decimal separator convention used in this contract.
   "dot"   = dot is the decimal separator (US/UK/Nordic digital format): "€0.0500", "€1,200.00", "1 234.50"
   "comma" = comma is the decimal separator (Continental European print format): "€0,0500", "€1.200,00", "1 234,50"
@@ -394,6 +395,22 @@ export function mergeExtractions(results: ContractTerms[]): ContractTerms {
     one_time_fees: dedupe([...results.flatMap(r => r.one_time_fees ?? [])], 'fee_label'),
     additional_recurring_fees: dedupe([...results.flatMap(r => r.additional_recurring_fees ?? [])], 'fee_label'),
     unsupported_commercial_mechanisms: dedupe([...results.flatMap(r => r.unsupported_commercial_mechanisms ?? [])], 'kind'),
+    // Step 17B0.2, item 6 — field_sources (the PDF-locator heading per
+    // field) had exactly the same "only from the winning chunk" bug as
+    // every field above: a field whose VALUE was correctly coalesced from
+    // a losing chunk could still end up with either no field_sources entry
+    // at all, or (worse) one silently inherited from `base` that names the
+    // WRONG section — the "View source" link would then either show
+    // nothing or navigate to unrelated text. Union every chunk's
+    // field_sources, keyed per field, first-non-empty-value-wins — same
+    // per-key coalescing principle as coalesceScalar, applied to an object
+    // instead of a single field.
+    field_sources: results.reduce<Record<string, string>>((acc, r) => {
+      for (const [key, value] of Object.entries(r.field_sources ?? {})) {
+        if (value && !acc[key]) acc[key] = value
+      }
+      return acc
+    }, {}),
     // Use 'comma' if ANY chunk detected comma notation (more specific detection wins)
     number_format: results.some(r => r.number_format === 'comma') ? 'comma' : 'dot',
   }

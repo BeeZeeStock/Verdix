@@ -8,6 +8,7 @@ import { maskText, restoreTokensInObject } from '@/lib/pii-detector'
 import { buildLineItems } from '@/lib/line-items'
 import { extractDocumentText, isAIInfraError, AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
 import { preserveStableRuleIds, preserveOneTimeFeeIdentity } from '@/lib/rule-id-stability'
+import { buildContractTermsUpsertPayload } from '@/lib/contract-terms-persistence'
 import type { Discount, ServiceCredit, OneTimeFee } from '@/lib/types'
 
 
@@ -168,52 +169,15 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
   // contract_terms is one canonical row per job; a plain insert on
   // re-extraction used to silently create a second row, breaking confirm-rule
   // and letting other routes read stale data.
+  // buildContractTermsUpsertPayload (lib/contract-terms-persistence.ts) is
+  // the single source of truth for which fields actually reach the
+  // database — see its own comment for why this was pulled out into a
+  // directly-testable function (Step 17B0.2: several fields were correct
+  // in `terms` here but silently excluded from this literal object for a
+  // long time, because the missing DB column was never migrated).
   const { data: savedTerms, error: termsError } = await supabaseServer
     .from('contract_terms')
-    .upsert({
-      job_id:               jobId,
-      // Identity
-      contract_id:          terms.contract_id,
-      customer_name:        terms.customer_name,
-      customer_address:     terms.customer_address,
-      billing_contact:      terms.billing_contact,
-      vendor_name:          terms.vendor_name,
-      vendor_address:       terms.vendor_address,
-      // Dates & term
-      order_date:           terms.order_date,
-      contract_start_date:  terms.contract_start_date,
-      contract_end_date:    terms.contract_end_date,
-      contract_term_months: terms.contract_term_months,
-      auto_renews:          terms.auto_renews,
-      renewal_notice_days:  terms.renewal_notice_days,
-      // Pricing
-      currency:             terms.currency,
-      base_monthly_fee:     terms.base_monthly_fee,
-      base_annual_fee:      terms.base_annual_fee,
-      billing_frequency:    terms.billing_frequency,
-      payment_terms_days:   terms.payment_terms_days,
-      payment_terms_text:   terms.payment_terms_text,
-      included_units:       terms.included_units,
-      included_unit_type:   terms.included_unit_type,
-      year_pricing:         terms.year_pricing,
-      base_fee_proration:   terms.base_fee_proration ?? null,
-      ramp_schedule:        terms.ramp_schedule ?? null,
-      // Structured arrays
-      escalators:                terms.escalators                ?? [],
-      discounts:                 terms.discounts                 ?? [],
-      service_credits:           terms.service_credits           ?? [],
-      overage_tiers:             terms.overage_tiers             ?? [],
-      one_time_fees:             terms.one_time_fees             ?? [],
-      additional_recurring_fees: terms.additional_recurring_fees ?? [],
-      billing_metered_items:     terms.billing_metered_items     ?? [],
-      // Metadata
-      field_sources:        terms.field_sources ?? {},
-      extraction_confidence: terms.extraction_confidence,
-      extraction_notes:     terms.extraction_notes,
-      number_format:        terms.number_format ?? 'dot',
-      // Full LLM output preserved for future fields
-      raw_extraction:       terms,
-    }, { onConflict: 'job_id' })
+    .upsert(buildContractTermsUpsertPayload(jobId, terms), { onConflict: 'job_id' })
     .select('id')
     .single()
   if (termsError) throw new Error(`Failed to save contract terms: ${termsError.message}`)

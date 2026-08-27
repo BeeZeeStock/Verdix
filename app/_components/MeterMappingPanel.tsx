@@ -271,7 +271,19 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
     </div>
   )
 
-  if (suggestions.length === 0) return operationalDataInputsSection
+  // Step 17B0.2, item 4 — no countable usage meter exists to map at all,
+  // but that must never read as "nothing here" when real operational
+  // dependencies exist — the explicit "No metered usage to map" note only
+  // appears alongside the Operational Data Inputs section, never instead
+  // of it and never silently on its own.
+  if (suggestions.length === 0) return (
+    <>
+      <div className="rounded-2xl border border-forest/10 bg-white px-7 py-4">
+        <p className="text-sm text-stone">No metered usage to map for this contract.</p>
+      </div>
+      {operationalDataInputsSection}
+    </>
+  )
 
   return (
     <>

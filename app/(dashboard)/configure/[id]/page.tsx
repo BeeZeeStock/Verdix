@@ -28,6 +28,7 @@ import { StatusInline } from '@/app/_components/StatusChip'
 import { BillingReconciliationPanel } from '@/app/_components/BillingReconciliationPanel'
 import { describeMatchConditions, describeEffectivePeriod } from '@/lib/rulebook/organization-rulebook-display'
 import { formatRenewalNoticePeriod } from '@/lib/contract-notice-period'
+import { resolveFixedFeeBand } from '@/lib/fixed-fee-band'
 import type { OrganizationRuleRecord } from '@/lib/rulebook/organization-rules'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
@@ -213,12 +214,17 @@ type AdditionalRecurringFee = {
   required_operational_inputs?: string[] | null
   unresolved_kind?: 'unsupported_semantics' | null
   source_clause?: string | null
+  // Step 17B0.2, item 6 — see lib/types.ts's identical field for the full
+  // rationale (multi-section evidence gets its own array of locators,
+  // never one combined/compound heading standing in for all of them).
+  source_sections?: string[] | null
   derived_metric?: { metric_name: string; formula: string; raw_inputs: string[] } | null
 }
 type UnsupportedCommercialMechanism = {
   kind: string
   description: string
   source_clause?: string | null
+  source_sections?: string[] | null
   required_operational_inputs?: string[] | null
   execution_status: 'unsupported'
 }
@@ -233,6 +239,12 @@ type Terms = {
   auto_renews?: boolean; renewal_notice_days?: number; renewal_notice_months?: number | null; renewal_term_months?: number | null
   currency?: string
   base_monthly_fee?: number; base_annual_fee?: number
+  // Step 17B0.2, item 5 — the full committed-volume fee band table and the
+  // stated committed volume that selects a row in it (see
+  // lib/fixed-fee-band.ts's resolveFixedFeeBand) — preserves the causal
+  // chain (volume -> band -> fee) a bare base_monthly_fee scalar loses.
+  base_fee_bands?: { from_unit: number; to_unit: number | null; monthly_fee: number }[] | null
+  base_fee_committed_volume?: number | null
   base_fee_proration?: PeriodProrationRule | null
   billing_frequency?: string; payment_terms_days?: number; payment_terms_text?: string
   included_units?: number; included_unit_type?: string
@@ -891,15 +903,63 @@ function SectionChip({ heading, onClick }: { heading?: string; onClick: () => vo
 // flagged by react-hooks/static-components and is bad practice regardless.
 // Renders nothing when no section is known (never a dead/misleading link)
 // or when the caller has no onViewSource at all.
-function SourceClauseLink({ section, onViewSource }: { section: string | undefined; onViewSource?: (section: string) => void }) {
-  if (!section || !onViewSource) return null
+// Step 17B0.2, item 6 — `sections` (when present) renders one independent
+// link PER section, so a fee/mechanism whose evidence spans several parts
+// of the contract (e.g. a performance-share fee stated across three parts
+// of an appendix) never collapses onto a single locator that can only ever
+// navigate to one of them. `hasClauseText`, when true and no locator is
+// available at all, distinguishes "we preserved the clause text but never
+// captured a navigable PDF location for it" from "there is nothing here" —
+// the caller states this explicitly (never guessed here) because only the
+// caller knows whether source_clause itself is non-empty. Existing callers
+// that pass neither `sections` nor `hasClauseText` keep their exact prior
+// behavior (silently render nothing when there's no section) — fully
+// backward compatible.
+function SourceClauseLink({
+  section, sections, onViewSource, hasClauseText,
+}: {
+  section?: string
+  sections?: string[] | null
+  onViewSource?: (section: string) => void
+  hasClauseText?: boolean
+}) {
+  const list = sections?.length ? sections : (section ? [section] : [])
+  if (list.length === 0) {
+    if (hasClauseText) {
+      return (
+        <span
+          className="text-[10px] text-stone/50 whitespace-nowrap flex-shrink-0"
+          title="The clause text was preserved, but no navigable PDF location was captured for it."
+        >
+          Source text preserved — exact PDF location unavailable
+        </span>
+      )
+    }
+    return null
+  }
+  if (!onViewSource) return null
+  if (list.length === 1) {
+    return (
+      <button
+        onClick={() => onViewSource(list[0])}
+        className="text-[10px] font-medium text-forest hover:underline whitespace-nowrap flex-shrink-0"
+      >
+        View source clause ↗
+      </button>
+    )
+  }
   return (
-    <button
-      onClick={() => onViewSource(section)}
-      className="text-[10px] font-medium text-forest hover:underline whitespace-nowrap flex-shrink-0"
-    >
-      View source clause ↗
-    </button>
+    <span className="flex items-center gap-2 flex-wrap justify-end">
+      {list.map((s, i) => (
+        <button
+          key={i}
+          onClick={() => onViewSource(s)}
+          className="text-[10px] font-medium text-forest hover:underline whitespace-nowrap flex-shrink-0"
+        >
+          Source {i + 1} ↗
+        </button>
+      ))}
+    </span>
   )
 }
 
@@ -4702,6 +4762,12 @@ function ReviewPanel({
                           <i className="ti ti-alert-hexagon text-red-500" style={{ fontSize: 12 }} />
                           <span className="text-sm font-medium text-ink flex-1">{f.fee_label}</span>
                           <span className="text-[10px] font-semibold uppercase tracking-wider text-red-600 bg-red-50 px-2 py-0.5 rounded-full">Unsupported</span>
+                          <SourceClauseLink
+                            sections={f.source_sections}
+                            section={fieldSources?.additional_recurring_fees}
+                            onViewSource={onViewSource}
+                            hasClauseText={!!f.source_clause}
+                          />
                         </div>
                         {f.description && <p className="text-xs text-stone leading-relaxed mb-2">{f.description}</p>}
                         {f.source_clause && (
@@ -4728,6 +4794,11 @@ function ReviewPanel({
                           <i className="ti ti-alert-hexagon text-red-500" style={{ fontSize: 12 }} />
                           <span className="text-sm font-medium text-ink flex-1">{m.kind.replace(/_/g, ' ')}</span>
                           <span className="text-[10px] font-semibold uppercase tracking-wider text-red-600 bg-red-50 px-2 py-0.5 rounded-full">Unsupported</span>
+                          <SourceClauseLink
+                            sections={m.source_sections}
+                            onViewSource={onViewSource}
+                            hasClauseText={!!m.source_clause}
+                          />
                         </div>
                         <p className="text-xs text-stone leading-relaxed mb-2">{m.description}</p>
                         {m.source_clause && (
@@ -6913,6 +6984,57 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 />
               </div>
             </div>
+
+            {/* Step 17B0.2, item 5 — fixed-fee band provenance, surfaced
+                directly from the already-structured base_fee_bands/
+                base_fee_committed_volume data (lib/fixed-fee-band.ts's
+                resolveFixedFeeBand — the SAME pure function
+                lib/line-items.test.ts/lib/step-17b0-1.test.ts already
+                exercise), never re-derived from display text. Always
+                visible when a band table was extracted, independent of
+                any review/confirmation state — this is a factual causal
+                chain (volume -> band -> fee), not an ambiguity to resolve. */}
+            {terms?.base_fee_bands && terms.base_fee_bands.length > 0 && (() => {
+              const resolution = resolveFixedFeeBand(terms.base_fee_bands, terms.base_fee_committed_volume)
+              return (
+                <div className="bg-white rounded-2xl border border-forest/10 p-6">
+                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-5">Fixed platform fee — band selection</h2>
+                  <div className="grid grid-cols-3 gap-x-8 gap-y-6">
+                    <div>
+                      <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Contracted monthly volume</p>
+                      <p className="text-[15px] font-medium text-ink leading-snug">
+                        {terms.base_fee_committed_volume != null ? terms.base_fee_committed_volume.toLocaleString() : '—'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Selected band</p>
+                      <p className="text-[15px] font-medium text-ink leading-snug">
+                        {resolution.status === 'resolved'
+                          ? `${resolution.band.from_unit.toLocaleString()}–${resolution.band.to_unit != null ? resolution.band.to_unit.toLocaleString() : '∞'}`
+                          : <span className="text-amber-600">{resolution.reason}</span>}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Fixed platform fee</p>
+                      <p className="text-[15px] font-medium text-ink leading-snug">
+                        {resolution.status === 'resolved' ? `${fmt(resolution.band.monthly_fee, cur)}/month` : '—'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-5 pt-4" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
+                    <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-2">Full band table</p>
+                    <div className="space-y-1">
+                      {[...terms.base_fee_bands].sort((a, b) => a.from_unit - b.from_unit).map((band, i) => (
+                        <p key={i} className={`text-[12px] ${resolution.status === 'resolved' && resolution.band.from_unit === band.from_unit ? 'text-ink font-medium' : 'text-stone'}`}>
+                          {band.from_unit.toLocaleString()}–{band.to_unit != null ? band.to_unit.toLocaleString() : '∞'}: {fmt(band.monthly_fee, cur)}/month
+                          {resolution.status === 'resolved' && resolution.band.from_unit === band.from_unit && ' (selected)'}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
 
             {/* ── 3. Commercial Terms ── */}
             <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">

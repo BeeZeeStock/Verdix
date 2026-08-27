@@ -880,6 +880,18 @@ export interface AdditionalRecurringFee {
    *  clause — mirrors OneTimeFee/Discount/ServiceCredit's own
    *  source_clause convention. */
   source_clause?: string | null
+  /** Step 17B0.2, item 6 — when source_clause combines evidence from more
+   *  than one section (e.g. a performance-share fee whose rate, formula,
+   *  and rate-schedule are each stated in a different part of an
+   *  appendix), each section's own PDF-locator heading, in the same order
+   *  the evidence appears in source_clause — never one heading standing in
+   *  for a concatenated multi-clause string. Same heading-string locator
+   *  convention as ContractTerms.field_sources (masking-safe, no stored
+   *  coordinates — see PDFViewer.tsx), just plural for the fields that
+   *  genuinely need more than one. Absent/empty means this fee's evidence
+   *  came from a single section (the common case) — callers fall back to
+   *  field_sources.additional_recurring_fees exactly as before. */
+  source_sections?: string[] | null
 }
 
 // Step 17A hardening item 4 — a commercial MECHANISM that is not itself a
@@ -894,6 +906,10 @@ export interface UnsupportedCommercialMechanism {
   kind: string
   description: string
   source_clause?: string | null
+  /** Step 17B0.2, item 6 — see AdditionalRecurringFee.source_sections'
+   *  own doc; identical convention, for a mechanism whose evidence spans
+   *  more than one section. */
+  source_sections?: string[] | null
   required_operational_inputs?: string[] | null
   execution_status: 'unsupported'
 }
