@@ -40,10 +40,42 @@ export default function NewConfigurePage() {
   // the first attempt (called right after a fresh upload succeeds) and by
   // Retry processing (called again for an already-created job, skipping
   // straight to this step).
+  //
+  // Step 17A, item 6 — 'reading'->'checking' used to be inferred purely
+  // from this function's own fetch-call boundaries (an instant, fake
+  // transition the instant the SINGLE detect-pii request resolved, with no
+  // way to ever visually show "checking" as genuinely in progress, since
+  // that route does the text extraction AND the PII pass inside one call).
+  // Now driven by the job's own real execute_status, polled concurrently
+  // from GET /api/jobs/[id] while the request is in flight — the same
+  // 'DETECTING_PII' -> 'CHECKING_PII' transition detect-pii/route.ts itself
+  // writes. 'done' (both checkmarks) is only ever set AFTER the detect-pii
+  // request has actually resolved successfully — never claimed early.
   const runProcessing = async (id: string) => {
     setStage('reading')
+    let polling = true
+    const pollStatus = async () => {
+      while (polling) {
+        await new Promise(resolve => setTimeout(resolve, 400))
+        if (!polling) return
+        try {
+          const res = await fetch(`/api/jobs/${id}`)
+          if (!res.ok) continue
+          const data = await res.json()
+          if (!polling) return
+          if (data.execute_status === 'CHECKING_PII') setStage('checking')
+        } catch {
+          // Best-effort only — the detect-pii request below is the
+          // authoritative signal for success/failure regardless.
+        }
+      }
+    }
+    const pollPromise = pollStatus()
+
     try {
       const piiRes = await fetch(`/api/jobs/${id}/detect-pii`, { method: 'POST' })
+      polling = false
+      await pollPromise
       if (!piiRes.ok) {
         if (piiRes.status === 403) {
           // PII masking not on plan — skip PII review, trigger extraction directly
@@ -58,9 +90,16 @@ export default function NewConfigurePage() {
         setStage(null)
         return
       }
-      setStage('checking')
+      setStage('done')
+      // A brief, deliberate pause so the completed checklist (both
+      // checkmarks) is actually visible before navigating away — not a
+      // fake progress delay, the work itself is already genuinely done by
+      // this point.
+      await new Promise(resolve => setTimeout(resolve, 500))
       router.push(`/configure/${id}/pii-review`)
     } catch {
+      polling = false
+      await pollPromise
       setProcessingFailed(true)
       setLoading(false)
       setStage(null)
@@ -198,7 +237,11 @@ export default function NewConfigurePage() {
         {loading && (
           <ul className="space-y-1.5" aria-label="Processing steps">
             {UPLOAD_PROGRESS_STAGES.map((s, i) => {
-              const activeIndex = UPLOAD_PROGRESS_STAGES.findIndex(x => x.key === stage)
+              // 'done' is a terminal marker past the last real stage — both
+              // items render as complete, none active.
+              const activeIndex = stage === 'done'
+                ? UPLOAD_PROGRESS_STAGES.length
+                : UPLOAD_PROGRESS_STAGES.findIndex(x => x.key === stage)
               const isActive = s.key === stage
               const isDone = activeIndex > -1 && i < activeIndex
               return (

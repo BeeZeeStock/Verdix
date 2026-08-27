@@ -4,6 +4,7 @@ import {
   buildPartialPeriodPrompt,
   buildEscalatorPrompt,
   buildDiscountPrompt,
+  buildDiscountProposalPrompt,
   buildTierCalculationPrompt,
   buildMinimumCommitmentProposalPrompt,
   buildTierCalculationProposalPrompt,
@@ -400,6 +401,8 @@ describe('buildDiscountPrompt', () => {
     existingAmount: null,
     extractedType: 'volume',
     appliesTo: 'SMS reminder usage',
+    affectedComponents: null,
+    possiblyAffectedComponents: null,
   }
   it('includes the source clause, reviewer input, and both tier_method and tiers in the required schema', () => {
     const prompt = buildDiscountPrompt(context, 'This is a staircase — each band only applies to units inside it')
@@ -418,6 +421,39 @@ describe('buildDiscountPrompt', () => {
   it('includes the selected structured option context when provided', () => {
     const prompt = buildDiscountPrompt(context, 'yes', 'volume')
     expect(prompt).toContain('Volume / all-units')
+  })
+})
+
+// Step 17A, item 9 — the actual Remembill_Kundavtal_SV.pdf bug: a "90-day
+// pilot, no platform fee" clause was graded clear_from_source even though
+// the platform charge is a HYBRID of a fixed component and a separate
+// performance/variable component, and the clause only names the fixed one.
+// No live AI call happens in this test suite (see this file's own existing
+// convention above) — this proves the PROMPT now carries the corrective
+// guidance; it cannot prove a live model follows it.
+describe('buildDiscountProposalPrompt — hybrid-fee pilot-scope ambiguity (item 9)', () => {
+  const hybridPilotContext: DiscountContext = {
+    sourceClause: '90-day pilot period with no platform fee. The fixed platform fee (EUR 2,000/month) is waived for the first 90 days of the agreement.',
+    description: '90-day pilot period with no platform fee. The fixed platform fee (EUR 2,000/month) is waived for the first 90 days of the agreement.',
+    currency: 'EUR',
+    existingPct: 100,
+    existingAmount: null,
+    extractedType: 'introductory',
+    appliesTo: 'fixed platform fee',
+    affectedComponents: ['base_recurring_fee'],
+    possiblyAffectedComponents: ['performance_fee'],
+  }
+
+  it('carries explicit guidance not to expand a fixed-component-only waiver to the whole hybrid charge', () => {
+    const prompt = buildDiscountProposalPrompt(hybridPilotContext)
+    expect(prompt).toMatch(/HYBRID-FEE SCOPE RULE/)
+    expect(prompt).toMatch(/decision_required/)
+    expect(prompt).toContain(hybridPilotContext.sourceClause!)
+  })
+
+  it('still offers clear_from_source as a real, reachable state for a genuinely single-component or fully-scoped waiver', () => {
+    const prompt = buildDiscountProposalPrompt(hybridPilotContext)
+    expect(prompt).toMatch(/clear_from_source/)
   })
 })
 

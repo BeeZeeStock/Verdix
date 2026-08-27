@@ -44,7 +44,8 @@ const STATUS_STYLE: Record<string, { color: string; label: string }> = {
   READY_TO_APPROVE:     { color: '#4A7C59', label: 'Ready to approve' },
   PENDING_HUMAN_REVIEW: { color: '#D97706', label: 'Needs review' },
   PENDING_PII_REVIEW:   { color: '#7C3AED', label: 'PII review' },
-  DETECTING_PII:        { color: '#2563EB', label: 'Detecting PII…' },
+  DETECTING_PII:        { color: '#2563EB', label: 'Reading agreement…' },
+  CHECKING_PII:         { color: '#2563EB', label: 'Checking sensitive information…' },
   EXTRACTING:           { color: '#2563EB', label: 'Extracting…' },
   FAILED:               { color: '#DC2626', label: 'Failed' },
   PENDING:              { color: '#9CA3AF', label: 'Pending' },
@@ -59,15 +60,24 @@ export default async function ConfigureListPage() {
   // Per-currency totals — a direct sum of the same per-row values shown in
   // the table below, so this can be cross-checked against the Agreements
   // dashboard's aggregate KPIs at a glance.
-  const totalsByCurrency: Record<string, { tcv: number; committedContractValue: number; count: number }> = {}
+  //
+  // Hardening item 3 (review pass 2) — committedContractValue is already 0
+  // (excluded) for any job whose committedFixedFeesResolution is
+  // 'unresolved' (see lib/contract-tcv.ts), so this sum never silently
+  // folds in a raw, still-undetermined figure. unresolvedCount surfaces
+  // that exclusion visibly rather than letting a lower total pass without
+  // explanation ("do not silently count the raw €24,000... visibly
+  // indicate N agreements unresolved").
+  const totalsByCurrency: Record<string, { tcv: number; committedContractValue: number; count: number; unresolvedCount: number }> = {}
   for (const job of jobs) {
     const summary = contractSummaries[job.id]
     if (!summary) continue
     const cur = summary.currency
-    totalsByCurrency[cur] ??= { tcv: 0, committedContractValue: 0, count: 0 }
+    totalsByCurrency[cur] ??= { tcv: 0, committedContractValue: 0, count: 0, unresolvedCount: 0 }
     totalsByCurrency[cur].tcv += summary.tcv
     totalsByCurrency[cur].committedContractValue += summary.committedContractValue
     totalsByCurrency[cur].count += 1
+    if (summary.committedFixedFeesResolution.status === 'unresolved') totalsByCurrency[cur].unresolvedCount += 1
   }
   const currencies = Object.keys(totalsByCurrency).sort((a, b) => totalsByCurrency[b].count - totalsByCurrency[a].count)
 
@@ -98,6 +108,11 @@ export default async function ConfigureListPage() {
                   <div>
                     <p className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-0.5">Committed contract value</p>
                     <p className="text-base font-semibold font-mono" style={{ color: '#0B5C36', fontVariantNumeric: 'tabular-nums' }}>{fmtTcv(t.committedContractValue, cur)}</p>
+                    {t.unresolvedCount > 0 && (
+                      <p className="text-[10px] text-amber-600 mt-0.5">
+                        {t.unresolvedCount} agreement{t.unresolvedCount !== 1 ? 's' : ''} unresolved, excluded from this total
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -159,7 +174,9 @@ export default async function ConfigureListPage() {
                     {summary ? fmtTcv(summary.tcv, summary.currency) : '—'}
                   </td>
                   <td className="px-4 py-3 font-mono text-sm font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                    {summary ? fmtTcv(summary.committedContractValue, summary.currency) : '—'}
+                    {summary?.committedFixedFeesResolution.status === 'unresolved'
+                      ? <span className="text-amber-600 font-sans font-medium text-xs" title={summary.committedFixedFeesResolution.reasons.join('; ')}>Unresolved</span>
+                      : summary ? fmtTcv(summary.committedContractValue, summary.currency) : '—'}
                   </td>
                   <td className="px-4 py-3">
                     <span className="text-xs font-medium" style={{ color: s.color }}>{s.label}</span>

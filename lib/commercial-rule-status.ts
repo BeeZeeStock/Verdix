@@ -265,6 +265,21 @@ export function isDiscountUnresolved(discount: DiscountLike): boolean {
   return !discount.interpretation || !!discount.interpretation.requires_confirmation
 }
 
+// Step 17A hardening (review pass 3), item 1 — exported standalone so the
+// committed-fixed-fee resolver (lib/committed-fixed-fee-resolver.ts) can
+// gate on it exactly like isDiscountUnresolved, without duplicating the
+// inline check computeCommercialRuleWorkload already does below. Unlike
+// isDiscountUnresolved, ABSENCE (base_fee_proration null/undefined) is NOT
+// unresolved — most contracts genuinely have no partial-period question at
+// all (see ProrationLike's own field comment); only an EXPLICIT
+// requires_confirmation: true counts, whether that question was triggered
+// by calendar/contract-start misalignment or by a discount/waiver's own
+// stated expiry landing mid-cycle (see lib/contract-extractor.ts's
+// base_fee_proration guidance, trigger (b)).
+export function isBaseFeeProrationUnresolved(proration: ProrationLike): boolean {
+  return !!proration?.requires_confirmation
+}
+
 // Step 11 (+ amendments) — OneTimeFee brought into the same readiness
 // discipline every sibling commercial-rule type already has, as TWO
 // independent questions (item 2/7), never conflated, BOTH now governed by
@@ -349,7 +364,7 @@ export function isOneTimeFeeUnresolved(fee: OneTimeFeeLike): boolean {
   return isOneTimeFeeAmountUnresolved(fee) || isOneTimeFeeBillabilityUnresolved(fee)
 }
 
-type ProrationLike = { requires_confirmation: boolean } | null | undefined
+export type ProrationLike = { requires_confirmation: boolean } | null | undefined
 
 export type CommercialRuleTerms = {
   overage_tiers?: TierLike[] | null

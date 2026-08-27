@@ -12,6 +12,7 @@ import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCard'
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, computeCommittedFixedFees, computeConditionalFixedFees, contractLifecycleStatus, type BaseTcvItem } from '@/lib/contract-tcv-calc'
+import { resolveCommittedFixedFeeValue, type CommittedFixedFeeResolution } from '@/lib/committed-fixed-fee-resolver'
 import { ruleCadenceLabel, cadenceNoun, contractMonthLabel, volumeTierCopy } from '@/lib/cadence-labels'
 import { optionsForRuleType, optionsForEdit, deriveSelectedOption, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
@@ -26,6 +27,7 @@ import { FinancialKPICard } from '@/app/_components/FinancialKPICard'
 import { StatusInline } from '@/app/_components/StatusChip'
 import { BillingReconciliationPanel } from '@/app/_components/BillingReconciliationPanel'
 import { describeMatchConditions, describeEffectivePeriod } from '@/lib/rulebook/organization-rulebook-display'
+import { formatRenewalNoticePeriod } from '@/lib/contract-notice-period'
 import type { OrganizationRuleRecord } from '@/lib/rulebook/organization-rules'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
@@ -197,7 +199,7 @@ type Terms = {
   customer_name?: string; customer_address?: string; customer_email?: string | null; customer_org_number?: string | null; billing_contact?: string
   vendor_name?: string;   vendor_address?: string
   contract_start_date?: string; contract_end_date?: string; contract_term_months?: number
-  auto_renews?: boolean; renewal_notice_days?: number; renewal_term_months?: number | null
+  auto_renews?: boolean; renewal_notice_days?: number; renewal_notice_months?: number | null; renewal_term_months?: number | null
   currency?: string
   base_monthly_fee?: number; base_annual_fee?: number
   base_fee_proration?: PeriodProrationRule | null
@@ -328,7 +330,10 @@ function buildContractSummary(
   // one-time-fees-only split this function derives internally below for
   // oneTimeStr. Agreement A final amendment, item 2 — the summary sentence
   // must never call the Change-Order-conditional portion "committed".
-  committedFixedFees: number,
+  // Hardening item 3 — a readiness object, not a bare number: when
+  // unresolved, the sentence must say so instead of ever printing a
+  // computed figure a billing-impacting decision could still change.
+  committedFixedFeeReadiness: CommittedFixedFeeResolution,
   conditionalFixedFees: number,
   userTiers: Tier[],
   apiTiers: Tier[],
@@ -393,9 +398,12 @@ function buildContractSummary(
       : '') + (conditionalSummaryFees.length > 0
     ? `${unconditionalSummaryFees.length > 0 ? ' (' : ' plus '}${fmt(conditionalSummaryTotal, cur)} conditional on a signed Change Order${unconditionalSummaryFees.length > 0 ? ')' : ''}`
     : '')
-  const tcvStr = committedFixedFees > 0
-    ? ` Committed fixed fees over the initial term: ${fmt(committedFixedFees, cur)}${conditionalFixedFees > 0 ? ` (plus ${fmt(conditionalFixedFees, cur)} conditional on a signed Change Order — potential total ${fmt(committedFixedFees + conditionalFixedFees, cur)})` : ''}.`
-    : ''
+  const committedFixedFees = committedFixedFeeReadiness.amount ?? 0
+  const tcvStr = committedFixedFeeReadiness.status === 'unresolved'
+    ? ` Committed fixed fees: not yet determinable — ${committedFixedFeeReadiness.reasons[0] ?? 'a billing-impacting decision is unresolved'}.`
+    : committedFixedFees > 0
+      ? ` Committed fixed fees over the initial term: ${fmt(committedFixedFees, cur)}${conditionalFixedFees > 0 ? ` (plus ${fmt(conditionalFixedFees, cur)} conditional on a signed Change Order — potential total ${fmt(committedFixedFees + conditionalFixedFees, cur)})` : ''}.`
+      : ''
   lines.push(`${duration}contract${customer}${dates} — ${pricing}${oneTimeStr}.${tcvStr}`)
 
   // ── Sentence 2: billing cadence · payment terms · auto-renewal ───────────
@@ -421,7 +429,7 @@ function buildContractSummary(
   if (terms.payment_terms_text) bits.push(terms.payment_terms_text)
   else if (terms.payment_terms_days) bits.push(`Net ${terms.payment_terms_days}`)
   if (terms.auto_renews === true) {
-    const notice = terms.renewal_notice_days ? `${terms.renewal_notice_days}-day notice required` : 'advance notice required'
+    const notice = formatRenewalNoticePeriod(terms) ?? 'advance notice required'
     bits.push(`auto-renews (${notice})`)
   } else if (terms.auto_renews === false) {
     bits.push('does not auto-renew')
@@ -6302,6 +6310,17 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const tcvItems: BaseTcvItem[] = [...recurringTcvItems, ...oneTimeTcvItems]
   const committedFixedFeeTotal   = computeCommittedFixedFees(tcvItems)
   const conditionalFixedFeeTotal = computeConditionalFixedFees(tcvItems)
+  // Hardening item 3 (review pass 2) — routed through the shared
+  // resolveCommittedFixedFeeValue resolver (lib/committed-fixed-fee-
+  // resolver.ts) rather than a page-local computation, so this page can
+  // never disagree with the portfolio/admin surfaces (lib/contract-tcv.ts)
+  // that present the SAME agreement's committed fixed fees.
+  const committedFixedFeeReadiness = resolveCommittedFixedFeeValue(
+    tcvItems,
+    terms?.discounts ?? null,
+    terms?.base_fee_proration,
+    terms?.additional_recurring_fees,
+  )
 
   // Additions = sent one-time invoices for variable fees (total_amount = 0 in billing config)
   const additionsTotal = sentOneTimeInvoices.reduce((s, inv) => {
@@ -6322,7 +6341,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // total under a different label, per the terminology-standardisation plan.
   const isCompleted             = lifecycleStatus === 'completed'
 
-  const summaryLines = buildContractSummary(terms, cur, committedFixedFeeTotal, conditionalFixedFeeTotal, userTiers, apiTiers)
+  const summaryLines = buildContractSummary(terms, cur, committedFixedFeeReadiness, conditionalFixedFeeTotal, userTiers, apiTiers)
 
   const baseItem = findItem('base subscription')
 
@@ -6640,7 +6659,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   value={terms?.auto_renews == null ? null : terms.auto_renews ? 'Yes' : 'No'}
                   hint="Enter Yes or No"
                   placeholder="Yes or No"
-                  sub={terms?.renewal_notice_days ? `${terms.renewal_notice_days} days notice required` : undefined}
+                  sub={terms ? formatRenewalNoticePeriod(terms) ?? undefined : undefined}
                   onSave={v => saveField('auto_renews', v)}
                 />
                 {/* Item 3 (final amendment) — committedFixedFeeTotal, not
@@ -6650,8 +6669,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     footer show, never re-derived independently here. */}
                 <Stat
                   label="Committed fixed fees"
-                  value={committedFixedFeeTotal > 0 ? fmt(committedFixedFeeTotal, cur) : billingModel === 'consumption' ? 'Usage-based' : '—'}
-                  sub={conditionalFixedFeeTotal > 0 ? `+ ${fmt(conditionalFixedFeeTotal, cur)} conditional (Change Order)` : undefined}
+                  value={committedFixedFeeReadiness.status === 'unresolved'
+                    ? 'Not yet determinable'
+                    : committedFixedFeeTotal > 0 ? fmt(committedFixedFeeTotal, cur) : billingModel === 'consumption' ? 'Usage-based' : '—'}
+                  sub={committedFixedFeeReadiness.status === 'unresolved'
+                    ? 'Resolve pending decisions above'
+                    : conditionalFixedFeeTotal > 0 ? `+ ${fmt(conditionalFixedFeeTotal, cur)} conditional (Change Order)` : undefined}
                 />
               </div>
             </div>
@@ -8271,12 +8294,25 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       || (terms?.additional_recurring_fees ?? []).some(f => f.proration?.requires_confirmation)
                     const endBeforeStart = billingModel !== 'consumption' && !!terms?.contract_start_date && !!terms?.contract_end_date
                       && parseLocalDate(terms.contract_end_date) <= parseLocalDate(terms.contract_start_date)
+                    // Hardening item 3 — a THIRD, independent withholding
+                    // condition alongside dates and partial-period
+                    // confirmation: a discount whose applicability/scope is
+                    // itself Decision Required (e.g. a pilot waiver naming
+                    // only one component of a hybrid fee) means the figure
+                    // itself — not just the invoice schedule around it — is
+                    // not yet knowable. Withheld like dates, not merely
+                    // caveated like partial-period treatment, because the
+                    // AMOUNT (not just the timing) is what's undetermined.
+                    const discountReadinessUnresolved = committedFixedFeeReadiness.status === 'unresolved'
+                    const canShowFigure = committedFixedFeeTotal > 0 && datesResolved && !discountReadinessUnresolved
                     return (
                       <>
-                        {committedFixedFeeTotal > 0 && datesResolved ? (
+                        {canShowFigure ? (
                           <FinancialAmount amount={committedFixedFeeTotal} currency={cur} basis="net" size="xl" />
                         ) : billingModel === 'consumption' ? (
                           <p className="text-[20px] font-medium text-stone/60">Usage-based</p>
+                        ) : discountReadinessUnresolved ? (
+                          <p className="text-[20px] font-medium text-stone/60">Not yet determinable</p>
                         ) : (
                           <p className="text-[32px] font-semibold text-stone/30" style={{ fontVariantNumeric: 'tabular-nums' }}>—</p>
                         )}
@@ -8286,7 +8322,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         {committedFixedFeeTotal > 0 && datesUnresolved && (
                           <p className="text-[10px] text-amber-600 mt-2">Contract dates unresolved — fixed-fee total withheld until confirmed above</p>
                         )}
-                        {committedFixedFeeTotal > 0 && datesResolved && partialPeriodUnconfirmed && (
+                        {committedFixedFeeTotal > 0 && datesResolved && discountReadinessUnresolved && (
+                          <p className="text-[10px] text-amber-600 mt-2">
+                            {committedFixedFeeReadiness.reasons[0] ?? 'A billing-impacting decision is unresolved'} — resolve pilot scope / partial-period treatment to determine committed fixed fees
+                          </p>
+                        )}
+                        {committedFixedFeeTotal > 0 && datesResolved && !discountReadinessUnresolved && partialPeriodUnconfirmed && (
                           <p className="text-[10px] text-amber-600 mt-2">Partial-period billing treatment not yet confirmed — the generated invoice schedule is not final</p>
                         )}
                         {committedFixedFeeTotal === 0 && billingModel !== 'consumption' && endBeforeStart && (
@@ -8307,7 +8348,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             the number above — same discipline as the
                             Confirmed billing rules cards: the figure stays
                             in the financial palette regardless of status. */}
-                        {committedFixedFeeTotal > 0 && datesResolved && !partialPeriodUnconfirmed && (
+                        {canShowFigure && !partialPeriodUnconfirmed && (
                           <div className="mt-2"><StatusInline kind="confirmed" label="Confirmed fees" /></div>
                         )}
                       </>

@@ -341,5 +341,13 @@ export async function GET(
     contract_terms: normalizedTerms ? [normalizedTerms] : [],
     billedToDate: summary?.billedToDate ?? 0,
     committedContractValue: summary?.committedContractValue ?? 0,
+    // Step 17A hardening (review pass 2), item 3 — the same
+    // readiness-aware resolution every other surface exposes; the page's
+    // own inline resolveCommittedFixedFeeValue call (using live, possibly
+    // unsaved terms state) is authoritative for its main KPI card, but
+    // this lets any other server-driven read of committedContractValue on
+    // this page know it may be 0-because-unresolved rather than a real
+    // zero-value contract.
+    committedFixedFeesResolution: summary?.committedFixedFeesResolution ?? null,
   })
 }

@@ -22,8 +22,9 @@
 import { supabaseServer } from '@/lib/supabase'
 import { computeBaseTcv, type BaseTcvItem } from '@/lib/contract-tcv-calc'
 import { computeContractValueModel, type ContractValueTier } from '@/lib/contract-value'
+import type { CommittedFixedFeeResolution } from '@/lib/committed-fixed-fee-resolver'
 import { isChangeOrderConditional } from '@/lib/billability-condition'
-import type { BillabilityCondition } from '@/lib/types'
+import type { BillabilityCondition, Discount } from '@/lib/types'
 export { computeBaseTcv, computeCommittedContractValue, contractLifecycleStatus, isEscalatorItem } from '@/lib/contract-tcv-calc'
 export type { BaseTcvItem, ContractLifecycleStatus } from '@/lib/contract-tcv-calc'
 
@@ -54,6 +55,17 @@ export type ContractSummary = {
    *  alongside the split so a caller never has to re-derive it. */
   potentialFixedFees: number
   currency: string
+  /** Step 17A hardening (review pass 2), item 3 — the authoritative
+   *  readiness of committedFixedFees/committedContractValue for THIS
+   *  agreement (see lib/committed-fixed-fee-resolver.ts). Every consumer
+   *  of this summary (the "New contracts" list, the Agreements dashboard,
+   *  the per-job Contract page's server fallback) MUST check this before
+   *  presenting committedContractValue/committedFixedFees as a final
+   *  number — when 'unresolved', committedContractValue is 0 here
+   *  (excluded from any sum, never a silent stand-in for the real,
+   *  still-undetermined figure) and the caller must visibly indicate the
+   *  agreement is unresolved rather than treat 0 as a real committed value. */
+  committedFixedFeesResolution: CommittedFixedFeeResolution
 }
 
 export async function getContractSummaries(jobIds: string[]): Promise<Record<string, ContractSummary>> {
@@ -61,7 +73,7 @@ export async function getContractSummaries(jobIds: string[]): Promise<Record<str
   const [{ data: termsData }, { data: lineItemsData }, { data: sentInvoicesData }, { data: billedRowsData }, { data: meterMappingsData }] = await Promise.all([
     supabaseServer
       .from('contract_terms')
-      .select('job_id, customer_name, currency, contract_term_months, contract_start_date, contract_end_date, one_time_fees')
+      .select('job_id, customer_name, currency, contract_term_months, contract_start_date, contract_end_date, one_time_fees, discounts, base_fee_proration')
       .in('job_id', jobIds),
     supabaseServer
       .from('line_items')
@@ -197,6 +209,8 @@ export async function getContractSummaries(jobIds: string[]): Promise<Record<str
       contractStartDate: (row.contract_start_date as string | null) ?? null,
       contractEndDate: (row.contract_end_date as string | null) ?? null,
       billedToDate,
+      discounts: (row.discounts as Discount[] | null) ?? null,
+      baseFeeProration: (row.base_fee_proration as { requires_confirmation: boolean } | null) ?? null,
     })
 
     map[row.job_id] = {
@@ -204,15 +218,23 @@ export async function getContractSummaries(jobIds: string[]): Promise<Record<str
       tcv,
       actualTcv: tcv + additionsTotal,
       billedToDate,
-      // Falls back to model.fixedFees (committed), never tcv (potential,
-      // includes any conditional Change-Order fee) — the two only diverge
-      // once a conditional fee exists, and a fallback must not silently
-      // reintroduce the exact number this fix excludes.
-      committedContractValue: model.committedContractValue ?? model.fixedFees,
+      // Hardening item 3 (review pass 2) — when committed fixed fees are
+      // unresolved, NEVER fall back to model.fixedFees (that fallback
+      // exists only for the pre-existing, unrelated "minimum commitment
+      // ambiguous" case, where the fixed-fee base itself is still solid) —
+      // falling back here would silently reintroduce the exact raw number
+      // this fix withholds. 0 here means "excluded from this figure";
+      // callers MUST check committedFixedFeesResolution.status before
+      // treating this as a real committed value (never display a bare 0
+      // as if it were an actual $0 contract).
+      committedContractValue: model.committedFixedFeesResolution.status === 'unresolved'
+        ? 0
+        : (model.committedContractValue ?? model.fixedFees),
       committedFixedFees: model.fixedFees,
       conditionalFixedFees: model.conditionalFixedFees,
       potentialFixedFees: model.potentialFixedFees,
       currency: (row.currency as string | null) ?? 'EUR',
+      committedFixedFeesResolution: model.committedFixedFeesResolution,
     }
   }
   return map

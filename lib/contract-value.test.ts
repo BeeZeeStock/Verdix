@@ -113,6 +113,62 @@ describe('computeContractValueModel — Change-Order-conditional fees (Agreement
   })
 })
 
+describe('computeContractValueModel — committed-fixed-fee readiness (hardening item 3, review pass 2)', () => {
+  it('an unconfirmed, day-stated discount with no clean effective period makes committedContractValue/unbilledCommitments/projectedContractValue all null — never the raw fixedFees number', () => {
+    const model = computeContractValueModel(inputs({
+      // Hardening item 1 (review pass 6) — affected_components is now the
+      // sole authority for materiality; applies_to alone no longer blocks.
+      discounts: [{ interpretation: undefined, description: '90-day pilot', applies_to: 'fixed platform fee', affected_components: ['base_recurring_fee'] }],
+    }))
+    expect(model.committedFixedFeesResolution.status).toBe('unresolved')
+    expect(model.committedFixedFeesResolution.amount).toBeNull()
+    expect(model.committedContractValue).toBeNull()
+    expect(model.unbilledCommitments === null || model.unbilledCommitments === 0).toBe(true)
+    expect(model.projectedContractValue).toBeNull()
+    expect(model.pendingReason).toMatch(/pilot/i)
+    // fixedFees itself stays a raw number (internal/legacy field, unchanged) —
+    // committedFixedFeesResolution is what callers must check before
+    // presenting a "committed fixed fees" figure to a user.
+    expect(model.fixedFees).toBe(computeBaseTcv(inputs().items))
+  })
+
+  it('a confirmed discount (interpretation present, requires_confirmation false) does not block committedContractValue', () => {
+    const model = computeContractValueModel(inputs({
+      discounts: [{
+        interpretation: { requires_confirmation: false },
+        description: 'Confirmed 10% intro discount', applies_to: 'base fee',
+      }],
+    }))
+    expect(model.committedFixedFeesResolution.status).toBe('ready')
+    expect(model.committedContractValue).not.toBeNull()
+  })
+
+  it('no discounts at all is always ready (backward compatible — every pre-existing caller passes no discounts field)', () => {
+    const model = computeContractValueModel(inputs())
+    expect(model.committedFixedFeesResolution.status).toBe('ready')
+    expect(model.committedFixedFeesResolution.amount).toBe(model.fixedFees)
+  })
+
+  it('review pass 3, item 1 — discount scope resolved but base_fee_proration still unresolved -> STILL null (two separate decisions)', () => {
+    const model = computeContractValueModel(inputs({
+      discounts: [{ interpretation: { requires_confirmation: false }, description: 'Pilot waiver', applies_to: 'fixed platform fee' }],
+      baseFeeProration: { requires_confirmation: true },
+    }))
+    expect(model.committedFixedFeesResolution.status).toBe('unresolved')
+    expect(model.committedContractValue).toBeNull()
+    expect(model.pendingReason).toMatch(/partial-period/i)
+  })
+
+  it('review pass 3, item 1 — both discount scope AND base_fee_proration resolved -> ready, real committedContractValue', () => {
+    const model = computeContractValueModel(inputs({
+      discounts: [{ interpretation: { requires_confirmation: false }, description: 'Pilot waiver', applies_to: 'fixed platform fee' }],
+      baseFeeProration: { requires_confirmation: false },
+    }))
+    expect(model.committedFixedFeesResolution.status).toBe('ready')
+    expect(model.committedContractValue).not.toBeNull()
+  })
+})
+
 describe('computeContractValueModel — cross-screen consistency (regression: 104,375 vs 126,375 divergence)', () => {
   it('two independent call sites given the same inputs produce identical output', () => {
     const sharedInputs = inputs({

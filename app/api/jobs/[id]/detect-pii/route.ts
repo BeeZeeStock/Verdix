@@ -65,6 +65,14 @@ export async function POST(
     // permanent store of raw unmasked contract text.
     await supabaseServer.from('jobs').update({ pending_extracted_text: contractText }).eq('id', id)
 
+    // Step 17A, item 6 — a real, separately-observable phase transition:
+    // the slow Bedrock-backed extraction above has genuinely finished and
+    // the fast, local, non-AI PII pass is about to start. The upload page
+    // polls GET /api/jobs/[id] and maps this exact value to its
+    // "Checking sensitive information" stage — never inferred client-side
+    // from timing/fetch-call boundaries.
+    await supabaseServer.from('jobs').update({ execute_status: 'CHECKING_PII' }).eq('id', id)
+
     // Run local PII detection (dynamic import keeps compromise out of module init)
     const { detectPII } = await import('@/lib/pii-detector')
     const { entities } = detectPII(contractText)
@@ -103,13 +111,27 @@ async function extractPDFText(buffer: Buffer, url: string): Promise<string> {
 
 async function savePIIEntities(jobId: string, orgId: string, entities: PIIEntity[]) {
   const results = []
+  // Item 3 (and hardening item 1, second pass) — detectPII() always emits
+  // a canonical org's alias entities AFTER the canonical entity itself in
+  // the same array (see lib/pii-detector.ts's Pass 5), so this map is
+  // always populated with the canonical's real, persisted DB id by the
+  // time an alias is processed. Each entity keeps its OWN token (see
+  // lib/pii-detector.ts's addEntity) — the alias relationship is tracked
+  // separately via pii_entities.alias_of_entity_id (see migration
+  // 20260901000001_pii_entity_alias.sql), never by sharing a token.
+  //
+  // NOTE — deployment ordering: this column does not exist until that
+  // migration is applied (deliberately left unapplied this session). This
+  // route will fail against the current live schema until it is. Per
+  // instruction, the migration must be applied BEFORE this code is
+  // deployed; nothing here is committed/deployed this session.
+  const dbIdByValue = new Map<string, string>()
 
   for (const entity of entities) {
     // If the entity already exists (e.g. approved from a previous contract), leave it untouched.
-    // ignoreDuplicates: true skips the upsert on conflict, preserving the existing approved state.
     const { data: existing } = await supabaseServer
       .from('pii_entities')
-      .select('id, entity_type, original_value, token, approved, ignored')
+      .select('id, entity_type, original_value, token, approved, ignored, alias_of_entity_id')
       .eq('org_id', orgId)
       .eq('original_value', entity.value)
       .maybeSingle()
@@ -117,11 +139,33 @@ async function savePIIEntities(jobId: string, orgId: string, entities: PIIEntity
     // Skip entities the user has permanently whitelisted as not-PII
     if (existing?.ignored) continue
 
+    // Best-effort resolution of the canonical entity's real DB id — an
+    // alias whose canonical org this run never actually persisted (e.g. it
+    // was itself skipped as ignored) simply has no association, never an
+    // invented/guessed one.
+    //
+    // Hardening item 3 (review pass 3) — application-layer defense in
+    // depth alongside the DB trigger (enforce_pii_entity_alias_integrity,
+    // migration 20260901000001_pii_entity_alias.sql): org_id can't
+    // actually mismatch here (every insert in this function uses the same
+    // `orgId` parameter — there's no code path within a single
+    // savePIIEntities call that could construct a cross-org link), but
+    // entity_type is independently re-checked against the in-memory
+    // detection result rather than assumed, so a future change to Pass 5's
+    // alias-detection logic that ever paired a non-ORG alias with an ORG
+    // canonical (or vice versa) fails loudly here instead of silently
+    // relying on the DB trigger to catch it first.
+    const canonicalEntity = entity.aliasOf ? entities.find(e => e.value === entity.aliasOf) : undefined
+    const aliasOfEntityId = (entity.aliasOf && canonicalEntity?.type === entity.type)
+      ? dbIdByValue.get(entity.aliasOf) ?? null
+      : null
+
     let saved = existing
     if (!existing) {
-      // Generate a globally unique token for this org + entity type.
-      // detectPII() resets its counter per run, so its token numbers can clash
-      // across contracts. Count existing org-level entities of this type instead.
+      // Generate a globally unique token for this org + entity type. Every
+      // entity — canonical or alias — gets its OWN token; detectPII()
+      // resets its counter per run, so its token numbers can clash across
+      // contracts, hence recomputing from the org-level count here.
       const { count } = await supabaseServer
         .from('pii_entities')
         .select('*', { count: 'exact', head: true })
@@ -132,19 +176,33 @@ async function savePIIEntities(jobId: string, orgId: string, entities: PIIEntity
       const { data: inserted } = await supabaseServer
         .from('pii_entities')
         .insert({
-          org_id:         orgId,
-          entity_type:    entity.type,
-          original_value: entity.value,
+          org_id:             orgId,
+          entity_type:        entity.type,
+          original_value:     entity.value,
           token,
-          approved:       false,
-          source_job_id:  jobId,
+          approved:           false,
+          source_job_id:      jobId,
+          alias_of_entity_id: aliasOfEntityId,
         })
-        .select('id, entity_type, original_value, token, approved, ignored')
+        .select('id, entity_type, original_value, token, approved, ignored, alias_of_entity_id')
         .single()
       saved = inserted
+    } else if (aliasOfEntityId && !existing.alias_of_entity_id) {
+      // A previously-detected entity newly recognized as an alias (e.g.
+      // the alias-detection pattern is new as of this pass) — backfill the
+      // association without touching anything else about the row
+      // (approval state, and crucially its OWN token, preserved).
+      const { data: updated } = await supabaseServer
+        .from('pii_entities')
+        .update({ alias_of_entity_id: aliasOfEntityId })
+        .eq('id', existing.id)
+        .select('id, entity_type, original_value, token, approved, ignored, alias_of_entity_id')
+        .single()
+      saved = updated ?? existing
     }
 
     if (!saved) continue
+    dbIdByValue.set(entity.value, saved.id)
     results.push({ ...saved, confidence: entity.confidence, source: entity.source })
 
     await supabaseServer

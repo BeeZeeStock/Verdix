@@ -50,6 +50,11 @@ function mockFetchSequence(opts: {
       detectPiiCallCount += 1
       return { ok: resp.ok, status: resp.status ?? (resp.ok ? 200 : 500), json: async () => resp.body } as Response
     }
+    // The real-status poll (item 6) — benign, arbitrary status; these
+    // scenarios don't assert on the mid-flight stage transition.
+    if (url === `/api/jobs/${JOB_ID}`) {
+      return { ok: true, json: async () => ({ execute_status: 'DETECTING_PII' }) } as Response
+    }
     throw new Error(`unexpected fetch call in test: ${url}`)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -158,11 +163,13 @@ describe('NewConfigurePage — progress wording', () => {
     let resolveDetectPii!: (v: Response) => void
     const pending = new Promise<Response>(resolve => { resolveDetectPii = resolve })
     const calls: Call[] = []
+    let jobStatus = 'DETECTING_PII'
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url, init })
       if (url === '/api/jobs' && init?.method === 'POST') return { ok: true, json: async () => ({ jobId: JOB_ID }) } as Response
       if (url === '/api/upload') return { ok: true, json: async () => ({}) } as Response
       if (url === `/api/jobs/${JOB_ID}/detect-pii`) return pending
+      if (url === `/api/jobs/${JOB_ID}`) return { ok: true, json: async () => ({ execute_status: jobStatus }) } as Response
       throw new Error(`unexpected fetch: ${url}`)
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -178,9 +185,10 @@ describe('NewConfigurePage — progress wording', () => {
     expect(readingItem).toBeInTheDocument()
     expect(readingItem.className).toMatch(/font-medium/) // rendered as the ACTIVE stage
 
-    // Must never claim PII checking/masking is what's happening right now.
-    const checkingItem = screen.getByText('Checking sensitive information')
-    expect(checkingItem.className).not.toMatch(/font-medium/)
+    // Must never claim PII checking/masking is what's happening right now,
+    // while the backend is still genuinely in the reading/extraction phase.
+    const checkingItemBefore = screen.getByText('Checking sensitive information')
+    expect(checkingItemBefore.className).not.toMatch(/font-medium/)
     expect(screen.queryByText(/masking/i)).not.toBeInTheDocument()
 
     // Commercial-term extraction never runs on THIS page (it happens later,
@@ -193,7 +201,22 @@ describe('NewConfigurePage — progress wording', () => {
     expect(stageList.children.length).toBe(2)
     expect(within(stageList).queryByText('Extracting commercial terms')).not.toBeInTheDocument()
 
+    // The backend genuinely transitions to its real "checking" phase —
+    // the page must pick this up from its own poll of GET /api/jobs/[id],
+    // not from the still-pending detect-pii request resolving.
+    jobStatus = 'CHECKING_PII'
+    const checkingItemActive = await screen.findByText('Checking sensitive information', {}, { timeout: 2000 })
+    await waitFor(() => expect(checkingItemActive.className).toMatch(/font-medium/), { timeout: 2000 })
+    const readingItemDone = screen.getByText('Reading agreement')
+    expect(readingItemDone.className).not.toMatch(/font-medium/)
+
+    // Only once the detect-pii request has ACTUALLY resolved successfully
+    // does the page claim both steps are complete.
     resolveDetectPii({ ok: true, json: async () => ({ entities: [] }) } as Response)
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith(`/configure/${JOB_ID}/pii-review`))
+    await waitFor(() => {
+      expect(screen.getByText('Reading agreement').className).not.toMatch(/font-medium/)
+      expect(screen.getByText('Checking sensitive information').className).not.toMatch(/font-medium/)
+    })
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith(`/configure/${JOB_ID}/pii-review`), { timeout: 2000 })
   })
 })

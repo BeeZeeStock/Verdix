@@ -324,6 +324,14 @@ export type DiscountContext = {
   existingAmount: number | null
   extractedType: string | null
   appliesTo: string | null
+  // Step 17A hardening (review pass 7), item 2 — extraction's own typed
+  // targeting (lib/types.ts's Discount.affected_components/
+  // possibly_affected_components), surfaced so a reviewer's confirmation
+  // resolves the SAME candidate set extraction already identified rather
+  // than the model inventing new component names. Null/[] when extraction
+  // found no hybrid-fee ambiguity to begin with.
+  affectedComponents: string[] | null
+  possiblyAffectedComponents: string[] | null
 }
 
 export type TierCalculationContext = {
@@ -500,6 +508,8 @@ Source clause / description: ${context.sourceClause ?? context.description}
 Extraction's own classification: ${context.extractedType ?? 'unknown'}
 Extracted flat value: ${context.existingPct != null ? `${context.existingPct}%` : context.existingAmount != null ? `${context.existingAmount} ${context.currency}` : 'none (may be tiered and not yet captured as a single value)'}
 Applies to (as extracted): ${context.appliesTo ?? 'unknown'}
+Definitely-affected components (as extracted): ${context.affectedComponents?.length ? context.affectedComponents.join(', ') : 'none typed yet'}
+Possibly-affected components — genuinely open scope question (as extracted): ${context.possiblyAffectedComponents?.length ? context.possiblyAffectedComponents.join(', ') : 'none'}
 ${optionContext('discount', selectedOption)}
 Reviewer's instruction: "${reviewerInput}"
 
@@ -512,8 +522,12 @@ Translate the reviewer's instruction into a structured JSON object with EXACTLY 
   "applies_to": "<what this discount reduces, e.g. usage charge, base fee, or a named component>",
   "application_order": "<plain-English ordering relative to other pricing rules, e.g. 'after usage pricing'>",
   "reset_period": "monthly" | "quarterly" | "semi-annual" | "annual" | "contract_term" | "cumulative" | "custom" | null,
-  "worked_example": "<a concrete numeric walkthrough at a sample quantity, e.g. 'At 150 units: first 100 at standard rate, next 50 at 10% off, using the graduated method the reviewer selected.'>"
+  "worked_example": "<a concrete numeric walkthrough at a sample quantity, e.g. 'At 150 units: first 100 at standard rate, next 50 at 10% off, using the graduated method the reviewer selected.'>",
+  "affected_components": [<short snake_case component-key strings, e.g. "base_recurring_fee", "performance_fee", "usage_fee", "overage_fee">] | null,
+  "possibly_affected_components": [<component-key strings>] | null
 }
+
+TYPED COMPONENT TARGETING RULE (affected_components / possibly_affected_components): the reviewer's instruction is what RESOLVES the scope question extraction may have left open. Start from the "Definitely-affected"/"Possibly-affected" lists above as the candidate components. If the reviewer's instruction confirms a possibly-affected component IS covered (e.g. "waive fixed and performance fee both", "yes, it covers the whole platform charge"), move it into affected_components. If the instruction confirms a possibly-affected component is NOT covered (e.g. "waive the fixed fee only", "just the base fee, nothing else"), leave it OUT of both arrays — it is resolved-and-excluded, not still-possible. affected_components must always include every component already listed as definitely-affected above (the reviewer's instruction narrows or extends the OPEN question, it never retracts what was already certain). possibly_affected_components should normally end up empty ([]) once the reviewer has spoken, UNLESS the instruction itself introduces a genuinely NEW open question (rare) or does not address the possibly-affected component(s) at all (in which case leave them exactly as extracted, still possibly-affected — do not resolve what the reviewer didn't actually address). Never invent a component the reviewer's instruction and the extracted candidates don't support.
 
 Rules:
 - discount_type "tiered_discount" or "volume_discount" requires tier_method and tiers to be filled in; a flat discount (flat_percentage/flat_amount) should set tier_method and tiers to null — do not invent tiers for a discount the reviewer described as flat.
@@ -1087,10 +1101,15 @@ Source clause / description: ${context.sourceClause ?? context.description}
 Extraction's own classification: ${context.extractedType ?? 'unknown'}
 Extracted flat value: ${context.existingPct != null ? `${context.existingPct}%` : context.existingAmount != null ? `${context.existingAmount} ${context.currency}` : 'none (may be tiered)'}
 Applies to (as extracted): ${context.appliesTo ?? 'unknown'}
+Definitely-affected components (as extracted): ${context.affectedComponents?.length ? context.affectedComponents.join(', ') : 'none typed yet'}
+Possibly-affected components — genuinely open scope question (as extracted): ${context.possiblyAffectedComponents?.length ? context.possiblyAffectedComponents.join(', ') : 'none'}
 
-${proposalSchemaBlock('{"discount_type": "flat_percentage"|"flat_amount"|"tiered_discount"|"volume_discount"|"component_specific"|"time_ramp"|"custom", "discount_basis": "percentage"|"amount", "tier_method": "graduated"|"volume"|"block"|"custom"|null, "tiers": [{"from_unit": <number|null>, "to_unit": <number|null>, "value": <number>}]|null, "applies_to": "<what this reduces>", "application_order": "<plain-English ordering>", "reset_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"contract_term"|"cumulative"|"custom"|null, "worked_example": "<concrete numeric walkthrough>"}')}
+${proposalSchemaBlock('{"discount_type": "flat_percentage"|"flat_amount"|"tiered_discount"|"volume_discount"|"component_specific"|"time_ramp"|"custom", "discount_basis": "percentage"|"amount", "tier_method": "graduated"|"volume"|"block"|"custom"|null, "tiers": [{"from_unit": <number|null>, "to_unit": <number|null>, "value": <number>}]|null, "applies_to": "<what this reduces>", "application_order": "<plain-English ordering>", "reset_period": "monthly"|"quarterly"|"semi-annual"|"annual"|"contract_term"|"cumulative"|"custom"|null, "worked_example": "<concrete numeric walkthrough>", "affected_components": [<component-key strings>]|null, "possibly_affected_components": [<component-key strings>]|null}')}
 
 Specific guidance: a flat introductory/time-limited discount with explicit percentage, start condition, and duration (e.g. "25% off the platform subscription for the first 3 months") is "clear_from_source" — every field is stated. A discount whose duration is stated only as a month-count with no explicit anchor to contract start vs. first invoice is still "clear_from_source" if that's the contract's only reasonable reading (anchor to contract/service commencement, not "next invoice after commencement" — do not invent a delayed start the contract doesn't state). Reserve "decision_required" for genuinely unstated tier mechanics on a tiered/volume discount.
+
+HYBRID-FEE SCOPE RULE — a common, high-cost failure mode: when the fee/charge this discount reduces is itself a HYBRID of multiple distinct components (e.g. a "platform fee" that combines a fixed monthly component AND a separate variable/performance component, billed together under one commercial umbrella but computed by entirely different mechanisms), a clause that names only ONE of those components by its specific label (e.g. "the fixed platform fee is waived", "no platform subscription fee") is NOT, by itself, evidence that the OTHER component(s) are also waived — even when a casual reading might assume "the platform fee" means the whole charge. Applying the waiver's stated scope (as extracted into "applies_to") beyond what the clause's own words name is exactly the over-confident guess this schema exists to prevent: grade "state" as "decision_required" whenever (a) "Applies to (as extracted)" names one specific, narrowly-labeled component of a charge you can tell from the clause/description is part of a larger, multi-component commercial structure, AND (b) the clause's own words never say the waiver covers the OTHER component(s) or "the entire charge"/"all amounts" as well. In that case, proposed_interpretation must be null (per the state rules above) — do not silently pick the narrow reading OR the broad reading; both are genuine possibilities the contract leaves open. Only grade "clear_from_source" for a hybrid fee's waiver when the clause itself is explicit about scope either way (e.g. "no platform fee of any kind, fixed or performance-based, applies during the pilot" clearly covers everything; "the fixed platform fee is waived; the performance-based component continues to apply" clearly covers only the fixed part). A single-component (non-hybrid) fee has no such ambiguity — this rule only applies when the charge being discounted genuinely has more than one distinct pricing component.
+When proposed_interpretation IS populated (state "clear_from_source" or "verdix_recommends"): set affected_components/possibly_affected_components to carry the SAME resolved scope forward from the "Definitely-affected"/"Possibly-affected" lists above — never introduce a new resolution here that the state grading above didn't already reach (this proposal step never resolves a hybrid-fee scope question the HYBRID-FEE SCOPE RULE just graded "decision_required"; that resolution only ever comes from an actual reviewer via the confirm step).
 
 Critical: an introductory/time-limited discount that reduces a RECURRING fee for a limited number of billing periods (e.g. "25% off for the first 3 months") is NOT a one-time charge, credit, or adjustment — it affects multiple recurring periods, just not all of them. Never describe it using "one-time" language anywhere in reasoning, calculation_summary, or worked_example; use "introductory"/"temporary"/"time-limited" instead. The worked_example should state the net fee for a discounted period and the net fee once the discount ends (e.g. "Periods 1-3: 5,625; period 4 onward: 7,500"), not just the discount percentage.`
 }

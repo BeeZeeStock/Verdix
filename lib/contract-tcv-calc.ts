@@ -122,6 +122,32 @@ export function computeCommittedContractValue(
   return fixedFees + confirmedMinimums
 }
 
+// Hardening item 3 — a committed-fixed-fee figure must never be presented
+// as final while a billing-impacting decision that could still change it
+// (fee applicability, effective period, or proration) remains unresolved.
+// Deliberately generic and caller-driven: this module stays a dumb
+// aggregator exactly like computeCommittedFixedFees above — it does not
+// itself decide WHAT counts as "unresolved" (that's already governed
+// elsewhere by lib/commercial-rule-status.ts's isDiscountUnresolved and
+// sibling predicates, the codebase's one existing readiness gate for
+// commercial rules); callers pass in the reasons their own readiness
+// checks already produced. Any non-empty reason list withholds the WHOLE
+// figure — never partially computed around an unresolved item — the same
+// conservative posture already used for unresolved contract dates.
+export interface CommittedFixedFeeReadiness {
+  status: 'resolved' | 'unresolved'
+  amount: number | null
+  reasons: string[]
+}
+
+export function assessCommittedFixedFeeReadiness(
+  items: BaseTcvItem[],
+  unresolvedReasons: string[],
+): CommittedFixedFeeReadiness {
+  if (unresolvedReasons.length > 0) return { status: 'unresolved', amount: null, reasons: unresolvedReasons }
+  return { status: 'resolved', amount: computeCommittedFixedFees(items), reasons: [] }
+}
+
 export type ContractLifecycleStatus = 'upcoming' | 'active' | 'completed' | 'no_dates'
 
 // Drives the Billed to date / Realised TCV label choice: a contract is

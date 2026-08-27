@@ -18,7 +18,9 @@
 // Client-safe: no supabaseServer import, same discipline as contract-tcv-calc.ts.
 
 import { computeCommittedFixedFees, computeConditionalFixedFees, type BaseTcvItem } from './contract-tcv-calc'
+import { resolveCommittedFixedFeeValue, type CommittedFixedFeeResolution, type CommittedFixedFeeDiscountLike } from './committed-fixed-fee-resolver'
 import { computeMinimumCommitmentSchedule, type CadenceAnchorMode } from './tariff'
+import type { ProrationLike } from './commercial-rule-status'
 import type { MinimumCommitment } from './types'
 
 export type ContractValueTier = {
@@ -40,6 +42,25 @@ export type ContractValueInputs = {
    *  getContractSummaries already computes server-side; RevenueModelTab
    *  derives its own equivalent client-side from billingData. */
   billedToDate: number
+  /** Step 17A hardening (review pass 2), item 3 — discounts whose scope/
+   *  effective period may still require a reviewer decision (see
+   *  lib/committed-fixed-fee-resolver.ts). When any are unresolved, this
+   *  model's committedContractValue (and everything derived from it) must
+   *  not present a number a still-open decision could change — reuses the
+   *  SAME pendingReason null mechanism already used for unresolved
+   *  minimum-commitment interpretation below, so every consumer already
+   *  handling "pendingReason set -> show Pending, not a number" gets this
+   *  correctly for free. */
+  discounts?: CommittedFixedFeeDiscountLike[] | null
+  /** Step 17A hardening (review pass 3), item 1 — the base/platform fee's
+   *  own partial-period proration state (lib/types.ts's PeriodProrationRule,
+   *  reused as-is — see lib/contract-extractor.ts's base_fee_proration
+   *  guidance for both triggers it now covers). A SEPARATE open question
+   *  from discounts above: a pilot/waiver's SCOPE being confirmed does not
+   *  by itself confirm how the fee applies to the partial period once that
+   *  waiver expires mid-cycle — both must resolve before committed fixed
+   *  fees are 'ready'. */
+  baseFeeProration?: ProrationLike
 }
 
 export type ContractValueModel = {
@@ -73,6 +94,14 @@ export type ContractValueModel = {
   /** Set whenever any of the above is null — the specific reason to surface
    *  as "Pending [x] interpretation" rather than a generic "unavailable". */
   pendingReason: string | null
+  /** Step 17A hardening (review pass 2), item 3 — the authoritative,
+   *  resolver-driven readiness of THIS agreement's committed fixed fees
+   *  (see lib/committed-fixed-fee-resolver.ts). Every user-facing surface
+   *  presenting "committed fixed fees" for this agreement must check this
+   *  before displaying fixedFees/committedContractValue as a final number —
+   *  fixedFees itself stays a raw number (unchanged, backward compatible)
+   *  purely for internal/legacy math; this field is the one to gate on. */
+  committedFixedFeesResolution: CommittedFixedFeeResolution
 }
 
 function parseLocalDate(s: string): Date {
@@ -120,7 +149,23 @@ export function computeContractValueModel(inputs: ContractValueInputs): Contract
     else if (!pendingReason) minimumCommitments = 0
   }
 
-  const committedContractValue = minimumCommitments != null ? fixedFees + minimumCommitments : null
+  // Hardening item 3 (review pass 2) — the SAME resolver every other
+  // user-facing surface uses. When unresolved, committedContractValue (and
+  // everything derived from it) must go null too — a still-open pilot-
+  // scope/proration decision could still change the base fixedFees figure
+  // that committedContractValue is built on top of, so adding a confirmed
+  // minimum commitment to it would only compound a number that isn't
+  // settled yet. Reuses the existing pendingReason mechanism rather than a
+  // new parallel one — this is checked FIRST so it can never be silently
+  // overwritten by the (unrelated) minimum-commitment loop's own reason.
+  const committedFixedFeesResolution = resolveCommittedFixedFeeValue(inputs.items, inputs.discounts ?? null, inputs.baseFeeProration)
+  if (committedFixedFeesResolution.status === 'unresolved') {
+    pendingReason = committedFixedFeesResolution.reasons[0] ?? 'Pending committed-fixed-fee decision'
+  }
+
+  const committedContractValue = (committedFixedFeesResolution.status === 'unresolved' || minimumCommitments == null)
+    ? null
+    : fixedFees + minimumCommitments
   const remainingFixedFees = Math.max(0, fixedFees - inputs.billedToDate)
   const unbilledCommitments = minimumCommitments
   const projectedContractValue = committedContractValue
@@ -133,6 +178,7 @@ export function computeContractValueModel(inputs: ContractValueInputs): Contract
     potentialFixedFees,
     minimumCommitments,
     committedContractValue,
+    committedFixedFeesResolution,
     billedToDate: inputs.billedToDate,
     remainingFixedFees,
     unbilledCommitments,

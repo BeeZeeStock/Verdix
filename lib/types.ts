@@ -72,6 +72,14 @@ export interface OverageTier {
    *  the calculation engine treats null as 'graduated' for backward
    *  compatibility only; every new extraction populates this explicitly. */
   tier_calculation?: TierCalculationMethod | null
+  /** Step 17A hardening item 5 — the distinct operational quantities this
+   *  tier's surcharge genuinely depends on, mirroring
+   *  AdditionalRecurringFee.required_operational_inputs' own convention
+   *  (short, generic, extracted-not-invented labels). An excess/overage
+   *  surcharge typically depends on the raw usage count AND the contracted
+   *  volume that defines where the tier starts — both preserved rather
+   *  than only the metric already implied by unit_type. */
+  required_operational_inputs?: string[] | null
 }
 
 // A reviewer's resolved reading of an escalator whose actual rate can't be
@@ -178,6 +186,16 @@ export interface Discount {
   start_date: string | null
   end_date: string | null
   duration_months: number | null
+  /** Step 17A, item 10 — a stated duration in DAYS (e.g. "90-day pilot")
+   *  that does NOT cleanly convert to a whole month count. Sibling field to
+   *  duration_months, not a replacement for it — never both populated for
+   *  the same clause; whichever unit the contract actually states is the
+   *  one that gets set, the other stays null. Extraction must never invent
+   *  a month-aligned start_date/end_date window for a day-stated duration
+   *  it cannot cleanly translate (see lib/contract-extractor.ts's prompt
+   *  guidance) — a genuinely day-bounded pilot/waiver belongs here, not
+   *  forced into duration_months or a guessed end_date. */
+  duration_days?: number | null
   applies_to: string
   description: string
   /** How start_date/end_date were derived. 'explicit_dates' (default when
@@ -193,6 +211,32 @@ export interface Discount {
    *  comparing dates for this anchor. */
   anchor?: 'explicit_dates' | 'first_n_billing_periods'
   billing_periods_count?: number | null
+  /** Step 17A hardening (review pass 6), item 1 — TYPED commercial-
+   *  component targeting, mirroring CreditApplicationRule.eligible_
+   *  component_keys' own convention (free-form string keys, not a closed
+   *  enum, so a new component never needs a schema change — e.g.
+   *  'base_recurring_fee', 'performance_fee', 'usage_fee', 'overage_fee').
+   *  This is the ONLY thing calculation code (see
+   *  lib/committed-fixed-fee-resolver.ts) may consult to decide whether an
+   *  unresolved discount is capable of changing a specific component's
+   *  value — never the free-text applies_to above, which is extracted
+   *  clause language for human display/audit only and must never drive a
+   *  runtime materiality decision (a label merely containing a word like
+   *  "platform" proves nothing structurally).
+   *  affected_components — components this discount's stated rate/amount
+   *  DEFINITELY affects, regardless of how any remaining scope ambiguity
+   *  resolves (e.g. a 90-day 100%-waiver explicitly naming the fixed
+   *  platform fee: affected_components: ['base_recurring_fee']). */
+  affected_components?: string[] | null
+  /** Components this discount MIGHT ALSO affect, pending a genuinely
+   *  unresolved scope decision (e.g. a hybrid-fee waiver that's silent on
+   *  whether it extends to a performance component too:
+   *  possibly_affected_components: ['performance_fee']). Never conflated
+   *  with affected_components — a component only ever belongs to one of
+   *  the two lists for a given discount. Resolving the scope decision
+   *  (via confirm-rule) moves an entry from here into affected_components
+   *  or drops it; it never changes what's already in affected_components. */
+  possibly_affected_components?: string[] | null
   /** Reviewer-approved structured reading of this discount's actual tier/application mechanics, once resolved. */
   interpretation?: DiscountInterpretation | null
 }
@@ -766,11 +810,101 @@ export interface PeriodProrationRule {
 
 export interface AdditionalRecurringFee {
   fee_label: string
-  amount: number          // amount per billing period
+  // Amount per billing period — 0 (falsy) when this fee has NO fixed
+  // periodic amount at all: either it is priced per unit of operational
+  // usage (metric_name/rate_per_unit populated instead — item 7) or it is
+  // a commercial mechanism this shape cannot execute yet (unresolved_kind
+  // === 'unsupported_semantics' — item 12). buildLineItems' own existing
+  // `if (!fee.amount) continue` guard is what keeps a falsy amount from
+  // ever contributing a fixed quantity/committed amount — never a
+  // secondary check duplicated here.
+  amount: number
   description: string | null
   /** Billing cadence for this fee when it differs from the contract's main billing_frequency. */
   billing_frequency?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
   proration?: PeriodProrationRule | null
+  /** Step 17A, item 7 — mirrors OneTimeFee's own metric_name/rate_per_unit
+   *  convention exactly. Set when the source states a per-unit/per-event
+   *  rate (e.g. "€0.38 per issued payment request") rather than a fixed
+   *  periodic amount — `amount` MUST be 0 whenever these are set; the
+   *  operational quantity this rate multiplies is unknown until real
+   *  usage data exists, never the contract's own term/cycle count. */
+  metric_name?: string | null
+  rate_per_unit?: number | null
+  /** Step 17A, item 11 (refined by hardening item 5) — the distinct
+   *  operational quantities/measurements THIS fee's own rate directly
+   *  depends on, when that's more than a single metric_name/rate_per_unit
+   *  pair can express. Must be the EXACT dependency set for this specific
+   *  fee, never a blanket list shared across every fee on the contract
+   *  (e.g. the €0.38 request fee depends only on
+   *  issued_payment_request_count — never also on completed_payment_count,
+   *  which belongs to the separate €1.70 success fee). When a fee's rate
+   *  is itself a DERIVED metric computed from other raw inputs via a
+   *  stated formula (see derived_metric below), this field lists only the
+   *  fee's OWN direct additional input(s) beyond that derived metric —
+   *  the derived metric's own raw inputs live in derived_metric.raw_inputs,
+   *  never duplicated here. Short, generic snake_case-ish labels extracted
+   *  from the clause itself — never invented, never a pricing-runtime
+   *  wiring, just preserving which inputs a future execution primitive
+   *  would need. */
+  required_operational_inputs?: string[] | null
+  /** Step 17A hardening item 5 — when this fee's rate is itself a DERIVED
+   *  metric (computed from other raw operational inputs via a formula the
+   *  contract states, e.g. "value-weighted payment rate = paid invoice
+   *  value ÷ total invoice value") rather than one raw measurement, this
+   *  preserves that formula truthfully instead of flattening every
+   *  referenced quantity into required_operational_inputs as if they were
+   *  independent, equally-weighted raw inputs to THIS fee directly.
+   *  Extraction-time preservation only — no derived-metric runtime exists
+   *  yet (Step 17A explicitly does not implement one). */
+  derived_metric?: {
+    metric_name: string
+    formula: string
+    raw_inputs: string[]
+  } | null
+  /** Step 17A, item 12 — same convention as OneTimeFee.unresolved_kind
+   *  (see that field's own comment). 'unsupported_semantics' marks a
+   *  commercial mechanism this shape genuinely cannot represent/execute
+   *  yet (e.g. a full percentage-of-basis rate schedule, or a rolling
+   *  multi-month average repricing transition) — the clause itself
+   *  (fee_label/description/source_clause/required_operational_inputs) is
+   *  still fully preserved, never silently dropped; it simply contributes
+   *  no amount/quantity anywhere until a future step adds real execution
+   *  support. Never set merely because a fee is per-unit (item 7) —
+   *  metric_name/rate_per_unit alone is a SUPPORTED shape (an operational-
+   *  quantity fee, correctly represented, just not yet invoiceable without
+   *  usage data); this is reserved for a fee whose pricing MECHANISM
+   *  itself (not merely its quantity) has no representation at all. */
+  unresolved_kind?: 'unsupported_semantics' | null
+  /** Literal (or lightly paraphrased) source text for THIS fee's own
+   *  clause — mirrors OneTimeFee/Discount/ServiceCredit's own
+   *  source_clause convention. */
+  source_clause?: string | null
+}
+
+// Step 17A hardening item 4 — a commercial MECHANISM that is not itself a
+// billable fee (see ContractTerms.unsupported_commercial_mechanisms' own
+// doc for the distinction from AdditionalRecurringFee.unresolved_kind).
+// `kind` is a short, generic, extracted-not-invented slug (e.g.
+// 'rolling_volume_pricing_transition') — never a closed enum, since new
+// contracts will state mechanisms this shape hasn't seen before and this
+// container's whole purpose is to preserve them rather than force-fit or
+// silently drop whatever doesn't fit an existing enum value.
+export interface UnsupportedCommercialMechanism {
+  kind: string
+  description: string
+  source_clause?: string | null
+  required_operational_inputs?: string[] | null
+  execution_status: 'unsupported'
+}
+
+// Step 17A, item 13 — one row of a committed-volume fixed-fee band table
+// (e.g. "1–500: EUR 500/mo", "501–1,500: EUR 1,200/mo", "1,501–5,000: EUR
+// 2,000/mo"). to_unit null means "and above" (the top/open-ended band).
+export interface FixedFeeBand {
+  from_unit: number
+  to_unit: number | null
+  monthly_fee: number
 }
 
 export interface RampStep {
@@ -794,6 +928,15 @@ export interface ContractTerms {
   contract_term_months: number | null
   auto_renews: boolean | null
   renewal_notice_days: number | null
+  /** Step 17A, item 10 — set ONLY when the contract states the renewal
+   *  notice period in MONTHS (e.g. "three (3) months' notice"). Sibling
+   *  field to renewal_notice_days, never a conversion of it and never both
+   *  meaningfully populated for the same clause — extraction preserves
+   *  whichever unit the contract actually uses; display code prefers this
+   *  field when present rather than converting a stated month-count into
+   *  an approximate day figure (see lib/contract-notice-period.ts's
+   *  formatRenewalNoticePeriod). */
+  renewal_notice_months?: number | null
   customer_email?: string | null
   customer_org_number?: string | null
   /** Length of each successive renewal period in months. Often differs from the initial term. */
@@ -801,6 +944,24 @@ export interface ContractTerms {
   currency: string
   base_monthly_fee: number | null
   base_annual_fee: number | null
+  /** Step 17A, item 13 — the full committed-volume fee band table, when the
+   *  contract states one (e.g. "1,501–5,000 requests/month: EUR 2,000").
+   *  base_monthly_fee remains the single resolved/selected figure the
+   *  billing engine actually uses (unchanged, backward compatible) —
+   *  this preserves the CAUSAL CHAIN (which band, and the committed
+   *  volume that selected it) rather than flattening it into an
+   *  unexplained flat number. See lib/fixed-fee-band.ts's
+   *  resolveFixedFeeBand for the (pure, generic) band-selection logic —
+   *  the SAME tier-selection shape lib/tariff.ts already uses for usage
+   *  overage tiers, applied here to a committed FIXED fee instead. */
+  base_fee_bands?: FixedFeeBand[] | null
+  /** The contractually stated/signed committed volume that selects a band
+   *  in base_fee_bands above (e.g. 5,000). Distinct from included_units
+   *  (the free allowance before overage applies) — a contract can state
+   *  both a committed volume (which band) and a separate included
+   *  allowance; they coincide in the common case but are not the same
+   *  fact. Null when the contract has no band table at all. */
+  base_fee_committed_volume?: number | null
   /** base_monthly_fee/base_annual_fee are singular fields, not an array, so
    *  they need their own proration slot rather than a per-item one like
    *  AdditionalRecurringFee.proration. */
@@ -825,6 +986,18 @@ export interface ContractTerms {
   billing_metered_items?: BillingMeteredItem[]
   additional_recurring_fees: AdditionalRecurringFee[] | null
   one_time_fees: OneTimeFee[]
+  /** Step 17A hardening item 4 — a commercial MECHANISM the contract states
+   *  that is not itself a fee at all (nothing here is ever billed
+   *  directly) but instead governs HOW another fee's rate changes over
+   *  time (e.g. a rolling three-month-average repricing transition for a
+   *  performance-share rate). AdditionalRecurringFee's own
+   *  unresolved_kind/'unsupported_semantics' convention stays reserved for
+   *  fee mechanisms proper (see that field's doc) — a transition/repricing
+   *  RULE belongs here instead, in a container the line-items/TCV pipeline
+   *  never reads, so it structurally cannot become a line item or
+   *  contribute to any total by accident. Preserved with full source
+   *  provenance; no execution runtime exists for any entry here yet. */
+  unsupported_commercial_mechanisms?: UnsupportedCommercialMechanism[] | null
   field_sources: Record<string, string>
   extraction_confidence: 'high' | 'medium' | 'low'
   extraction_notes: string | null

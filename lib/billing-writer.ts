@@ -114,7 +114,30 @@ export function computeDiscountMultiplier(terms: ContractTerms, d: Date): number
   for (const disc of terms.discounts ?? []) {
     // Same local-midnight anchoring as the ramp/escalator dates above.
     const ds = disc.start_date ? new Date(disc.start_date + 'T00:00:00') : null
-    const de = disc.end_date   ? new Date(disc.end_date   + 'T00:00:00') : null
+    // Step 17A hardening (review pass 4), item 2 — a day-stated duration
+    // (duration_days, no explicit end_date — e.g. a "90-day pilot") implies
+    // a real end date the same way an explicit one would; previously this
+    // shape produced NO discount at all (de stayed null), silently billing
+    // the full undiscounted rate for the entire discount window. This is a
+    // strictly additive fix: it only ever fires when duration_days is set
+    // AND end_date is absent — a shape no discount had before Step 17A
+    // introduced duration_days, so no previously-correct discount's
+    // behavior changes.
+    //
+    // This is coarse, MONTH-cursor-granularity only (d is always a whole
+    // month's anniversary date, never a mid-month day) — it can only ever
+    // decide "this whole month is inside the window or not," i.e. exactly
+    // the "bill in full starting the next whole period"
+    // (PeriodProrationRule.prorate_partial_periods: false) reading. A
+    // day-level PARTIAL-month proration (prorate_partial_periods: true)
+    // needs finer granularity than a per-month cursor can express and is
+    // deliberately NOT attempted here — see
+    // lib/committed-fixed-fee-resolver.ts's capability-gap check, which
+    // keeps that specific confirmed choice unresolved rather than silently
+    // reusing this coarser number for it.
+    const de = disc.end_date
+      ? new Date(disc.end_date + 'T00:00:00')
+      : (ds && disc.duration_days ? new Date(ds.getTime() + (disc.duration_days - 1) * 86_400_000) : null)
     if (ds && de && d >= ds && d <= de && disc.discount_pct) {
       return 1 - disc.discount_pct / 100
     }

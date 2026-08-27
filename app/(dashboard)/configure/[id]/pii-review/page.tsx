@@ -10,6 +10,12 @@ type PIIEntity = {
   original_value: string
   token: string
   approved: boolean
+  // Hardening item 2 — populated server-side (app/api/jobs/[id]/pii/route.ts)
+  // from the shared-token entity-group, not client-computed. `aliases` is
+  // non-empty only on the canonical row of a group; `aliasOf` is set only
+  // on an alias row, naming its canonical's original_value.
+  aliases?: string[]
+  aliasOf?: string | null
 }
 
 type PIIOccurrence = {
@@ -20,26 +26,28 @@ type PIIOccurrence = {
 }
 
 const TYPE_LABEL: Record<string, string> = {
-  PERSON:     'Person',
-  ORG:        'Organisation',
-  EMAIL:      'Email',
-  PHONE:      'Phone',
-  IBAN:       'IBAN',
-  VAT_NUMBER: 'VAT No.',
-  ADDRESS:    'Address',
+  PERSON:                 'Person',
+  ORG:                    'Organisation',
+  EMAIL:                  'Email',
+  PHONE:                  'Phone',
+  IBAN:                   'IBAN',
+  VAT_NUMBER:             'VAT No.',
+  ADDRESS:                'Address',
+  ORGANIZATION_IDENTIFIER: 'Org. reg. no.',
 }
 
 const TYPE_COLOR: Record<string, string> = {
-  PERSON:     '#7C3AED',
-  ORG:        '#2563EB',
-  EMAIL:      '#D97706',
-  PHONE:      '#0891B2',
-  IBAN:       '#DC2626',
-  VAT_NUMBER: '#DC2626',
-  ADDRESS:    '#059669',
+  PERSON:                 '#7C3AED',
+  ORG:                    '#2563EB',
+  EMAIL:                  '#D97706',
+  PHONE:                  '#0891B2',
+  IBAN:                   '#DC2626',
+  VAT_NUMBER:             '#DC2626',
+  ADDRESS:                '#059669',
+  ORGANIZATION_IDENTIFIER: '#2563EB',
 }
 
-const ENTITY_TYPES = ['PERSON', 'ORG', 'EMAIL', 'PHONE', 'IBAN', 'VAT_NUMBER', 'ADDRESS']
+const ENTITY_TYPES = ['PERSON', 'ORG', 'EMAIL', 'PHONE', 'IBAN', 'VAT_NUMBER', 'ADDRESS', 'ORGANIZATION_IDENTIFIER']
 
 export default function PIIReviewPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
@@ -62,35 +70,41 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchEntities() }, [id])
 
+  // Hardening item 3 (review pass 5) — approve/reject/ignore now apply
+  // group-wide server-side (an alias and its canonical are the same
+  // organisation identity — see the PATCH route's resolveAliasGroupIds).
+  // A single-row optimistic local update would leave the OTHER group
+  // member's row showing stale state until the next full reload, which
+  // could read as "contradictory" even though the persisted decision is
+  // already correct — refetching the real, group-consistent state from
+  // the server after each action is simpler than duplicating the group-
+  // resolution logic client-side and can never drift from what's actually
+  // persisted.
   const approve = async (entityId: string) => {
-    setOccurrences(prev => prev.map(o =>
-      o.pii_entity.id === entityId
-        ? { ...o, pii_entity: { ...o.pii_entity, approved: true } }
-        : o
-    ))
     await fetch(`/api/jobs/${id}/pii`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'approve', entityId }),
     })
+    await fetchEntities()
   }
 
-  const reject = async (occurrenceId: string, entityId: string) => {
-    setOccurrences(prev => prev.filter(o => o.id !== occurrenceId))
+  const reject = async (entityId: string) => {
     await fetch(`/api/jobs/${id}/pii`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'reject', entityId }),
     })
+    await fetchEntities()
   }
 
-  const ignore = async (occurrenceId: string, entityId: string) => {
-    setOccurrences(prev => prev.filter(o => o.id !== occurrenceId))
+  const ignore = async (entityId: string) => {
     await fetch(`/api/jobs/${id}/pii`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'ignore', entityId }),
     })
+    await fetchEntities()
   }
 
   const addManual = async () => {
@@ -228,7 +242,17 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
                         {TYPE_LABEL[e.entity_type] ?? e.entity_type}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-sm text-ink font-mono">{e.original_value}</td>
+                    <td className="px-4 py-3 text-sm text-ink font-mono">
+                      {e.original_value}
+                      {e.aliasOf && (
+                        <div className="text-[11px] text-stone font-sans mt-0.5">Alias of {e.aliasOf} — approving here also covers it</div>
+                      )}
+                      {!!e.aliases?.length && (
+                        <div className="text-[11px] text-stone font-sans mt-0.5">
+                          Alias: {e.aliases.join(', ')} — approval here covers both
+                        </div>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-xs text-stone font-mono">{e.token}</td>
                     <td className="px-4 py-3 text-xs text-stone capitalize">{occ.detection_source?.replace('_', ' ')}</td>
                     <td className="px-4 py-3 text-xs text-stone">{occ.confidence_pct != null ? `${occ.confidence_pct}%` : '—'}</td>
@@ -247,14 +271,14 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
                           </button>
                         )}
                         <button
-                          onClick={() => reject(occ.id, e.id)}
+                          onClick={() => reject(e.id)}
                           className="text-xs text-stone hover:text-red-600 transition-colors"
                           title="Remove from this contract"
                         >
                           <i className="ti ti-x" style={{ fontSize: 13 }} />
                         </button>
                         <button
-                          onClick={() => ignore(occ.id, e.id)}
+                          onClick={() => ignore(e.id)}
                           className="text-xs text-stone hover:text-red-600 transition-colors"
                           title="Never flag this value again for your organisation"
                         >

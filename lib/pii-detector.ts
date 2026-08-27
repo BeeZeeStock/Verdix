@@ -10,6 +10,13 @@ export type PIIEntityType =
   | 'IBAN'
   | 'VAT_NUMBER'
   | 'ADDRESS'
+  // A company/organisation registration number (e.g. Swedish
+  // organisationsnummer) — an organisation identifier, never a personal
+  // identity number. Kept as its own type (never PERSON/SSN — this codebase
+  // has no personal-identity-number type at all) so an org's registration
+  // number is masked and reviewable on its own terms instead of either
+  // leaking unmasked or being misclassified as personal data.
+  | 'ORGANIZATION_IDENTIFIER'
 
 export interface PIIEntity {
   type:       PIIEntityType
@@ -17,6 +24,21 @@ export interface PIIEntity {
   token:      string       // replacement token e.g. [PERSON_1]
   confidence: number       // 0–100
   source:     'regex' | 'nlp' | 'context_pattern'
+  // Item 3 — an alias is a DIFFERENT literal string referring to the SAME
+  // organisation (e.g. "CoAccept AB" and its short name "Remembill" used
+  // interchangeably through the same contract). Set to the canonical org
+  // entity's own `value` when this entity was detected as an alias of it —
+  // never set on the canonical entity itself. Two distinct spans stay two
+  // distinct, independently traceable PIIEntity records (this module never
+  // silently merges text spans); the association is what lets a caller
+  // ensure approving/masking the canonical entity also accounts for its
+  // aliases, so anonymizing one can never leave the other visible.
+  aliasOf?: string
+  // Item 4 — for ORGANIZATION_IDENTIFIER entities, the canonical org value
+  // (if one was found nearby in the text) this identifier belongs to.
+  // Proximity-based and generic — never inferred from the identifier's own
+  // digits, which carry no organisation name.
+  associatedOrg?: string
 }
 
 export interface PIIDetectionResult {
@@ -90,6 +112,27 @@ function dedupKey(value: string): string {
     .toLowerCase()
 }
 
+// Item 2 — generic PERSON-candidate validity check, applied to NLP output.
+// compromise.js is an English-tuned tagger; fed non-English prose (Swedish/
+// Danish/Norwegian contracts) it can mis-tag an ordinary sentence fragment
+// as a person name — e.g. "mätt värdeviktat." ("measured, value-weighted")
+// from "...är utfallet, mätt värdeviktat." Never a hardcoded phrase check:
+// purely structural, on the SAME shape every genuine name candidate in
+// this file is already required to have (see NAME_SEG above) — every word
+// must itself look like a name token (capitalized, letters only), and the
+// candidate must not end in ordinary sentence-terminating punctuation (a
+// real name is never captured ending in two-or-more lowercase letters
+// then a period — that's prose, not a name/abbreviation).
+function isPlausiblePersonName(candidate: string): boolean {
+  const trimmed = candidate.trim()
+  if (!trimmed) return false
+  if (/[a-zà-ÿ]{2,}\.$/.test(trimmed)) return false
+  const core = trimmed.replace(/[.,;:!?]+$/, '')
+  const words = core.split(/\s+/).filter(Boolean)
+  if (words.length === 0) return false
+  return words.every(w => /^[A-ZÀ-Ö][a-zà-ÿ'-]*$/.test(w))
+}
+
 // Replace all known entities in `text` to prevent subsequent passes from
 // re-matching substrings of already-found values.
 function applyTokenMap(text: string, tokenMap: Map<string, string>): string {
@@ -110,15 +153,30 @@ export function detectPII(text: string): PIIDetectionResult {
   const seen:       Set<string>         = new Set()
   const nextToken = makeCounter()
 
-  function addEntity(type: PIIEntityType, value: string, confidence: number, source: PIIEntity['source']) {
+  function addEntity(
+    type: PIIEntityType, value: string, confidence: number, source: PIIEntity['source'],
+    aliasOf?: string, associatedOrg?: string,
+  ) {
     const trimmed = value.trim()
     if (!trimmed) return
     const key = dedupKey(trimmed)
     if (seen.has(key)) return
     seen.add(key)
 
+    // Hardening item 1 (second pass) — an alias gets its OWN token, never
+    // a shared/reused one. Overloading a single token across two literal
+    // source strings makes restoration ambiguous (which original text
+    // occupied a given occurrence?) and corrupts source_clause fidelity —
+    // a clause that actually said "Remembill" would restore back to
+    // "CoAccept AB" instead. Identity GROUPING (does this alias belong to
+    // that canonical org, for masking-completeness purposes) is tracked
+    // separately via aliasOf below and, once persisted, via
+    // pii_entities.alias_of_entity_id — never via token identity.
     const token = nextToken(type)
-    entities.push({ type, value: trimmed, token, confidence, source })
+    const entity: PIIEntity = { type, value: trimmed, token, confidence, source }
+    if (aliasOf) entity.aliasOf = aliasOf
+    if (associatedOrg) entity.associatedOrg = associatedOrg
+    entities.push(entity)
     tokenMap.set(trimmed, token)
     reverseMap.set(token, trimmed)
   }
@@ -157,11 +215,80 @@ export function detectPII(text: string): PIIDetectionResult {
   // ── Pass 5: Company names (title-cased words + legal suffix) ──────────────
   workingText = applyTokenMap(text, tokenMap)
   COMPANY_SUFFIX_RE.lastIndex = 0
+  interface OrgMatch { value: string; index: number; end: number }
+  const orgMatches: OrgMatch[] = []
   while ((m = COMPANY_SUFFIX_RE.exec(workingText)) !== null) {
     const candidate = m[0].trim()
     // Skip matches that contain document-title words (e.g. "MASTER SOFTWARE ... AB")
     if (TITLE_WORD_BLOCKLIST.test(candidate)) continue
-    addEntity('ORG', candidate, 95, 'regex')
+    orgMatches.push({ value: candidate, index: m.index, end: m.index + m[0].length })
+  }
+
+  // Item 2 — canonical-span dedup for overlapping organisation matches.
+  // The same real occurrence of an org name can be captured under two
+  // different literal spans when a preceding capitalized word gets swept
+  // into the name segment (e.g. a Swedish signature block "För CoAccept AB"
+  // vs. the plain "CoAccept AB" used earlier in the body) — these are
+  // DIFFERENT literal substrings, so naive dedup-by-exact-text treats them
+  // as two organisations. Purely structural: a longer match that ENDS WITH
+  // a shorter match at a whole-word boundary is a duplicate of it; keep
+  // only the shortest (canonical) span. No language-specific branch — this
+  // is a trailing-substring rule, not a "För" check.
+  function isCanonicalDuplicate(candidate: OrgMatch): boolean {
+    return orgMatches.some(other => {
+      if (other === candidate) return false
+      if (other.value.length >= candidate.value.length) return false
+      if (!candidate.value.endsWith(other.value)) return false
+      const prefix = candidate.value.slice(0, candidate.value.length - other.value.length)
+      return /\s$/.test(prefix)
+    })
+  }
+
+  for (const org of orgMatches) {
+    if (isCanonicalDuplicate(org)) continue
+    addEntity('ORG', org.value, 95, 'regex')
+
+    // Item 3 — an obvious alias immediately following the canonical name in
+    // parentheses, e.g. "CoAccept AB (Remembill)" — a single short,
+    // capitalized name, not a sentence. A purely structural, position-
+    // relative pattern (right after a just-detected org match), not tied to
+    // any specific company — kept as its OWN distinct, traceable entity
+    // (never silently merged into the canonical org's own span), linked via
+    // aliasOf so a caller can ensure masking one accounts for the other.
+    const afterMatch = workingText.slice(org.end, org.end + 60)
+    const aliasMatch = /^\s*\(\s*(?:hereinafter\s+)?"?([A-ZÀ-Ö][a-zA-ZÀ-ÿ]{1,40})"?\s*\)/.exec(afterMatch)
+    if (aliasMatch) addEntity('ORG', aliasMatch[1], 90, 'regex', org.value)
+  }
+
+  // ── Pass 5.5: Organisation registration numbers ───────────────────────────
+  // Nordic organisationsnummer shape: 6 digits, hyphen, 4 digits — the SAME
+  // shape a Swedish personnummer (personal identity number) uses
+  // (YYMMDD-XXXX), so this is genuinely ambiguous by digits alone.
+  // Disambiguated the same way Swedish practice does: a personnummer's 3rd
+  // and 4th digits are always a valid month (01-12, since they encode a
+  // real birth date); an organisationsnummer's never are (its group-number
+  // digit starts outside that range). When the digits COULD be a real date,
+  // this pass stays silent rather than guessing — never classified as
+  // ORGANIZATION_IDENTIFIER on ambiguous input, and never as PERSON/SSN
+  // either way (this codebase has no personal-identity-number type to
+  // misclassify into).
+  workingText = applyTokenMap(text, tokenMap)
+  const orgNumberRe = /\b(\d{2})(\d{2})(\d{2})-(\d{4})\b/g
+  while ((m = orgNumberRe.exec(workingText)) !== null) {
+    const monthDigits = Number(m[2])
+    if (monthDigits >= 1 && monthDigits <= 12) continue // plausibly a real date — stay silent
+    // Best-effort proximity association with the nearest preceding ORG
+    // entity in the original text — never inferred from the digits
+    // themselves.
+    const occurrenceIndex = text.indexOf(m[0])
+    const precedingText = occurrenceIndex >= 0 ? text.slice(0, occurrenceIndex) : ''
+    let associatedOrg: string | undefined
+    let bestIdx = -1
+    for (const orgEntity of entities.filter(e => e.type === 'ORG')) {
+      const idx = precedingText.lastIndexOf(orgEntity.value)
+      if (idx > bestIdx) { bestIdx = idx; associatedOrg = orgEntity.value }
+    }
+    addEntity('ORGANIZATION_IDENTIFIER', m[0], 90, 'regex', undefined, associatedOrg)
   }
 
   // ── Pass 6: Context-pattern person names ──────────────────────────────────
@@ -189,6 +316,7 @@ export function detectPII(text: string): PIIDetectionResult {
     if (
       trimmed.length > 3 &&
       !trimmed.startsWith('[') &&
+      isPlausiblePersonName(trimmed) &&
       !NLP_PERSON_BLOCKLIST.test(trimmed) &&
       !NLP_PERSON_BLOCKLIST.test(firstWord)
     ) addEntity('PERSON', name, 80, 'nlp')
@@ -213,6 +341,41 @@ export function detectPII(text: string): PIIDetectionResult {
   }
 
   return { entities, tokenMap, reverseMap }
+}
+
+// ── Alias-group resolution (for DB-persisted entities) ──────────────────────
+//
+// Hardening item 2 (review pass 3) — approving EITHER member of an
+// canonical/alias pair must mask BOTH, since they represent the same real-
+// world identity: "approve CoAccept AB -> masks CoAccept AB + Remembill"
+// AND, symmetrically, "approve Remembill -> masks Remembill + CoAccept AB".
+// One-hop only (alias.alias_of_entity_id always points directly at a
+// canonical, never at another alias — enforced by migration
+// 20260901000001_pii_entity_alias.sql's chain-prevention check and the
+// service layer, see detect-pii/route.ts), so the "group root" for any
+// entity is simply its own id (if canonical) or its alias_of_entity_id (if
+// an alias) — approving any member whose id maps to the same root, or
+// whose root itself is approved, masks the whole two-(or-more)-row group.
+// Each entity keeps its own token/original_value throughout — this
+// resolves GROUP MEMBERSHIP only, never token identity.
+
+export interface AliasGroupable {
+  id: string
+  alias_of_entity_id: string | null
+}
+
+export function aliasGroupRoot(entity: AliasGroupable): string {
+  return entity.alias_of_entity_id ?? entity.id
+}
+
+// Hardening item 3 (review pass 5) — the same group-root logic, applied to
+// find every id belonging to a given canonical's group (including the
+// canonical itself). Used both for masking (buildMaskFromDB) and for
+// REVIEW DECISIONS (app/api/jobs/[id]/pii/route.ts's PATCH handler) so
+// approve/reject/ignore can never persist a contradictory state across an
+// alias and its canonical — they represent the same organisation identity.
+export function resolveGroupMemberIds<T extends AliasGroupable>(canonicalId: string, entities: T[]): string[] {
+  return entities.filter(e => aliasGroupRoot(e) === canonicalId).map(e => e.id)
 }
 
 // ── Mask contract text ────────────────────────────────────────────────────────

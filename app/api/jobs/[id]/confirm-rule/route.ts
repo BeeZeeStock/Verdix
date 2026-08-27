@@ -31,6 +31,7 @@ import { buildOneTimeFeeConfirmation, OneTimeFeeCapabilityBlockedError, OneTimeF
 import { listMatchableOrganizationRules } from '@/lib/rulebook/organization-rules-service'
 import { resolveProductionOrganizationField, isOrganizationPolicyStale, organizationPolicyAvailableForUnresolvedReason, resolveAuthoritativeUnresolvedReason, type ProductionOrganizationResolution, type SeenOrganizationPolicy } from '@/lib/rulebook/organization-rulebook-production'
 import { resolveOrganizationPolicyRevert } from '@/lib/organization-policy-revert'
+import { resolveConfirmedDiscountComponents } from '@/lib/discount-component-targeting'
 
 // Several sequential writes (audit row, contract_terms, sometimes
 // contract_meter_mappings) — same defensive reasoning as propose-rule/
@@ -568,7 +569,13 @@ export async function POST(
     // Addressed by discount_rule_id, not array position, so a contract with
     // several independent discounts only has the targeted one touched — the
     // others keep whatever interpretation (or lack of one) they already had.
-    type Disc = { discount_rule_id?: string; interpretation?: DiscountInterpretation | null; [k: string]: unknown }
+    type Disc = {
+      discount_rule_id?: string
+      interpretation?: DiscountInterpretation | null
+      affected_components?: string[] | null
+      possibly_affected_components?: string[] | null
+      [k: string]: unknown
+    }
     const discounts = (termsRow.discounts ?? []) as Disc[]
     const isTiered = approvedInterpretation.discount_type === 'tiered_discount' || approvedInterpretation.discount_type === 'volume_discount'
     const interpretation: DiscountInterpretation = {
@@ -585,15 +592,35 @@ export async function POST(
     }
     const targetIndex = discounts.findIndex(d => d.discount_rule_id === discountId)
     const fallbackIndex = targetIndex === -1 && Number.isInteger(Number(discountId)) ? Number(discountId) : -1
+    const existingDiscount = targetIndex !== -1 ? discounts[targetIndex] : (fallbackIndex !== -1 ? discounts[fallbackIndex] : undefined)
+    // Step 17A hardening (review pass 7), item 2 — close the loop: a
+    // reviewer's CONFIRMED scope decision (whether it reached
+    // approvedInterpretation via /interpret-rule's natural-language
+    // translation or a direct structured-option selection) must update
+    // the TYPED targeting fields the committed-fixed-fee resolver actually
+    // reads (lib/committed-fixed-fee-resolver.ts), not only the
+    // human-readable interpretation/applies_to. When approvedInterpretation
+    // carries these fields (array, even empty — an explicit [] IS a
+    // resolved answer), they become the new authoritative typed state;
+    // when it doesn't (e.g. a legacy client that never sends them), the
+    // discount's existing typed fields are preserved as-is rather than
+    // being silently cleared to "no typed metadata" (which would reopen
+    // the fail-closed gap this confirmation was supposed to close).
+    const { affected_components: affectedComponents, possibly_affected_components: possiblyAffectedComponents } =
+      resolveConfirmedDiscountComponents(approvedInterpretation, existingDiscount)
     let newDiscounts: Disc[]
     if (targetIndex !== -1) {
-      newDiscounts = discounts.map((d, i) => (i === targetIndex ? { ...d, interpretation } : d))
+      newDiscounts = discounts.map((d, i) => (i === targetIndex ? { ...d, interpretation, affected_components: affectedComponents, possibly_affected_components: possiblyAffectedComponents } : d))
     } else if (fallbackIndex !== -1 && discounts[fallbackIndex]) {
       // Legacy discount row addressed positionally, predates discount_rule_id
       // — backfill the id now so future confirmations address it directly.
-      newDiscounts = discounts.map((d, i) => (i === fallbackIndex ? { ...d, discount_rule_id: d.discount_rule_id ?? discountId, interpretation } : d))
+      newDiscounts = discounts.map((d, i) => (i === fallbackIndex ? { ...d, discount_rule_id: d.discount_rule_id ?? discountId, interpretation, affected_components: affectedComponents, possibly_affected_components: possiblyAffectedComponents } : d))
     } else if (discounts.length === 0) {
-      newDiscounts = [{ discount_rule_id: discountId, discount_pct: null, discount_amount: null, discount_type: 'other', start_date: null, end_date: null, duration_months: null, applies_to: interpretation.applies_to ?? '', description: '', interpretation }]
+      newDiscounts = [{
+        discount_rule_id: discountId, discount_pct: null, discount_amount: null, discount_type: 'other',
+        start_date: null, end_date: null, duration_months: null, applies_to: interpretation.applies_to ?? '', description: '',
+        interpretation, affected_components: affectedComponents, possibly_affected_components: possiblyAffectedComponents,
+      }]
     } else {
       newDiscounts = discounts
       propagation['contract_terms'] = 'failed'

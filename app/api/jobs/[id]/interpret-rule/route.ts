@@ -134,7 +134,7 @@ export async function POST(
     currency: string | null
     overage_tiers: TierRow[] | null
     escalators: Array<{ escalator_pct: number | null; cap_pct: number | null; effective_date: string | null; applies_from_year: number | null; description: string }> | null
-    discounts: Array<{ discount_rule_id?: string; discount_pct: number | null; discount_amount: number | null; discount_type: string | null; applies_to: string | null; description: string | null }> | null
+    discounts: Array<{ discount_rule_id?: string; discount_pct: number | null; discount_amount: number | null; discount_type: string | null; applies_to: string | null; description: string | null; affected_components?: string[] | null; possibly_affected_components?: string[] | null }> | null
     service_credits: Array<{ credit_rule_id?: string; credit_type: string | null; description: string | null; source_clause: string | null; stated_pct: number | null; stated_amount: number | null }> | null
     contract_start_date: string | null
     contract_end_date: string | null
@@ -300,6 +300,8 @@ export async function POST(
       existingAmount: discount.discount_amount ?? null,
       extractedType: discount.discount_type ?? null,
       appliesTo: discount.applies_to ?? null,
+      affectedComponents: discount.affected_components ?? null,
+      possiblyAffectedComponents: discount.possibly_affected_components ?? null,
     }
     prompt = buildDiscountPrompt(context, reviewerInput, selectedOption)
   } else if (ruleType === 'tier_calculation') {

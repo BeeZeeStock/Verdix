@@ -5,8 +5,7 @@ import { requireOrg } from '@/lib/org'
 import { extractContractTerms } from '@/lib/contract-extractor'
 import { resolveStorageUrl } from '@/lib/storage'
 import { maskText, restoreTokensInObject } from '@/lib/pii-detector'
-import { computeMonthlyBaseRate, computeEscalatorMultiplier, computeDiscountMultiplier, monthCursor } from '@/lib/billing-writer'
-import { billingInterval } from '@/lib/stripe-meter'
+import { buildLineItems } from '@/lib/line-items'
 import { extractDocumentText, isAIInfraError, AI_INFRA_ERROR_PREFIX } from '@/lib/ai-client'
 import { preserveStableRuleIds, preserveOneTimeFeeIdentity } from '@/lib/rule-id-stability'
 import type { Discount, ServiceCredit, OneTimeFee } from '@/lib/types'
@@ -210,204 +209,81 @@ async function runExecutePipeline(jobId: string, orgId: string, contractUrl: str
   }).eq('id', jobId)
 }
 
-function buildLineItems(terms: import('@/lib/types').ContractTerms, currency: string) {
-  const items = []
-  const cur = terms.currency || currency
-  const src = terms.field_sources ?? {}
-  const conf = terms.extraction_confidence === 'high' ? 0.97 : terms.extraction_confidence === 'medium' ? 0.82 : 0.62
-
-  // Recurring base fee — one line item per distinct rate block, on the
-  // contract's *actual* billing cadence (monthly/quarterly/...), not always
-  // bucketed by calendar year regardless of whether the rate changed within
-  // it. Rate logic (ramp schedule → year pricing → flat fee, with compound
-  // escalation and any dated discount) mirrors computeBillingSchedule
-  // (lib/billing-writer.ts) — the same function real billing (Stripe/
-  // Remembill) uses to generate actual invoices — so this display can never
-  // disagree with what's really charged (previously it ignored discounts
-  // entirely, so a contract with an intro discount showed a higher Base TCV
-  // than what actually got billed). Consecutive periods at the same rate
-  // collapse into one row; a new row starts wherever the rate actually
-  // changes (an escalator/ramp step, or a discount window's edge), so a
-  // flat-rate contract shows a single "12 × monthly" row instead of one
-  // "Year 1" row per calendar year. quantity stays the number of cycles and
-  // unit_price the per-cycle rate (not pre-multiplied) — several billing
-  // connectors (e.g. Chargebee) read these fields as literal per-cycle
-  // subscription quantities, so only total_amount should ever hold the
-  // full-term figure. Falls back to a single flat item when contract dates
-  // are missing and a schedule can't be computed.
-  const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date + 'T00:00:00') : null
-  let termMonths = terms.contract_term_months ?? 0
-  if (!termMonths && contractStart && terms.contract_end_date) {
-    const ce = new Date(terms.contract_end_date + 'T00:00:00')
-    termMonths = (ce.getFullYear() - contractStart.getFullYear()) * 12 + (ce.getMonth() - contractStart.getMonth()) + 1
-  }
-  const hasRecurringBase = !!(terms.base_monthly_fee || terms.base_annual_fee || terms.ramp_schedule?.length || terms.year_pricing)
-
-  if (hasRecurringBase && contractStart && termMonths > 0) {
-    const { interval, intervalCount } = billingInterval(terms.billing_frequency)
-    const monthsPerPeriod = interval === 'year' ? 12 * intervalCount : intervalCount
-    const freq = terms.billing_frequency ?? 'monthly'
-
-    const periodAmounts: number[] = []
-    let monthsUsed = 0
-    while (monthsUsed < termMonths) {
-      const monthsInThisPeriod = Math.min(monthsPerPeriod, termMonths - monthsUsed)
-      let amount = 0
-      for (let mi = 0; mi < monthsInThisPeriod; mi++) {
-        const globalMonthIdx = monthsUsed + mi
-        const d = monthCursor(contractStart, globalMonthIdx)
-        amount += computeMonthlyBaseRate(terms, globalMonthIdx, d) * computeEscalatorMultiplier(terms, d) * computeDiscountMultiplier(terms, d)
-      }
-      periodAmounts.push(amount)
-      monthsUsed += monthsInThisPeriod
-    }
-
-    let i = 0
-    while (i < periodAmounts.length) {
-      const rate = periodAmounts[i]
-      let j = i
-      while (j < periodAmounts.length && Math.abs(periodAmounts[j] - rate) < 0.005) j++
-      const periodCount = j - i
-      if (rate > 0) {
-        const rounded = Math.round(rate * 100) / 100
-        items.push({
-          product_name: periodCount === periodAmounts.length ? 'Recurring base fee' : `Recurring base fee (periods ${i + 1}–${j})`,
-          quantity: periodCount,
-          unit_price: rounded,
-          billing_period: freq,
-          total_amount: Math.round(rate * periodCount * 100) / 100,
-          currency: cur,
-          confidence_score: conf,
-          source_section: src.base_monthly_fee ?? src.year_pricing ?? src.ramp_schedule ?? null,
-        })
-      }
-      i = j
-    }
-  } else if (terms.base_monthly_fee) {
-    items.push({
-      product_name: 'Base subscription',
-      quantity: 1,
-      unit_price: terms.base_monthly_fee,
-      billing_period: 'monthly',
-      total_amount: terms.base_monthly_fee,
-      currency: cur,
-      confidence_score: conf,
-      source_section: src.base_monthly_fee ?? null,
-    })
-  }
-
-  // Additional recurring fees (e.g. support tier, add-on modules billed
-  // separately) — represented the same way as the base fee above: quantity
-  // is the number of billing cycles over the term, unit_price the flat
-  // per-cycle amount (not escalated — matches the existing display
-  // convention), and total_amount their full contribution to TCV.
-  for (const fee of terms.additional_recurring_fees ?? []) {
-    if (!fee.amount) continue
-    const feeFreq = terms.billing_frequency ?? 'monthly'
-    const { interval, intervalCount } = billingInterval(feeFreq)
-    const feeMonthsPerPeriod = interval === 'year' ? 12 * intervalCount : intervalCount
-    const periodCount = termMonths > 0 && feeMonthsPerPeriod > 0 ? Math.ceil(termMonths / feeMonthsPerPeriod) : 1
-    items.push({
-      product_name: fee.fee_label,
-      quantity: periodCount,
-      unit_price: fee.amount,
-      billing_period: feeFreq,
-      total_amount: Math.round(fee.amount * periodCount * 100) / 100,
-      currency: cur,
-      confidence_score: conf,
-      source_section: src.additional_recurring_fees ?? src.base_monthly_fee ?? null,
-    })
-  }
-
-  for (const tier of terms.overage_tiers ?? []) {
-    items.push({
-      // tier_label already fully describes the tier per the extraction
-      // prompt's own rules (e.g. "SMS reminders 501–2,000" or "... —
-      // included in base fee") — appending "— overage" here duplicated that
-      // description instead of adding information ("... — overage —
-      // overage", "... — included in base fee — overage").
-      product_name: tier.tier_label,
-      quantity: 0,
-      unit_price: tier.rate_per_unit,
-      // A tier can be measured/charged on its own cadence, distinct from the
-      // contract's overall billing_frequency (e.g. a quarterly-measured
-      // metric inside a monthly-invoiced contract) — show that cadence, not
-      // a hardcoded 'monthly' that silently disagreed with the contract text.
-      billing_period: tier.measurement_period ?? terms.billing_frequency ?? 'monthly',
-      total_amount: 0,
-      currency: cur,
-      // Previously hardcoded to 0.88 regardless of how explicitly the
-      // contract stated the rate — an unambiguous per-unit price (e.g.
-      // "SEK 195 per chargeback") was flagged "Needs confirmation" purely
-      // because 0.88 < the 0.95 review threshold. Use the same
-      // extraction-confidence signal as every other line item kind above.
-      confidence_score: conf,
-      source_section: src.overage_tiers ?? null,
-    })
-  }
-
-  for (const fee of (terms.one_time_fees ?? []) as Array<typeof terms.one_time_fees[0] & { manual_trigger?: boolean; rate_per_unit?: number | null; metric_name?: string | null }>) {
-    const isParked = fee.manual_trigger && fee.amount === 0
-    items.push({
-      product_name: fee.fee_label,
-      quantity: isParked ? 0 : 1,
-      unit_price: isParked ? (fee.rate_per_unit ?? 0) : fee.amount,
-      billing_period: 'one_time',
-      total_amount: fee.amount,
-      currency: cur,
-      confidence_score: conf,
-      source_section: src.one_time_fees ?? null,
-    })
-  }
-
-  for (const escalator of terms.escalators ?? []) {
-    items.push({
-      product_name: `Price escalator (${escalator.escalator_pct ?? ''}% ${escalator.escalator_type})`,
-      quantity: 1,
-      unit_price: 0,
-      billing_period: 'annual',
-      total_amount: 0,
-      currency: cur,
-      confidence_score: conf > 0.9 ? 0.94 : 0.72,
-      source_section: src.escalators ?? null,
-    })
-  }
-
-  return items
-}
-
 // Build tokenMap/reverseMap from approved PII entities in DB.
 // Loads org-level approved library + any entity linked to this job (including manual additions).
 // Falls back to auto-detecting if no entities exist yet.
+//
+// Hardening item 1 (second pass) — a canonical organisation and its
+// alias(es) are DISTINCT entities with DISTINCT tokens, linked via
+// pii_entities.alias_of_entity_id (see migration
+// 20260901000001_pii_entity_alias.sql), never a shared token. Each
+// entity's OWN token is what goes into tokenMap, and reverseMap is a
+// plain, unambiguous token -> original_value mapping per entity, so
+// restoration always recovers the EXACT original source string (e.g. a
+// clause that actually said "Remembill" restores to "Remembill", never to
+// "CoAccept AB").
+//
+// Hardening item 2 (review pass 3) — approval is GROUP-CONSISTENT in both
+// directions: approving the canonical masks its alias(es) (as before), and
+// approving an alias directly ALSO masks its canonical, because both rows
+// represent the same real-world organisation identity — never leave one
+// exposed because the reviewer happened to approve the other one. Uses
+// lib/pii-detector.ts's aliasGroupRoot (one-hop grouping) so this is a
+// single, symmetric containment check rather than two separate directional
+// branches.
+//
+// NOTE — deployment ordering: alias_of_entity_id does not exist until
+// migration 20260901000001_pii_entity_alias.sql is applied (deliberately
+// left unapplied this session); this function will fail against the
+// current live schema until it is.
 async function buildMaskFromDB(jobId: string, orgId: string, contractText: string) {
   // Entities linked to this specific job (approved or manually added)
   const { data: jobEntities } = await supabaseServer
     .from('job_pii_occurrences')
-    .select(`pii_entity:pii_entities(id, original_value, token, approved)`)
+    .select(`pii_entity:pii_entities(id, original_value, token, approved, alias_of_entity_id)`)
     .eq('job_id', jobId)
 
   // Org-level approved entities not already in this job
   const { data: orgEntities } = await supabaseServer
     .from('pii_entities')
-    .select('id, original_value, token, approved')
+    .select('id, original_value, token, approved, alias_of_entity_id')
     .eq('org_id', orgId)
     .eq('approved', true)
+
+  type EntityRow = { id: string; original_value: string; token: string; approved: boolean; alias_of_entity_id: string | null }
+  const approvedIds = new Set<string>()
+  for (const row of jobEntities ?? []) {
+    // Supabase returns foreign-key joins as an object (not array) when the FK is many-to-one
+    const e = (row.pii_entity as unknown) as EntityRow | null
+    if (e?.approved) approvedIds.add(e.id)
+  }
+  for (const e of (orgEntities as EntityRow[] | null) ?? []) approvedIds.add(e.id)
 
   const tokenMap   = new Map<string, string>()
   const reverseMap = new Map<string, string>()
 
-  // Job-level first (includes manual adds, rejected entities excluded at review step)
-  for (const row of jobEntities ?? []) {
-    // Supabase returns foreign-key joins as an object (not array) when the FK is many-to-one
-    const e = (row.pii_entity as unknown) as { original_value: string; token: string; approved: boolean } | null
-    if (!e || !e.approved) continue
-    tokenMap.set(e.original_value, e.token)
-    reverseMap.set(e.token, e.original_value)
-  }
+  if (approvedIds.size > 0) {
+    const { aliasGroupRoot } = await import('@/lib/pii-detector')
+    // Full org entity set (not filtered by approved) so the whole alias
+    // group gets included in the mask even when only one member — canonical
+    // OR alias — was independently approved.
+    const { data: allOrgEntities } = await supabaseServer
+      .from('pii_entities')
+      .select('id, original_value, token, alias_of_entity_id')
+      .eq('org_id', orgId)
 
-  // Org-level approved (add any not already covered)
-  for (const e of orgEntities ?? []) {
-    if (!tokenMap.has(e.original_value)) {
+    const entities = (allOrgEntities as Pick<EntityRow, 'id' | 'original_value' | 'token' | 'alias_of_entity_id'>[] | null) ?? []
+    const rootById = new Map(entities.map(e => [e.id, aliasGroupRoot(e)]))
+    const approvedRoots = new Set<string>()
+    for (const id of approvedIds) {
+      const root = rootById.get(id) ?? id // approved entity outside this select (shouldn't happen, same org) still counts as its own root
+      approvedRoots.add(root)
+    }
+
+    for (const e of entities) {
+      if (!approvedRoots.has(aliasGroupRoot(e))) continue
+      // Each entity keeps its own token/original_value pair — no grouping
+      // at the token level, so restoration is always exact.
       tokenMap.set(e.original_value, e.token)
       reverseMap.set(e.token, e.original_value)
     }
