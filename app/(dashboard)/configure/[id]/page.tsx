@@ -14,7 +14,7 @@ import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, computeCommittedFixedFees, computeConditionalFixedFees, contractLifecycleStatus, type BaseTcvItem } from '@/lib/contract-tcv-calc'
 import { resolveCommittedFixedFeeValue, type CommittedFixedFeeResolution } from '@/lib/committed-fixed-fee-resolver'
 import { ruleCadenceLabel, cadenceNoun, contractMonthLabel, volumeTierCopy } from '@/lib/cadence-labels'
-import { optionsForRuleType, optionsForEdit, deriveSelectedOption, baseFeeHasExpiringWaiver, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal, type DiscountScopeContext } from '@/lib/rule-interpretation'
+import { optionsForRuleType, optionsForEdit, deriveSelectedOption, baseFeeHasExpiringWaiver, discountHasUnresolvedComponentScope, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal, type DiscountScopeContext } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, isProvenanceResolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { isMonetaryBasisRecognitionApplicable, isPaidBasisFinalizationApplicable } from '@/lib/paid-basis-finalization'
@@ -6976,11 +6976,22 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           </div>
                         )
                       }
+                      // Step 17B0.1, item 3 — this used to always say "can't
+                      // tell a staircase from a volume schedule," even for a
+                      // flat, non-tiered waiver whose actual open question is
+                      // which component(s) it covers, not tier mechanics.
+                      // The message must derive from the discount's real
+                      // shape, same signal RuleInterpretationCard itself uses
+                      // to choose between DISCOUNT_OPTIONS and the scope
+                      // options (see getComponentScopeOptions).
+                      const scopeUnresolved = discountHasUnresolvedComponentScope(d)
                       return (
                         <div key={discountId} className="flex items-center justify-between gap-4">
                           <p className="text-[11px] text-amber-700 min-w-0">
                             <i className="ti ti-alert-triangle mr-1" style={{ fontSize: 11 }} />
-                            <span className="font-medium">{label}</span> — structure not yet interpreted; &quot;applies to&quot; alone can&apos;t tell a staircase from a volume schedule.
+                            <span className="font-medium">{label}</span> — {scopeUnresolved
+                              ? <>which component(s) this waiver covers has not been confirmed.</>
+                              : <>structure not yet interpreted; &quot;applies to&quot; alone can&apos;t tell a staircase from a volume schedule.</>}
                           </p>
                           <button onClick={() => setEditingRule(editKey)} className="text-[11px] font-semibold px-3 py-1.5 rounded-lg flex-shrink-0" style={{ background: '#1A3D2B', color: 'white' }}>
                             Resolve interpretation

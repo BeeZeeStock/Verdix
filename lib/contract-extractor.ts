@@ -35,10 +35,13 @@ Rules:
     - unresolved_kind: set to "unsupported_semantics" only when THIS FEE's own pricing MECHANISM has no way to be expressed by amount/metric_name/rate_per_unit/derived_metric at all — e.g. a rate that varies by a percentage SCHEDULE (e.g. "0.20% rising to 4.50% depending on payment rate, rounded to the nearest 5-point step"). In this case set amount to 0, still populate fee_label/description/source_clause/required_operational_inputs as completely as you can from the contract text (never drop the clause just because you cannot structure its mechanism), and leave metric_name/rate_per_unit null. Do NOT set unresolved_kind merely because a fee is an ordinary single per-unit rate — that case (metric_name + rate_per_unit populated) is a fully supported shape, just not yet invoiceable without usage data. A rule that RECALCULATES a fee/rate/band over time based on a rolling average of some OTHER operational quantity (e.g. "if the three-month average of issued requests exceeds the agreed volume, the fee band migrates to the next level", or "the rate transitions to a rolling three-month average after the initial period") is NOT itself a fee — it never gets its own additional_recurring_fees entry; extract it into unsupported_commercial_mechanisms instead (below). Read the clause carefully for WHICH quantity is actually being averaged — a volume-migration rule averages a request/event COUNT (required_operational_inputs: the count metric, e.g. ["issued_payment_request_count"]), which is a completely different dependency from a rate-migration rule that averages a VALUE RATIO (e.g. paid/total invoice value). Never assume a rolling-average mechanism shares inputs with a nearby percentage-rate fee just because both mention "rolling"/"three-month average" — each must list only the quantity its OWN clause actually says is averaged.
     - source_clause: the verbatim (or lightly paraphrased) sentence(s) stating this fee's own rate/formula — same completeness discipline as service_credits' SOURCE_CLAUSE COMPLETENESS RULE below: include the trigger, the rate/percentage/schedule, and any stated calculation basis, never truncated to just the headline number.
 - unsupported_commercial_mechanisms: array of commercial MECHANISMS the contract states that are not themselves billable fees — they instead govern HOW another fee's rate or basis changes over time (e.g. a rolling multi-month average repricing transition, a tier-migration rule). Each entry: { "kind": "<short snake_case slug you choose to describe this mechanism, e.g. rolling_volume_pricing_transition>", "description": "<what it does, in plain terms>", "source_clause": "<verbatim or paraphrased, or null>", "required_operational_inputs": <array of strings or null>, "execution_status": "unsupported" }. Use this instead of inventing a fake additional_recurring_fees entry for a rule that has no fee amount/rate of its own. Leave as [] when the contract has no such mechanism.
+  DO NOT DROP THIS — A COMMON MISS: a contract that has a percentage-schedule/derived-rate fee (captured via additional_recurring_fees[].unresolved_kind: "unsupported_semantics", per the rule above) frequently ALSO has a SEPARATE rolling-average volume/band-migration clause elsewhere (e.g. "if the rolling three-month average of issued requests exceeds the agreed volume, the fee moves to the next band from the next contract period"). These are TWO INDEPENDENT things extraction must capture SEPARATELY — one goes in additional_recurring_fees (a fee whose rate mechanism is unsupported), the other goes HERE in unsupported_commercial_mechanisms (a mechanism with no fee/rate of its own). Finding one must never stop you looking for the other; a contract can and often does have both. Do not merge them into a single entry, and do not skip this one just because you already logged the other. Read the whole document for BOTH before finalizing this array — a mid-document or end-of-section clause about volume-based band migration is exactly as real as one appearing near the main fee table.
+  WHICH QUANTITY IS AVERAGED — read carefully, never assume: a volume/band-migration rule (moves to a different pricing band based on a rolling average of a COUNT, e.g. issued requests) has required_operational_inputs naming only that count metric (e.g. ["issued_payment_request_count"]) — a completely different dependency from a nearby derived-rate fee that averages a VALUE RATIO (e.g. paid ÷ total invoice value). Never assume the two share inputs merely because both clauses use words like "rolling" or "three-month average" — each mechanism's required_operational_inputs must reflect only what its OWN clause actually says is being averaged.
   Set "billing_frequency" on the entry when this fee bills at a different cadence than the main billing_frequency (e.g. main contract bills quarterly but this fee bills monthly). Example: if a contract has "Base Access: €4,500/mo" and "Premium Support: €1,200/mo", then base_monthly_fee=4500 and additional_recurring_fees=[{"fee_label":"Dedicated Premium Support - 2hr SLA Window","amount":1200,"description":"...","billing_frequency":null}]. Leave as [] when there is only one recurring fee.
 - base_fee_proration (on base_monthly_fee/base_annual_fee) and each additional_recurring_fees[].proration: populate for EITHER of two genuinely separate triggers, never conflated:
   (a) the contract's start date falls MID-CYCLE relative to a fee that resets on fixed CALENDAR boundaries (e.g. contract starts 17 Aug but the fee is described as billing "each calendar month" or "each calendar quarter", not simply anchored to the contract's own start-date anniversary — most contracts use the latter, which has no partial-period question at all from THIS trigger).
   (b) a discount/waiver on this same fee (see discounts[]) has its OWN stated expiry (e.g. a day-stated pilot/introductory period) that does not land on a clean boundary of the fee's normal billing cadence — the fee resumes mid-cycle relative to its OWN normal periods, a partial-period question exactly as real as trigger (a), just created by the waiver's expiry rather than by calendar/contract-start misalignment. reset_anchor still describes the fee's own normal cadence anchor truthfully (e.g. "contract_start" if that's genuinely how the fee's periods run) — it is NOT restricted to "calendar" just because this trigger is in play; only prorate_partial_periods/requires_confirmation describe the actual open question.
+    TRIGGER (b) IS A COMMON MISS — CHECK IT EXPLICITLY, DO NOT SKIP: whenever a discount/waiver targets this fee (affected_components or possibly_affected_components includes the fee's component, e.g. "base_recurring_fee") AND states a day-count duration (duration_days), you MUST actually add contract_start_date + duration_days and check whether that landing date is the LAST day of a calendar month. It almost never is, because calendar months are not 30/60/90/etc. days long — e.g. a 90-day pilot starting 2026-10-01 expires 2026-12-30 (31 days in October + 30 in November + 29 of December = 90), which is TWO DAYS SHORT of the next full month boundary (2027-01-01), even though 90 days "sounds like" 3 clean months. Do not skip this arithmetic just because the duration is a round number of days (90, 60, 30) or looks like it should equal whole months — verify it. If the landing date is not a clean month-end, base_fee_proration MUST be populated with requires_confirmation: true (per the schema above) — this holds regardless of whether trigger (a) also applies, and regardless of what day of the month the contract itself starts on.
   When either applies: { "reset_anchor": "contract_start"|"calendar", "prorate_partial_periods": true|false|"unclear", "requires_confirmation": <boolean>, "confirmation_reason": "<string or null>", "source_clause": "<verbatim or paraphrased, or null>" }. Whether a partial period bills in full or prorated is very rarely stated explicitly — unless the contract text actually says so, set prorate_partial_periods to "unclear" and requires_confirmation to true. NEVER default to full-charge or to proration as a "reasonable assumption" — this mirrors the exact discipline already required for a metric minimum commitment's own prorate_partial_periods field, generalized to the base/recurring fees themselves. Leave proration null/omitted entirely when NEITHER trigger applies (the common case: contract-start-anchored billing with no mid-cycle-expiring waiver on this fee).
   CRITICAL RULE for "base price × users" language: SaaS contracts commonly state additional user fees separately (e.g. "base platform fee: €456,987/yr + additional users at €2,500/user/yr"). In this pattern, base_monthly_fee or base_annual_fee = the platform fee alone (€456,987), and the user fees go into overage_tiers or a separate line. NEVER multiply the platform fee by the user count — that would be double-counting. The only time you multiply a rate by users is when the contract EXPLICITLY states a per-seat price (e.g. "€500/user/month for 10 users = €5,000/month total") where the stated per-seat figure is small and clearly a unit rate. A base annual platform fee in the hundreds of thousands is never a per-seat rate.
 - base_annual_fee: annual fee if billed annually
@@ -55,7 +58,7 @@ Rules:
 - billing_contact: billing contact email or name from the contract
 - vendor_address: full mailing address of the vendor/supplier
 - payment_terms_text: exact payment terms string e.g. "Net 30 days from invoice date"
-- renewal_notice_days / renewal_notice_months: the notice period required to prevent auto-renewal, PRESERVED IN THE UNIT THE CONTRACT ACTUALLY STATES — set renewal_notice_days when the contract states a day count, or renewal_notice_months when it states a month count (e.g. "three (3) months' written notice" → renewal_notice_months: 3, renewal_notice_days: null). NEVER convert one unit into the other (a stated month count must not become an approximate day count, or vice versa) — set only the field matching the contract's own words, leave the other null.
+- renewal_notice_days / renewal_notice_months: the notice period required to prevent auto-renewal, PRESERVED IN THE UNIT THE CONTRACT ACTUALLY STATES — set renewal_notice_days when the contract states a day count, or renewal_notice_months when it states a month count (e.g. "three (3) months' written notice" → renewal_notice_months: 3, renewal_notice_days: null). NEVER convert one unit into the other (a stated month count must not become an approximate day count, or vice versa) — set only the field matching the contract's own words, leave the other null. This field is easy to miss when the renewal/notice clause is a short, standalone sentence far from the main fee terms (often near the auto-renewal/term clause, not the pricing section) — actively look for it rather than only noting it if it happens to appear near other fields you're extracting. Swedish contracts commonly state this as "uppsägning" with a month or day count, e.g. "avtalet förlängs automatiskt om det inte sägs upp med tre (3) månaders varsel" → renewal_notice_months: 3.
 - renewal_term_months: the LENGTH of each successive renewal period in months. This is OFTEN DIFFERENT from the initial contract term. Example: a 12-month contract that "automatically renews for successive six-month periods" → contract_term_months = 12, renewal_term_months = 6. Set to null only when the renewal period is not specified or explicitly equals the initial term.
 - escalators: automatic price increases (CPI clauses, fixed % increases, etc.)
   CPI ESCALATOR RULE: For CPI-linked, inflation-linked, or index-linked price adjustments where the exact future rate is unknown at signing: set escalator_pct = null (the actual CPI rate cannot be known at contract time), set escalator_type = 'CPI_cap' when there is a maximum cap, set cap_pct = the stated maximum percentage cap, and set description = the complete escalation formula in plain English (e.g. 'CPI change + 2 percentage points, maximum 6% per 12-month period'). NEVER set escalator_pct = 0 for CPI clauses — a 0% rate means no price change, which misrepresents the contract. Use null to indicate the rate is variable and unknown at signing.
@@ -64,8 +67,9 @@ Rules:
   DISCRETION RULE: If the contract uses discretionary language ("may be increased", "is entitled to increase") rather than mandatory language ("shall be increased", "will increase"), include that discretion in description (e.g. "...the vendor MAY increase the fee, subject to..."). Do not drop the word "may"/"shall" when paraphrasing — a human reviewer needs to see whether the increase is automatic or requires a separate decision.
 - discounts: introductory or volume discounts with explicit start/end dates.
   DAY-STATED DURATION RULE: when the contract states the discount/waiver's duration in DAYS (e.g. "a 90-day pilot period with no platform fee") rather than a whole month count, set duration_days to that number (90) and leave duration_months null — do NOT invent a month-aligned end_date by guessing how many whole billing months the day count covers (a 90-day window from an arbitrary contract-start date essentially never lands on a clean month boundary, and the difference materially changes what gets billed). Only set start_date/end_date when the contract itself states or clearly implies exact calendar dates, or when duration_months (a genuine month count) is what's stated.
-  HYBRID-FEE SCOPE RULE: when a discount/waiver names only ONE component of a fee that has multiple components (e.g. "no platform fee during the pilot" where the platform charge is itself a hybrid of a fixed component AND a separate performance/variable component), applies_to must name exactly the component the clause's own words cover (e.g. "fixed platform fee") — never expand it to "the entire platform charge" unless the contract text says so explicitly. Whether the waiver also covers the OTHER component(s) is a genuine, separate question the clause may leave unanswered — do not resolve it yourself; that ambiguity is exactly what the review/interpretation step (not extraction) exists to surface as Decision Required.
-  TYPED COMPONENT TARGETING RULE: applies_to (above) is free text for human display only — calculation code never reads it. Alongside it, also populate affected_components: <array of short snake_case component-key strings, e.g. ["base_recurring_fee"]> naming every component the discount's stated rate/amount DEFINITELY covers regardless of how any remaining scope ambiguity resolves (use "base_recurring_fee" for the primary fixed/base/platform recurring fee; "performance_fee", "usage_fee", "overage_fee" or another short, clear key matching how the contract itself names a distinct component). When the HYBRID-FEE SCOPE RULE above identifies a genuinely open "does this also cover component X" question, add X to possibly_affected_components instead (never to affected_components, and never invent a resolution). A component belongs to exactly one of the two arrays, never both. Leave both null when the discount is a simple single-component discount with nothing else to distinguish.
+  HYBRID-FEE SCOPE RULE: when a discount/waiver names only ONE component of a fee that has multiple components (e.g. "no platform fee during the pilot" where the platform charge is itself a hybrid of a fixed component AND a separate performance/variable component BILLED TOGETHER UNDER THAT SAME NAMED CHARGE), applies_to must name exactly the component the clause's own words cover (e.g. "fixed platform fee") — never expand it to "the entire platform charge" unless the contract text says so explicitly. Whether the waiver also covers the OTHER component(s) OF THAT SAME HYBRID CHARGE is a genuine, separate question the clause may leave unanswered — do not resolve it yourself; that ambiguity is exactly what the review/interpretation step (not extraction) exists to surface as Decision Required.
+    SCOPE BOUNDARY — do not over-generalize: this ambiguity is strictly limited to components that are part of the SAME hybrid charge the clause is talking about (e.g. a "platform fee" that combines a fixed component and a performance-based component under one commercial umbrella). It NEVER extends to a separately-named, independently-metered fee billed under its own distinct trigger — e.g. a per-request fee (triggered by each issued request) and a per-success fee (triggered by each completed payment) are their OWN independent fees, not components of "the platform fee," even if they appear in a nearby clause or the same fee table. A waiver naming only "the fixed platform fee" creates NO open question at all about those other, independently-triggered fees — do not add them to possibly_affected_components, and do not describe them as possibly waived anywhere in your output. Ask yourself concretely: is this OTHER charge described as PART OF the same named hybrid charge the clause waives (real ambiguity — add it to possibly_affected_components), or is it a SEPARATE fee with its own name, its own trigger, and its own rate (no ambiguity at all — never mention it in connection with this waiver)?
+  TYPED COMPONENT TARGETING RULE: applies_to (above) is free text for human display only — calculation code never reads it. Alongside it, also populate affected_components: <array of short snake_case component-key strings, e.g. ["base_recurring_fee"]> naming every component the discount's stated rate/amount DEFINITELY covers regardless of how any remaining scope ambiguity resolves (use "base_recurring_fee" for the primary fixed/base/platform recurring fee; "performance_fee", "usage_fee", "overage_fee" or another short, clear key matching how the contract itself names a distinct component). When the HYBRID-FEE SCOPE RULE above identifies a genuinely open "does this also cover component X" question, add X to possibly_affected_components instead (never to affected_components, and never invent a resolution) — and per the SCOPE BOUNDARY immediately above, X must be a component of the SAME hybrid charge, never an unrelated separately-metered fee. A component belongs to exactly one of the two arrays, never both. Leave both null when the discount is a simple single-component discount with nothing else to distinguish. Worked example matching a real contract shape: "90-day pilot period with no fixed platform fee. Hybrid platform charge separately includes a performance-based component" alongside independent "EUR 0.38 per issued payment request" and "EUR 1.70 per completed payment" fees elsewhere in the contract → affected_components: ["base_recurring_fee"], possibly_affected_components: ["performance_fee"] ONLY — the per-request and per-success fees are never candidates, because they are separately-named, independently-triggered fees, not components of the platform charge being waived.
 - overage_tiers: usage-based charges above included units. Each tier must have:
   - from_unit: the first unit in this tier's range (the cumulative usage count, NOT a billing-block denominator). E.g. for graduated API tiers priced per 1,000 calls: Tier 1 = from_unit:1, to_unit:10000; Tier 2 = from_unit:10001, to_unit:100000; Tier 3 = from_unit:100001, to_unit:null.
     ADDITIVE-OVERAGE-ABOVE-INCLUDED-VOLUME RULE: a common, distinct shape from the graduated example above — the contract charges a SEPARATE flat per-unit fee (or a fixed base fee, populated elsewhere in base_monthly_fee/additional_recurring_fees) for every unit from 1 up to a stated included/contracted volume N, PLUS an additional per-unit surcharge that applies ONLY to usage EXCEEDING N (e.g. "0.60 EUR per payment request above the contracted volume of 5,000"). This is not a graduated table covering the full range from unit 1 — it is a single additive tier covering only the excess. In this shape, from_unit MUST be N+1 (the first unit actually charged at the excess rate), never 1 — e.g. contracted/included volume 5,000 → from_unit: 5001, to_unit: null. Setting from_unit to 1 for an excess-only surcharge would misrepresent every one of the first N units as being charged at the overage rate as well as the base rate, which the contract does not say. Also set included_units to N (the volume the excess is measured above) when the contract states it as a single committed/contracted volume figure.
@@ -331,6 +335,29 @@ ${contractText.slice(0, 10000)}
 // Exported so the merge/dedupe/safety-net logic (which has zero AI-call
 // dependency of its own — it only ever operates on already-parsed
 // ContractTerms objects) is directly unit-testable without mocking Claude.
+// Step 17B0.1, items 1/4/5/6/7 — root cause found live: `base` (below) is a
+// SINGLE chunk's full result, picked only by scoreCompleteness's narrow
+// criteria (customer_name/base fee/dates/currency/escalators/discounts/
+// overage_tiers). Every OTHER field that scoreCompleteness doesn't score —
+// customer_org_number, renewal_notice_months, base_fee_proration,
+// vendor/billing contact fields, etc. — used to come ONLY from that one
+// winning chunk, silently discarding the same field's real value the
+// moment it was extracted from a DIFFERENT chunk instead. A real,
+// multi-chunk Remembill extraction confirmed this: the chunk containing
+// the fee table won as `base` (it scores highest), while the org number,
+// renewal-notice clause, and base_fee_proration — extracted correctly
+// from a LATER chunk — were silently dropped because nothing coalesced
+// them back in. Takes the first genuinely non-null value across ALL
+// chunks, in chunk order, rather than trusting whichever chunk happened
+// to score highest on unrelated criteria.
+function coalesceScalar<K extends keyof ContractTerms>(results: ContractTerms[], key: K): ContractTerms[K] {
+  for (const r of results) {
+    const v = r[key]
+    if (v != null) return v
+  }
+  return results[0][key]
+}
+
 export function mergeExtractions(results: ContractTerms[]): ContractTerms {
   // Take the most complete result as base, then merge arrays from all chunks
   const base = results.reduce((best, curr) => {
@@ -341,11 +368,32 @@ export function mergeExtractions(results: ContractTerms[]): ContractTerms {
 
   const merged: ContractTerms = {
     ...base,
+    contract_id: coalesceScalar(results, 'contract_id'),
+    crm_id: coalesceScalar(results, 'crm_id'),
+    customer_address: coalesceScalar(results, 'customer_address'),
+    billing_contact: coalesceScalar(results, 'billing_contact'),
+    vendor_address: coalesceScalar(results, 'vendor_address'),
+    order_date: coalesceScalar(results, 'order_date'),
+    auto_renews: coalesceScalar(results, 'auto_renews'),
+    renewal_notice_days: coalesceScalar(results, 'renewal_notice_days'),
+    renewal_notice_months: coalesceScalar(results, 'renewal_notice_months'),
+    customer_email: coalesceScalar(results, 'customer_email'),
+    customer_org_number: coalesceScalar(results, 'customer_org_number'),
+    renewal_term_months: coalesceScalar(results, 'renewal_term_months'),
+    payment_terms_days: coalesceScalar(results, 'payment_terms_days'),
+    payment_terms_text: coalesceScalar(results, 'payment_terms_text'),
+    included_units: coalesceScalar(results, 'included_units'),
+    included_unit_type: coalesceScalar(results, 'included_unit_type'),
+    base_fee_bands: coalesceScalar(results, 'base_fee_bands'),
+    base_fee_committed_volume: coalesceScalar(results, 'base_fee_committed_volume'),
+    base_fee_proration: coalesceScalar(results, 'base_fee_proration'),
     escalators: dedupe([...results.flatMap(r => r.escalators)], 'description'),
     discounts: dedupe([...results.flatMap(r => r.discounts)], 'description'),
     service_credits: dedupe([...results.flatMap(r => r.service_credits ?? [])], 'description'),
     overage_tiers: dedupe([...results.flatMap(r => r.overage_tiers)], 'tier_label'),
     one_time_fees: dedupe([...results.flatMap(r => r.one_time_fees ?? [])], 'fee_label'),
+    additional_recurring_fees: dedupe([...results.flatMap(r => r.additional_recurring_fees ?? [])], 'fee_label'),
+    unsupported_commercial_mechanisms: dedupe([...results.flatMap(r => r.unsupported_commercial_mechanisms ?? [])], 'kind'),
     // Use 'comma' if ANY chunk detected comma notation (more specific detection wins)
     number_format: results.some(r => r.number_format === 'comma') ? 'comma' : 'dot',
   }
@@ -565,27 +613,92 @@ function extractSectionClause(contractText: string, heading: string): string | n
 }
 
 function flagAmbiguousBaseFeeProration(terms: ContractTerms, contractText?: string): void {
-  if (!terms.contract_start_date) return
-  const startDay = new Date(terms.contract_start_date + 'T00:00:00').getDate()
-  if (startDay === 1) return // already calendar-aligned — no partial-period question exists either way
+  // Trigger (a): calendar/contract-start mismatch — only a real question
+  // when the contract starts mid-period; a contract starting on the 1st
+  // has no such question under EITHER anchor reading, so this branch has
+  // nothing to add for it. Independent of trigger (b) below — a contract
+  // starting cleanly on the 1st (this early return) can still have an
+  // open trigger-(b) question, so trigger (b) must never be gated by it.
+  if (terms.contract_start_date) {
+    const startDay = new Date(terms.contract_start_date + 'T00:00:00').getDate()
+    if (startDay !== 1) {
+      const reason = 'The contract does not state whether this fee resets on the contract’s own start-date anniversary or on calendar boundaries, and the agreement begins mid-period.'
 
-  const reason = 'The contract does not state whether this fee resets on the contract’s own start-date anniversary or on calendar boundaries, and the agreement begins mid-period.'
-
-  if ((terms.base_monthly_fee || terms.base_annual_fee) && !terms.base_fee_proration) {
-    const heading = terms.field_sources?.base_monthly_fee ?? terms.field_sources?.base_annual_fee
-    const sourceClause = (contractText && heading) ? extractSectionClause(contractText, heading) : null
-    terms.base_fee_proration = {
-      reset_anchor: 'calendar', prorate_partial_periods: 'unclear',
-      requires_confirmation: true, confirmation_reason: reason, source_clause: sourceClause,
-    }
-  }
-  for (const fee of terms.additional_recurring_fees ?? []) {
-    if (fee.amount && !fee.proration) {
-      fee.proration = {
-        reset_anchor: 'calendar', prorate_partial_periods: 'unclear',
-        requires_confirmation: true, confirmation_reason: reason, source_clause: null,
+      if ((terms.base_monthly_fee || terms.base_annual_fee) && !terms.base_fee_proration) {
+        const heading = terms.field_sources?.base_monthly_fee ?? terms.field_sources?.base_annual_fee
+        const sourceClause = (contractText && heading) ? extractSectionClause(contractText, heading) : null
+        terms.base_fee_proration = {
+          reset_anchor: 'calendar', prorate_partial_periods: 'unclear',
+          requires_confirmation: true, confirmation_reason: reason, source_clause: sourceClause,
+        }
+      }
+      for (const fee of terms.additional_recurring_fees ?? []) {
+        if (fee.amount && !fee.proration) {
+          fee.proration = {
+            reset_anchor: 'calendar', prorate_partial_periods: 'unclear',
+            requires_confirmation: true, confirmation_reason: reason, source_clause: null,
+          }
+        }
       }
     }
+  }
+
+  flagAmbiguousWaiverExpiryProration(terms)
+}
+
+// Step 17B0.1, item 1 — deterministic backstop for the prompt's own
+// base_fee_proration trigger (b): a discount/waiver on the base fee has a
+// stated duration_days expiry that doesn't land on a clean calendar-month
+// boundary. Confirmed live: a real extraction of the actual Remembill
+// contract omitted base_fee_proration entirely for exactly this shape (a
+// 90-day pilot from 2026-10-01 expires 2026-12-30, two days short of the
+// next month boundary) — the model is asked to catch this itself (see the
+// prompt's own rule (b)), but nothing forced it to, so buildLineItems then
+// had nothing to withhold on and silently materialized a confident
+// multi-period schedule. This never overrides an existing structured
+// answer (mirrors trigger (a)'s own `!terms.base_fee_proration` guard
+// above) — only fills the gap when the model produced NOTHING at all, so
+// a genuinely-resolved reading the model correctly derived from explicit
+// contract text is never fought.
+function flagAmbiguousWaiverExpiryProration(terms: ContractTerms): void {
+  if (terms.base_fee_proration) return // model already produced a structured answer — never override it
+  if (!terms.contract_start_date) return
+  if (!(terms.base_monthly_fee || terms.base_annual_fee)) return
+
+  // UTC millisecond arithmetic, not local-timezone Date methods — a plain
+  // 'YYYY-MM-DD' date has no time-of-day/timezone component at all, and
+  // repeated local setDate() calls across a DST transition (Sweden's own
+  // October changeover falls squarely inside this contract's own term) can
+  // silently shift the computed calendar date by a day. UTC has no DST, so
+  // this stays correct regardless of the server's runtime timezone.
+  const [y, m, d] = terms.contract_start_date.split('-').map(Number)
+  const contractStartMs = Date.UTC(y, m - 1, d)
+  const DAY_MS = 86_400_000
+
+  for (const discount of terms.discounts ?? []) {
+    if (discount.duration_days == null) continue
+    const targetsBaseFee = discount.affected_components?.includes('base_recurring_fee')
+      || discount.possibly_affected_components?.includes('base_recurring_fee')
+    if (!targetsBaseFee) continue
+
+    // expiryMs is the FIRST day the waiver no longer applies (the fee
+    // resumes) — a duration_days-long waiver starting on contractStart
+    // covers exactly that many days, so the fee resumes on day
+    // contractStart + duration_days. If that landing day is itself the
+    // 1st of a month, the fee's normal cadence resumes with no partial
+    // stretch at all — a genuinely clean boundary, nothing to flag.
+    const expiryMs = contractStartMs + discount.duration_days * DAY_MS
+    const expiryDate = new Date(expiryMs)
+    if (expiryDate.getUTCDate() === 1) continue
+
+    terms.base_fee_proration = {
+      reset_anchor: 'contract_start',
+      prorate_partial_periods: 'unclear',
+      requires_confirmation: true,
+      confirmation_reason: `A waiver on the fixed platform fee (${discount.duration_days}-day duration from ${terms.contract_start_date}) expires ${expiryDate.toISOString().slice(0, 10)}, which does not land on a clean boundary of the fee's normal billing cadence — the contract does not state whether the resumed fee is prorated for the remainder of that period or begins in full from the next full billing period.`,
+      source_clause: discount.description ?? null,
+    }
+    return // one flag is enough
   }
 }
 
