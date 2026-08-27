@@ -256,12 +256,12 @@ describe('17B0.1 item 7 — full fresh-output acceptance regression for the Reme
     const byKey = new Map(inputs.map(i => [i.key, i]))
     expect(byKey.has('issued_payment_request_count')).toBe(true)
     expect(byKey.has('completed_payment_count')).toBe(true)
-    expect(byKey.has('paid_invoice_value_for_issued_requests')).toBe(true)
-    expect(byKey.has('total_invoice_value_for_issued_requests')).toBe(true)
+    expect(byKey.has('paid_invoice_value')).toBe(true)
+    expect(byKey.has('total_invoice_value_of_issued_requests')).toBe(true)
     expect(byKey.get('issued_payment_request_count')?.kind).toBe('countable')
     expect(byKey.get('completed_payment_count')?.kind).toBe('countable')
-    expect(byKey.get('paid_invoice_value_for_issued_requests')?.kind).toBe('monetary')
-    expect(byKey.get('total_invoice_value_for_issued_requests')?.kind).toBe('monetary')
+    expect(byKey.get('paid_invoice_value')?.kind).toBe('monetary')
+    expect(byKey.get('total_invoice_value_of_issued_requests')?.kind).toBe('monetary')
   })
 
   it('C. the base fee proration question is structurally recognized as waiver-expiry, not a generic calendar question', () => {

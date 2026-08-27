@@ -14,7 +14,7 @@ import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, computeCommittedFixedFees, computeConditionalFixedFees, contractLifecycleStatus, type BaseTcvItem } from '@/lib/contract-tcv-calc'
 import { resolveCommittedFixedFeeValue, type CommittedFixedFeeResolution } from '@/lib/committed-fixed-fee-resolver'
 import { ruleCadenceLabel, cadenceNoun, contractMonthLabel, volumeTierCopy } from '@/lib/cadence-labels'
-import { optionsForRuleType, optionsForEdit, deriveSelectedOption, baseFeeHasExpiringWaiver, discountHasUnresolvedComponentScope, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal, type DiscountScopeContext } from '@/lib/rule-interpretation'
+import { optionsForRuleType, optionsForEdit, deriveSelectedOption, baseFeeHasExpiringWaiver, discountHasUnresolvedComponentScope, describeDiscountComponentScope, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal, type DiscountScopeContext } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, isProvenanceResolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { isMonetaryBasisRecognitionApplicable, isPaidBasisFinalizationApplicable } from '@/lib/paid-basis-finalization'
@@ -4515,7 +4515,11 @@ function ReviewPanel({
                 <div className="space-y-3">
                   {unresolvedDiscounts.map((d, i) => {
                     const discountId = d.discount_rule_id ?? String((discounts ?? []).indexOf(d))
-                    const label = d.description || d.applies_to || `Discount ${i + 1}`
+                    // Step 17B0.5 (corrections pass) — the deterministic
+                    // component-scope summary is the authority; applies_to/
+                    // description are only a last-resort fallback for a
+                    // discount with no typed component data at all.
+                    const label = describeDiscountComponentScope(d) || d.description || d.applies_to || `Discount ${i + 1}`
                     return (
                       <div key={discountId} className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FAC775', background: 'white' }}>
                         <div className="px-4 pt-4 pb-3">
@@ -7126,7 +7130,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       const discountId = d.discount_rule_id ?? String(i)
                       const editKey = `disc:${discountId}`
                       const interp = d.interpretation
-                      const label = d.description || d.applies_to || `Discount ${i + 1}`
+                      // Step 17B0.5 (corrections pass) — same deterministic-
+                      // scope-first rule as the review card above; this
+                      // summary reflects whatever confirm-rule most recently
+                      // wrote to affected_components/possibly_affected_components.
+                      const label = describeDiscountComponentScope(d) || d.description || d.applies_to || `Discount ${i + 1}`
                       if (interp && !interp.requires_confirmation) {
                         return (
                           <div key={discountId} className="flex items-start justify-between gap-4">
@@ -8093,7 +8101,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               })
               for (const d of terms?.discounts ?? []) {
                 if (!d.interpretation) continue
-                confirmedRuleLines.push({ label: 'Discount', value: d.description || d.applies_to || d.interpretation.discount_type })
+                confirmedRuleLines.push({ label: 'Discount', value: describeDiscountComponentScope(d) || d.description || d.applies_to || d.interpretation.discount_type })
               }
               // Service credits — the confirmed EXECUTION policy (what it may
               // reduce, and what happens to an unused balance), not just the

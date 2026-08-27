@@ -193,14 +193,14 @@ describe('17B0 item G — every operational dependency is surfaced, monetary inp
 
     expect(byKey.get('issued_payment_request_count')?.kind).toBe('countable')
     expect(byKey.get('completed_payment_count')?.kind).toBe('countable')
-    expect(byKey.get('total_invoice_value_for_issued_requests')?.kind).toBe('monetary')
-    expect(byKey.get('paid_invoice_value_for_issued_requests')?.kind).toBe('monetary')
+    expect(byKey.get('total_invoice_value_of_issued_requests')?.kind).toBe('monetary')
+    expect(byKey.get('paid_invoice_value')?.kind).toBe('monetary')
   })
 
-  it('paid_invoice_value_for_issued_requests (only in derived_metric.raw_inputs) is still collected, not dropped', () => {
+  it('paid_invoice_value (only in derived_metric.raw_inputs) is still collected, not dropped', () => {
     const terms = buildRemembillFixtureTerms()
     const inputs = collectOperationalDataInputs(terms)
-    const paidValue = inputs.find(i => i.key === 'paid_invoice_value_for_issued_requests')
+    const paidValue = inputs.find(i => i.key === 'paid_invoice_value')
     expect(paidValue).toBeDefined()
     expect(paidValue!.sources.some(s => s.includes('derived_metric'))).toBe(true)
   })

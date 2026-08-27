@@ -63,8 +63,8 @@ describe('17B0.2 — fresh-output acceptance regression (Remembill fixture, post
       'completed_payment_count',
       'contracted_volume', // the excess-overage tier's own second dependency (lib/remembill-fixture.ts)
       'issued_payment_request_count',
-      'paid_invoice_value_for_issued_requests',
-      'total_invoice_value_for_issued_requests',
+      'paid_invoice_value',
+      'total_invoice_value_of_issued_requests',
     ])
     // The rolling-transition's dependency specifically — this is the ONE
     // input that only ever reaches the collector via

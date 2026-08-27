@@ -15,7 +15,7 @@ import { isAdminEmail, isRemembillTeam } from '@/lib/admin'
 import { getFastAIClient } from '@/lib/ai-client'
 import { allMeterMappingsResolved } from '@/lib/meter-mapping-status'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
-import { collectOperationalDataInputs } from '@/lib/operational-data-inputs'
+import { collectOperationalDataInputs, collectDerivedMetrics } from '@/lib/operational-data-inputs'
 
 // ── Auto-mapping heuristic ────────────────────────────────────────────────────
 const METER_RULES: Array<{ patterns: string[]; key: string; confidence: number }> = [
@@ -370,6 +370,10 @@ export async function GET(
     billing_cycle: contractBillingCycle,
     // Step 17B0, item G — see collectOperationalDataInputs's own comment.
     operational_data_inputs: collectOperationalDataInputs(terms),
+    // Corrections pass (post-17B0.4) — surfaced separately: a derived
+    // metric requires no external mapping of its own (see
+    // collectDerivedMetrics's own comment).
+    derived_metrics: collectDerivedMetrics(terms),
   })
 }
 

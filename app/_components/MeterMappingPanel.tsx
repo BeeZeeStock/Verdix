@@ -52,6 +52,18 @@ type AvailableMeter = { meter_key: string; display_name: string; unit_label: str
 // real operational dependency is never silently invisible.
 type OperationalDataInput = { key: string; kind: 'monetary' | 'countable'; sources: string[] }
 
+// Corrections pass (post-17B0.4) — a derived metric (a fee's rate computed
+// from other raw inputs via a stated formula, e.g. "value-weighted payment
+// rate = paid invoice value / total invoice value") is never itself a raw
+// operational input — see lib/operational-data-inputs.ts's
+// collectDerivedMetrics doc. Shown as its own section so a reviewer sees
+// "this rate is computed as X / Y" as a distinct fact from "these are the
+// raw values Verdix needs a data source for" (raw_inputs still also appear
+// in Operational data inputs above, since those DO need a source). No
+// external mapping applies to a derived metric — there is nothing to pick
+// here, informational only, same as Operational data inputs.
+type DerivedMetric = { metric_name: string; formula: string; raw_inputs: string[]; source: string }
+
 interface Props {
   jobId: string
   isConfigured?: boolean
@@ -77,6 +89,7 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
   const [suggestions, setSuggestions] = useState<MeterSuggestion[]>([])
   const [meters, setMeters]           = useState<AvailableMeter[]>([])
   const [operationalDataInputs, setOperationalDataInputs] = useState<OperationalDataInput[]>([])
+  const [derivedMetrics, setDerivedMetrics] = useState<DerivedMetric[]>([])
   const [loading, setLoading]         = useState(true)
   const [saving, setSaving]           = useState(false)
   const [saveMsg, setSaveMsg]         = useState<{ ok: boolean; text: string } | null>(null)
@@ -93,15 +106,18 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
     setMeters(res.available_meters ?? [])
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setOperationalDataInputs(res.operational_data_inputs ?? [])
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDerivedMetrics(res.derived_metrics ?? [])
   }, [jobId])
 
   useEffect(() => {
     fetch(`/api/jobs/${jobId}/meter-mappings`)
       .then(r => r.json())
-      .then((res: { suggestions: MeterSuggestion[]; available_meters: AvailableMeter[]; operational_data_inputs?: OperationalDataInput[] }) => {
+      .then((res: { suggestions: MeterSuggestion[]; available_meters: AvailableMeter[]; operational_data_inputs?: OperationalDataInput[]; derived_metrics?: DerivedMetric[] }) => {
         setSuggestions(res.suggestions ?? [])
         setMeters(res.available_meters ?? [])
         setOperationalDataInputs(res.operational_data_inputs ?? [])
+        setDerivedMetrics(res.derived_metrics ?? [])
         setLoading(false)
       })
       .catch(() => setLoading(false))
@@ -235,7 +251,7 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
     )
   }
 
-  if (suggestions.length === 0 && operationalDataInputs.length === 0) return null
+  if (suggestions.length === 0 && operationalDataInputs.length === 0 && derivedMetrics.length === 0) return null
 
   const hasUnsaved = Object.keys(edits).length > 0
 
@@ -271,6 +287,33 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
     </div>
   )
 
+  // Corrections pass (post-17B0.4) — a derived metric's raw_inputs still
+  // show up in Operational data inputs above (they DO need a real data
+  // source); this section shows the computed rate itself, which needs none.
+  const derivedMetricsSection = derivedMetrics.length > 0 && (
+    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
+      <div className="px-7 py-4" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+        <p className="text-sm font-medium text-ink">Derived metrics</p>
+        <p className="text-xs text-stone mt-0.5">
+          These rates are computed from the operational inputs above via a formula stated in the contract. Derived metrics require no external mapping — there is nothing to map, only the raw inputs they&apos;re computed from.
+        </p>
+      </div>
+      <div className="px-7 py-4 space-y-2.5">
+        {derivedMetrics.map(metric => (
+          <div key={metric.metric_name} className="flex items-start gap-3">
+            <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full flex-shrink-0" style={{ color: '#6D28D9', background: '#EDE9FE' }}>
+              Derived
+            </span>
+            <div className="min-w-0">
+              <p className="text-xs font-mono text-ink">{metric.metric_name} = {metric.formula}</p>
+              <p className="text-[11px] text-stone/70">{metric.source}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+
   // Step 17B0.2, item 4 — no countable usage meter exists to map at all,
   // but that must never read as "nothing here" when real operational
   // dependencies exist — the explicit "No metered usage to map" note only
@@ -282,12 +325,14 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
         <p className="text-sm text-stone">No metered usage to map for this contract.</p>
       </div>
       {operationalDataInputsSection}
+      {derivedMetricsSection}
     </>
   )
 
   return (
     <>
     {operationalDataInputsSection}
+    {derivedMetricsSection}
     <div className="rounded-2xl border overflow-hidden transition-colors"
       style={{
         borderColor: allConfirmed ? 'rgba(11,92,54,0.2)' : '#FAC775',

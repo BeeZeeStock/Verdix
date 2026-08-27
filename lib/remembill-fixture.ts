@@ -151,10 +151,20 @@ export function buildRemembillFixtureTerms(): ContractTerms {
         description: 'Variable monthly fee based on value-weighted payment rate (paid invoice value / total invoice value of requests issued in the month). Rate ranges from 0.20% to 4.50%, rounded down to the nearest 5-percentage-point step. No performance share below 5% payment rate.',
         derived_metric: {
           metric_name: 'value_weighted_payment_rate',
-          formula: 'paid_invoice_value_for_issued_requests / total_invoice_value_for_issued_requests',
-          raw_inputs: ['paid_invoice_value_for_issued_requests', 'total_invoice_value_for_issued_requests'],
+          formula: 'paid_invoice_value / total_invoice_value_of_issued_requests',
+          raw_inputs: ['paid_invoice_value', 'total_invoice_value_of_issued_requests'],
         },
-        required_operational_inputs: ['total_invoice_value_for_issued_requests'],
+        // Corrections pass (post-17B0.4) — the fee's OWN additional direct
+        // dependency beyond the derived metric itself: the monetary charge
+        // basis the derived rate is applied TO, to compute the actual EUR
+        // fee amount. Also one of derived_metric.raw_inputs above (the
+        // formula's denominator) — deliberately kept here too so this
+        // fee's own dependency stays traceable per-fee via
+        // required_operational_inputs, not only buried inside the derived
+        // metric; collectOperationalDataInputs (lib/operational-data-inputs.ts)
+        // already de-dupes by key, so listing it in both places produces
+        // exactly one operational-input row, not two.
+        required_operational_inputs: ['total_invoice_value_of_issued_requests'],
         unresolved_kind: 'unsupported_semantics',
         source_clause: 'Betalgrad efter uppföljning är utfallet, mätt värdeviktat.',
         // Step 17B0.2, item 6 (revised Step 17B0.4) — this fee's evidence

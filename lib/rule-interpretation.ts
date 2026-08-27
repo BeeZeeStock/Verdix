@@ -234,6 +234,67 @@ export function discountHasUnresolvedComponentScope(
   return !!discount?.possibly_affected_components?.length
 }
 
+// Step 17B0.5 (corrections pass) — the user-facing discount summary must
+// be rendered DETERMINISTICALLY from the typed affected_components/
+// possibly_affected_components pair, never from applies_to, the model's
+// free-text description, or source-clause prose — those are display-only,
+// non-authoritative fields that can silently overstate or understate scope
+// (see WORDING DISCIPLINE in lib/contract-extractor.ts). Because this reads
+// the discount's CURRENT typed fields at render time, a reviewer's
+// confirm-rule resolution (which rewrites affected_components/
+// possibly_affected_components — see resolveConfirmedDiscountComponents in
+// lib/discount-component-targeting.ts) is reflected automatically on the
+// next render; no separate cache/derivation to invalidate.
+//
+// A dedicated label map, not COMPONENT_KEY_LABELS above — that map's
+// "performance fee" wording feeds getComponentScopeOptions' confirm-rule
+// UI (a different, already-shipped surface); changing it would ripple
+// there too. This summary sentence calls for slightly different, more
+// descriptive wording ("performance-share component") without touching
+// that unrelated surface.
+const SCOPE_SUMMARY_LABELS: Record<string, string> = {
+  base_recurring_fee: 'fixed platform fee',
+  performance_fee: 'performance-share component',
+  usage_fee: 'usage fee',
+  overage_fee: 'overage fee',
+}
+function scopeSummaryLabel(key: string): string {
+  return SCOPE_SUMMARY_LABELS[key] ?? key.replace(/_/g, ' ')
+}
+function joinComponentNames(keys: string[]): { text: string; plural: boolean } {
+  const names = keys.map(scopeSummaryLabel)
+  return { text: names.join(' and '), plural: names.length > 1 }
+}
+
+export function describeDiscountComponentScope(
+  discount: {
+    affected_components?: string[] | null
+    possibly_affected_components?: string[] | null
+    discount_pct?: number | null
+  } | null | undefined,
+): string | null {
+  const affected = discount?.affected_components ?? []
+  const possible = discount?.possibly_affected_components ?? []
+  if (affected.length === 0 && possible.length === 0) return null
+
+  // Full waiver reads as "waived"; anything else (a partial percentage/
+  // amount discount) reads as "discounted" — the magnitude itself is
+  // already shown elsewhere on the card (the %/amount BigValue), this
+  // sentence's job is scope, not magnitude.
+  const verb = discount?.discount_pct === 100 ? 'waived' : 'discounted'
+
+  const sentences: string[] = []
+  if (affected.length > 0) {
+    const { text, plural } = joinComponentNames(affected)
+    sentences.push(`The ${text} ${plural ? 'are' : 'is'} ${verb}.`)
+  }
+  if (possible.length > 0) {
+    const { text, plural } = joinComponentNames(possible)
+    sentences.push(`Whether the ${text} ${plural ? 'are' : 'is'} also ${verb} is not explicit.`)
+  }
+  return sentences.join(' ')
+}
+
 // Same distinction as DISCOUNT_OPTIONS, applied to pricing tiers — the
 // ambiguity is identical whether the tier table sets a price, a discount, or
 // an overage rate, so it is asked the same way and never given a different

@@ -74,10 +74,10 @@ describe('Remembill fixture — expected first-pass extraction result', () => {
     // which belong to THOSE fees, not this one).
     expect(perf.derived_metric).toEqual({
       metric_name: 'value_weighted_payment_rate',
-      formula: 'paid_invoice_value_for_issued_requests / total_invoice_value_for_issued_requests',
-      raw_inputs: ['paid_invoice_value_for_issued_requests', 'total_invoice_value_for_issued_requests'],
+      formula: 'paid_invoice_value / total_invoice_value_of_issued_requests',
+      raw_inputs: ['paid_invoice_value', 'total_invoice_value_of_issued_requests'],
     })
-    expect(perf.required_operational_inputs).toEqual(['total_invoice_value_for_issued_requests'])
+    expect(perf.required_operational_inputs).toEqual(['total_invoice_value_of_issued_requests'])
     expect(perf.description).toMatch(/0\.20%/)
     expect(perf.description).toMatch(/4\.50%/)
   })
@@ -103,8 +103,8 @@ describe('Remembill fixture — expected first-pass extraction result', () => {
 
   it('hardening review item 2 (regression) — the rolling transition must never acquire the performance fee\'s inputs (paid/total invoice value)', () => {
     const rolling = terms.unsupported_commercial_mechanisms!.find(m => m.kind === 'rolling_volume_pricing_transition')!
-    expect(rolling.required_operational_inputs).not.toContain('paid_invoice_value_for_issued_requests')
-    expect(rolling.required_operational_inputs).not.toContain('total_invoice_value_for_issued_requests')
+    expect(rolling.required_operational_inputs).not.toContain('paid_invoice_value')
+    expect(rolling.required_operational_inputs).not.toContain('total_invoice_value_of_issued_requests')
     expect(rolling.required_operational_inputs).not.toContain('completed_payment_count')
 
     // The two mechanisms stay fully disjoint in their dependencies — the
