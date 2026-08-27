@@ -10,9 +10,32 @@
 // OS-2026-09 contract text (§§2.1-3.4, Schedule 1), read directly from the
 // stored PDF during design — not an illustrative/invented fixture.
 import type { BillableUnitQualificationRule, FieldDecision, QualificationExpression, QualificationFactDefinition } from './billable-unit-qualification'
+import type { OverageTier } from './types'
 
 function unresolved<T>(): FieldDecision<T> {
   return { value: null, state: 'decision_required', provenance: null }
+}
+
+// §5.1's SQM commercial terms — an all-units (volume) tier table with a
+// monthly minimum floor: 1-40 SQMs at €250/unit, 41+ SQMs at €225/unit
+// applied to ALL qualifying units (crossing 41 re-rates the whole month,
+// not just the units past the threshold — lib/tariff.ts's own volumeAmount
+// semantics), €5,000 monthly minimum. Canonical — the SAME shape any real
+// contract_meter_mappings row for this agreement would carry (lib/usage-
+// pull.ts); shared here (16B.4) so no test maintains its own, possibly-
+// diverging synthetic tier table. minimum_commitment/tier_calculation are
+// duplicated onto every tier, matching this codebase's own per-metric
+// storage convention (see resolveMinimumCommitment/
+// resolveTierCalculationMethod in lib/tariff.ts).
+export function buildOs202609SqmTiers(): OverageTier[] {
+  const shared = {
+    minimum_commitment: { mode: 'floor' as const, amount: 5000, requires_confirmation: false },
+    tier_calculation: { method: 'volume' as const, requires_confirmation: false },
+  }
+  return [
+    { tier_label: 'Tier 1', from_unit: 1, to_unit: 40, rate_per_unit: 250, unit_type: 'SQM', ...shared },
+    { tier_label: 'Tier 2', from_unit: 41, to_unit: null, rate_per_unit: 225, unit_type: 'SQM', ...shared },
+  ]
 }
 
 export function buildOs202609Rule(): BillableUnitQualificationRule {

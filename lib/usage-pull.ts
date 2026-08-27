@@ -6,6 +6,8 @@
 import { supabaseServer } from '@/lib/supabase'
 import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining, isPartialWindow, isBillingWindowClosed, resolveWindowMinimum, clampWindowToContract, type CadenceAnchorMode } from '@/lib/tariff'
 import { createRemembillUsageConnector } from '@/lib/connectors/usage/remembill'
+import { resolveQualifiedUnitAggregateQuantitySource } from '@/lib/qualified-unit-aggregation-service'
+import { resolveCommercialQuantity, requireReadyCommercialQuantity } from '@/lib/commercial-quantity-source'
 import type { ContractTerms, MinimumCommitment, TierCalculationMethod } from '@/lib/types'
 
 // Fail-closed real-billing invariant — thrown by computeOverageForPeriod
@@ -311,6 +313,42 @@ export async function computeOverageForPeriod(params: {
           } catch (err) {
             console.error(`[usage-pull] remembill pull failed for meter '${cfg.meter_key}' org ${orgId}:`, err)
             continue
+          }
+        } else if (def?.connector === 'qualified_unit_aggregate') {
+          // Step 16B.4 — a Verdix-owned, contractually-qualified quantity
+          // (lib/qualified-unit-aggregation.ts) is a legitimate commercial
+          // quantity source in its own right, not a fake external meter —
+          // this is what actually solves "No suitable meter found" for a
+          // metric like an SQM that has no real external usage endpoint.
+          // cfg.meter_key IS the billable_unit_candidates.unit_type this
+          // meter measures — no separate mapping column, and no domain
+          // vocabulary (SQM/meeting/OS-2026-09) appears anywhere in this
+          // file; it only ever sees whatever meter_key the caller's own
+          // contract_meter_mappings row names. window.measureStart/
+          // measureEnd (already clamped to the contract's own start/end,
+          // exactly like every other branch here) become the aggregate's
+          // billing period — window.measureEnd is a CALENDAR-DAY start
+          // (see windowEndUnix's own +86_399 adjustment above), so +1 day
+          // gives the correct exclusive half-open upper bound.
+          const periodEnd = new Date(window.measureEnd.getTime() + 86_400_000)
+          const source = await resolveQualifiedUnitAggregateQuantitySource({
+            jobId, orgId, unitType: cfg.meter_key,
+            periodStart: window.measureStart.toISOString(), periodEnd: periodEnd.toISOString(),
+            asOf: billingAsOf.toISOString(),
+          })
+          const resolved = resolveCommercialQuantity(source)
+          if (isRealBilling) {
+            // Fail closed — never substitutes 0, a known-so-far count, or a
+            // previous period's quantity. Thrown, not caught here, exactly
+            // like OpenBillingWindowError above: the caller's own existing
+            // fail-closed handling is what's expected to hold/fail this row.
+            totalUnits = requireReadyCommercialQuantity(resolved)
+          } else {
+            if (!resolved.ready) {
+              console.warn(`[usage-pull] qualified-unit aggregate for meter '${cfg.meter_key}' org ${orgId} not ready: ${resolved.reason}`)
+              continue
+            }
+            totalUnits = resolved.quantity
           }
         } else {
           if (!def?.pull_endpoint_url) {

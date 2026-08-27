@@ -19,6 +19,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl } from '@/lib/billing-writer'
 import { computeOverageForPeriod, type OverageLineItem } from '@/lib/usage-pull'
+import { QuantitySourceNotReadyError } from '@/lib/commercial-quantity-source'
 import { applyCreditLedgerForPeriod } from '@/lib/credit-ledger-service'
 import type { ContractTerms } from '@/lib/types'
 import { isAuthorizedCronRequest } from '@/lib/cron-auth'
@@ -79,7 +80,7 @@ export async function GET(req: NextRequest) {
   // reclaim block below can also report into it — an exhausted row is
   // marked 'failed' directly by reclaim_stale_processing_row and never
   // enters the main per-row loop at all, so it needs its own result entry.
-  const results: { id: string; ok: boolean; stripe_invoice_id?: string; error?: string }[] = []
+  const results: { id: string; ok: boolean; stripe_invoice_id?: string; error?: string; held?: boolean }[] = []
 
   // ── Find all due planned invoices ─────────────────────────────────────────
   // status='scheduled' structurally excludes 'backfill_review' by
@@ -934,6 +935,31 @@ export async function GET(req: NextRequest) {
 
       results.push({ id: row.id, ok: true, stripe_invoice_id: sentInvoiceId ?? undefined })
     } catch (err) {
+      // Scheduler retry/hold audit (16B.4) — a commercial-quantity source
+      // that isn't ready yet (e.g. a September meeting's rejection window
+      // still open) is an EXPECTED, temporary hold, never a genuine
+      // execution failure. status='failed' above is a TERMINAL state — the
+      // scheduler's own selection query only ever matches status='scheduled'
+      // (see the top of this file), so a row left 'failed' would never be
+      // reconsidered by any later run even once its window closes and the
+      // quantity becomes ready. Reusing this file's own existing "Held:"
+      // convention (see the historical-terminal-settlement guard above,
+      // which never even claims a held row in the first place) — this row
+      // WAS already claimed to 'processing' before this try block started,
+      // so unlike that guard, reverting the claim back to 'scheduled' is
+      // required here for the next run to naturally re-select and retry it.
+      // Generic — nothing here or in QuantitySourceNotReadyError itself
+      // knows what a qualified unit, an SQM, or a meeting is.
+      if (err instanceof QuantitySourceNotReadyError) {
+        console.log(`[invoice-scheduler] planned_invoice ${row.id} held — commercial quantity source not yet ready: ${err.message}`)
+        await supabaseServer
+          .from('planned_invoices')
+          .update({ status: 'scheduled', processing_started_at: null, error_message: `Held: ${err.message}` })
+          .eq('id', row.id)
+        results.push({ id: row.id, ok: false, held: true, error: `Held: ${err.message}` })
+        continue
+      }
+
       const message = err instanceof Error ? err.message : String(err)
       console.error(`[invoice-scheduler] failed for planned_invoice ${row.id}`, err)
 

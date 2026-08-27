@@ -183,6 +183,22 @@ export interface DedupeRule {
   // or an evidence_precedence source. Empty is valid (and means dedupe can
   // never clear via completeness for this rule — a real, fail-closed
   // outcome, not an oversight to guard against).
+  //
+  // Semantic audit (16B.4 hardening, item 5) — this field's real meaning is
+  // "the source-role universe CAPABLE OF DISCOVERING a candidate for this
+  // unit_type at all," not merely "sources consulted for a dedupe lookup."
+  // The name (discovery_coverage_role_keys), the coverage_kind it gates
+  // (literally 'candidate_discovery', not e.g. 'dedupe_lookup'), and the
+  // OS-2026-09 fixture's own grounding note (the source that would have
+  // surfaced a duplicate meeting is definitionally the same source that
+  // would have surfaced ANY meeting for that account) all point the same
+  // way: dedupe completeness (16B.3) was simply the FIRST consumer of this
+  // proof, not its defining purpose. lib/qualified-unit-aggregation.ts
+  // (16B.4) reuses this exact field for period-level candidate-discovery
+  // completeness on that basis — this is the field's own intended, general
+  // meaning applied to a second legitimate use case, not a semantic
+  // stretch, and deliberately not duplicated into a second, differently-
+  // named field for that reuse.
   discovery_coverage_role_keys: string[]
 }
 
