@@ -143,11 +143,21 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
     // for an operational count — enforced structurally here, not merely by
     // the extraction prompt being followed.
     const isVariableRate = !!fee.metric_name && typeof fee.rate_per_unit === 'number' && fee.rate_per_unit > 0
-    if (!fee.amount && !isVariableRate) continue
+    // Step 17C.1 — a percentage-of-basis fee (e.g. Remembill's performance
+    // share) has the SAME "no fixed quantity until real operational data
+    // exists" shape as a variable-rate fee above — its rate is selected
+    // from a schedule at calculation time, never a stand-in for the
+    // contract's own billing-cycle count. Without this, such a fee would
+    // silently vanish from this TCV preview entirely (fee.amount stays 0
+    // and it doesn't match isVariableRate either) rather than staying
+    // visible at quantity 0 / total 0 like every other operational-only fee.
+    const isPercentageOfBasis = !!fee.percentage_of_basis
+    if (!fee.amount && !isVariableRate && !isPercentageOfBasis) continue
     const feeFreq = terms.billing_frequency ?? 'monthly'
     const { interval, intervalCount } = billingInterval(feeFreq)
     const feeMonthsPerPeriod = interval === 'year' ? 12 * intervalCount : intervalCount
     const periodCount = termMonths > 0 && feeMonthsPerPeriod > 0 ? Math.ceil(termMonths / feeMonthsPerPeriod) : 1
+    const isOperationalOnly = isVariableRate || isPercentageOfBasis
     items.push({
       product_name: fee.fee_label,
       // Mirrors one_time_fees' own isParked convention below: still
@@ -155,10 +165,10 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
       // contributing a quantity/amount until usage data supplies a real
       // count — quantity 0 / total 0 is the "operational, unresolved"
       // representation, not an invented committed figure.
-      quantity: isVariableRate ? 0 : periodCount,
-      unit_price: isVariableRate ? (fee.rate_per_unit ?? 0) : fee.amount,
+      quantity: isOperationalOnly ? 0 : periodCount,
+      unit_price: isPercentageOfBasis ? 0 : isVariableRate ? (fee.rate_per_unit ?? 0) : fee.amount,
       billing_period: feeFreq,
-      total_amount: isVariableRate ? 0 : Math.round(fee.amount * periodCount * 100) / 100,
+      total_amount: isOperationalOnly ? 0 : Math.round(fee.amount * periodCount * 100) / 100,
       currency: cur,
       confidence_score: conf,
       source_section: src.additional_recurring_fees ?? src.base_monthly_fee ?? null,

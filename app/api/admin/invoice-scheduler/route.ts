@@ -19,6 +19,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl } from '@/lib/billing-writer'
 import { computeOverageForPeriod, type OverageLineItem } from '@/lib/usage-pull'
+import { computePerformanceShareLineItemsForPeriod } from '@/lib/performance-share-pull'
 import { QuantitySourceNotReadyError } from '@/lib/commercial-quantity-source'
 import { applyCreditLedgerForPeriod } from '@/lib/credit-ledger-service'
 import type { ContractTerms } from '@/lib/types'
@@ -514,6 +515,23 @@ export async function GET(req: NextRequest) {
               currency: cur,
               billingAsOfUnix: Math.floor(billingAsOf.getTime() / 1000),
             })
+            // Step 17C.1 — same closed-period arrears scan, a separate
+            // producer of the SAME OverageLineItem shape (never a separate
+            // "performance billing engine"); concatenated so every
+            // downstream consumer (credit-ledger pool, netAmount, VAT,
+            // provider push) sees it exactly like any other computed-in-
+            // arrears line item without needing its own branch. scanEnd is
+            // always set alongside scanStart above (never independently
+            // null) — the extra check here is purely for TypeScript
+            // narrowing, not a real runtime possibility.
+            if (scanEnd) {
+              overageLineItems = overageLineItems.concat(
+                await computePerformanceShareLineItemsForPeriod({
+                  jobId: row.job_id, terms, currency: cur, periodStart: scanStart, periodEnd: scanEnd,
+                  asOf: billingAsOf.toISOString(),
+                }),
+              )
+            }
           }
         } else if (row.invoice_type === 'terminal_settlement') {
           // Deterministic settlement target — never a backward "previous
@@ -537,6 +555,12 @@ export async function GET(req: NextRequest) {
               // itself has genuinely closed.
               billingAsOfUnix: Math.floor(billingAsOf.getTime() / 1000),
             })
+            overageLineItems = overageLineItems.concat(
+              await computePerformanceShareLineItemsForPeriod({
+                jobId: row.job_id, terms, currency: cur, periodStart: scanStart, periodEnd: scanEnd,
+                asOf: billingAsOf.toISOString(),
+              }),
+            )
           }
         }
 

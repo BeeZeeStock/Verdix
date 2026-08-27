@@ -35,9 +35,20 @@ export type CommercialComponentClass =
   | 'transaction_processing'
   | 'chargeback'
   | 'one_time_fee'
+  // Step 17C.1a, item 5 — the performance-share fee's own stable component
+  // identity (lib/performance-share-materiality.ts's
+  // PERFORMANCE_SHARE_FEE_COMPONENT). Without a registered class, the
+  // pool item invoice-scheduler builds from a performance-share
+  // OverageLineItem resolves to componentClass: null — unreachable by any
+  // credit with a SPECIFIC eligible_component_keys list (fails closed,
+  // safe) but ALSO never intentionally targetable by one (a real gap: a
+  // credit whose contract text genuinely says "may also reduce the
+  // performance-share fee" would have no way to express that). See
+  // lib/performance-share-credit-isolation.test.ts.
+  | 'performance_fee'
 
 const ALL_CLASSES: ReadonlySet<CommercialComponentClass> = new Set([
-  'platform_fee', 'transaction_processing', 'chargeback', 'one_time_fee',
+  'platform_fee', 'transaction_processing', 'chargeback', 'one_time_fee', 'performance_fee',
 ])
 
 function normalize(token: string): string {
@@ -73,6 +84,10 @@ const SCOPE_TOKEN_ALIASES: Readonly<Record<string, CommercialComponentClass>> = 
   chargeback_fees: 'chargeback',
   one_time_fee: 'one_time_fee',
   one_time_fees: 'one_time_fee',
+  performance_fee: 'performance_fee',
+  performance_fees: 'performance_fee',
+  performance_share: 'performance_fee',
+  performance_share_fee: 'performance_fee',
 }
 
 // Resolves ONE eligible_component_keys / excluded_component_keys token to
@@ -109,6 +124,11 @@ const CONTRACT_UNIT_TYPE_ALIASES: Readonly<Record<string, CommercialComponentCla
   'transaction processing': 'transaction_processing',
   chargeback: 'chargeback',
   chargebacks: 'chargeback',
+  // Step 17C.1a, item 5 — matches lib/performance-share-materiality.ts's
+  // PERFORMANCE_SHARE_FEE_COMPONENT constant exactly; this is the literal
+  // contractUnitType value lib/performance-share-pull.ts sets on every
+  // performance-share OverageLineItem.
+  performance_fee: 'performance_fee',
 }
 
 export function classifyContractUnitType(contractUnitType: string | null | undefined): CommercialComponentClass | null {

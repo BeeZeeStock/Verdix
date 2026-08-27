@@ -234,9 +234,10 @@ describe('17B0.1 item 7 — full fresh-output acceptance regression for the Reme
     expect(pilot.possibly_affected_components).toEqual(['performance_fee'])
   })
 
-  it('4. both unsupported mechanisms are present: Performance share fee AND rolling three-month volume transition', () => {
-    const perf = merged.additional_recurring_fees!.find(f => f.unresolved_kind === 'unsupported_semantics')
-    expect(perf?.fee_label).toBe('Performance share (value-weighted payment rate)')
+  it('4. the rolling three-month volume transition is present and still unsupported; the performance share fee is present with real execution config (Step 17C.1)', () => {
+    const perf = merged.additional_recurring_fees!.find(f => f.fee_label === 'Performance share (value-weighted payment rate)')
+    expect(perf?.unresolved_kind).toBeNull()
+    expect(perf?.percentage_of_basis).toBeTruthy()
     const rolling = merged.unsupported_commercial_mechanisms!.find(m => m.kind === 'rolling_volume_pricing_transition')
     expect(rolling).toBeDefined()
     expect(rolling!.execution_status).toBe('unsupported')

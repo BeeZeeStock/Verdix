@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildRemembillFixtureTerms } from './remembill-fixture'
+import { buildRemembillFixtureTerms, REMEMBILL_PERFORMANCE_SHARE_SCHEDULE } from './remembill-fixture'
 import { buildLineItems } from './line-items'
 import { computeCommittedFixedFees } from './contract-tcv-calc'
 import { resolveCommittedFixedFeeValue } from './committed-fixed-fee-resolver'
@@ -64,9 +64,9 @@ describe('Remembill fixture — expected first-pass extraction result', () => {
     expect(pilot.interpretation).toBeUndefined() // no interpretation pre-selected on the bare extracted record
   })
 
-  it('performance mechanism: extracted, derived-rate formula preserved, exact direct dependency only, execution unsupported in 17A', () => {
+  it('performance mechanism: extracted, derived-rate formula preserved, exact direct dependency only, executable as of Step 17C.1', () => {
     const perf = terms.additional_recurring_fees!.find(f => f.fee_label === 'Performance share (value-weighted payment rate)')!
-    expect(perf.unresolved_kind).toBe('unsupported_semantics')
+    expect(perf.unresolved_kind).toBeNull()
     expect(perf.amount).toBe(0)
     // Hardening item 5 — the derived rate's OWN formula/raw inputs live in
     // derived_metric; required_operational_inputs holds only this fee's
@@ -78,8 +78,21 @@ describe('Remembill fixture — expected first-pass extraction result', () => {
       raw_inputs: ['paid_invoice_value', 'total_invoice_value_of_issued_requests'],
     })
     expect(perf.required_operational_inputs).toEqual(['total_invoice_value_of_issued_requests'])
-    expect(perf.description).toMatch(/0\.20%/)
     expect(perf.description).toMatch(/4\.50%/)
+    // Step 17C.1 — the TYPED, executable counterpart alongside derived_metric.
+    expect(perf.percentage_of_basis).toEqual({
+      derived_metric: {
+        metric_key: 'value_weighted_payment_rate',
+        operation: 'ratio',
+        numerator_input_key: 'paid_invoice_value',
+        denominator_input_key: 'total_invoice_value_of_issued_requests',
+        output_unit: 'percentage',
+        min_output_value: 0,
+        max_output_value: 100,
+      },
+      rate_schedule: REMEMBILL_PERFORMANCE_SHARE_SCHEDULE,
+      basis_input_key: 'total_invoice_value_of_issued_requests',
+    })
   })
 
   it('rolling three-month transition: extracted into unsupported_commercial_mechanisms, NOT additional_recurring_fees (it is not a fee)', () => {

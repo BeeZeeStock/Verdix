@@ -229,6 +229,26 @@ type AdditionalRecurringFee = {
   // standing in for all of them).
   source_sections?: SourceLocator[] | null
   derived_metric?: { metric_name: string; formula: string; raw_inputs: string[] } | null
+  // Step 17C.1 — the typed, executable counterpart to derived_metric above.
+  // See lib/types.ts's PercentageOfBasisConfig doc for the full rationale.
+  percentage_of_basis?: {
+    derived_metric: {
+      metric_key: string
+      operation: 'ratio'
+      numerator_input_key: string
+      denominator_input_key: string
+      output_unit: 'ratio' | 'percentage'
+      min_output_value?: number | null
+      max_output_value?: number | null
+    }
+    rate_schedule: {
+      schedule_key: string
+      bands: Array<{ from: number; to: number | null; rate_pct: number }>
+      min_selector_value: number
+      max_selector_value: number | null
+    }
+    basis_input_key: string
+  } | null
 }
 type UnsupportedCommercialMechanism = {
   kind: string
@@ -1029,6 +1049,111 @@ function UnsupportedMechanismCard({
               <p className="text-[11px] text-stone/70 leading-relaxed italic">&ldquo;{sourceClause}&rdquo;</p>
             )}
             <p className="text-[11px] text-stone/60">{disclaimer}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Step 17C.1, item 13 — a percentage-of-basis fee (e.g. Remembill's
+// performance share) is no longer "Unsupported": it has real execution
+// support (lib/percentage-of-basis-fee.ts). This card reflects ACTUAL
+// readiness instead — "Executable — input mapping required" (a valid
+// config exists, but no operational-input value has ever been entered for
+// its required inputs) vs. "Ready" (at least one value exists for every
+// required input, so the mechanism will actually run once a period
+// closes). Same compact-card shell as UnsupportedMechanismCard — the
+// calculation trace stays behind "View details", never shown by default.
+function PerformanceShareCard({
+  jobId, fee, sections, fieldSourceFallback, onViewSource,
+}: {
+  jobId: string
+  fee: AdditionalRecurringFee
+  sections?: SourceLocator[] | null
+  fieldSourceFallback?: string
+  onViewSource?: (section: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [ready, setReady] = useState<boolean | null>(null) // null = still checking
+
+  const config = fee.percentage_of_basis
+
+  useEffect(() => {
+    if (!config) return
+    const requiredKeys = [config.derived_metric.numerator_input_key, config.derived_metric.denominator_input_key, config.basis_input_key]
+    let dead = false
+    fetch(`/api/jobs/${jobId}/operational-input-values`)
+      .then(r => r.json())
+      .then((res: { values?: Array<{ input_key: string; status: string; finalized_at: string | null }> }) => {
+        if (dead) return
+        // Step 17C.1a — "Ready" means every required input has at least
+        // one ACTIVE, FINALIZED value on record, not merely a draft.
+        // "Only final values may execute billing" (item 3) — a draft-only
+        // input still reads as "input mapping required".
+        const rows = (res.values ?? []).filter(r => r.status === 'active' && r.finalized_at != null)
+        setReady(requiredKeys.every(k => rows.some(r => r.input_key === k)))
+      })
+      .catch(() => { if (!dead) setReady(false) })
+    return () => { dead = true }
+    // config's own identity changes whenever the fee it belongs to does —
+    // re-checking on jobId change alone is what actually matters here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId])
+
+  // no-gaps/no-overlaps/deterministic-boundary validation is not
+  // duplicated here — Step 17C.1's own lib/rate-schedule.ts already
+  // enforces it at calculation time; the review card only needs to know
+  // whether a config exists at all, never re-runs that check client-side.
+  const badge = !config
+    ? { label: 'Unsupported', color: '#DC2626', background: '#FEE2E2' }
+    : ready === null
+      ? { label: 'Checking…', color: '#57534E', background: '#F5F5F4' }
+      : ready
+        ? { label: 'Ready', color: '#15803D', background: '#DCFCE7' }
+        : { label: 'Executable — input mapping required', color: '#B45309', background: '#FEF3C7' }
+
+  return (
+    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
+      <div className="px-4 pt-4 pb-3">
+        <div className="flex items-center gap-1.5 mb-2">
+          <i className="ti ti-percentage text-stone" style={{ fontSize: 12 }} />
+          <span className="text-sm font-medium text-ink flex-1">{fee.fee_label}</span>
+          <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full whitespace-nowrap" style={{ color: badge.color, background: badge.background }}>
+            {badge.label}
+          </span>
+        </div>
+        {fee.description && <p className="text-xs text-stone leading-relaxed mb-2">{fee.description}</p>}
+        {!!fee.required_operational_inputs?.length && (
+          <p className="text-[11px] text-stone mb-2">Depends on: {fee.required_operational_inputs.join(' · ')}</p>
+        )}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <button
+            onClick={() => setExpanded(e => !e)}
+            className="text-[10px] font-medium text-stone hover:text-ink whitespace-nowrap flex-shrink-0"
+          >
+            {expanded ? 'Hide details' : 'View details'}
+          </button>
+          <SourceClauseLink sections={sections} section={fieldSourceFallback} onViewSource={onViewSource} hasClauseText={!!fee.source_clause} />
+        </div>
+        {expanded && (
+          <div className="mt-3 pt-3 space-y-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.08)' }}>
+            {config && (
+              <>
+                <p className="text-[11px] text-stone">
+                  Rate: {config.derived_metric.metric_key} = {config.derived_metric.numerator_input_key} / {config.derived_metric.denominator_input_key}
+                </p>
+                <p className="text-[11px] text-stone">Applied to basis: {config.basis_input_key}</p>
+                <p className="text-[11px] text-stone">
+                  {config.rate_schedule.bands.length} rate bands, {config.rate_schedule.min_selector_value}–{config.rate_schedule.max_selector_value ?? '∞'}
+                  {config.derived_metric.output_unit === 'percentage' ? '%' : ''}
+                </p>
+              </>
+            )}
+            {fee.source_clause && (
+              <p className="text-[11px] text-stone/70 leading-relaxed italic">&ldquo;{fee.source_clause}&rdquo;</p>
+            )}
+            <p className="text-[11px] text-stone/60">Amount calculates automatically each period once real operational values are entered and finalized for that period — never estimated or substituted.</p>
           </div>
         )}
       </div>
@@ -4856,6 +4981,39 @@ function ReviewPanel({
                       sections={m.source_sections}
                       onViewSource={onViewSource}
                       disclaimer="Not itself a billable fee — governs how another fee's rate/band changes over time. No execution runtime yet; preserved for review and manual handling."
+                    />
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Step 17C.1, item 13 — a percentage-of-basis fee (real
+              execution support via lib/percentage-of-basis-fee.ts) is
+              distinct from the genuinely-unsupported mechanisms above: it
+              has a runtime, it just needs real per-period operational
+              input values before it can produce an amount. Its own
+              section, never mixed into "Unsupported commercial
+              mechanisms" — that section's own disclaimer text ("no
+              execution runtime") would be actively wrong for these. */}
+          {(() => {
+            const percentageOfBasisFees = (additionalRecurringFees ?? []).filter(f => f.percentage_of_basis)
+            if (percentageOfBasisFees.length === 0) return null
+            return (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Percentage-of-basis fees</p>
+                  <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                </div>
+                <div className="space-y-3">
+                  {percentageOfBasisFees.map((f, i) => (
+                    <PerformanceShareCard
+                      key={`pob:${f.fee_label ?? i}`}
+                      jobId={jobId}
+                      fee={f}
+                      sections={f.source_sections}
+                      fieldSourceFallback={fieldSources?.additional_recurring_fees}
+                      onViewSource={onViewSource}
                     />
                   ))}
                 </div>

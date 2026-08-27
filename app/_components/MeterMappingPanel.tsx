@@ -64,6 +64,125 @@ type OperationalDataInput = { key: string; kind: 'monetary' | 'countable'; sourc
 // here, informational only, same as Operational data inputs.
 type DerivedMetric = { metric_name: string; formula: string; raw_inputs: string[]; source: string }
 
+// Step 17C.1a, item 3 — one row as returned by
+// GET /api/jobs/[id]/operational-input-values (append/revoke-versioned;
+// see lib/operational-input-binding.ts's own header). finalized_at null =
+// draft, never used in a real calculation.
+type OperationalInputValueRow = {
+  id: string
+  input_key: string
+  period_start: string
+  period_end: string
+  value: number
+  currency: string | null
+  finalized_at: string | null
+  status: 'active' | 'revoked'
+}
+
+// Step 17C.1a, item 3 — the smallest generic UI for the manual source kind
+// of lib/operational-input-binding.ts's OperationalInputBinding. This is
+// explicitly the CURRENT source method, not the eventual production model
+// — a future 'api'/'connector' source would reach the SAME
+// operational_input_period_values table through the same typed input_key,
+// never a parallel mechanism, so nothing here assumes manual entry is
+// permanent. No CSV upload, no Remembill connector — a single period's
+// value, typed in and saved, is the entire surface.
+function ManualInputEntry({ jobId, inputKey }: { jobId: string; inputKey: string }) {
+  const [periodStart, setPeriodStart] = useState('')
+  const [periodEnd, setPeriodEnd] = useState('')
+  const [value, setValue] = useState('')
+  const [currency, setCurrency] = useState('')
+  const [saving, setSaving] = useState<'draft' | 'final' | null>(null)
+  const [rows, setRows] = useState<OperationalInputValueRow[]>([])
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    fetch(`/api/jobs/${jobId}/operational-input-values`)
+      .then(r => r.json())
+      .then((res: { values?: OperationalInputValueRow[] }) => {
+        setRows((res.values ?? []).filter(v => v.input_key === inputKey && v.status === 'active'))
+      })
+      .catch(() => {})
+  }, [jobId, inputKey])
+
+  useEffect(() => { load() }, [load])
+
+  const save = async (isFinal: boolean) => {
+    const numericValue = Number(value)
+    if (!periodStart || !periodEnd || value.trim() === '' || !Number.isFinite(numericValue)) {
+      setMsg('Enter a period and a numeric value first.')
+      return
+    }
+    setSaving(isFinal ? 'final' : 'draft')
+    setMsg(null)
+    const res = await fetch(`/api/jobs/${jobId}/operational-input-values`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        input_key: inputKey, period_start: periodStart, period_end: periodEnd,
+        value: numericValue, currency: currency.trim() || null, is_final: isFinal,
+      }),
+    }).catch(() => null)
+    setSaving(null)
+    if (!res?.ok) { setMsg('Save failed — try again.'); return }
+    setMsg(isFinal ? 'Marked final.' : 'Draft saved.')
+    setValue('')
+    load()
+  }
+
+  return (
+    <div className="mt-2 pt-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.06)' }}>
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-stone/70 mb-1.5">Manual entry — current source method</p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <input
+          type="date" value={periodStart} onChange={e => setPeriodStart(e.target.value)}
+          aria-label={`${inputKey} period start`}
+          className="text-[11px] border rounded px-1.5 py-1" style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+        />
+        <span className="text-[11px] text-stone/60">–</span>
+        <input
+          type="date" value={periodEnd} onChange={e => setPeriodEnd(e.target.value)}
+          aria-label={`${inputKey} period end`}
+          className="text-[11px] border rounded px-1.5 py-1" style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+        />
+        <input
+          type="number" placeholder="Value" value={value} onChange={e => setValue(e.target.value)}
+          aria-label={`${inputKey} value`}
+          className="text-[11px] border rounded px-1.5 py-1 w-24" style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+        />
+        <input
+          type="text" placeholder="EUR" value={currency} onChange={e => setCurrency(e.target.value)}
+          aria-label={`${inputKey} currency`}
+          className="text-[11px] border rounded px-1.5 py-1 w-14" style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+        />
+        <button
+          onClick={() => save(false)} disabled={saving !== null}
+          className="text-[11px] font-medium text-stone hover:text-ink px-2 py-1 rounded border disabled:opacity-50"
+          style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+        >
+          {saving === 'draft' ? 'Saving…' : 'Save draft'}
+        </button>
+        <button
+          onClick={() => save(true)} disabled={saving !== null}
+          className="text-[11px] font-medium text-white px-2 py-1 rounded bg-forest hover:bg-sage disabled:opacity-50"
+        >
+          {saving === 'final' ? 'Saving…' : 'Mark final'}
+        </button>
+      </div>
+      {msg && <p className="text-[10px] text-stone/70 mt-1">{msg}</p>}
+      {rows.length > 0 && (
+        <div className="mt-1.5 space-y-0.5">
+          {rows.map(r => (
+            <p key={r.id} className="text-[10px] text-stone/70 font-mono">
+              {r.period_start} – {r.period_end}: {r.value}{r.currency ? ` ${r.currency}` : ''} — {r.finalized_at ? 'final' : 'draft'}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 interface Props {
   jobId: string
   isConfigured?: boolean
@@ -265,7 +384,7 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
       <div className="px-7 py-4" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
         <p className="text-sm font-medium text-ink">Operational data inputs</p>
         <p className="text-xs text-stone mt-0.5">
-          These commercial rules depend on the operational data below. Countable inputs are real usage events, just not yet mapped through a billing meter here; monetary inputs (running totals, not event counts) aren&apos;t billing-meter-shaped at all. Mapping through the appropriate data source isn&apos;t configurable yet for either kind — shown here so nothing is silently missing.
+          These commercial rules depend on the operational data below. Countable inputs are real usage events, just not yet mapped through a billing meter here. Monetary inputs aren&apos;t billing-meter-shaped at all — they&apos;re entered manually per period below (the current source method; a future automated source would fill the same input_key, never a separate mechanism).
         </p>
       </div>
       <div className="px-7 py-4 space-y-2.5">
@@ -277,9 +396,10 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
             }}>
               {input.kind === 'monetary' ? 'Monetary' : 'Countable'}
             </span>
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <p className="text-xs font-mono text-ink">{input.key}</p>
               <p className="text-[11px] text-stone/70">{input.sources.join(' · ')}</p>
+              {input.kind === 'monetary' && <ManualInputEntry jobId={jobId} inputKey={input.key} />}
             </div>
           </div>
         ))}

@@ -855,26 +855,47 @@ export interface AdditionalRecurringFee {
    *  preserves that formula truthfully instead of flattening every
    *  referenced quantity into required_operational_inputs as if they were
    *  independent, equally-weighted raw inputs to THIS fee directly.
-   *  Extraction-time preservation only — no derived-metric runtime exists
-   *  yet (Step 17A explicitly does not implement one). */
+   *  Extraction-time preservation only — a human-readable label/formula
+   *  STRING, never itself execution authority (no eval, ever — see
+   *  PercentageOfBasisConfig below for the actual typed, structural
+   *  execution config Step 17C.1 introduces alongside this field, which
+   *  this one is never repurposed into). */
   derived_metric?: {
     metric_name: string
     formula: string
     raw_inputs: string[]
   } | null
+  /** Step 17C.1 — the TYPED, structural, deterministic execution
+   *  configuration for a fee whose rate is itself a percentage selected
+   *  from a schedule keyed off a derived ratio metric (e.g. Remembill's
+   *  value-weighted-payment-rate performance share). Populated at
+   *  extraction time when the contract states an explicit rate schedule
+   *  (never invented/interpolated) — see lib/rate-schedule.ts's own
+   *  gap/overlap validation, which this shape must satisfy before it's
+   *  usable. Absent/null means this fee has no executable percentage-of-
+   *  basis mechanism (the common case for every fee that isn't shaped this
+   *  way) — never a fallback derived from derived_metric.formula's free
+   *  text. See lib/percentage-of-basis-fee.ts's computePercentageOfBasisFee
+   *  for the actual execution, and lib/performance-share-fee.ts for how
+   *  this composes with pilot/waiver materiality gating and readiness. */
+  percentage_of_basis?: PercentageOfBasisConfig | null
   /** Step 17A, item 12 — same convention as OneTimeFee.unresolved_kind
    *  (see that field's own comment). 'unsupported_semantics' marks a
    *  commercial mechanism this shape genuinely cannot represent/execute
-   *  yet (e.g. a full percentage-of-basis rate schedule, or a rolling
-   *  multi-month average repricing transition) — the clause itself
-   *  (fee_label/description/source_clause/required_operational_inputs) is
-   *  still fully preserved, never silently dropped; it simply contributes
-   *  no amount/quantity anywhere until a future step adds real execution
-   *  support. Never set merely because a fee is per-unit (item 7) —
-   *  metric_name/rate_per_unit alone is a SUPPORTED shape (an operational-
-   *  quantity fee, correctly represented, just not yet invoiceable without
-   *  usage data); this is reserved for a fee whose pricing MECHANISM
-   *  itself (not merely its quantity) has no representation at all. */
+   *  yet (e.g. a rolling multi-month average repricing transition) — the
+   *  clause itself (fee_label/description/source_clause/
+   *  required_operational_inputs) is still fully preserved, never silently
+   *  dropped; it simply contributes no amount/quantity anywhere until a
+   *  future step adds real execution support. Never set merely because a
+   *  fee is per-unit (item 7) — metric_name/rate_per_unit alone is a
+   *  SUPPORTED shape (an operational-quantity fee, correctly represented,
+   *  just not yet invoiceable without usage data); this is reserved for a
+   *  fee whose pricing MECHANISM itself has no representation at all. A
+   *  percentage-of-basis fee (percentage_of_basis populated, Step 17C.1) is
+   *  likewise no longer this shape — it has real execution support now,
+   *  even though it still contributes no amount until real per-period
+   *  operational input values exist (a readiness/finality question, not a
+   *  representational one — see lib/performance-share-fee.ts). */
   unresolved_kind?: 'unsupported_semantics' | null
   /** Literal (or lightly paraphrased) source text for THIS fee's own
    *  clause — mirrors OneTimeFee/Discount/ServiceCredit's own
@@ -943,6 +964,100 @@ export interface FixedFeeBand {
    *  "—/month" that reads as missing data rather than a real, deliberate
    *  contractual state. */
   monthly_fee: number | null
+}
+
+// Step 17C.1 — the generic execution chain: raw operational inputs ->
+// DerivedMetric -> RateSchedule -> PercentageOfBasis -> economic
+// obligation. Each stage is its own small, typed, deterministic primitive
+// (lib/derived-metric.ts, lib/rate-schedule.ts, lib/percentage-of-basis-
+// fee.ts) — no arbitrary formula/eval, ever; every operand is referenced by
+// a stable typed key, resolved against the SAME operational-input map
+// lib/operational-data-inputs.ts already surfaces for review-UI visibility.
+
+// A deterministic computation of one value from two named raw operational
+// inputs. 'ratio' is the only operation Step 17C.1 implements (numerator /
+// denominator) — deliberately not an open-ended formula language (see this
+// file's header rule against arbitrary JS/eval). output_unit converts the
+// raw ratio (0..1) to a percentage (0..100) when the consuming RateSchedule
+// is itself percentage-keyed, without the two needing to agree on units by
+// convention alone.
+export interface DerivedMetricConfig {
+  metric_key: string
+  operation: 'ratio'
+  numerator_input_key: string
+  denominator_input_key: string
+  output_unit: 'ratio' | 'percentage'
+  /** Both operands are rejected as invalid (never silently coerced to 0 or
+   *  their absolute value) when negative and this is false/unset — the
+   *  correct default for a monetary/countable operational input, where a
+   *  negative value is virtually always a data error. Set true only for a
+   *  metric whose configured semantics genuinely permit a negative operand
+   *  (none exist in this codebase yet). */
+  allow_negative_operands?: boolean
+  /** Optional domain bound on the COMPUTED value (in output_unit), not the
+   *  raw operands — e.g. a ratio where the numerator is contractually a
+   *  subset of the denominator (paid invoice value ⊆ total invoice value)
+   *  can never legitimately exceed 100%; a value above this is a data
+   *  problem (paid > total), not a "wait for more data" situation, and
+   *  fails 'invalid' rather than 'not_ready'. Unset = no bound. */
+  min_output_value?: number | null
+  max_output_value?: number | null
+}
+
+// One row of a rate schedule: [from, to) — from inclusive, to EXCLUSIVE
+// (never the FixedFeeBand's inclusive-inclusive convention above — a
+// percentage schedule's own stated intervals are half-open, e.g. "5–<10%",
+// and must preserve that exact boundary semantics, not FixedFeeBand's
+// unrelated committed-volume-band shape). to: null is only ever valid on
+// the LAST band of a schedule — see RateSchedule.max_selector_value, which
+// is what actually bounds an open-ended last band (e.g. a schedule capped
+// at exactly 100% represents that as a single-point last band
+// {from:100, to:null} + max_selector_value:100, never a literal {from:100,
+// to:100} which validateRateSchedule would reject as empty/inverted).
+export interface RateScheduleBand {
+  from: number
+  to: number | null
+  rate_pct: number
+}
+
+// A generic, bounded, explicit lookup table converting a selector value
+// (e.g. a DerivedMetric's output) into a contractual rate — never a
+// generic mathematical formula reconstructing the table (e.g. "round down
+// to the nearest 5%"), even when the real numbers happen to look like they
+// might fit one — the agreement's schedule is what it states, verbatim,
+// row by row; lib/rate-schedule.ts's validateRateSchedule enforces no
+// gaps/no overlaps/deterministic boundaries structurally, not by trusting
+// extraction to have gotten the arithmetic right.
+export interface RateSchedule {
+  schedule_key: string
+  bands: RateScheduleBand[]
+  /** The first band's `from` must equal this exactly (validated) — the
+   *  schedule's own stated floor, e.g. 0 for a payment-rate percentage
+   *  that can be as low as 0%. */
+  min_selector_value: number
+  /** A selector value above this is rejected (out_of_bounds) rather than
+   *  silently matched against whichever band happens to have to: null —
+   *  null means genuinely unbounded (no configured cap), which must be an
+   *  explicit choice, never the default for a schedule whose real-world
+   *  values are contractually bounded (e.g. a payment rate can never
+   *  exceed 100%). */
+  max_selector_value: number | null
+}
+
+// Ties a DerivedMetric (the RATE SELECTOR) to a RateSchedule (the RATE
+// TABLE) and a separately-configurable MONETARY BASIS the selected rate is
+// applied against. The key generic principle Step 17C.1 exists to encode:
+// Metric A may select Rate B, and Rate B may be applied to a different
+// Basis C — basis_input_key is deliberately independent of
+// derived_metric.numerator_input_key/denominator_input_key (for Remembill
+// they happen to share the denominator, total_invoice_value_of_issued_
+// requests, but nothing here couples them — a future contract could select
+// a rate off one ratio and apply it to an entirely unrelated monetary
+// basis). See lib/percentage-of-basis-fee.ts's computePercentageOfBasisFee.
+export interface PercentageOfBasisConfig {
+  derived_metric: DerivedMetricConfig
+  rate_schedule: RateSchedule
+  basis_input_key: string
 }
 
 export interface RampStep {

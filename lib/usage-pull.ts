@@ -93,7 +93,12 @@ export type OverageLineItem = {
   amount: number
   currency: string
   description: string
-  metric_source: 'meter_pull' | 'client_pull'
+  // Step 17C.1 — 'manual_entry' covers a computed-in-arrears charge whose
+  // inputs came from lib/operational-input-binding.ts's manual-entry
+  // boundary (a monetary value with no live connector/meter equivalent —
+  // e.g. the performance-share fee's paid/total invoice values) rather
+  // than either pull mechanism below.
+  metric_source: 'meter_pull' | 'client_pull' | 'manual_entry'
   // The actual window this meter was measured over — set whenever the meter
   // has its own measurement cadence, which can differ from the invoice
   // period it's displayed under (e.g. a quarterly-measured metric shown

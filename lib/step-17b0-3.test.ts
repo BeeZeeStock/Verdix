@@ -43,7 +43,7 @@ describe('17B0.3 item 2 — open-ended fixed band with no stated fee', () => {
 describe('17B0.3 item 3 — both unsupported mechanisms carry their own independent source_sections', () => {
   it('the performance-share fee has three independent Bilaga 1 locators (unaffected regression from Step 17B0.2)', () => {
     const terms = buildRemembillFixtureTerms()
-    const perf = terms.additional_recurring_fees!.find(f => f.unresolved_kind === 'unsupported_semantics')!
+    const perf = terms.additional_recurring_fees!.find(f => f.fee_label === 'Performance share (value-weighted payment rate)')!
     expect(perf.source_sections?.length).toBeGreaterThanOrEqual(2)
   })
 
@@ -63,7 +63,7 @@ describe('17B0.3 item 3 — both unsupported mechanisms carry their own independ
     const terms = buildRemembillFixtureTerms()
     const merged = mergeExtractions([terms])
     const payload = buildContractTermsUpsertPayload('job-x', merged)
-    const perf = payload.additional_recurring_fees!.find(f => f.unresolved_kind === 'unsupported_semantics')!
+    const perf = payload.additional_recurring_fees!.find(f => f.fee_label === 'Performance share (value-weighted payment rate)')!
     const rolling = payload.unsupported_commercial_mechanisms!.find(m => m.kind === 'rolling_volume_pricing_transition')!
     expect(perf.source_sections?.length).toBeGreaterThanOrEqual(2)
     expect(rolling.source_sections).toEqual([

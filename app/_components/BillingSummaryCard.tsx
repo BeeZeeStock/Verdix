@@ -28,7 +28,7 @@ type OverageLineItem = {
   amount: number
   currency: string
   description: string
-  metric_source: 'meter_pull' | 'client_pull'
+  metric_source: 'meter_pull' | 'client_pull' | 'manual_entry'
 }
 
 type InvoiceInfo = {

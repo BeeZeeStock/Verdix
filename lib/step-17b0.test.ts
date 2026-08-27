@@ -163,10 +163,12 @@ describe('17B0 item E — overage threshold is never mislabeled "from unit 1"', 
 describe('17B0 item F — unsupported mechanisms are extracted and never silently droppable', () => {
   const terms = buildRemembillFixtureTerms()
 
-  it('the performance fee and rolling volume transition are present and correctly shaped for the review card filter', () => {
+  it('the rolling volume transition remains unsupported; the performance fee no longer does (Step 17C.1 gave it real execution support)', () => {
     const unsupportedFees = (terms.additional_recurring_fees ?? []).filter(f => f.unresolved_kind === 'unsupported_semantics')
-    expect(unsupportedFees).toHaveLength(1)
-    expect(unsupportedFees[0].fee_label).toBe('Performance share (value-weighted payment rate)')
+    expect(unsupportedFees).toHaveLength(0)
+    const perf = terms.additional_recurring_fees!.find(f => f.fee_label === 'Performance share (value-weighted payment rate)')!
+    expect(perf.unresolved_kind).toBeNull()
+    expect(perf.percentage_of_basis).toBeTruthy()
 
     const unsupportedMechanisms = terms.unsupported_commercial_mechanisms ?? []
     expect(unsupportedMechanisms).toHaveLength(1)
@@ -174,8 +176,8 @@ describe('17B0 item F — unsupported mechanisms are extracted and never silentl
     expect(unsupportedMechanisms[0].execution_status).toBe('unsupported')
   })
 
-  it('both unsupported items carry a source_clause and required_operational_inputs — nothing to render is ever missing', () => {
-    const perf = terms.additional_recurring_fees!.find(f => f.unresolved_kind === 'unsupported_semantics')!
+  it('the performance fee still carries a source_clause and required_operational_inputs — nothing to render is ever missing', () => {
+    const perf = terms.additional_recurring_fees!.find(f => f.fee_label === 'Performance share (value-weighted payment rate)')!
     expect(perf.source_clause).toBeTruthy()
     expect(perf.required_operational_inputs?.length).toBeGreaterThan(0)
 

@@ -12,7 +12,44 @@
 // prompt guidance (items 7/8/10/11/12/13) is aimed at producing, and what
 // lib/pii-detector.ts (items 2/3/4/5) is aimed at protecting from ever
 // being masked.
-import type { ContractTerms } from './types'
+import type { ContractTerms, RateSchedule } from './types'
+
+// Step 17C.1 — the real, explicit performance-share rate schedule stated in
+// Bilaga 1 (verbatim contractual data, not a reconstructed formula — see
+// lib/rate-schedule.ts's own header for why "round down to the nearest 5
+// points" would misprice several of these bands, e.g. 50–<55% is 2.05%, not
+// a uniform +0.20% step). Exported so both the fixture below and this
+// step's test files (lib/rate-schedule.test.ts, lib/percentage-of-basis-
+// fee.test.ts, lib/performance-share-fee.test.ts) reference the exact same
+// data — never two independently-typed copies that could silently drift.
+export const REMEMBILL_PERFORMANCE_SHARE_SCHEDULE: RateSchedule = {
+  schedule_key: 'remembill_value_weighted_payment_rate_schedule',
+  min_selector_value: 0,
+  max_selector_value: 100,
+  bands: [
+    { from: 0,  to: 5,    rate_pct: 0 },
+    { from: 5,  to: 10,   rate_pct: 0.20 },
+    { from: 10, to: 15,   rate_pct: 0.40 },
+    { from: 15, to: 20,   rate_pct: 0.60 },
+    { from: 20, to: 25,   rate_pct: 0.80 },
+    { from: 25, to: 30,   rate_pct: 1.00 },
+    { from: 30, to: 35,   rate_pct: 1.20 },
+    { from: 35, to: 40,   rate_pct: 1.40 },
+    { from: 40, to: 45,   rate_pct: 1.60 },
+    { from: 45, to: 50,   rate_pct: 1.80 },
+    { from: 50, to: 55,   rate_pct: 2.05 },
+    { from: 55, to: 60,   rate_pct: 2.30 },
+    { from: 60, to: 65,   rate_pct: 2.55 },
+    { from: 65, to: 70,   rate_pct: 2.80 },
+    { from: 70, to: 75,   rate_pct: 3.05 },
+    { from: 75, to: 80,   rate_pct: 3.30 },
+    { from: 80, to: 85,   rate_pct: 3.55 },
+    { from: 85, to: 90,   rate_pct: 3.80 },
+    { from: 90, to: 95,   rate_pct: 4.05 },
+    { from: 95, to: 100,  rate_pct: 4.30 },
+    { from: 100, to: null, rate_pct: 4.50 },
+  ],
+}
 
 export function buildRemembillFixtureTerms(): ContractTerms {
   return {
@@ -138,21 +175,37 @@ export function buildRemembillFixtureTerms(): ContractTerms {
         metric_name: 'completed_payment', rate_per_unit: 1.7,
         required_operational_inputs: ['completed_payment_count'],
       },
-      // Items 11/12 (refined by hardening items 4/5) — the value-weighted
-      // performance mechanism: a genuine rate FORMULA this shape cannot
-      // execute yet. Preserved (never dropped), flagged
-      // unsupported_semantics. The formula itself (paid ÷ total invoice
-      // value) lives in derived_metric — required_operational_inputs holds
-      // only this fee's OWN additional direct dependency (the invoice-value
-      // base the derived rate is applied to), never a blanket copy of every
-      // quantity mentioned anywhere in the clause.
+      // Items 11/12 (refined by hardening items 4/5; made executable in
+      // Step 17C.1) — the value-weighted performance mechanism.
+      // required_operational_inputs holds only this fee's OWN additional
+      // direct dependency (the invoice-value base the derived rate is
+      // applied to), never a blanket copy of every quantity mentioned
+      // anywhere in the clause.
       {
         fee_label: 'Performance share (value-weighted payment rate)', amount: 0,
-        description: 'Variable monthly fee based on value-weighted payment rate (paid invoice value / total invoice value of requests issued in the month). Rate ranges from 0.20% to 4.50%, rounded down to the nearest 5-percentage-point step. No performance share below 5% payment rate.',
+        description: 'Variable monthly fee based on value-weighted payment rate (paid invoice value / total invoice value of requests issued in the month). Rate schedule stated explicitly in Bilaga 1, from 0% below 5% payment rate up to 4.50% at 100%.',
         derived_metric: {
           metric_name: 'value_weighted_payment_rate',
           formula: 'paid_invoice_value / total_invoice_value_of_issued_requests',
           raw_inputs: ['paid_invoice_value', 'total_invoice_value_of_issued_requests'],
+        },
+        // Step 17C.1 — the TYPED, executable counterpart to derived_metric
+        // above. basis_input_key is the SAME denominator here (Remembill's
+        // own contractual shape), but deliberately configured, never
+        // assumed equal to the derived metric's own operands — see
+        // lib/types.ts's PercentageOfBasisConfig doc.
+        percentage_of_basis: {
+          derived_metric: {
+            metric_key: 'value_weighted_payment_rate',
+            operation: 'ratio',
+            numerator_input_key: 'paid_invoice_value',
+            denominator_input_key: 'total_invoice_value_of_issued_requests',
+            output_unit: 'percentage',
+            min_output_value: 0,
+            max_output_value: 100,
+          },
+          rate_schedule: REMEMBILL_PERFORMANCE_SHARE_SCHEDULE,
+          basis_input_key: 'total_invoice_value_of_issued_requests',
         },
         // Corrections pass (post-17B0.4) — the fee's OWN additional direct
         // dependency beyond the derived metric itself: the monetary charge
@@ -165,7 +218,13 @@ export function buildRemembillFixtureTerms(): ContractTerms {
         // already de-dupes by key, so listing it in both places produces
         // exactly one operational-input row, not two.
         required_operational_inputs: ['total_invoice_value_of_issued_requests'],
-        unresolved_kind: 'unsupported_semantics',
+        // Step 17C.1 — no longer unresolved_kind: 'unsupported_semantics':
+        // this mechanism now has real execution support (percentage_of_basis
+        // above). It still contributes no amount until real per-period
+        // paid_invoice_value/total_invoice_value_of_issued_requests values
+        // exist — a readiness/finality question (see
+        // lib/performance-share-fee.ts), not a representational gap.
+        unresolved_kind: null,
         source_clause: 'Betalgrad efter uppföljning är utfallet, mätt värdeviktat.',
         // Step 17B0.2, item 6 (revised Step 17B0.4) — this fee's evidence
         // genuinely spans three parts of Bilaga 1 (the rate itself, the

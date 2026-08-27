@@ -235,7 +235,7 @@ describe('17B0.2 item 6 — PII masking never alters the locator', () => {
 describe('17B0.2 item 6 — multiple independent locators for multi-section evidence (performance-share fee, Bilaga 1)', () => {
   it('the performance-share fee carries three independent Bilaga 1 locators, not one combined string', () => {
     const terms = buildRemembillFixtureTerms()
-    const perf = terms.additional_recurring_fees!.find(f => f.unresolved_kind === 'unsupported_semantics')!
+    const perf = terms.additional_recurring_fees!.find(f => f.fee_label === 'Performance share (value-weighted payment rate)')!
     expect(perf.source_sections).toEqual([
       { exact_source_heading: '2. Pilot och affärsmodell', display_label: 'Bilaga 1, Source 1' },
       { exact_source_heading: '3. Modellen i korthet', display_label: 'Bilaga 1, Source 2' },
@@ -253,7 +253,7 @@ describe('17B0.2 item 6 — multiple independent locators for multi-section evid
     const terms = buildRemembillFixtureTerms()
     const merged = mergeExtractions([terms])
     const payload = buildContractTermsUpsertPayload('job-x', merged)
-    const perf = payload.additional_recurring_fees!.find(f => f.unresolved_kind === 'unsupported_semantics')!
+    const perf = payload.additional_recurring_fees!.find(f => f.fee_label === 'Performance share (value-weighted payment rate)')!
     expect(perf.source_sections).toEqual([
       { exact_source_heading: '2. Pilot och affärsmodell', display_label: 'Bilaga 1, Source 1' },
       { exact_source_heading: '3. Modellen i korthet', display_label: 'Bilaga 1, Source 2' },
