@@ -249,7 +249,7 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
       <div className="px-7 py-4" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
         <p className="text-sm font-medium text-ink">Operational data inputs</p>
         <p className="text-xs text-stone mt-0.5">
-          These commercial rules depend on data that isn&apos;t a countable usage meter — mapping through the appropriate data source isn&apos;t configurable yet. Shown here so nothing is silently missing.
+          These commercial rules depend on the operational data below. Countable inputs are real usage events, just not yet mapped through a billing meter here; monetary inputs (running totals, not event counts) aren&apos;t billing-meter-shaped at all. Mapping through the appropriate data source isn&apos;t configurable yet for either kind — shown here so nothing is silently missing.
         </p>
       </div>
       <div className="px-7 py-4 space-y-2.5">

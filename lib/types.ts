@@ -920,7 +920,14 @@ export interface UnsupportedCommercialMechanism {
 export interface FixedFeeBand {
   from_unit: number
   to_unit: number | null
-  monthly_fee: number
+  /** Step 17B0.3 — null means this band has no stated fixed amount at all:
+   *  the contract requires a separate quote/negotiation above this volume
+   *  (e.g. "150,001+: Offereras" / "priced on request"). Never 0 — a
+   *  quote-required band is not a free one. Display code must render this
+   *  distinctly (e.g. "Offereras" / "Price required"), never as a blank
+   *  "—/month" that reads as missing data rather than a real, deliberate
+   *  contractual state. */
+  monthly_fee: number | null
 }
 
 export interface RampStep {

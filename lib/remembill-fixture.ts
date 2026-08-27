@@ -46,6 +46,11 @@ export function buildRemembillFixtureTerms(): ContractTerms {
       { from_unit: 1, to_unit: 500, monthly_fee: 500 },
       { from_unit: 501, to_unit: 1500, monthly_fee: 1200 },
       { from_unit: 1501, to_unit: 5000, monthly_fee: 2000 },
+      // Step 17B0.3 — the real contract's band table has an open-ended top
+      // band above 150,000 with no stated fixed fee ("Offereras" — quoted
+      // on request), confirmed live. monthly_fee: null, never 0 or a
+      // fabricated number — see FixedFeeBand's own doc.
+      { from_unit: 150001, to_unit: null, monthly_fee: null },
     ],
     // Hardening item 1 (review pass 3) — a SEPARATE Decision Required from
     // the pilot's own scope (discounts[0] above): once the 90-day waiver
@@ -180,6 +185,12 @@ export function buildRemembillFixtureTerms(): ContractTerms {
         kind: 'rolling_volume_pricing_transition',
         description: 'If the rolling three-month average of issued payment requests exceeds the contracted/agreed volume, the platform-fee band migrates to the corresponding higher level from the next contract period onward.',
         source_clause: 'Om tremånaderssnittet överstiger avtalad volym övergår leverantören till motsvarande nivå från nästa avtalsperiod.',
+        // Step 17B0.3, item 3 — this mechanism's own independent locator,
+        // set directly on the item (not only via the per-FIELD
+        // field_sources.unsupported_commercial_mechanisms fallback, which
+        // only ever names one heading shared across the whole array — see
+        // AdditionalRecurringFee.source_sections' identical rationale).
+        source_sections: ['Bilaga 1, avsnitt 4'],
         required_operational_inputs: ['issued_payment_request_count'],
         execution_status: 'unsupported',
       },

@@ -243,7 +243,7 @@ type Terms = {
   // stated committed volume that selects a row in it (see
   // lib/fixed-fee-band.ts's resolveFixedFeeBand) — preserves the causal
   // chain (volume -> band -> fee) a bare base_monthly_fee scalar loses.
-  base_fee_bands?: { from_unit: number; to_unit: number | null; monthly_fee: number }[] | null
+  base_fee_bands?: { from_unit: number; to_unit: number | null; monthly_fee: number | null }[] | null
   base_fee_committed_volume?: number | null
   base_fee_proration?: PeriodProrationRule | null
   billing_frequency?: string; payment_terms_days?: number; payment_terms_text?: string
@@ -7017,7 +7017,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     <div>
                       <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Fixed platform fee</p>
                       <p className="text-[15px] font-medium text-ink leading-snug">
-                        {resolution.status === 'resolved' ? `${fmt(resolution.band.monthly_fee, cur)}/month` : '—'}
+                        {resolution.status === 'resolved'
+                          ? (resolution.band.monthly_fee != null ? `${fmt(resolution.band.monthly_fee, cur)}/month` : <span className="text-amber-600">Offereras / Price required</span>)
+                          : '—'}
                       </p>
                     </div>
                   </div>
@@ -7026,7 +7028,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     <div className="space-y-1">
                       {[...terms.base_fee_bands].sort((a, b) => a.from_unit - b.from_unit).map((band, i) => (
                         <p key={i} className={`text-[12px] ${resolution.status === 'resolved' && resolution.band.from_unit === band.from_unit ? 'text-ink font-medium' : 'text-stone'}`}>
-                          {band.from_unit.toLocaleString()}–{band.to_unit != null ? band.to_unit.toLocaleString() : '∞'}: {fmt(band.monthly_fee, cur)}/month
+                          {band.from_unit.toLocaleString()}–{band.to_unit != null ? band.to_unit.toLocaleString() : '∞'}: {band.monthly_fee != null ? `${fmt(band.monthly_fee, cur)}/month` : 'Offereras / Price required'}
                           {resolution.status === 'resolved' && resolution.band.from_unit === band.from_unit && ' (selected)'}
                         </p>
                       ))}
