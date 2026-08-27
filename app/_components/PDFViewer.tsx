@@ -261,6 +261,20 @@ export default function PDFViewer({ url, section }: Props) {
   const pdfRef = useRef<PDFDocumentProxy | null>(null)
   const wrapperMap = useRef<Map<number, HTMLDivElement>>(new Map())
   const sectionRef = useRef<string | undefined>(undefined)
+  // Step 17B0.5 — a real, confirmed race: `status` flips to 'ready' (the
+  // PDF document itself is loaded) well before any individual page's own
+  // canvas+text-layer rendering has completed (that's a separate, later,
+  // per-page async chain — see mountPage). The section-navigation effect
+  // below fires the moment `status` becomes 'ready', which used to mean its
+  // very first paintSection() attempt ran against zero rendered text
+  // layers — guaranteed to fail and log a misleading "could not locate"
+  // warning, even on a heading that mountPage's own trailing paintSection
+  // call (fired once THAT page's text layer is actually ready — a genuine
+  // readiness event, not a sleep) goes on to find correctly moments later.
+  // This tracks which pages have real, rendered text layers so paintSection
+  // only treats "not found" as final once every currently-known page has
+  // genuinely had a chance — never before, never via an arbitrary delay.
+  const readyPagesRef = useRef<Set<number>>(new Set())
 
   useEffect(() => {
     let dead = false
@@ -368,7 +382,16 @@ export default function PDFViewer({ url, section }: Props) {
     const found = candidates.some(candidate =>
       attemptMatch(normWithMap, norm(candidate)) || attemptMatch(normWithMapLoose, normLoose(candidate)),
     )
-    if (!found) console.warn('[PDFViewer] could not locate heading in PDF text:', heading, candidates)
+    // Step 17B0.5 — only warn once every currently-mounted page has a
+    // rendered text layer (readyPagesRef, updated by mountPage below). A
+    // "not found" result while pages are still loading is expected and
+    // meaningless (mountPage's own trailing paintSection call for each
+    // not-yet-ready page will retry the moment ITS text layer actually
+    // exists — a real readiness event, not a guess) — warning at that point
+    // was misleading noise, not a signal of an actual missing heading.
+    if (!found && readyPagesRef.current.size >= wrapperMap.current.size) {
+      console.warn('[PDFViewer] could not locate heading in PDF text:', heading, candidates)
+    }
   }, [])
 
   useEffect(() => {
@@ -434,6 +457,7 @@ export default function PDFViewer({ url, section }: Props) {
       s.style.color = 'transparent'
     })
 
+    readyPagesRef.current.add(pageNum)
     if (sectionRef.current) paintSection(sectionRef.current)
   }, [paintSection])
 

@@ -979,6 +979,63 @@ function SourceClauseLink({
   )
 }
 
+// Unsupported-mechanism review UI compacted for scannability (data itself
+// unchanged): the default row shows only title/badge, one-line
+// description, dependencies, and source links; the extracted source
+// quotation, derived-rate formula, and execution-limitation disclaimer —
+// all real fields already present on the fee/mechanism — move behind a
+// "View details" toggle instead of always rendering inline.
+function UnsupportedMechanismCard({
+  title, description, sourceClause, requiredInputs, derivedMetric, sections, fieldSourceFallback, onViewSource, disclaimer,
+}: {
+  title: string
+  description?: string | null
+  sourceClause?: string | null
+  requiredInputs?: string[] | null
+  derivedMetric?: { metric_name: string; formula: string; raw_inputs: string[] } | null
+  sections?: SourceLocator[] | null
+  fieldSourceFallback?: string
+  onViewSource?: (section: string) => void
+  disclaimer: string
+}) {
+  const [expanded, setExpanded] = useState(false)
+  return (
+    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FECACA', background: 'white' }}>
+      <div className="px-4 pt-4 pb-3">
+        <div className="flex items-center gap-1.5 mb-2">
+          <i className="ti ti-alert-hexagon text-red-500" style={{ fontSize: 12 }} />
+          <span className="text-sm font-medium text-ink flex-1">{title}</span>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-red-600 bg-red-50 px-2 py-0.5 rounded-full">Unsupported</span>
+        </div>
+        {description && <p className="text-xs text-stone leading-relaxed mb-2">{description}</p>}
+        {!!requiredInputs?.length && (
+          <p className="text-[11px] text-stone mb-2">Depends on: {requiredInputs.join(' · ')}</p>
+        )}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <button
+            onClick={() => setExpanded(e => !e)}
+            className="text-[10px] font-medium text-stone hover:text-ink whitespace-nowrap flex-shrink-0"
+          >
+            {expanded ? 'Hide details' : 'View details'}
+          </button>
+          <SourceClauseLink sections={sections} section={fieldSourceFallback} onViewSource={onViewSource} hasClauseText={!!sourceClause} />
+        </div>
+        {expanded && (
+          <div className="mt-3 pt-3 space-y-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.08)' }}>
+            {derivedMetric && (
+              <p className="text-[11px] text-stone">Rate formula: {derivedMetric.formula} (inputs: {derivedMetric.raw_inputs.join(', ')})</p>
+            )}
+            {sourceClause && (
+              <p className="text-[11px] text-stone/70 leading-relaxed italic">&ldquo;{sourceClause}&rdquo;</p>
+            )}
+            <p className="text-[11px] text-stone/60">{disclaimer}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function CorrectionInput({
   value,
   onChange,
@@ -4772,62 +4829,30 @@ function ReviewPanel({
                 </div>
                 <div className="space-y-3">
                   {unsupportedFees.map((f, i) => (
-                    <div key={`fee:${f.fee_label ?? i}`} className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FECACA', background: 'white' }}>
-                      <div className="px-4 pt-4 pb-3">
-                        <div className="flex items-center gap-1.5 mb-2">
-                          <i className="ti ti-alert-hexagon text-red-500" style={{ fontSize: 12 }} />
-                          <span className="text-sm font-medium text-ink flex-1">{f.fee_label}</span>
-                          <span className="text-[10px] font-semibold uppercase tracking-wider text-red-600 bg-red-50 px-2 py-0.5 rounded-full">Unsupported</span>
-                          <SourceClauseLink
-                            sections={f.source_sections}
-                            section={fieldSources?.additional_recurring_fees}
-                            onViewSource={onViewSource}
-                            hasClauseText={!!f.source_clause}
-                          />
-                        </div>
-                        {f.description && <p className="text-xs text-stone leading-relaxed mb-2">{f.description}</p>}
-                        {f.source_clause && (
-                          <p className="text-[11px] text-stone/70 leading-relaxed mb-2 italic">&ldquo;{f.source_clause}&rdquo;</p>
-                        )}
-                        {!!f.required_operational_inputs?.length && (
-                          <p className="text-[11px] text-stone">
-                            Depends on: {f.required_operational_inputs.join(', ')}
-                          </p>
-                        )}
-                        {f.derived_metric && (
-                          <p className="text-[11px] text-stone mt-1">
-                            Rate formula: {f.derived_metric.formula} (inputs: {f.derived_metric.raw_inputs.join(', ')})
-                          </p>
-                        )}
-                        <p className="text-[11px] text-stone/60 mt-2">Cannot be billed automatically yet — no execution runtime for this rate mechanism. Preserved for review and manual handling; will never silently disappear.</p>
-                      </div>
-                    </div>
+                    <UnsupportedMechanismCard
+                      key={`fee:${f.fee_label ?? i}`}
+                      title={f.fee_label}
+                      description={f.description}
+                      sourceClause={f.source_clause}
+                      requiredInputs={f.required_operational_inputs}
+                      derivedMetric={f.derived_metric}
+                      sections={f.source_sections}
+                      fieldSourceFallback={fieldSources?.additional_recurring_fees}
+                      onViewSource={onViewSource}
+                      disclaimer="Cannot be billed automatically yet — no execution runtime for this rate mechanism. Preserved for review and manual handling; will never silently disappear."
+                    />
                   ))}
                   {unsupportedMechanisms.map((m, i) => (
-                    <div key={`mech:${i}`} className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FECACA', background: 'white' }}>
-                      <div className="px-4 pt-4 pb-3">
-                        <div className="flex items-center gap-1.5 mb-2">
-                          <i className="ti ti-alert-hexagon text-red-500" style={{ fontSize: 12 }} />
-                          <span className="text-sm font-medium text-ink flex-1">{m.kind.replace(/_/g, ' ')}</span>
-                          <span className="text-[10px] font-semibold uppercase tracking-wider text-red-600 bg-red-50 px-2 py-0.5 rounded-full">Unsupported</span>
-                          <SourceClauseLink
-                            sections={m.source_sections}
-                            onViewSource={onViewSource}
-                            hasClauseText={!!m.source_clause}
-                          />
-                        </div>
-                        <p className="text-xs text-stone leading-relaxed mb-2">{m.description}</p>
-                        {m.source_clause && (
-                          <p className="text-[11px] text-stone/70 leading-relaxed mb-2 italic">&ldquo;{m.source_clause}&rdquo;</p>
-                        )}
-                        {!!m.required_operational_inputs?.length && (
-                          <p className="text-[11px] text-stone">
-                            Depends on: {m.required_operational_inputs.join(', ')}
-                          </p>
-                        )}
-                        <p className="text-[11px] text-stone/60 mt-2">Not itself a billable fee — governs how another fee&apos;s rate/band changes over time. No execution runtime yet; preserved for review and manual handling.</p>
-                      </div>
-                    </div>
+                    <UnsupportedMechanismCard
+                      key={`mech:${i}`}
+                      title={m.kind.replace(/_/g, ' ')}
+                      description={m.description}
+                      sourceClause={m.source_clause}
+                      requiredInputs={m.required_operational_inputs}
+                      sections={m.source_sections}
+                      onViewSource={onViewSource}
+                      disclaimer="Not itself a billable fee — governs how another fee's rate/band changes over time. No execution runtime yet; preserved for review and manual handling."
+                    />
                   ))}
                 </div>
               </div>
