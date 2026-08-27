@@ -219,5 +219,48 @@ async function savePIIEntities(jobId: string, orgId: string, entities: PIIEntity
       )
   }
 
+  // Step 17A hardening (review pass 8) — self-heal group approved/ignored
+  // consistency in the DB itself, not just at display time (see the GET
+  // handler's own group derivation, app/api/jobs/[id]/pii/route.ts).
+  // pii_entities.approved/ignored are intentionally org-scoped, REUSED
+  // flags (the same "CoAccept AB" row is shared across every contract
+  // that mentions it — see CLAUDE.md) — so a canonical already approved
+  // from an EARLIER job and an alias newly discovered in THIS job's
+  // document can otherwise persist as a split state indefinitely. Reuses
+  // the exact same group-resolution/derivation helpers the PATCH route
+  // already uses for explicit reviewer actions — never a new, separate
+  // merge rule.
+  if (results.length > 0) {
+    const { resolveGroupMemberIds, deriveGroupReviewState } = await import('@/lib/pii-detector')
+    const { data: allOrgEntities } = await supabaseServer
+      .from('pii_entities')
+      .select('id, alias_of_entity_id, approved, ignored')
+      .eq('org_id', orgId)
+    const orgEntities = allOrgEntities ?? []
+    const touchedIds = new Set(results.map(r => r.id))
+    const processedRoots = new Set<string>()
+    for (const row of orgEntities) {
+      if (!touchedIds.has(row.id)) continue
+      const root = row.alias_of_entity_id ?? row.id
+      if (processedRoots.has(root)) continue
+      processedRoots.add(root)
+      const groupIds = resolveGroupMemberIds(root, orgEntities)
+      if (groupIds.length < 2) continue // no group to sync
+      const groupRows = orgEntities.filter(e => groupIds.includes(e.id))
+      const derived = deriveGroupReviewState(groupRows)
+      for (const memberId of groupIds) {
+        const target = derived.get(memberId)
+        const current = orgEntities.find(e => e.id === memberId)
+        if (!target || !current) continue
+        if (current.approved !== target.approved || current.ignored !== target.ignored) {
+          await supabaseServer
+            .from('pii_entities')
+            .update({ approved: target.approved, ignored: target.ignored, updated_at: new Date().toISOString() })
+            .eq('id', memberId)
+        }
+      }
+    }
+  }
+
   return results
 }

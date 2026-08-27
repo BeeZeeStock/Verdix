@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
-import type { PIIEntityType } from '@/lib/pii-detector'
+import { deriveGroupReviewState, type PIIEntityType } from '@/lib/pii-detector'
 
 // GET — return all PII entities detected for this job
 export async function GET(
@@ -55,14 +55,32 @@ export async function GET(
     aliasesByCanonicalId.set(e.alias_of_entity_id, list)
   }
 
+  // Hardening item (review pass 8) — pii_entities.approved is an
+  // intentionally org-scoped, reused flag (the same "CoAccept AB" row is
+  // shared across every contract that mentions it — see CLAUDE.md), so a
+  // canonical approved in an EARLIER job can legitimately differ from an
+  // alias just detected for the FIRST time in THIS job, even though
+  // masking already treats them as one identity. Never display that raw,
+  // possibly-split state — derive it group-consistently from this job's
+  // own occurrence set (not a blind org-wide/global inheritance) so the
+  // review UI can never show "CoAccept AB: Approved / Remembill: Pending"
+  // for the same underlying organisation.
+  type OccurrenceEntity = { id: string; alias_of_entity_id: string | null; approved: boolean; ignored: boolean }
+  const jobEntities = occurrences
+    .map(occ => (occ.pii_entity as unknown) as OccurrenceEntity | null)
+    .filter((e): e is OccurrenceEntity => !!e)
+  const groupState = deriveGroupReviewState(jobEntities)
+
   const enriched = occurrences.map(occ => {
-    const e = (occ.pii_entity as unknown) as { id: string; alias_of_entity_id: string | null } | null
+    const e = (occ.pii_entity as unknown) as OccurrenceEntity | null
     if (!e) return occ
     const canonical = e.alias_of_entity_id ? byId.get(e.alias_of_entity_id) : null
+    const derived = groupState.get(e.id)
     return {
       ...occ,
       pii_entity: {
         ...occ.pii_entity,
+        approved: derived?.approved ?? e.approved,
         aliases: canonical ? [] : (aliasesByCanonicalId.get(e.id) ?? []),
         aliasOf: canonical ? canonical.original_value : null,
       },

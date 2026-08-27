@@ -378,6 +378,41 @@ export function resolveGroupMemberIds<T extends AliasGroupable>(canonicalId: str
   return entities.filter(e => aliasGroupRoot(e) === canonicalId).map(e => e.id)
 }
 
+// Hardening item (review pass 8) — closes the remaining gap: approve/
+// reject/ignore already persist group-consistently at ACTION time (the
+// PATCH route's resolveAliasGroupIds), but pii_entities.approved is an
+// intentionally org-scoped, REUSED flag (see CLAUDE.md — the same
+// "CoAccept AB" row is shared across every contract that mentions it). A
+// fresh job can therefore start with a canonical already approved: true
+// from an earlier job while an alias newly discovered in THIS job's
+// document is still approved: false by default — a split the review UI
+// must never present, even before any reviewer has clicked anything.
+//
+// Deliberately takes an already-scoped entity list (e.g. one job's own
+// occurrences) rather than reaching org-wide itself — "derive the group
+// decision from job-level occurrence state" per the caller's own scope,
+// not a blind global inheritance. If ANY member of a group within the
+// given set is approved, every member of that group (within the set) is
+// presented as approved; if any member is ignored, the whole group is
+// ignored (and never simultaneously approved, matching the PATCH route's
+// own ignore semantics: approved: false, ignored: true together).
+export interface GroupReviewState extends AliasGroupable {
+  approved: boolean
+  ignored: boolean
+}
+
+export function deriveGroupReviewState<T extends GroupReviewState>(entities: T[]): Map<string, { approved: boolean; ignored: boolean }> {
+  const ignoredRoots = new Set(entities.filter(e => e.ignored).map(aliasGroupRoot))
+  const approvedRoots = new Set(entities.filter(e => e.approved).map(aliasGroupRoot))
+  const result = new Map<string, { approved: boolean; ignored: boolean }>()
+  for (const e of entities) {
+    const root = aliasGroupRoot(e)
+    const ignored = ignoredRoots.has(root)
+    result.set(e.id, { ignored, approved: !ignored && approvedRoots.has(root) })
+  }
+  return result
+}
+
 // ── Mask contract text ────────────────────────────────────────────────────────
 
 export function maskText(text: string, tokenMap: Map<string, string>): string {

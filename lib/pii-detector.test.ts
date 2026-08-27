@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectPII, maskText, restoreTokensInObject, aliasGroupRoot, resolveGroupMemberIds } from './pii-detector'
+import { detectPII, maskText, restoreTokensInObject, aliasGroupRoot, resolveGroupMemberIds, deriveGroupReviewState } from './pii-detector'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Step 17A — PII/anonymization correctness regressions, grounded in the
@@ -395,6 +395,95 @@ describe('resolveGroupMemberIds — hardening item 3 (review pass 5): group-cons
     ]
     applyAction(rows, 'A', 'approve')
     expect(rows.find(r => r.id === 'C')!.approved).toBe(false)
+  })
+})
+
+describe('deriveGroupReviewState — hardening (review pass 8): fresh-job initial state must never split canonical/alias approval', () => {
+  // The exact reported bug: pii_entities.approved is an intentionally
+  // org-scoped, REUSED flag (the same "CoAccept AB" row is shared across
+  // every contract that mentions it), so a canonical approved in an
+  // EARLIER job and an alias just detected for the first time in a FRESH
+  // job start out with genuinely different raw `approved` values, even
+  // though masking already treats them as one identity.
+  it('REQUIRED — existing canonical entity from an earlier job (approved) + newly discovered alias in a fresh job (not yet approved) -> derives BOTH as approved, no mixed initial state', () => {
+    const jobOccurrenceEntities = [
+      { id: 'canonical-coaccept', alias_of_entity_id: null, approved: true, ignored: false },  // from an earlier job
+      { id: 'alias-remembill', alias_of_entity_id: 'canonical-coaccept', approved: false, ignored: false }, // brand new in this job
+    ]
+    const derived = deriveGroupReviewState(jobOccurrenceEntities)
+    expect(derived.get('canonical-coaccept')).toEqual({ approved: true, ignored: false })
+    expect(derived.get('alias-remembill')).toEqual({ approved: true, ignored: false }) // no longer "Pending"
+  })
+
+  it('the reverse direction: alias already approved from an earlier context, canonical freshly detected and not yet approved -> both derive approved', () => {
+    const entities = [
+      { id: 'canonical', alias_of_entity_id: null, approved: false, ignored: false },
+      { id: 'alias', alias_of_entity_id: 'canonical', approved: true, ignored: false },
+    ]
+    const derived = deriveGroupReviewState(entities)
+    expect(derived.get('canonical')!.approved).toBe(true)
+    expect(derived.get('alias')!.approved).toBe(true)
+  })
+
+  it('neither member approved -> both derive pending (no accidental default-approval)', () => {
+    const entities = [
+      { id: 'canonical', alias_of_entity_id: null, approved: false, ignored: false },
+      { id: 'alias', alias_of_entity_id: 'canonical', approved: false, ignored: false },
+    ]
+    const derived = deriveGroupReviewState(entities)
+    expect(derived.get('canonical')!.approved).toBe(false)
+    expect(derived.get('alias')!.approved).toBe(false)
+  })
+
+  it('if either member is ignored, the WHOLE group derives ignored, and never simultaneously approved', () => {
+    const entities = [
+      { id: 'canonical', alias_of_entity_id: null, approved: true, ignored: false },
+      { id: 'alias', alias_of_entity_id: 'canonical', approved: false, ignored: true },
+    ]
+    const derived = deriveGroupReviewState(entities)
+    expect(derived.get('canonical')).toEqual({ approved: false, ignored: true })
+    expect(derived.get('alias')).toEqual({ approved: false, ignored: true })
+  })
+
+  it('an unrelated entity in the same set never inherits another group\'s approval', () => {
+    const entities = [
+      { id: 'canonical', alias_of_entity_id: null, approved: true, ignored: false },
+      { id: 'alias', alias_of_entity_id: 'canonical', approved: false, ignored: false },
+      { id: 'unrelated', alias_of_entity_id: null, approved: false, ignored: false },
+    ]
+    const derived = deriveGroupReviewState(entities)
+    expect(derived.get('unrelated')!.approved).toBe(false)
+  })
+
+  it('a non-grouped (no alias relationship at all) entity simply reflects its own state unchanged', () => {
+    const entities = [
+      { id: 'solo-approved', alias_of_entity_id: null, approved: true, ignored: false },
+      { id: 'solo-pending', alias_of_entity_id: null, approved: false, ignored: false },
+    ]
+    const derived = deriveGroupReviewState(entities)
+    expect(derived.get('solo-approved')!.approved).toBe(true)
+    expect(derived.get('solo-pending')!.approved).toBe(false)
+  })
+
+  // End-to-end simulation of the GET /api/jobs/[id]/pii route's actual
+  // fix: scoped to THIS JOB's own occurrence entities (job-level
+  // occurrence state), exactly reproducing the reported scenario with
+  // realistic CoAccept AB / Remembill values and asserting the API-shaped
+  // output a reviewer would see.
+  it('simulates the GET /pii route fix end-to-end: job-level occurrence state, not a blind global inheritance', () => {
+    type OccurrenceEntity = { id: string; original_value: string; alias_of_entity_id: string | null; approved: boolean; ignored: boolean }
+    const thisJobsOccurrenceEntities: OccurrenceEntity[] = [
+      { id: 'e-coaccept', original_value: 'CoAccept AB', alias_of_entity_id: null, approved: true, ignored: false },
+      { id: 'e-remembill', original_value: 'Remembill', alias_of_entity_id: 'e-coaccept', approved: false, ignored: false },
+      { id: 'e-nordicfit', original_value: 'NordicFit Test AB', alias_of_entity_id: null, approved: false, ignored: false }, // unrelated org, must stay untouched
+    ]
+    const derived = deriveGroupReviewState(thisJobsOccurrenceEntities)
+    const presented = thisJobsOccurrenceEntities.map(e => ({ original_value: e.original_value, approved: derived.get(e.id)!.approved }))
+    expect(presented).toEqual([
+      { original_value: 'CoAccept AB', approved: true },
+      { original_value: 'Remembill', approved: true },
+      { original_value: 'NordicFit Test AB', approved: false },
+    ])
   })
 })
 
