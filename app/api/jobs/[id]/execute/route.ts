@@ -11,8 +11,22 @@ import { preserveStableRuleIds, preserveOneTimeFeeIdentity } from '@/lib/rule-id
 import type { Discount, ServiceCredit, OneTimeFee } from '@/lib/types'
 
 
-// Allow up to 5 minutes — PDF extraction + two Anthropic calls can exceed the default 10s limit
-export const maxDuration = 300
+// runExecutePipeline's real worst case is two AI-client tiers stacked
+// sequentially, not one: when pending_extracted_text is absent (every
+// retry of a job whose first attempt already consumed and nulled it — see
+// runExecutePipeline below — plus any job that never went through
+// detect-pii's PII-review step), this route falls back to re-downloading
+// and re-running document extraction itself
+// (AI_DOCUMENT_EXTRACTION_TIMEOUT_MS: 170s x 1 attempt) before
+// extractContractTerms's own worst case (AI_CLIENT_TIMEOUT_MS: 60s x up to
+// 3 attempts = 180s) even starts — 350s combined. The previous 300s budget
+// only ever covered the second half; a route killed by the PLATFORM before
+// its own .catch() below can run never gets to write
+// execute_status: 'FAILED', leaving the job stuck at 'EXTRACTING' forever
+// with no error surfaced —
+// the exact failure mode already documented and fixed once for
+// detect-pii/route.ts (same reasoning, same >=30s headroom convention).
+export const maxDuration = 380
 
 export async function POST(
   _req: NextRequest,
@@ -34,7 +48,24 @@ export async function POST(
     return NextResponse.json({ error: 'Job not found' }, { status: 404 })
   }
 
-  await supabaseServer.from('jobs').update({ execute_status: 'EXTRACTING' }).eq('id', id)
+  // Atomic claim — a second POST while extraction is already in flight (an
+  // accidental double-click, a race between two tabs, a Retry fired twice)
+  // must not launch a second concurrent runExecutePipeline for the same
+  // job: two background pipelines racing on the same contract_terms upsert
+  // and the same pending_extracted_text handoff could corrupt both. The
+  // conditional .neq guard plus an empty-result check makes the claim
+  // atomic — no separate read-then-write race window.
+  const { data: claimed } = await supabaseServer
+    .from('jobs')
+    .update({ execute_status: 'EXTRACTING' })
+    .eq('id', id)
+    .eq('org_id', org.orgId)
+    .neq('execute_status', 'EXTRACTING')
+    .select('id')
+
+  if (!claimed || claimed.length === 0) {
+    return NextResponse.json({ error: 'Extraction is already in progress for this job.' }, { status: 409 })
+  }
 
   waitUntil(
     runExecutePipeline(id, org.orgId, job.contract_pdf_url, job.currency, job.contract_terms_id).catch(async (err) => {

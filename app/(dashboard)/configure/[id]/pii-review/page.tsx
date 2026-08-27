@@ -60,6 +60,8 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
   const [newValue, setNewValue] = useState('')
   const [adding, setAdding] = useState(false)
   const [showAddForm, setShowAddForm] = useState(false)
+  const [discarding, setDiscarding] = useState(false)
+  const [discardError, setDiscardError] = useState<string | null>(null)
 
   const fetchEntities = async () => {
     const res = await fetch(`/api/jobs/${id}/pii`)
@@ -129,6 +131,15 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
     setShowAddForm(false)
   }
 
+  // This is the ONLY path in this file that may start extraction — every
+  // row action (approve/reject/ignore) above is PATCH-then-refetch and
+  // deliberately never reaches /execute or navigates away, even once
+  // pendingCount hits 0 (a previous "Extract with approved only" button
+  // used to auto-appear the instant the last pending row was resolved,
+  // causing an accidental click straight into extraction — removed). The
+  // POST is awaited before navigating so a network failure here surfaces as
+  // a real error rather than a navigation to a job that never actually
+  // started.
   const approveAllAndExtract = async () => {
     setProcessing(true)
     // Approve all pending detections at once
@@ -141,8 +152,43 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
       })
     ))
     // Kick off the main extraction pipeline
-    await fetch(`/api/jobs/${id}/execute`, { method: 'POST' })
+    const res = await fetch(`/api/jobs/${id}/execute`, { method: 'POST' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setProcessing(false)
+      setDiscardError(data.error ?? 'Could not start extraction — please try again.')
+      return
+    }
     router.push(`/configure/${id}`)
+  }
+
+  // Destructive, explicitly confirmed, exact-ID only. Mirrors the job
+  // deletion discipline established earlier in Step 17A: delete this job
+  // and its exclusively-owned derived rows (via DELETE /api/jobs/[id]'s
+  // existing cascade), never touch pii_entities — that table is org-scoped
+  // and shared across every job that has ever referenced the same
+  // person/org/etc., so a discard here must never remove another job's
+  // detections.
+  const discardUpload = async () => {
+    const confirmed = window.confirm(
+      'Discard this contract upload? This will remove this job and its derived PII-review data.'
+    )
+    if (!confirmed) return
+    setDiscarding(true)
+    setDiscardError(null)
+    try {
+      const res = await fetch(`/api/jobs/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setDiscardError(data.error ?? 'Could not discard this upload — please try again.')
+        setDiscarding(false)
+        return
+      }
+      router.push('/configure')
+    } catch {
+      setDiscardError('Network error — please check your connection and try again.')
+      setDiscarding(false)
+    }
   }
 
   const approvedCount = occurrences.filter(o => o.pii_entity.approved).length
@@ -151,13 +197,31 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
   return (
     <div className="p-8 max-w-5xl mx-auto">
       <div className="mb-8">
-        <Link href="/configure" className="text-sm text-stone hover:text-forest flex items-center gap-1 mb-4">
-          <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> Back to contracts
-        </Link>
+        <div className="flex items-center justify-between mb-4">
+          <Link href="/configure" className="text-sm text-stone hover:text-forest flex items-center gap-1">
+            <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> Back to contracts
+          </Link>
+          <button
+            onClick={discardUpload}
+            disabled={discarding}
+            aria-label="Discard this contract upload"
+            title="Delete this job and its PII-review data — cannot be undone"
+            className="text-xs text-stone hover:text-red-600 transition-colors flex items-center gap-1 disabled:opacity-40"
+          >
+            <i className="ti ti-trash" style={{ fontSize: 12 }} />
+            {discarding ? 'Discarding…' : 'Discard upload'}
+          </button>
+        </div>
         <h1 className="font-display font-light text-ink text-2xl mb-1">PII Review</h1>
         <p className="text-stone text-sm">
           These values were detected in your contract. Approve the ones that should be masked before the document is sent to AI, or remove false positives.
         </p>
+        <p className="text-stone text-xs mt-1">
+          Leaving this page via &quot;Back to contracts&quot; does not delete anything — you can resume this job&apos;s PII review later.
+        </p>
+        {discardError && (
+          <p className="text-xs text-red-600 mt-2">{discardError}</p>
+        )}
       </div>
 
       <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden mb-4">
@@ -273,14 +337,16 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
                         <button
                           onClick={() => reject(e.id)}
                           className="text-xs text-stone hover:text-red-600 transition-colors"
-                          title="Remove from this contract"
+                          title="Reject detection — remove from this contract only. It may be detected again in future contracts."
+                          aria-label="Reject detection"
                         >
                           <i className="ti ti-x" style={{ fontSize: 13 }} />
                         </button>
                         <button
                           onClick={() => ignore(e.id)}
                           className="text-xs text-stone hover:text-red-600 transition-colors"
-                          title="Never flag this value again for your organisation"
+                          title="Ignore — do not mask. Whitelists this value for your whole organisation; it will never be flagged again."
+                          aria-label="Ignore, do not mask"
                         >
                           <i className="ti ti-ban" style={{ fontSize: 13 }} />
                         </button>
@@ -306,18 +372,6 @@ export default function PIIReviewPage({ params }: { params: Promise<{ id: string
             : <>Approve all & extract contract terms →</>
           }
         </button>
-        {pendingCount === 0 && approvedCount > 0 && (
-          <button
-            onClick={() => {
-              fetch(`/api/jobs/${id}/execute`, { method: 'POST' })
-              router.push(`/configure/${id}`)
-            }}
-            disabled={processing}
-            className="text-sm text-stone hover:text-ink transition-colors px-4 py-3"
-          >
-            Extract with approved only
-          </button>
-        )}
       </div>
       <p className="text-xs text-stone mt-3 text-center">
         Approved entities will be masked in the document before it is sent to AI. Rejected ones pass through as-is.

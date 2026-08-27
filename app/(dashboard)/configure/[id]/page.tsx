@@ -5521,6 +5521,15 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [job, setJob]         = useState<Job | null>(null)
   const [items, setItems]     = useState<LineItem[]>([])
   const [msgIdx, setMsgIdx]   = useState(0)
+  // Step 17A.1 — bumping this restarts the poll effect below (it's in that
+  // effect's own dependency array) without duplicating its recursion logic.
+  // Needed because retryExtraction fires a fresh POST /execute from the
+  // "Extraction failed" screen, well after the original poll chain already
+  // stopped at the terminal FAILED status — nothing else would otherwise
+  // ever resume polling for the new EXTRACTING run.
+  const [pollGeneration, setPollGeneration] = useState(0)
+  const [retryingExtraction, setRetryingExtraction] = useState(false)
+  const [retryExtractionError, setRetryExtractionError] = useState<string | null>(null)
   const [corrections, setCorrections] = useState<Record<string, { value: string; remember: boolean }>>({})
   const [approving, setApproving]     = useState(false)
   const [approveError, setApproveError] = useState<string | null>(null)
@@ -5831,8 +5840,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     let timer: ReturnType<typeof setTimeout> | null = null
     const poll = async () => {
       const data = await fetchJob()
-      if (cancelled || !data) return
-      if (['PENDING_HUMAN_REVIEW', 'READY_TO_APPROVE', 'COMPLETED', 'FAILED'].includes(data.execute_status)) return
+      if (cancelled) return
+      // Step 17A.1 — a transient fetch failure (flaky network, a dropped
+      // request while the tab was backgrounded, ...) used to be treated
+      // identically to "reached a terminal status" here (both left `data`
+      // falsy), permanently killing the poll chain on a single blip. The
+      // job could still be extracting fine server-side; the page would
+      // just silently stop finding out, showing an unchanging "processing"
+      // spinner forever with no error and no way to tell it apart from a
+      // genuine hang. fetchJob already surfaces the failure via
+      // refreshError — this loop's own job is only to keep trying, same as
+      // it already does for any other non-terminal status.
+      if (data && ['PENDING_HUMAN_REVIEW', 'READY_TO_APPROVE', 'COMPLETED', 'FAILED'].includes(data.execute_status)) return
       timer = setTimeout(poll, 3000)
     }
     poll()
@@ -5842,7 +5861,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       if (timer) clearTimeout(timer)
       clearInterval(cycle)
     }
-  }, [id])
+  }, [id, pollGeneration])
 
   // When the last flagged item is reviewed, promote the DB status so the list reflects "Ready to approve".
   useEffect(() => {
@@ -6054,6 +6073,38 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     }
   }
 
+  // Step 17A.1 — the ONLY retry path for an extraction (not billing-push)
+  // failure: calls POST /execute directly, never authorize-billing-retry
+  // (that route is for a job that already has contract_terms and a
+  // billing-execution attempt — neither exists yet for a job that failed
+  // during its first extraction pass). execute/route.ts's own atomic
+  // .neq('execute_status', 'EXTRACTING') claim guards against this firing
+  // twice concurrently (double-click, or a second tab) and creating a
+  // duplicate background pipeline run.
+  const retryExtraction = async () => {
+    setRetryingExtraction(true)
+    setRetryExtractionError(null)
+    try {
+      const res = await fetch(`/api/jobs/${id}/execute`, { method: 'POST' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setRetryExtractionError(data.error ?? 'Could not restart extraction — please try again.')
+        setRetryingExtraction(false)
+        return
+      }
+      // Reflect the new EXTRACTING status immediately, then bump
+      // pollGeneration to resume the recursive poll loop below (it already
+      // stopped once when this job first reached the terminal FAILED
+      // status — nothing else re-triggers it on its own).
+      await fetchJob()
+      setPollGeneration(g => g + 1)
+      setRetryingExtraction(false)
+    } catch {
+      setRetryExtractionError('Network error — please check your connection and try again.')
+      setRetryingExtraction(false)
+    }
+  }
+
   // ── Loading / error states ────────────────────────────────────────────────
 
   if (!job) return (
@@ -6069,7 +6120,50 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       <div className="text-center max-w-sm">
         <div className="w-12 h-12 border-2 border-forest border-t-transparent rounded-full animate-spin mx-auto mb-6" />
         <p className="text-ink font-medium mb-2">{PROCESSING_MESSAGES[msgIdx]}</p>
-        <p className="text-stone text-sm">Usually takes under a minute</p>
+        <p className="text-stone text-sm mb-6">Usually takes under a minute</p>
+        {refreshError && (
+          <p className="text-xs text-amber-700 mb-4">{refreshError}</p>
+        )}
+        <Link href="/configure" className="text-xs text-stone hover:text-ink underline underline-offset-2">
+          Back to contracts
+        </Link>
+      </div>
+    </div>
+  )
+
+  // Step 17A.1 — distinct from isFailed below: this job never even
+  // produced a contract_terms row, so it failed somewhere in extraction
+  // itself (PDF text extraction, masking, the Claude call, or saving
+  // terms) — not in a later billing push, which is what isFailed/the
+  // "Push failed" banner further down is about. Structural signal (no
+  // terms), not execute_status alone, since both failure modes persist the
+  // same execute_status: 'FAILED' value.
+  const isExtractionFailed = job.execute_status === 'FAILED' && !terms
+
+  if (isExtractionFailed) return (
+    <div className="flex items-center justify-center h-full">
+      <div className="text-center max-w-sm">
+        <i className="ti ti-alert-circle text-red-500 block mb-4" style={{ fontSize: 32 }} />
+        <p className="text-ink font-medium mb-2">Extraction failed</p>
+        <p className="text-stone text-sm mb-6">{job.error_message ?? 'Something went wrong while extracting this contract.'}</p>
+        {retryExtractionError && (
+          <p className="text-xs text-red-600 mb-4">{retryExtractionError}</p>
+        )}
+        <div className="flex items-center justify-center gap-3">
+          <Link href="/configure" className="text-sm text-stone hover:text-ink px-4 py-2.5">
+            Back to contracts
+          </Link>
+          <button
+            onClick={retryExtraction}
+            disabled={retryingExtraction}
+            className="text-sm bg-forest text-white px-4 py-2.5 rounded-xl hover:bg-sage transition-colors disabled:opacity-40 flex items-center gap-2"
+          >
+            {retryingExtraction
+              ? <><i className="ti ti-loader-2 animate-spin" style={{ fontSize: 14 }} /> Retrying…</>
+              : <>Retry <i className="ti ti-refresh" style={{ fontSize: 13 }} /></>
+            }
+          </button>
+        </div>
       </div>
     </div>
   )
