@@ -27,6 +27,9 @@ import {
   parseRuleInterpretationResponse,
   describeMissingFieldQuestions,
   describeWhatWillChange,
+  withAppendixContext,
+  baseFeeHasExpiringWaiver,
+  type LabeledClauseText,
   type RuleType,
   type MinimumCommitmentContext,
   type PartialPeriodContext,
@@ -57,8 +60,9 @@ type TierRow = {
   tier_calculation?: { source_clause?: string | null } | null
 }
 
-function sourceClauseFor(extracted: string | null | undefined, clientSupplied: string | null | undefined): string | null {
-  return extracted || clientSupplied || null
+function sourceClauseFor(extracted: string | null | undefined, clientSupplied: string | null | undefined, otherClauses?: LabeledClauseText[]): string | null {
+  const resolved = extracted || clientSupplied || null
+  return otherClauses ? withAppendixContext(resolved, otherClauses) : resolved
 }
 
 export async function POST(
@@ -141,16 +145,41 @@ export async function POST(
     base_monthly_fee: number | null
     base_annual_fee: number | null
     billing_frequency: string | null
-    base_fee_proration: { source_clause?: string | null } | null
-    additional_recurring_fees: Array<{ fee_label: string; amount: number; description: string | null; proration?: { source_clause?: string | null } | null }> | null
+    base_fee_proration: { source_clause?: string | null; confirmation_reason?: string | null } | null
+    additional_recurring_fees: Array<{ fee_label: string; amount: number; description: string | null; source_clause?: string | null; proration?: { source_clause?: string | null } | null }> | null
+    one_time_fees: Array<{ fee_label?: string | null; description?: string | null; source_clause?: string | null }> | null
+    unsupported_commercial_mechanisms: Array<{ description?: string | null; source_clause?: string | null }> | null
   }
   const { data: termsRaw } = await supabaseServer
     .from('contract_terms')
-    .select('currency, overage_tiers, escalators, discounts, service_credits, contract_start_date, contract_end_date, base_monthly_fee, base_annual_fee, billing_frequency, base_fee_proration, additional_recurring_fees')
+    .select('currency, overage_tiers, escalators, discounts, service_credits, contract_start_date, contract_end_date, base_monthly_fee, base_annual_fee, billing_frequency, base_fee_proration, additional_recurring_fees, one_time_fees, unsupported_commercial_mechanisms')
     .eq('id', job.contract_terms_id)
     .single()
   const terms = termsRaw as unknown as TermsRow | null
   if (!terms) return NextResponse.json({ error: 'Contract terms not found' }, { status: 404 })
+
+  // Step 17B0, item A — same bounded appendix-context set as propose-rule.
+  const otherClauses: LabeledClauseText[] = [
+    { label: 'base_fee_proration.source_clause', text: terms.base_fee_proration?.source_clause },
+    ...(terms.discounts ?? []).map((d, i) => ({ label: `discounts[${i}].description`, text: d.description })),
+    ...(terms.service_credits ?? []).flatMap((c, i) => [
+      { label: `service_credits[${i}].description`, text: c.description },
+      { label: `service_credits[${i}].source_clause`, text: c.source_clause },
+    ]),
+    ...(terms.additional_recurring_fees ?? []).flatMap((f, i) => [
+      { label: `additional_recurring_fees[${i}].description`, text: f.description },
+      { label: `additional_recurring_fees[${i}].source_clause`, text: f.source_clause },
+      { label: `additional_recurring_fees[${i}].proration.source_clause`, text: f.proration?.source_clause },
+    ]),
+    ...(terms.one_time_fees ?? []).flatMap((f, i) => [
+      { label: `one_time_fees[${i}].description`, text: f.description },
+      { label: `one_time_fees[${i}].source_clause`, text: f.source_clause },
+    ]),
+    ...(terms.unsupported_commercial_mechanisms ?? []).flatMap((m, i) => [
+      { label: `unsupported_commercial_mechanisms[${i}].description`, text: m.description },
+      { label: `unsupported_commercial_mechanisms[${i}].source_clause`, text: m.source_clause },
+    ]),
+  ]
 
   const currency = terms.currency ?? 'EUR'
   // Sonnet, not the reasoning tier — see lib/contract-extractor.ts's
@@ -169,7 +198,7 @@ export async function POST(
     const credit = credits.find(c => c.credit_rule_id === creditId)
     if (!credit) return NextResponse.json({ error: `Service credit '${creditId}' not found on this job` }, { status: 404 })
     const survivalPrompt = buildCreditSurvivalPrompt(
-      { sourceClause: sourceClauseFor(credit.source_clause, sourceClause), description: credit.description ?? '' },
+      { sourceClause: sourceClauseFor(credit.source_clause, sourceClause, otherClauses), description: credit.description ?? '' },
       reviewerInput,
     )
     let survivalRawText: string
@@ -221,7 +250,7 @@ export async function POST(
     const extractedClause = tiers.find(t => t.minimum_commitment?.source_clause)?.minimum_commitment?.source_clause
     const context: MinimumCommitmentContext = {
       contractUnitType,
-      sourceClause: sourceClauseFor(extractedClause, sourceClause),
+      sourceClause: sourceClauseFor(extractedClause, sourceClause, otherClauses),
       currency,
       includedUnits: includedTier?.to_unit ?? 0,
       tiers: paidTiers.map(t => ({ tier_label: t.tier_label, from_unit: t.from_unit, to_unit: t.to_unit, rate_per_unit: t.rate_per_unit })),
@@ -236,7 +265,7 @@ export async function POST(
     const extractedClause = tiers.find(t => t.minimum_commitment?.source_clause)?.minimum_commitment?.source_clause
     const context: PartialPeriodContext = {
       contractUnitType,
-      sourceClause: sourceClauseFor(extractedClause, sourceClause),
+      sourceClause: sourceClauseFor(extractedClause, sourceClause, otherClauses),
       currency,
       contractStartDate: terms.contract_start_date,
       contractEndDate: terms.contract_end_date,
@@ -263,19 +292,20 @@ export async function POST(
     }
     const context: PartialPeriodContext = {
       contractUnitType: subjectLabel,
-      sourceClause: sourceClauseFor(extractedClause, sourceClause),
+      sourceClause: sourceClauseFor(extractedClause, sourceClause, otherClauses),
       currency,
       contractStartDate: terms.contract_start_date,
       contractEndDate: terms.contract_end_date,
       measurementPeriod: terms.billing_frequency,
       minimumAmount: amount,
       subjectNoun: 'recurring fee',
+      waiverExpiry: isBase ? baseFeeHasExpiringWaiver(terms.discounts) : false,
     }
     prompt = buildPartialPeriodPrompt(context, reviewerInput, selectedOption)
   } else if (ruleType === 'escalator') {
     const escalator = (terms.escalators ?? [])[0]
     const context: EscalatorContext = {
-      sourceClause: sourceClauseFor(escalator?.description, sourceClause),
+      sourceClause: sourceClauseFor(escalator?.description, sourceClause, otherClauses),
       description: escalator?.description ?? '',
       capPct: escalator?.cap_pct ?? null,
       effectiveDate: escalator?.effective_date ?? null,
@@ -293,7 +323,7 @@ export async function POST(
       ?? (Number.isInteger(Number(discountId)) ? discounts[Number(discountId)] : undefined)
     if (!discount) return NextResponse.json({ error: `Discount '${discountId}' not found on this job` }, { status: 404 })
     const context: DiscountContext = {
-      sourceClause: sourceClauseFor(discount.description, sourceClause),
+      sourceClause: sourceClauseFor(discount.description, sourceClause, otherClauses),
       description: discount.description ?? '',
       currency,
       existingPct: discount.discount_pct ?? null,
@@ -310,7 +340,7 @@ export async function POST(
     const extractedClause = tiers.find(t => t.tier_calculation?.source_clause)?.tier_calculation?.source_clause
     const context: TierCalculationContext = {
       contractUnitType,
-      sourceClause: sourceClauseFor(extractedClause, sourceClause),
+      sourceClause: sourceClauseFor(extractedClause, sourceClause, otherClauses),
       currency,
       tiers: tiers.map(t => ({ tier_label: t.tier_label, from_unit: t.from_unit, to_unit: t.to_unit, rate_per_unit: t.rate_per_unit })),
     }
@@ -323,7 +353,7 @@ export async function POST(
       ?? (Number.isInteger(Number(creditId)) ? credits[Number(creditId)] : undefined)
     if (!credit) return NextResponse.json({ error: `Service credit '${creditId}' not found on this job` }, { status: 404 })
     const context: ServiceCreditContext = {
-      sourceClause: sourceClauseFor(credit.source_clause, sourceClause),
+      sourceClause: sourceClauseFor(credit.source_clause, sourceClause, otherClauses),
       description: credit.description ?? '',
       creditType: credit.credit_type ?? 'other',
       statedPct: credit.stated_pct ?? null,

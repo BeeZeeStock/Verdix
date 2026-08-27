@@ -47,7 +47,35 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
   }
   const hasRecurringBase = !!(terms.base_monthly_fee || terms.base_annual_fee || terms.ramp_schedule?.length || terms.year_pricing)
 
-  if (hasRecurringBase && contractStart && termMonths > 0) {
+  // Step 17B0, item D — an unresolved base_fee_proration (e.g. a pilot
+  // waiver on this fee expiring mid-cycle with no stated partial-period
+  // treatment — see lib/types.ts's PeriodProrationRule) means the exact
+  // per-period schedule genuinely cannot be computed yet:
+  // computeMonthlyBaseRate/computeDiscountMultiplier below have no way to
+  // represent "unconfirmed" and would otherwise silently assume ONE
+  // specific treatment (a full charge from the very next calendar day) and
+  // materialize it as a confident, concrete multi-period total — exactly
+  // the "Qty 9, €18,000, periods 4–12" false-precision this guards
+  // against. Emit one unresolved-marker row showing the flat committed
+  // rate instead of running the period-by-period computation at all;
+  // quantity/total_amount stay at 0 (never a fabricated partial total) and
+  // confidence_score is forced low so this participates in the same
+  // needsReview gate every other unresolved item does. The recurring-fee
+  // path for additional_recurring_fees[].proration below is unaffected —
+  // this only guards the single job-level base_fee_proration.
+  if (hasRecurringBase && contractStart && termMonths > 0 && terms.base_fee_proration?.requires_confirmation) {
+    const flatRate = terms.base_monthly_fee ?? terms.base_annual_fee ?? 0
+    items.push({
+      product_name: 'Recurring base fee — partial-period treatment unresolved',
+      quantity: 0,
+      unit_price: flatRate,
+      billing_period: terms.billing_frequency ?? 'monthly',
+      total_amount: 0,
+      currency: cur,
+      confidence_score: 0,
+      source_section: src.base_monthly_fee ?? src.year_pricing ?? src.ramp_schedule ?? null,
+    })
+  } else if (hasRecurringBase && contractStart && termMonths > 0) {
     const { interval, intervalCount } = billingInterval(terms.billing_frequency)
     const monthsPerPeriod = interval === 'year' ? 12 * intervalCount : intervalCount
     const freq = terms.billing_frequency ?? 'monthly'

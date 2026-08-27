@@ -41,6 +41,17 @@ type MeterSuggestion = {
 
 type AvailableMeter = { meter_key: string; display_name: string; unit_label: string }
 
+// Step 17B0, item G — a required_operational_inputs entry that isn't
+// represented by any overage_tiers unit_type at all (e.g. a monetary
+// running total a derived-rate fee depends on) never becomes a
+// MeterSuggestion row above — nothing in this panel's existing
+// meter-picker machinery fits a value that isn't a countable usage meter.
+// Purely informational: never gates onConfirmedChange/allConfirmed, never
+// offers a picker — there is no "appropriate source type" mapping
+// mechanism built yet (out of scope here). Its only job is to make sure a
+// real operational dependency is never silently invisible.
+type OperationalDataInput = { key: string; kind: 'monetary' | 'countable'; sources: string[] }
+
 interface Props {
   jobId: string
   isConfigured?: boolean
@@ -65,6 +76,7 @@ const CYCLE_LABELS: Record<string, string> = {
 export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, contractBillingFrequency, refreshSignal }: Props) {
   const [suggestions, setSuggestions] = useState<MeterSuggestion[]>([])
   const [meters, setMeters]           = useState<AvailableMeter[]>([])
+  const [operationalDataInputs, setOperationalDataInputs] = useState<OperationalDataInput[]>([])
   const [loading, setLoading]         = useState(true)
   const [saving, setSaving]           = useState(false)
   const [saveMsg, setSaveMsg]         = useState<{ ok: boolean; text: string } | null>(null)
@@ -79,14 +91,17 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
     setSuggestions(res.suggestions ?? [])
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setMeters(res.available_meters ?? [])
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOperationalDataInputs(res.operational_data_inputs ?? [])
   }, [jobId])
 
   useEffect(() => {
     fetch(`/api/jobs/${jobId}/meter-mappings`)
       .then(r => r.json())
-      .then((res: { suggestions: MeterSuggestion[]; available_meters: AvailableMeter[] }) => {
+      .then((res: { suggestions: MeterSuggestion[]; available_meters: AvailableMeter[]; operational_data_inputs?: OperationalDataInput[] }) => {
         setSuggestions(res.suggestions ?? [])
         setMeters(res.available_meters ?? [])
+        setOperationalDataInputs(res.operational_data_inputs ?? [])
         setLoading(false)
       })
       .catch(() => setLoading(false))
@@ -220,11 +235,47 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
     )
   }
 
-  if (suggestions.length === 0) return null
+  if (suggestions.length === 0 && operationalDataInputs.length === 0) return null
 
   const hasUnsaved = Object.keys(edits).length > 0
 
+  // Step 17B0, item G — rendered as its own block below, standalone from
+  // the meter-suggestions panel proper (which returns null here when there
+  // are no usage meters to map at all — a real case for a contract whose
+  // only operational dependencies are monetary/derived, with no countable
+  // usage metric of its own).
+  const operationalDataInputsSection = operationalDataInputs.length > 0 && (
+    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
+      <div className="px-7 py-4" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+        <p className="text-sm font-medium text-ink">Operational data inputs</p>
+        <p className="text-xs text-stone mt-0.5">
+          These commercial rules depend on data that isn&apos;t a countable usage meter — mapping through the appropriate data source isn&apos;t configurable yet. Shown here so nothing is silently missing.
+        </p>
+      </div>
+      <div className="px-7 py-4 space-y-2.5">
+        {operationalDataInputs.map(input => (
+          <div key={input.key} className="flex items-start gap-3">
+            <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full flex-shrink-0" style={{
+              color: input.kind === 'monetary' ? '#B45309' : '#0369A1',
+              background: input.kind === 'monetary' ? '#FEF3C7' : '#E0F2FE',
+            }}>
+              {input.kind === 'monetary' ? 'Monetary' : 'Countable'}
+            </span>
+            <div className="min-w-0">
+              <p className="text-xs font-mono text-ink">{input.key}</p>
+              <p className="text-[11px] text-stone/70">{input.sources.join(' · ')}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+
+  if (suggestions.length === 0) return operationalDataInputsSection
+
   return (
+    <>
+    {operationalDataInputsSection}
     <div className="rounded-2xl border overflow-hidden transition-colors"
       style={{
         borderColor: allConfirmed ? 'rgba(11,92,54,0.2)' : '#FAC775',
@@ -533,5 +584,6 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
       </div>
       </>}
     </div>
+    </>
   )
 }

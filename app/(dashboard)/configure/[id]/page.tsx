@@ -14,7 +14,7 @@ import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, computeCommittedFixedFees, computeConditionalFixedFees, contractLifecycleStatus, type BaseTcvItem } from '@/lib/contract-tcv-calc'
 import { resolveCommittedFixedFeeValue, type CommittedFixedFeeResolution } from '@/lib/committed-fixed-fee-resolver'
 import { ruleCadenceLabel, cadenceNoun, contractMonthLabel, volumeTierCopy } from '@/lib/cadence-labels'
-import { optionsForRuleType, optionsForEdit, deriveSelectedOption, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal } from '@/lib/rule-interpretation'
+import { optionsForRuleType, optionsForEdit, deriveSelectedOption, baseFeeHasExpiringWaiver, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal, type DiscountScopeContext } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, isProvenanceResolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { isMonetaryBasisRecognitionApplicable, isPaidBasisFinalizationApplicable } from '@/lib/paid-basis-finalization'
@@ -50,6 +50,12 @@ type Escalator = {
 type Discount   = {
   discount_rule_id?: string
   discount_pct?: number; discount_amount?: number; discount_type?: string; start_date?: string; end_date?: string; duration_months?: number; applies_to?: string; description?: string
+  // Step 17A hardening (review pass 6)/17B0, item B — typed component
+  // targeting (see lib/types.ts's Discount.affected_components/
+  // possibly_affected_components) — used to detect a genuinely open
+  // hybrid-fee scope question and generate bounded scope options for it.
+  affected_components?: string[] | null
+  possibly_affected_components?: string[] | null
   interpretation?: {
     discount_type: 'flat_percentage' | 'flat_amount' | 'tiered_discount' | 'volume_discount' | 'component_specific' | 'time_ramp' | 'custom'
     discount_basis: 'percentage' | 'amount'
@@ -157,6 +163,10 @@ type Tier       = {
     requires_confirmation: boolean
     confirmation_reason?: string | null
   } | null
+  // Step 17B0, item G — the operational quantities this tier's surcharge
+  // depends on (e.g. the raw usage count AND the contracted volume that
+  // defines where the tier starts) — see lib/types.ts's OverageTier.
+  required_operational_inputs?: string[] | null
 }
 
 type OneTimeFee = {
@@ -190,7 +200,28 @@ type PeriodProrationRule = {
   confirmation_reason?: string | null
   source_clause?: string | null
 }
-type AdditionalRecurringFee = { fee_label: string; amount: number; description?: string | null; billing_frequency?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null; proration?: PeriodProrationRule | null }
+type AdditionalRecurringFee = {
+  fee_label: string; amount: number; description?: string | null
+  billing_frequency?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
+  proration?: PeriodProrationRule | null
+  // Step 17B0, item F/G — a per-unit/variable-rate fee (metric_name +
+  // rate_per_unit) or a fee whose rate mechanism this shape cannot express
+  // at all (unresolved_kind: 'unsupported_semantics' — e.g. a derived rate
+  // formula/percentage schedule). See lib/types.ts's AdditionalRecurringFee.
+  metric_name?: string | null
+  rate_per_unit?: number | null
+  required_operational_inputs?: string[] | null
+  unresolved_kind?: 'unsupported_semantics' | null
+  source_clause?: string | null
+  derived_metric?: { metric_name: string; formula: string; raw_inputs: string[] } | null
+}
+type UnsupportedCommercialMechanism = {
+  kind: string
+  description: string
+  source_clause?: string | null
+  required_operational_inputs?: string[] | null
+  execution_status: 'unsupported'
+}
 
 type Terms = {
   id?: string
@@ -210,6 +241,10 @@ type Terms = {
   escalators?: Escalator[]; discounts?: Discount[]; service_credits?: ServiceCredit[]; overage_tiers?: Tier[]
   one_time_fees?: OneTimeFee[]
   additional_recurring_fees?: AdditionalRecurringFee[]
+  // Step 17B0, item F — commercial mechanisms extraction captured but
+  // cannot execute yet (e.g. a rolling-average volume/band migration
+  // rule) — must remain visible to the reviewer, never silently dropped.
+  unsupported_commercial_mechanisms?: UnsupportedCommercialMechanism[]
   field_sources?: Record<string, string>
   extraction_confidence?: string; extraction_notes?: string
   number_format?: 'dot' | 'comma'
@@ -993,6 +1028,14 @@ function classifyItem(item: LineItem, escalators: Escalator[] = []): ItemKind {
   // it would get misclassified as a pricing tier.
   if (item.billing_period === 'one_time' || rule.includes('one_time') || name.includes('setup') || name.includes('onboarding')) return 'one_time'
 
+  // Step 17B0, item D — lib/line-items.ts's own unresolved-marker row for
+  // an unconfirmed base_fee_proration (see its own comment) — must be
+  // caught before the generic `quantity === 0` check below, which would
+  // otherwise misclassify it as an unconfirmed usage/overage tier. Reuses
+  // the 'base_fee_proration' ItemKind (already the RuleInterpretationCard
+  // kind for this exact rule) rather than inventing a parallel one.
+  if (name === 'recurring base fee — partial-period treatment unresolved') return 'base_fee_proration'
+
   if (rule.includes('escalator') || name.includes('escalator') || name.includes('cpi') || name.includes('price escalator')) {
     // A CPI-linked escalator with no resolved rate/interpretation needs the
     // same structured-interpretation flow as an ambiguous minimum — a plain
@@ -1363,7 +1406,7 @@ function serviceCreditConfirmLabel(creditType?: string): string {
 }
 
 function RuleInterpretationCard({
-  jobId, kind, contractUnitType, discountId, creditId, creditType, interactionKey, cadenceLabel, contractPeriodLabel, sourceClause, currency, meterMappingConfirmed, meterSuggestion, showMeterDependencyNotice, onApplied,
+  jobId, kind, contractUnitType, discountId, creditId, creditType, interactionKey, cadenceLabel, contractPeriodLabel, waiverExpiry, discountScope, sourceClause, currency, meterMappingConfirmed, meterSuggestion, showMeterDependencyNotice, onApplied,
   initialSelectedOption, initialFreeText,
 }: {
   jobId: string
@@ -1391,6 +1434,19 @@ function RuleInterpretationCard({
   // option. Null/absent when the contract starts on day 1 (no distinct
   // contract-month framing exists) or for every other kind.
   contractPeriodLabel?: string | null
+  // Step 17B0, item C — true when this base_fee_proration/
+  // recurring_fee_proration card's open question was created by a waiver
+  // on this same fee expiring mid-cycle (see baseFeeHasExpiringWaiver),
+  // not a calendar/contract-start mismatch — swaps in
+  // getWaiverExpiryFeeProrationOptions instead of the generic calendar
+  // options. Ignored for every other kind.
+  waiverExpiry?: boolean
+  // Only meaningful for kind 'discount' — this discount's own typed
+  // affected_components/possibly_affected_components, so a genuinely open
+  // hybrid-fee scope question renders bounded scope options instead of
+  // DISCOUNT_OPTIONS' tier-mechanics choices. See
+  // discountHasUnresolvedComponentScope/getComponentScopeOptions.
+  discountScope?: DiscountScopeContext | null
   sourceClause: string
   currency: string
   meterMappingConfirmed?: boolean
@@ -1408,7 +1464,7 @@ function RuleInterpretationCard({
   initialFreeText?: string
 }) {
   const ruleType = ITEM_KIND_TO_RULE_TYPE[kind] ?? 'minimum_commitment'
-  const options = optionsForRuleType(ruleType, cadenceLabel, contractPeriodLabel)
+  const options = optionsForRuleType(ruleType, cadenceLabel, contractPeriodLabel, waiverExpiry, discountScope)
   // Re-opening an already-confirmed rule ("Edit interpretation") starts from
   // what's already approved, not a fresh AI proposal — only a first-time
   // review runs the propose-first flow.
@@ -1564,7 +1620,7 @@ function RuleInterpretationCard({
         // which reuses the same form) starts from the right place rather
         // than a blank slate — never pre-selected for decision_required.
         if (data.proposal.state !== 'decision_required' && data.proposal.proposed_interpretation) {
-          setSelectedOption(deriveSelectedOption(ruleType, data.proposal.proposed_interpretation))
+          setSelectedOption(deriveSelectedOption(ruleType, data.proposal.proposed_interpretation, waiverExpiry))
         }
         // Same pre-selection discipline as above, scoped to the survival
         // sub-field: a recommendation is shown pre-picked with its already-
@@ -1808,7 +1864,7 @@ function RuleInterpretationCard({
   // override form — always reflects what Verdix itself originally proposed,
   // so switching options to explore alternatives doesn't lose track of it.
   const aiRecommendedOptionId = aiProposal?.proposed_interpretation
-    ? deriveSelectedOption(ruleType, aiProposal.proposed_interpretation)
+    ? deriveSelectedOption(ruleType, aiProposal.proposed_interpretation, waiverExpiry)
     : null
 
   // Computed once, shared by both the survival badge and the confirm-button
@@ -3439,7 +3495,7 @@ function ConfirmedRuleCard({
 }
 
 function EditCommercialRuleDrawer({
-  jobId, ruleType, contractUnitType, discountId, creditId, cadenceLabel, ruleTitle, currency, currentRecord, historyRecords, onClose, onApplied,
+  jobId, ruleType, contractUnitType, discountId, creditId, cadenceLabel, waiverExpiry, ruleTitle, currency, currentRecord, historyRecords, onClose, onApplied,
 }: {
   jobId: string
   ruleType: RuleType
@@ -3449,8 +3505,10 @@ function EditCommercialRuleDrawer({
   discountId?: string
   // Same addressing pattern as discountId, when ruleType is 'service_credit'.
   creditId?: string
-  // Only meaningful for ruleType 'partial_period' — see RuleInterpretationCard.
+  // Only meaningful for ruleType 'partial_period'. See RuleInterpretationCard.
   cadenceLabel?: string
+  // See RuleInterpretationCard's identical prop.
+  waiverExpiry?: boolean
   ruleTitle: string
   currency: string
   currentRecord: RuleInterpretationRecord | null
@@ -3462,7 +3520,7 @@ function EditCommercialRuleDrawer({
   // a rule with no currentRecord yet (e.g. a discount's first interpretation,
   // which has no separate first-time Review-panel trigger) gets the plain,
   // unbiased option labels instead of a "change" framing.
-  const options = currentRecord ? optionsForEdit(ruleType, currentRecord.approved_interpretation, cadenceLabel) : optionsForRuleType(ruleType, cadenceLabel)
+  const options = currentRecord ? optionsForEdit(ruleType, currentRecord.approved_interpretation, cadenceLabel, waiverExpiry) : optionsForRuleType(ruleType, cadenceLabel, null, waiverExpiry)
   const [phase, setPhase] = useState<RulePhase>('input')
   const [selectedOption, setSelectedOption] = useState<string | null>(null)
   const [freeText, setFreeText] = useState('')
@@ -3756,6 +3814,7 @@ function ReviewPanel({
   baseFeeProration,
   additionalRecurringFees,
   oneTimeFees,
+  unsupportedCommercialMechanisms,
   fieldSources,
   operationalEventEvidence,
   extractionNotes,
@@ -3787,6 +3846,9 @@ function ReviewPanel({
   additionalRecurringFees?: AdditionalRecurringFee[]
   // Step 11B — the minimal OneTimeFee review path.
   oneTimeFees?: OneTimeFee[]
+  // Step 17B0, item F — commercial mechanisms extraction captured but
+  // cannot execute yet — must remain visible, never silently dropped.
+  unsupportedCommercialMechanisms?: UnsupportedCommercialMechanism[]
   // Item 6 — maps a field key (e.g. "base_monthly_fee") to the contract
   // section it was extracted from, e.g. "1.1 Base Platform Fee" — the
   // same field the main page's own line-items view already reads
@@ -4343,6 +4405,7 @@ function ReviewPanel({
                             jobId={jobId}
                             kind="discount"
                             discountId={discountId}
+                            discountScope={{ affectedComponents: d.affected_components, possiblyAffectedComponents: d.possibly_affected_components }}
                             sourceClause={d.description ?? label}
                             currency={cur ?? 'EUR'}
                             onApplied={onRefresh}
@@ -4573,6 +4636,7 @@ function ReviewPanel({
                           contractUnitType={BASE_FEE_PRORATION_SENTINEL}
                           cadenceLabel={cadenceNoun(contractBillingFrequency)}
                           contractPeriodLabel={contractMonthLabel(contractStartDate)}
+                          waiverExpiry={baseFeeHasExpiringWaiver(discounts)}
                           sourceClause={baseFeeProration?.source_clause ?? ''}
                           currency={cur ?? 'EUR'}
                           onApplied={onRefresh}
@@ -4598,6 +4662,83 @@ function ReviewPanel({
                           currency={cur ?? 'EUR'}
                           onApplied={onRefresh}
                         />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Step 17B0, item F — commercial mechanisms/fee shapes
+              extraction genuinely captured but cannot execute yet (a
+              derived-rate/percentage-schedule fee, a rolling-average
+              volume/band-migration rule, ...). Distinct from the
+              unresolved-and-confirmable cards above: there is nothing a
+              reviewer can pick or type to resolve these — the mechanism
+              itself has no runtime yet — so this card is informational
+              only, never gates on a reviewer action, and (per item F's
+              explicit requirement) must never disappear even though
+              nothing here can be confirmed. Unsupported terms may still
+              block approval/execution elsewhere (readiness checks), but
+              this is the one place a reviewer can always see WHAT was
+              found and WHY it's blocked, with its exact operational
+              dependencies. */}
+          {(() => {
+            const unsupportedFees = (additionalRecurringFees ?? []).filter(f => f.unresolved_kind === 'unsupported_semantics')
+            const unsupportedMechanisms = unsupportedCommercialMechanisms ?? []
+            if (unsupportedFees.length === 0 && unsupportedMechanisms.length === 0) return null
+            return (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Unsupported commercial mechanisms</p>
+                  <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                </div>
+                <div className="space-y-3">
+                  {unsupportedFees.map((f, i) => (
+                    <div key={`fee:${f.fee_label ?? i}`} className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FECACA', background: 'white' }}>
+                      <div className="px-4 pt-4 pb-3">
+                        <div className="flex items-center gap-1.5 mb-2">
+                          <i className="ti ti-alert-hexagon text-red-500" style={{ fontSize: 12 }} />
+                          <span className="text-sm font-medium text-ink flex-1">{f.fee_label}</span>
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-red-600 bg-red-50 px-2 py-0.5 rounded-full">Unsupported</span>
+                        </div>
+                        {f.description && <p className="text-xs text-stone leading-relaxed mb-2">{f.description}</p>}
+                        {f.source_clause && (
+                          <p className="text-[11px] text-stone/70 leading-relaxed mb-2 italic">&ldquo;{f.source_clause}&rdquo;</p>
+                        )}
+                        {!!f.required_operational_inputs?.length && (
+                          <p className="text-[11px] text-stone">
+                            Depends on: {f.required_operational_inputs.join(', ')}
+                          </p>
+                        )}
+                        {f.derived_metric && (
+                          <p className="text-[11px] text-stone mt-1">
+                            Rate formula: {f.derived_metric.formula} (inputs: {f.derived_metric.raw_inputs.join(', ')})
+                          </p>
+                        )}
+                        <p className="text-[11px] text-stone/60 mt-2">Cannot be billed automatically yet — no execution runtime for this rate mechanism. Preserved for review and manual handling; will never silently disappear.</p>
+                      </div>
+                    </div>
+                  ))}
+                  {unsupportedMechanisms.map((m, i) => (
+                    <div key={`mech:${i}`} className="rounded-2xl border overflow-hidden" style={{ borderColor: '#FECACA', background: 'white' }}>
+                      <div className="px-4 pt-4 pb-3">
+                        <div className="flex items-center gap-1.5 mb-2">
+                          <i className="ti ti-alert-hexagon text-red-500" style={{ fontSize: 12 }} />
+                          <span className="text-sm font-medium text-ink flex-1">{m.kind.replace(/_/g, ' ')}</span>
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-red-600 bg-red-50 px-2 py-0.5 rounded-full">Unsupported</span>
+                        </div>
+                        <p className="text-xs text-stone leading-relaxed mb-2">{m.description}</p>
+                        {m.source_clause && (
+                          <p className="text-[11px] text-stone/70 leading-relaxed mb-2 italic">&ldquo;{m.source_clause}&rdquo;</p>
+                        )}
+                        {!!m.required_operational_inputs?.length && (
+                          <p className="text-[11px] text-stone">
+                            Depends on: {m.required_operational_inputs.join(', ')}
+                          </p>
+                        )}
+                        <p className="text-[11px] text-stone/60 mt-2">Not itself a billable fee — governs how another fee&apos;s rate/band changes over time. No execution runtime yet; preserved for review and manual handling.</p>
                       </div>
                     </div>
                   ))}
@@ -7358,6 +7499,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           const isEscalator = rowKind === 'escalator'
                           const isEscalatorUnresolved = rowKind === 'escalator_interpretation'
                           const isVariableTier = rowKind === 'overage_tier'
+                          // Step 17B0, item D — lib/line-items.ts's unresolved
+                          // base_fee_proration marker row: the flat rate (unit_price)
+                          // IS known and shown normally, but Qty/Total are never
+                          // materialized into a concrete multi-period schedule while
+                          // the partial-period treatment is unconfirmed.
+                          const isBaseFeeProrationUnresolved = rowKind === 'base_fee_proration'
                           // A metric whose tier method (graduated/volume/block) isn't
                           // confirmed has no single safe Total to show — the same
                           // rate table can legitimately produce different totals
@@ -7376,6 +7523,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           // meaningless for a % rate either way) — only the Total
                           // column's text differs between them.
                           const isEscalatorLike = isEscalator || isEscalatorUnresolved
+                          // Qty/Unit-price cells are non-editable for the same reason
+                          // as an escalator row — Qty here would just be re-inventing
+                          // the exact concrete schedule this row exists to withhold.
+                          const isNonEditableRow = isEscalatorLike || isBaseFeeProrationUnresolved
                           const group = groupOf(item)
                           const showGroupHeader = group !== lastGroup
                           lastGroup = group
@@ -7402,7 +7553,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
                             {/* Qty — editable */}
                             <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums', minWidth: 48 }}>
-                              {!isEscalatorLike && billingEdit?.itemId === item.id && billingEdit.field === 'quantity' ? (
+                              {!isNonEditableRow && billingEdit?.itemId === item.id && billingEdit.field === 'quantity' ? (
                                 <input autoFocus type="number" min="0" step="1"
                                   className={editCellStyle}
                                   style={{ width: 56 }}
@@ -7413,16 +7564,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                                 />
                               ) : (
                                 <span
-                                  className={isEscalatorLike ? '' : 'cursor-pointer hover:text-forest transition-colors'}
-                                  title={isEscalatorLike ? undefined : 'Click to edit'}
-                                  onClick={() => !isEscalatorLike && setBillingEdit({ itemId: item.id, field: 'quantity', value: String(item.quantity) })}
-                                >{isVariableTier && item.quantity === 0 ? <span className="text-stone/40">—</span> : item.quantity}</span>
+                                  className={isNonEditableRow ? '' : 'cursor-pointer hover:text-forest transition-colors'}
+                                  title={isNonEditableRow ? undefined : 'Click to edit'}
+                                  onClick={() => !isNonEditableRow && setBillingEdit({ itemId: item.id, field: 'quantity', value: String(item.quantity) })}
+                                >{isBaseFeeProrationUnresolved || (isVariableTier && item.quantity === 0) ? <span className="text-stone/40">—</span> : item.quantity}</span>
                               )}
                             </td>
 
                             {/* Unit price — editable */}
                             <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums', minWidth: 96 }}>
-                              {isEscalatorLike ? (
+                              {isBaseFeeProrationUnresolved ? (
+                                <span>{fmtUnit(item.unit_price, cur)}</span>
+                              ) : isEscalatorLike ? (
                                 <span>
                                   {isEscalatorUnresolved
                                     ? <span className="text-amber-600">Pending interpretation</span>
@@ -7470,7 +7623,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                                 consumed, not an invoice line for SEK 0 — showing the
                                 raw total here previously read as "nothing configured". */}
                             <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                              {isEscalatorUnresolved
+                              {isBaseFeeProrationUnresolved
+                                ? <span className="text-amber-600 font-normal text-[11px]">Pending interpretation</span>
+                                : isEscalatorUnresolved
                                 ? <span className="text-amber-600 font-normal text-[11px]">Pending interpretation</span>
                                 : escalatorNotApplied
                                   ? <span className="text-stone/50 font-normal text-[11px]">Not applied</span>
@@ -7521,7 +7676,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         <tr style={{ borderTop: '2px solid rgba(26,61,43,0.10)' }}>
                           <td colSpan={3} className="pt-3 text-[10px] font-bold text-stone uppercase tracking-[0.1em]">Committed fixed fees</td>
                           <td className="pt-3 text-[13px] font-semibold text-ink text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            {fmt(committedFixedFeeTotal, cur)}
+                            {committedFixedFeeReadiness.status === 'unresolved'
+                              ? <span className="text-amber-600 font-normal text-[11px]">Not yet determinable</span>
+                              : fmt(committedFixedFeeTotal, cur)}
                           </td>
                           <td />
                         </tr>
@@ -7747,10 +7904,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               // a different treatment than what was actually confirmed.
               if (terms?.base_fee_proration && !terms.base_fee_proration.requires_confirmation) {
                 const bfp = terms.base_fee_proration
-                const optionId = deriveSelectedOption('base_fee_proration', bfp as unknown as Record<string, unknown>)
+                const bfpWaiverExpiry = baseFeeHasExpiringWaiver(terms?.discounts)
+                const optionId = deriveSelectedOption('base_fee_proration', bfp as unknown as Record<string, unknown>, bfpWaiverExpiry)
                 const cadenceLabel = cadenceNoun(terms?.billing_frequency)
                 const periodLabel = contractMonthLabel(terms?.contract_start_date)
-                const opt = optionsForRuleType('base_fee_proration', cadenceLabel, periodLabel).find(o => o.id === optionId)
+                const opt = optionsForRuleType('base_fee_proration', cadenceLabel, periodLabel, bfpWaiverExpiry).find(o => o.id === optionId)
                 confirmedRuleLines.push({ label: 'Platform-fee billing-period treatment', value: opt?.label ?? (bfp.reset_anchor === 'contract_start' ? 'Contract-month anchored' : 'Calendar-anchored') })
               }
               confirmedRuleLines.push({
@@ -8054,10 +8212,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               // different treatment than what was actually confirmed.
               if (terms?.base_fee_proration && !terms.base_fee_proration.requires_confirmation && terms?.base_monthly_fee) {
                 const bfp = terms.base_fee_proration
-                const optionId = deriveSelectedOption('base_fee_proration', bfp as unknown as Record<string, unknown>)
+                const bfpWaiverExpiry = baseFeeHasExpiringWaiver(terms?.discounts)
+                const optionId = deriveSelectedOption('base_fee_proration', bfp as unknown as Record<string, unknown>, bfpWaiverExpiry)
                 const cadenceLabel = cadenceNoun(terms?.billing_frequency)
                 const periodLabel = contractMonthLabel(terms?.contract_start_date)
-                const opt = optionsForRuleType('base_fee_proration', cadenceLabel, periodLabel).find(o => o.id === optionId)
+                const opt = optionsForRuleType('base_fee_proration', cadenceLabel, periodLabel, bfpWaiverExpiry).find(o => o.id === optionId)
                 const audit = findAudit('base_fee_proration', BASE_FEE_PRORATION_SENTINEL)
                 cards.push({
                   key: 'basefee',
@@ -8663,6 +8822,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           baseFeeProration={terms?.base_fee_proration}
           additionalRecurringFees={terms?.additional_recurring_fees}
           oneTimeFees={terms?.one_time_fees}
+          unsupportedCommercialMechanisms={terms?.unsupported_commercial_mechanisms}
           fieldSources={terms?.field_sources}
           operationalEventEvidence={job?.operational_event_evidence}
           extractionNotes={terms?.extraction_notes}
@@ -8728,6 +8888,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             discountId={discountId}
             creditId={creditId}
             cadenceLabel={cadenceNoun(partialCadence)}
+            waiverExpiry={isBaseFee ? baseFeeHasExpiringWaiver(terms?.discounts) : false}
             ruleTitle={ruleTitle}
             currency={cur}
             currentRecord={currentRecord}

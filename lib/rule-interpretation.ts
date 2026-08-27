@@ -17,6 +17,39 @@ import { renderRulebookAIGuidance } from './rulebook/ai-guidance'
 
 export type RuleType = 'minimum_commitment' | 'escalator' | 'partial_period' | 'discount' | 'tier_calculation' | 'service_credit' | 'rule_interaction' | 'base_fee_proration' | 'recurring_fee_proration' | 'one_time_fee'
 
+// Step 17B0, item A — a clause under review frequently cross-references an
+// appendix/exhibit/Bilaga by name (e.g. "see Bilaga 1"). The full contract
+// document does not survive past the initial extraction pass (see
+// execute/route.ts's pending_extracted_text handoff, which is nulled the
+// moment it's consumed) — so propose-rule/interpret-rule have nothing to
+// draw on beyond what extraction already captured into contract_terms.
+// Rather than blindly sending the whole agreement (never persisted anyway)
+// or silently answering from one isolated sentence, this does a bounded,
+// deterministic scan of every OTHER already-extracted clause-bearing field
+// on the same job for text that shares the SAME appendix reference marker
+// as the primary clause, and appends any matches, each explicitly labeled
+// with its own field so provenance is never lost. Reuses only what
+// extraction already produced — no new retrieval infrastructure, no raw
+// text, no AI call of its own.
+const APPENDIX_REFERENCE_PATTERN = /\b(?:Bilaga|Appendix|Exhibit|Schedule|Attachment)\s+[0-9A-Za-z]+/gi
+
+export type LabeledClauseText = { label: string; text: string | null | undefined }
+
+export function withAppendixContext(primaryClause: string | null, otherClauses: LabeledClauseText[]): string | null {
+  if (!primaryClause) return primaryClause
+  const markers = Array.from(new Set((primaryClause.match(APPENDIX_REFERENCE_PATTERN) ?? []).map(m => m.toLowerCase())))
+  if (markers.length === 0) return primaryClause
+
+  const matches: string[] = []
+  for (const { label, text } of otherClauses) {
+    if (!text) continue
+    const textLower = text.toLowerCase()
+    if (markers.some(m => textLower.includes(m))) matches.push(`[${label}] ${text}`)
+  }
+  if (matches.length === 0) return primaryClause
+  return `${primaryClause}\n\nRelated context also captured from this contract (referenced by the clause above):\n${matches.join('\n')}`
+}
+
 export type StructuredOption = {
   id: string
   label: string
@@ -86,6 +119,44 @@ export function getBaseFeeProrationOptions(cadenceLabel: string = 'period', cont
   return options
 }
 
+// Step 17B0, item C — a genuinely different open question from
+// getBaseFeeProrationOptions above: the fee's own cadence anchor is NOT in
+// doubt here (it's already known, e.g. contract-start-anchored monthly
+// billing) — what's open is what happens to the specific partial stretch
+// created by a WAIVER on this same fee expiring mid-cycle (trigger (b) in
+// lib/contract-extractor.ts's base_fee_proration guidance), not a
+// calendar/contract-start mismatch (trigger (a)). Asking the generic
+// "does billing reset on calendar boundaries?" question here would be
+// answering a question the contract never raised, while leaving the real
+// one — how the resumed fee treats the partial remainder — unaddressed.
+// See baseFeeHasExpiringWaiver, the structural (not text-matching) signal
+// that selects this option set over getBaseFeeProrationOptions.
+export function getWaiverExpiryFeeProrationOptions(subjectLabel: string = 'fixed platform fee'): StructuredOption[] {
+  return [
+    { id: 'prorate_from_expiry', label: `Prorate ${subjectLabel} from waiver expiry`, description: `Charge only the days remaining in the current billing period from the day the waiver ends, then resume the normal full-period cadence.` },
+    { id: 'start_next_full_period', label: `Start ${subjectLabel} from next full billing period`, description: `Do not charge any amount for the partial remainder after the waiver ends — the fee starts fresh at the next full billing period.` },
+    { id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' },
+  ]
+}
+
+// Structural (not text-matching) signal for whether a base/recurring fee's
+// open proration question was created by a waiver's own stated expiry
+// rather than a calendar/contract-start mismatch: some discount targets
+// (or possibly targets) this fee's component AND has a stated, bounded
+// duration (days or an explicit end date) — the exact shape
+// lib/contract-extractor.ts's DAY-STATED DURATION RULE / HYBRID-FEE SCOPE
+// RULE produce for a clause like "90-day pilot period with no fixed
+// platform fee". Never inferred from confirmation_reason prose.
+export function baseFeeHasExpiringWaiver(
+  discounts: Array<{ affected_components?: string[] | null; possibly_affected_components?: string[] | null; duration_days?: number | null; end_date?: string | null }> | null | undefined,
+  componentKey: string = 'base_recurring_fee',
+): boolean {
+  return (discounts ?? []).some(d =>
+    (d.affected_components?.includes(componentKey) || d.possibly_affected_components?.includes(componentKey)) &&
+    (d.duration_days != null || d.end_date != null)
+  )
+}
+
 export const ESCALATOR_OPTIONS: StructuredOption[] = [
   { id: 'cpi_capped', label: 'CPI-linked, capped', description: 'Annual increase tracks CPI, capped at a maximum percentage.' },
   { id: 'cpi_uncapped', label: 'CPI-linked, uncapped', description: 'Annual increase tracks CPI with no maximum.' },
@@ -106,6 +177,62 @@ export const DISCOUNT_OPTIONS: StructuredOption[] = [
   { id: 'block', label: 'Block-based', description: 'Reaching a band produces a fixed benefit or charge for that block.' },
   { id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' },
 ]
+
+// Step 17B0, item B — DISCOUNT_OPTIONS above answers a TIER-MECHANICS
+// question (how a banded discount table is evaluated) — meaningless for a
+// flat waiver like a 100%-off pilot period, which has no bands at all. The
+// genuinely open question for a discount with a non-empty
+// possibly_affected_components is entirely different: WHICH components of
+// a multi-component charge the waiver covers (see lib/types.ts's
+// Discount.possibly_affected_components and lib/contract-extractor.ts's
+// HYBRID-FEE SCOPE RULE). Generated from the discount's own typed
+// affected_components/possibly_affected_components — never a hardcoded
+// "fixed vs performance" pair — so this reads correctly for any future
+// contract's own component names, not just this one.
+const COMPONENT_KEY_LABELS: Record<string, string> = {
+  base_recurring_fee: 'fixed platform fee',
+  performance_fee: 'performance fee',
+  usage_fee: 'usage fee',
+  overage_fee: 'overage fee',
+}
+function componentKeyLabel(key: string): string {
+  return COMPONENT_KEY_LABELS[key] ?? key.replace(/_/g, ' ')
+}
+function capitalizeFirst(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+export function getComponentScopeOptions(
+  affectedComponents: string[] | null | undefined,
+  possiblyAffectedComponents: string[] | null | undefined,
+): StructuredOption[] {
+  const affectedLabel = (affectedComponents ?? []).map(componentKeyLabel).join(' + ') || 'the named component'
+  const possibleLabel = (possiblyAffectedComponents ?? []).map(componentKeyLabel).join(' + ') || 'the other component'
+  const combinedLabel = [...(affectedComponents ?? []), ...(possiblyAffectedComponents ?? [])].map(componentKeyLabel).join(' + ')
+  return [
+    {
+      id: 'affected_only',
+      label: `${capitalizeFirst(affectedLabel)} only`,
+      description: `Covers only ${affectedLabel} — ${possibleLabel} continues to apply at its normal rate.`,
+    },
+    {
+      id: 'affected_plus_possible',
+      label: capitalizeFirst(combinedLabel),
+      description: `Covers both ${affectedLabel} and ${possibleLabel}.`,
+    },
+    { id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' },
+  ]
+}
+
+// Structural signal — this discount's open question is component SCOPE,
+// not tier mechanics, whenever extraction left a possibly_affected
+// component genuinely unresolved (lib/contract-extractor.ts's HYBRID-FEE
+// SCOPE RULE). Never inferred from discount_type/description text.
+export function discountHasUnresolvedComponentScope(
+  discount: { possibly_affected_components?: string[] | null } | null | undefined,
+): boolean {
+  return !!discount?.possibly_affected_components?.length
+}
 
 // Same distinction as DISCOUNT_OPTIONS, applied to pricing tiers — the
 // ambiguity is identical whether the tier table sets a price, a discount, or
@@ -176,17 +303,30 @@ export const RULE_INTERACTION_OPTIONS: StructuredOption[] = [
   { id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' },
 ]
 
-export function optionsForRuleType(ruleType: RuleType, cadenceLabel?: string, contractPeriodLabel?: string | null): StructuredOption[] {
+export type DiscountScopeContext = { affectedComponents: string[] | null | undefined; possiblyAffectedComponents: string[] | null | undefined }
+
+export function optionsForRuleType(ruleType: RuleType, cadenceLabel?: string, contractPeriodLabel?: string | null, waiverExpiry?: boolean, discountScope?: DiscountScopeContext | null): StructuredOption[] {
   switch (ruleType) {
     case 'minimum_commitment': return MINIMUM_COMMITMENT_OPTIONS
     case 'partial_period': return getPartialPeriodOptions(cadenceLabel)
     // A different question from partial_period, not the same one reused —
     // see getBaseFeeProrationOptions for why: the calendar anchor itself is
-    // open here, not just proration treatment.
-    case 'base_fee_proration': return getBaseFeeProrationOptions(cadenceLabel, contractPeriodLabel)
-    case 'recurring_fee_proration': return getBaseFeeProrationOptions(cadenceLabel, contractPeriodLabel)
+    // open here, not just proration treatment. waiverExpiry (item C) swaps
+    // in a THIRD, distinct option set for the case where the open question
+    // isn't the calendar anchor at all but a waiver on this fee expiring
+    // mid-cycle — see getWaiverExpiryFeeProrationOptions/
+    // baseFeeHasExpiringWaiver.
+    case 'base_fee_proration': return waiverExpiry ? getWaiverExpiryFeeProrationOptions(cadenceLabel === 'month' ? 'fixed platform fee' : `fixed ${cadenceLabel} fee`) : getBaseFeeProrationOptions(cadenceLabel, contractPeriodLabel)
+    case 'recurring_fee_proration': return waiverExpiry ? getWaiverExpiryFeeProrationOptions('fee') : getBaseFeeProrationOptions(cadenceLabel, contractPeriodLabel)
     case 'escalator': return ESCALATOR_OPTIONS
-    case 'discount': return DISCOUNT_OPTIONS
+    // Step 17B0, item B — DISCOUNT_OPTIONS (tier mechanics) only applies
+    // when this discount is actually banded. A discount with a genuinely
+    // open possibly_affected_components question asks a different question
+    // entirely (which component(s) it covers) — see
+    // getComponentScopeOptions/discountHasUnresolvedComponentScope.
+    case 'discount': return discountScope && discountHasUnresolvedComponentScope({ possibly_affected_components: discountScope.possiblyAffectedComponents })
+      ? getComponentScopeOptions(discountScope.affectedComponents, discountScope.possiblyAffectedComponents)
+      : DISCOUNT_OPTIONS
     case 'tier_calculation': return TIER_CALCULATION_OPTIONS
     case 'service_credit': return SERVICE_CREDIT_OPTIONS
     case 'rule_interaction': return RULE_INTERACTION_OPTIONS
@@ -204,8 +344,13 @@ export function optionsForRuleType(ruleType: RuleType, cadenceLabel?: string, co
 // optionsForEdit below). Best-effort only; a rule approved from free text
 // alone that doesn't cleanly match a structured choice falls back to
 // 'other' rather than guessing which option the reviewer "really meant".
-export function deriveSelectedOption(ruleType: RuleType, approved: Record<string, unknown> | null | undefined): string | null {
+export function deriveSelectedOption(ruleType: RuleType, approved: Record<string, unknown> | null | undefined, waiverExpiry?: boolean): string | null {
   if (!approved) return null
+  if (waiverExpiry && (ruleType === 'base_fee_proration' || ruleType === 'recurring_fee_proration')) {
+    if (approved.prorate_partial_periods === true) return 'prorate_from_expiry'
+    if (approved.prorate_partial_periods === false) return 'start_next_full_period'
+    return 'other'
+  }
   if (ruleType === 'minimum_commitment') {
     if (approved.mode === 'additive') return 'additive'
     if (approved.mode === 'floor' && approved.included_allowance_interaction === 'before_allowance') return 'floor_before_allowance'
@@ -269,9 +414,9 @@ export function deriveSelectedOption(ruleType: RuleType, approved: Record<string
 // set per rule type (still not hardcoded globally — it already varies by
 // rule type, current interpretation, and, via the label text itself, the
 // source clause context shown alongside it in the drawer).
-export function optionsForEdit(ruleType: RuleType, currentInterpretation: Record<string, unknown> | null, cadenceLabel?: string): StructuredOption[] {
-  const base = optionsForRuleType(ruleType, cadenceLabel)
-  const currentOptionId = deriveSelectedOption(ruleType, currentInterpretation)
+export function optionsForEdit(ruleType: RuleType, currentInterpretation: Record<string, unknown> | null, cadenceLabel?: string, waiverExpiry?: boolean, discountScope?: DiscountScopeContext | null): StructuredOption[] {
+  const base = optionsForRuleType(ruleType, cadenceLabel, null, waiverExpiry, discountScope)
+  const currentOptionId = deriveSelectedOption(ruleType, currentInterpretation, waiverExpiry)
   return base.map(opt => {
     if (opt.id === 'other') return opt
     const lowerLabel = opt.label.charAt(0).toLowerCase() + opt.label.slice(1)
@@ -306,6 +451,14 @@ export type PartialPeriodContext = {
   // options are identical either way, only the noun in the prompt changes.
   // Defaults to 'minimum commitment' so every existing caller is unaffected.
   subjectNoun?: string
+  // Step 17B0, item C — true when this base/recurring-fee proration
+  // question exists because a waiver on this same fee has its own stated
+  // expiry (lib/contract-extractor.ts's base_fee_proration trigger (b)),
+  // not because of a calendar/contract-start mismatch (trigger (a)). Only
+  // ever meaningful when subjectNoun is set (the fee case) — see
+  // baseFeeHasExpiringWaiver for the structural signal callers compute
+  // this from. Never set for a plain minimum-commitment partial_period.
+  waiverExpiry?: boolean
 }
 
 export type EscalatorContext = {
@@ -358,9 +511,9 @@ export type RuleInteractionContext = {
   overlapReason: string
 }
 
-function optionContext(ruleType: RuleType, selectedOption?: string, cadenceLabel?: string, contractPeriodLabel?: string | null): string {
+function optionContext(ruleType: RuleType, selectedOption?: string, cadenceLabel?: string, contractPeriodLabel?: string | null, waiverExpiry?: boolean, discountScope?: DiscountScopeContext | null): string {
   if (!selectedOption || selectedOption === 'other') return ''
-  const opt = optionsForRuleType(ruleType, cadenceLabel, contractPeriodLabel).find(o => o.id === selectedOption)
+  const opt = optionsForRuleType(ruleType, cadenceLabel, contractPeriodLabel, waiverExpiry, discountScope).find(o => o.id === selectedOption)
   if (!opt) return ''
   return `\nThe reviewer selected the structured option "${opt.label}": ${opt.description}`
 }
@@ -418,6 +571,32 @@ export function buildPartialPeriodPrompt(
   const isFee = !!context.subjectNoun
   const subject = context.subjectNoun ?? 'minimum commitment'
   const ruleType = isFee ? 'base_fee_proration' : 'partial_period'
+  if (isFee && context.waiverExpiry) {
+    // Step 17B0, item C — the fee's cadence anchor is not in question here;
+    // a waiver on this same fee has its own stated expiry that doesn't
+    // land on a clean boundary of the fee's normal billing cadence. Never
+    // reduce this to the generic calendar-anchor question above.
+    return `A SaaS contract's "${context.contractUnitType}" ${subject} of ${context.minimumAmount != null ? `${context.minimumAmount} ${context.currency}` : ''} is billed on a recurring cadence. A waiver/pilot period on this SAME fee ends mid-cycle relative to that cadence, creating a partial billing period between the waiver's expiry and the start of the fee's next full period. The contract does not state whether the resumed fee is prorated for that specific partial remainder or begins in full only from the next full billing period. A human reviewer is resolving that treatment — NOT a calendar-vs-contract-start anchor question, which is not open here.
+
+Source clause: ${context.sourceClause ?? '(not captured)'}
+${optionContext(ruleType, selectedOption, cadenceNoun(context.measurementPeriod), null, true)}
+Reviewer's instruction: "${reviewerInput}"
+
+Translate the reviewer's instruction into a structured JSON object with EXACTLY these fields:
+{
+  "reset_anchor": "contract_start" | "calendar",
+  "prorate_partial_periods": true | false,
+  "proration_method": "days" | "months" | "none" | null,
+  "calculation_summary": "<one-sentence plain-English description>"
+}
+
+Rules:
+- Use ONLY what the reviewer's instruction and the source clause actually say. Never invent a value the reviewer didn't specify.
+- reset_anchor here describes the fee's own normal cadence anchor (leave it as already established — do not reinterpret it as open just because this prompt is about the waiver's expiry).
+- prorate_partial_periods true + proration_method "days" means "prorate the fee from the waiver's expiry date to the end of the current billing period, then resume the full-period cadence". prorate_partial_periods false + proration_method "none" means "charge nothing for that partial remainder — the fee starts fresh at the next full billing period".
+- If the reviewer's instruction doesn't clearly specify a field, omit it entirely rather than guessing.
+- Respond with ONLY the JSON object, no other text.`
+  }
   if (isFee) {
     const cadenceLabel = cadenceNoun(context.measurementPeriod)
     const contractPeriodLabel = contractMonthLabel(context.contractStartDate)
@@ -510,7 +689,7 @@ Extracted flat value: ${context.existingPct != null ? `${context.existingPct}%` 
 Applies to (as extracted): ${context.appliesTo ?? 'unknown'}
 Definitely-affected components (as extracted): ${context.affectedComponents?.length ? context.affectedComponents.join(', ') : 'none typed yet'}
 Possibly-affected components — genuinely open scope question (as extracted): ${context.possiblyAffectedComponents?.length ? context.possiblyAffectedComponents.join(', ') : 'none'}
-${optionContext('discount', selectedOption)}
+${optionContext('discount', selectedOption, undefined, undefined, undefined, { affectedComponents: context.affectedComponents, possiblyAffectedComponents: context.possiblyAffectedComponents })}
 Reviewer's instruction: "${reviewerInput}"
 
 Translate the reviewer's instruction into a structured JSON object with EXACTLY these fields:
@@ -1058,6 +1237,20 @@ export function buildPartialPeriodProposalPrompt(context: PartialPeriodProposalC
   // even asking about it in the schema — silently forecloses the
   // contract-start reading and skews any calculation_preview toward
   // calendar-boundary math that may not apply.
+  if (context.subjectNoun && context.waiverExpiry) {
+    // Step 17B0, item C — same divergence as buildPartialPeriodPrompt: the
+    // open question here is what happens to the partial remainder left by
+    // a waiver on this SAME fee expiring mid-cycle, not the fee's calendar
+    // anchor (which is not in doubt).
+    const subject = context.subjectNoun
+    return `A SaaS contract's "${context.contractUnitType}" ${subject} of ${context.minimumAmount != null ? `${context.minimumAmount} ${context.currency}` : ''} is billed on a recurring cadence. A waiver/pilot period on this SAME fee ends mid-cycle relative to that cadence, creating a partial billing period between the waiver's expiry and the start of the fee's next full period. Before any human reviewer has said anything, determine Verdix's own best interpretation of whether the resumed fee is prorated for that partial remainder or begins in full only from the next full billing period.
+
+Source clause: ${context.sourceClause ?? '(not captured)'}
+
+${proposalSchemaBlock('{"reset_anchor": "contract_start"|"calendar", "prorate_partial_periods": true|false, "proration_method": "days"|"months"|"none"|null, "calculation_summary": "<one sentence>"}')}
+
+Specific guidance: reset_anchor here describes the fee's own already-established normal cadence anchor — it is not the open question. Whether a waiver's mid-cycle expiry results in a prorated partial charge or a clean skip-to-next-full-period is very rarely stated explicitly. Unless the source clause says something explicit about this specific scenario, you MUST use "decision_required" with proposed_interpretation null — do not default to proration or to a full skip as a "reasonable assumption". This is the single most important rule in this prompt: silence on the waiver-expiry partial-period question is silence, not evidence for either answer.`
+  }
   if (context.subjectNoun) {
     const subject = context.subjectNoun
     return `A SaaS contract runs from ${context.contractStartDate ?? 'unknown'} to ${context.contractEndDate ?? 'unknown'}. The "${context.contractUnitType}" ${subject} of ${context.minimumAmount != null ? `${context.minimumAmount} ${context.currency}` : ''} is billed on a recurring cadence, but the contract does not state whether that cadence resets on fixed calendar boundaries or on the contract's own start-date anniversary. Before any human reviewer has said anything, determine Verdix's own best interpretation of which anchor applies, and — only if calendar boundaries — how a resulting partial first/final period should be treated.

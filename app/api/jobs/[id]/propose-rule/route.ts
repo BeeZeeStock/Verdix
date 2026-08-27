@@ -47,6 +47,9 @@ import {
   buildServiceCreditProposalPrompt,
   buildRuleInteractionProposalPrompt,
   validateProposalState,
+  withAppendixContext,
+  baseFeeHasExpiringWaiver,
+  type LabeledClauseText,
   type RuleType,
   type RuleProposal,
   type MinimumCommitmentContext,
@@ -81,8 +84,12 @@ type TierRow = {
 // The server's own extracted text always wins over whatever the client
 // happened to send as `sourceClause` — a client-supplied value is only ever
 // used as a last-resort fallback when extraction genuinely captured nothing.
-function sourceClauseFor(extracted: string | null | undefined, clientSupplied: string | null | undefined): string | null {
-  return extracted || clientSupplied || null
+// otherClauses (item A) is optional so every existing call site keeps
+// working — bounded appendix-context augmentation is additive, never
+// changes which clause wins.
+function sourceClauseFor(extracted: string | null | undefined, clientSupplied: string | null | undefined, otherClauses?: LabeledClauseText[]): string | null {
+  const resolved = extracted || clientSupplied || null
+  return otherClauses ? withAppendixContext(resolved, otherClauses) : resolved
 }
 
 // Step 5C — surfaces organization-policy availability to the review panel
@@ -211,16 +218,44 @@ export async function POST(
     base_monthly_fee: number | null
     base_annual_fee: number | null
     billing_frequency: string | null
-    base_fee_proration: { source_clause?: string | null } | null
-    additional_recurring_fees: Array<{ fee_label: string; amount: number; description: string | null; proration?: { source_clause?: string | null } | null }> | null
+    base_fee_proration: { source_clause?: string | null; confirmation_reason?: string | null } | null
+    additional_recurring_fees: Array<{ fee_label: string; amount: number; description: string | null; source_clause?: string | null; proration?: { source_clause?: string | null } | null }> | null
+    one_time_fees: Array<{ fee_label?: string | null; description?: string | null; source_clause?: string | null }> | null
+    unsupported_commercial_mechanisms: Array<{ description?: string | null; source_clause?: string | null }> | null
   }
   const { data: termsRaw } = await supabaseServer
     .from('contract_terms')
-    .select('id, currency, overage_tiers, escalators, discounts, service_credits, contract_start_date, contract_end_date, base_monthly_fee, base_annual_fee, billing_frequency, base_fee_proration, additional_recurring_fees')
+    .select('id, currency, overage_tiers, escalators, discounts, service_credits, contract_start_date, contract_end_date, base_monthly_fee, base_annual_fee, billing_frequency, base_fee_proration, additional_recurring_fees, one_time_fees, unsupported_commercial_mechanisms')
     .eq('id', job.contract_terms_id)
     .single()
   const terms = termsRaw as unknown as TermsRow | null
   if (!terms) return NextResponse.json({ error: 'Contract terms not found' }, { status: 404 })
+
+  // Step 17B0, item A — the bounded "everything else already captured on
+  // this job" set that withAppendixContext scans for a shared appendix
+  // marker. Built once, reused by every rule-type branch below via
+  // sourceClauseFor's optional third argument.
+  const otherClauses: LabeledClauseText[] = [
+    { label: 'base_fee_proration.source_clause', text: terms.base_fee_proration?.source_clause },
+    ...(terms.discounts ?? []).map((d, i) => ({ label: `discounts[${i}].description`, text: d.description })),
+    ...(terms.service_credits ?? []).flatMap((c, i) => [
+      { label: `service_credits[${i}].description`, text: c.description },
+      { label: `service_credits[${i}].source_clause`, text: c.source_clause },
+    ]),
+    ...(terms.additional_recurring_fees ?? []).flatMap((f, i) => [
+      { label: `additional_recurring_fees[${i}].description`, text: f.description },
+      { label: `additional_recurring_fees[${i}].source_clause`, text: f.source_clause },
+      { label: `additional_recurring_fees[${i}].proration.source_clause`, text: f.proration?.source_clause },
+    ]),
+    ...(terms.one_time_fees ?? []).flatMap((f, i) => [
+      { label: `one_time_fees[${i}].description`, text: f.description },
+      { label: `one_time_fees[${i}].source_clause`, text: f.source_clause },
+    ]),
+    ...(terms.unsupported_commercial_mechanisms ?? []).flatMap((m, i) => [
+      { label: `unsupported_commercial_mechanisms[${i}].description`, text: m.description },
+      { label: `unsupported_commercial_mechanisms[${i}].source_clause`, text: m.source_clause },
+    ]),
+  ]
 
   // Isolated from the query above deliberately — ai_proposal_cache requires
   // a migration (20260819000001_ai_proposal_cache.sql) that may not have
@@ -275,7 +310,7 @@ export async function POST(
     const existingMinimum = tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0)
     const extractedClause = tiers.find(t => t.minimum_commitment?.source_clause)?.minimum_commitment?.source_clause
     sourceClauseAvailable = sourceClauseAvailable || !!extractedClause
-    resolvedSourceClause = sourceClauseFor(extractedClause, sourceClause)
+    resolvedSourceClause = sourceClauseFor(extractedClause, sourceClause, otherClauses)
     const context: MinimumCommitmentContext = {
       contractUnitType,
       sourceClause: resolvedSourceClause,
@@ -294,7 +329,7 @@ export async function POST(
     // not a separate one — reuse its extracted source_clause.
     const extractedClause = tiers.find(t => t.minimum_commitment?.source_clause)?.minimum_commitment?.source_clause
     sourceClauseAvailable = sourceClauseAvailable || !!extractedClause
-    resolvedSourceClause = sourceClauseFor(extractedClause, sourceClause)
+    resolvedSourceClause = sourceClauseFor(extractedClause, sourceClause, otherClauses)
     const context: PartialPeriodContext = {
       contractUnitType,
       sourceClause: resolvedSourceClause,
@@ -327,7 +362,7 @@ export async function POST(
       extractedClause = fee.proration?.source_clause ?? fee.description
     }
     sourceClauseAvailable = sourceClauseAvailable || !!extractedClause
-    resolvedSourceClause = sourceClauseFor(extractedClause, sourceClause)
+    resolvedSourceClause = sourceClauseFor(extractedClause, sourceClause, otherClauses)
     const context: PartialPeriodContext = {
       contractUnitType: subjectLabel,
       sourceClause: resolvedSourceClause,
@@ -337,12 +372,13 @@ export async function POST(
       measurementPeriod: terms.billing_frequency,
       minimumAmount: amount,
       subjectNoun: 'recurring fee',
+      waiverExpiry: isBase ? baseFeeHasExpiringWaiver(terms.discounts) : false,
     }
     prompt = buildPartialPeriodProposalPrompt(context)
   } else if (ruleType === 'escalator') {
     const escalator = (terms.escalators ?? [])[0]
     sourceClauseAvailable = sourceClauseAvailable || !!escalator?.description
-    resolvedSourceClause = sourceClauseFor(escalator?.description, sourceClause)
+    resolvedSourceClause = sourceClauseFor(escalator?.description, sourceClause, otherClauses)
     const context: EscalatorContext = {
       sourceClause: resolvedSourceClause,
       description: escalator?.description ?? '',
@@ -357,7 +393,7 @@ export async function POST(
       ?? (Number.isInteger(Number(discountId)) ? discounts[Number(discountId)] : undefined)
     if (!discount) return NextResponse.json({ error: `Discount '${discountId}' not found on this job` }, { status: 404 })
     sourceClauseAvailable = sourceClauseAvailable || !!discount.description
-    resolvedSourceClause = sourceClauseFor(discount.description, sourceClause)
+    resolvedSourceClause = sourceClauseFor(discount.description, sourceClause, otherClauses)
     const context: DiscountContext = {
       sourceClause: resolvedSourceClause,
       description: discount.description ?? '',
@@ -375,7 +411,7 @@ export async function POST(
     const tiers = (terms.overage_tiers ?? []).filter(t => t.unit_type === contractUnitType && (t.rate_per_unit ?? 0) > 0)
     const extractedClause = tiers.find(t => t.tier_calculation?.source_clause)?.tier_calculation?.source_clause
     sourceClauseAvailable = sourceClauseAvailable || !!extractedClause
-    resolvedSourceClause = sourceClauseFor(extractedClause, sourceClause)
+    resolvedSourceClause = sourceClauseFor(extractedClause, sourceClause, otherClauses)
     const context: TierCalculationContext = {
       contractUnitType,
       sourceClause: resolvedSourceClause,
@@ -390,7 +426,7 @@ export async function POST(
     if (!credit) return NextResponse.json({ error: `Service credit '${creditId}' not found on this job` }, { status: 404 })
     serviceCreditType = credit.credit_type ?? 'other'
     sourceClauseAvailable = sourceClauseAvailable || !!credit.description || !!credit.source_clause
-    resolvedSourceClause = sourceClauseFor(credit.source_clause, sourceClause)
+    resolvedSourceClause = sourceClauseFor(credit.source_clause, sourceClause, otherClauses)
     const context: ServiceCreditContext = {
       sourceClause: resolvedSourceClause,
       description: credit.description ?? '',

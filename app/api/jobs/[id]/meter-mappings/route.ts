@@ -15,6 +15,7 @@ import { isAdminEmail, isRemembillTeam } from '@/lib/admin'
 import { getFastAIClient } from '@/lib/ai-client'
 import { allMeterMappingsResolved } from '@/lib/meter-mapping-status'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
+import { collectOperationalDataInputs } from '@/lib/operational-data-inputs'
 
 // ── Auto-mapping heuristic ────────────────────────────────────────────────────
 const METER_RULES: Array<{ patterns: string[]; key: string; confidence: number }> = [
@@ -128,7 +129,7 @@ export async function GET(
   // Fetch the job's contract_terms (need overage_tiers + billing_frequency)
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('id, org_id, contract_terms ( id, overage_tiers, billing_frequency, included_units, included_unit_type )')
+    .select('id, org_id, contract_terms ( id, overage_tiers, billing_frequency, included_units, included_unit_type, additional_recurring_fees, one_time_fees, unsupported_commercial_mechanisms )')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .single()
@@ -139,6 +140,7 @@ export async function GET(
     id?: string
     overage_tiers?: Array<{
       unit_type?: string
+      tier_label?: string
       from_unit?: number | null
       to_unit?: number | null
       rate_per_unit?: number
@@ -146,10 +148,22 @@ export async function GET(
       minimum_period_amount?: number | null
       minimum_commitment?: import('@/lib/types').MinimumCommitment | null
       reset_anchor?: 'contract_start' | 'calendar' | null
+      required_operational_inputs?: string[] | null
     }>
     billing_frequency?: string | null
     included_units?: number | null
     included_unit_type?: string | null
+    // Step 17B0, item G — every OTHER place a required_operational_inputs
+    // list can live. None of these feed unitGroups/the meter-picker below —
+    // they are usage-metered "billing meter" mapping only. See
+    // collectOperationalDataInputs for how these surface instead.
+    additional_recurring_fees?: Array<{
+      fee_label?: string
+      required_operational_inputs?: string[] | null
+      derived_metric?: { raw_inputs?: string[] } | null
+    }>
+    one_time_fees?: Array<{ fee_label?: string; required_operational_inputs?: string[] | null }>
+    unsupported_commercial_mechanisms?: Array<{ kind?: string; required_operational_inputs?: string[] | null }>
   }
   const terms = unwrapEmbedded(job.contract_terms as unknown as MeterMappingTerms | MeterMappingTerms[]) ?? {}
 
@@ -354,6 +368,8 @@ export async function GET(
     suggestions,
     available_meters: meters ?? [],
     billing_cycle: contractBillingCycle,
+    // Step 17B0, item G — see collectOperationalDataInputs's own comment.
+    operational_data_inputs: collectOperationalDataInputs(terms),
   })
 }
 
