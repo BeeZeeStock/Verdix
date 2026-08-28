@@ -19,8 +19,7 @@
 // (already computed via lib/usage-charge-projection.ts and the existing
 // /api/jobs/[id]/performance-share route respectively) — this module only
 // ORGANIZES those facts into one period's readiness/action state.
-import { computeMonthlyBaseRate, computeEscalatorMultiplier, computeDiscountMultiplier, computeFixedFeePeriodAmount } from './billing-writer'
-import { findCadenceWindowContaining } from './tariff'
+import { computeMonthlyBaseRate, computeEscalatorMultiplier, computeDiscountMultiplier, computeFixedFeePeriodAmount, findCadenceWindowContaining } from './tariff'
 import { normaliseCadence } from './billing-cadence'
 import type { ContractTerms, FixedFeeBillingTimingRule } from './types'
 

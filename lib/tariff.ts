@@ -1,4 +1,4 @@
-import type { MinimumCommitment, OverageTier, TierCalculationMethod } from './types'
+import type { MinimumCommitment, OverageTier, TierCalculationMethod, ContractTerms } from './types'
 
 // Structural minimum accepted by the computation functions —
 // compatible with both OverageTier and the local Tier type in RevenueModelTab.
@@ -657,4 +657,120 @@ export function groupTiersByMetric(
     map.set(code, existing)
   }
   return map
+}
+
+// Step 17F.7 hotfix — moved out of lib/billing-writer.ts, same reasoning
+// already established there for monthCursor (see that file's own re-export
+// comment): these four functions are genuinely pure fixed-fee arithmetic
+// with zero DB/provider dependency, but billing-writer.ts also eagerly
+// instantiates supabaseServer (a service-role client) at module scope.
+// lib/billing-period-workspace.ts — imported by the client-side
+// BillingPeriodWorkspaceCard — imported these from billing-writer.ts,
+// which pulled that service-role client (and the Stripe SDK) into the
+// BROWSER bundle, crashing every /configure/[id] page on load (module
+// evaluation fails when SUPABASE_SERVICE_ROLE_KEY is undefined
+// client-side). tariff.ts has no such import and is already the
+// established client-safe home for this kind of pure billing arithmetic.
+// billing-writer.ts re-exports these verbatim so its own existing callers
+// (execute/route.ts, line-items.ts, rolling-band-schedule-reconciliation.ts,
+// etc.) need no changes.
+
+// Which rate applies to a given month — ramp schedule → year pricing → flat
+// base fee, in that priority order. No escalation, no additions, no discount;
+// callers compose those on top.
+export function computeMonthlyBaseRate(terms: ContractTerms, globalMonthIdx: number, d: Date): number {
+  const yearPricing  = terms.year_pricing
+  const rampSchedule = terms.ramp_schedule?.length ? terms.ramp_schedule : null
+  const baseAnnualFallback = terms.base_annual_fee ?? 0
+  const baseMonthly = terms.base_monthly_fee
+    ?? (baseAnnualFallback > 0 && !yearPricing && !rampSchedule ? baseAnnualFallback / 12 : 0)
+
+  if (rampSchedule) {
+    for (const step of rampSchedule) {
+      // Bare date-only strings ("2024-04-01") parse as UTC midnight, while d
+      // (the per-month cursor, built via `new Date(y, m, 1)`) is local
+      // midnight — in any timezone east of UTC those disagree by several
+      // hours, so the *first* day of every ramp step failed its own
+      // `d >= s` check and silently fell through to the wrong rate.
+      // Anchoring both to local midnight keeps this correct regardless of
+      // which timezone the code happens to run in.
+      const s = new Date(step.start_date + 'T00:00:00'), e = new Date(step.end_date + 'T00:00:00')
+      if (d >= s && d <= e) return step.monthly_fee
+    }
+    return rampSchedule[rampSchedule.length - 1].monthly_fee
+  }
+  if (yearPricing) {
+    const yr   = Math.floor(globalMonthIdx / 12) + 1
+    const key  = `year${yr}`
+    const keys = Object.keys(yearPricing)
+    return (yearPricing[key] ?? yearPricing[keys[keys.length - 1]] ?? 0) / 12
+  }
+  return baseMonthly
+}
+
+// Compound escalation multiplier for a given month. Only applies when neither
+// ramp_schedule nor year_pricing is set (those already encode their own
+// step-ups).
+export function computeEscalatorMultiplier(terms: ContractTerms, d: Date): number {
+  if (terms.year_pricing || terms.ramp_schedule?.length) return 1
+  for (const esc of terms.escalators ?? []) {
+    // A discretionary clause ("may be increased") must never silently
+    // compound — only an interpretation explicitly confirmed 'automatic'
+    // authorizes the calculation engine to apply it. Missing/undefined
+    // discretion (rows written before this field existed, or an escalator
+    // with no interpretation at all yet) reads as 'automatic' to preserve
+    // existing behavior for already-confirmed escalators.
+    const discretion = esc.interpretation?.discretion ?? 'automatic'
+    if (discretion !== 'automatic') continue
+
+    const ed = esc.effective_date ? new Date(esc.effective_date + 'T00:00:00') : null
+    if (ed && d >= ed) {
+      // Renewal-triggered indexation (e.g. "on renewal, HICP + cap") is a
+      // step applied once at each renewal event, not a recurring intra-term
+      // compound — the existing 12-month compounding below is only correct
+      // once d has actually reached a renewal boundary, which `d >= ed`
+      // already gates on (effective_date is the first possible renewal
+      // date).
+      const ms = (d.getFullYear() - ed.getFullYear()) * 12 + (d.getMonth() - ed.getMonth())
+      return Math.pow(1 + (esc.escalator_pct ?? 0) / 100, Math.floor(ms / 12) + 1)
+    }
+  }
+  return 1
+}
+
+// Discount multiplier for a given month — 1 (no discount) unless d falls
+// within a dated discount window.
+export function computeDiscountMultiplier(terms: ContractTerms, d: Date): number {
+  for (const disc of terms.discounts ?? []) {
+    // Same local-midnight anchoring as the ramp/escalator dates above.
+    const ds = disc.start_date ? new Date(disc.start_date + 'T00:00:00') : null
+    // A day-stated duration (duration_days, no explicit end_date — e.g. a
+    // "90-day pilot") implies a real end date the same way an explicit one
+    // would.
+    //
+    // This is coarse, MONTH-cursor-granularity only (d is always a whole
+    // month's anniversary date, never a mid-month day) — it can only ever
+    // decide "this whole month is inside the window or not," i.e. exactly
+    // the "bill in full starting the next whole period"
+    // (PeriodProrationRule.prorate_partial_periods: false) reading. A
+    // day-level PARTIAL-month proration (prorate_partial_periods: true)
+    // needs finer granularity than a per-month cursor can express and is
+    // deliberately NOT attempted here.
+    const de = disc.end_date
+      ? new Date(disc.end_date + 'T00:00:00')
+      : (ds && disc.duration_days ? new Date(ds.getTime() + (disc.duration_days - 1) * 86_400_000) : null)
+    if (ds && de && d >= ds && d <= de && disc.discount_pct) {
+      return 1 - disc.discount_pct / 100
+    }
+  }
+  return 1
+}
+
+// The ONE pure fixed-fee-period arithmetic step:
+// (base component + additional component) * escalator * discount.
+// Deliberately just the arithmetic — no DB lookup, no rounding beyond what
+// a caller does at its own boundary — so it stays trivially pure and
+// unit-testable on its own.
+export function computeFixedFeePeriodAmount(baseComponent: number, additionalComponent: number, escalatorMultiplier: number, discountMultiplier: number): number {
+  return (baseComponent + additionalComponent) * escalatorMultiplier * discountMultiplier
 }
