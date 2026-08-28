@@ -1451,8 +1451,41 @@ Specific guidance: this is rarely explicit — most contracts that define a serv
 // deliberately left alone: a short-but-real reasoning like "Clear." is
 // merely unconvincing, not malformed, and should still downgrade to
 // verdix_recommends rather than being treated as unusable).
-function looksLikeMalformedReasoning(text: string): boolean {
+// Exported (Step 17C.3b, item D) so client-side truncation of this same
+// reasoning text (app/(dashboard)/configure/[id]/page.tsx's
+// truncateSentences, called with maxSentences: 1 for the compact
+// "Decision required" card) can apply the identical validity check to its
+// OWN output — truncateSentences' sentence-boundary regex can itself
+// produce a malformed one-token fragment (e.g. "e." from text starting
+// "E.g. ...") even when the untruncated `reasoning` string is fine; this
+// function is the single, shared source of truth for "does this look like
+// real content" on both sides.
+export function looksLikeMalformedReasoning(text: string): boolean {
   return !/[a-zA-Z]{3,}/.test(text.trim())
+}
+
+// Moved from app/(dashboard)/configure/[id]/page.tsx (Step 17C.3b, item D)
+// so it's directly unit-testable alongside looksLikeMalformedReasoning,
+// which callers must apply to its output — see that function's own doc.
+// AI reasoning defaults to 2-3 sentences on the review card — a full
+// chain-of-reasoning paragraph buries "what Verdix thinks / why / what it
+// costs" under prose the reviewer has to wade through. Splits on
+// sentence-ending punctuation rather than truncating by character count, so
+// it never cuts off mid-sentence — EXCEPT that the same regex can also
+// split on an abbreviation's period (e.g. "E.g. ..." -> "E." + "g. ..."),
+// which is exactly what can turn a 1-sentence truncation into the
+// meaningless single-token fragment "e." — callers must run this
+// function's `short` result through looksLikeMalformedReasoning before
+// rendering it, never trust it unconditionally.
+export function truncateSentences(text: string, maxSentences = 3, maxChars = 220): { short: string; truncated: boolean } {
+  const sentences = text.match(/[^.!?]+[.!?]+(\s|$)/g) ?? [text]
+  const bySentence = sentences.length > maxSentences ? sentences.slice(0, maxSentences).join('').trim() : text
+  if (bySentence.length <= maxChars) return { short: bySentence, truncated: bySentence !== text }
+  // A hard character-length safety net — a single long run-on sentence (or
+  // several short ones with no terminal punctuation the regex could split
+  // on) would otherwise sail through the sentence-count check untouched.
+  const hardCut = bySentence.slice(0, maxChars).replace(/\s+\S*$/, '')
+  return { short: `${hardCut}…`, truncated: true }
 }
 
 // The one detector this module trusts to ground UnresolvedReason

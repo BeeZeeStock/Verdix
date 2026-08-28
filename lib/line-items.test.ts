@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { buildLineItems } from './line-items'
 import { computeBaseTcv, computeCommittedFixedFees } from './contract-tcv-calc'
+import { buildRemembillFixtureTerms } from './remembill-fixture'
 import type { ContractTerms } from './types'
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -102,5 +103,53 @@ describe('item 13 — fixed-fee band provenance is preserved, not flattened', ()
     expect(terms.base_fee_committed_volume).toBe(5000)
     expect(terms.base_fee_bands).toHaveLength(3)
     expect(terms.base_fee_bands![2]).toEqual({ from_unit: 1501, to_unit: 5000, monthly_fee: 2000 })
+  })
+})
+
+describe('Step 17C.3b, item A — a percentage-of-basis fee is never duplicated as a generic line item', () => {
+  it('the fresh Remembill output\'s performance-share fee (percentage_of_basis compiled) does not appear in buildLineItems at all — PerformanceShareCard is its sole representation', () => {
+    const terms = buildRemembillFixtureTerms()
+    const items = buildLineItems(terms, terms.currency)
+
+    const performanceShareItems = items.filter(i => i.product_name === 'Performance share (value-weighted payment rate)')
+    expect(performanceShareItems).toHaveLength(0)
+
+    // Every OTHER additional_recurring_fees entry on this same fixture (the
+    // ordinary per-unit fees) is unaffected — this isn't a blanket
+    // suppression of the fee array, only of the percentage_of_basis shape.
+    expect(items.some(i => i.product_name === 'Per payment request fee')).toBe(true)
+    expect(items.some(i => i.product_name === 'Success fee per completed payment')).toBe(true)
+  })
+
+  it('a genuine independent €0 included-usage overage tier is NOT suppressed by this change', () => {
+    const terms = baseTerms({
+      overage_tiers: [
+        { tier_label: 'Included SMS reminders 1–500', from_unit: 1, to_unit: 500, rate_per_unit: 0, unit_type: 'SMS reminder' },
+      ],
+    })
+    const items = buildLineItems(terms, 'EUR')
+    const includedTier = items.find(i => i.product_name === 'Included SMS reminders 1–500')
+    expect(includedTier).toBeDefined()
+    expect(includedTier!.unit_price).toBe(0)
+  })
+
+  it('a fee with percentage_of_basis but zero amount and no variable rate contributes nothing to this table (fully replaced by the dedicated card)', () => {
+    const terms = baseTerms({
+      contract_start_date: '2026-10-01', contract_term_months: 12, billing_frequency: 'monthly',
+      additional_recurring_fees: [{
+        fee_label: 'Performance share', amount: 0, description: null, unresolved_kind: null,
+        percentage_of_basis: {
+          derived_metric: {
+            metric_key: 'value_weighted_payment_rate', operation: 'ratio',
+            numerator_input_key: 'paid_invoice_value', denominator_input_key: 'total_invoice_value_of_issued_requests',
+            output_unit: 'percentage', min_output_value: 0, max_output_value: 100,
+          },
+          rate_schedule: { schedule_key: 'x', bands: [{ from: 0, to: null, rate_pct: 1 }], min_selector_value: 0, max_selector_value: 100 },
+          basis_input_key: 'total_invoice_value_of_issued_requests',
+        },
+      }],
+    })
+    const items = buildLineItems(terms, 'EUR')
+    expect(items.find(i => i.product_name === 'Performance share')).toBeUndefined()
   })
 })

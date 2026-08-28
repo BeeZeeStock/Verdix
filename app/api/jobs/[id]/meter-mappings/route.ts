@@ -16,6 +16,7 @@ import { getFastAIClient } from '@/lib/ai-client'
 import { allMeterMappingsResolved } from '@/lib/meter-mapping-status'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import { collectOperationalDataInputs, collectDerivedMetrics } from '@/lib/operational-data-inputs'
+import { isNotificationChannelMismatch, NOTIFICATION_CHANNEL_MISMATCH_CONFIDENCE_CAP } from '@/lib/meter-suggestion-guard'
 
 // ── Auto-mapping heuristic ────────────────────────────────────────────────────
 const METER_RULES: Array<{ patterns: string[]; key: string; confidence: number }> = [
@@ -82,6 +83,17 @@ ${tierSummary}
 
 Available meters:
 ${meterList}
+
+A meter only matches when it counts the SAME underlying real-world event as
+the contract metric — not merely because both descriptions mention a
+related word like "invoice" or "payment". Be conservative: superficial
+keyword overlap is not semantic equivalence.
+Example of a NON-match: contract metric "payment request" (a customer
+payment transaction being processed) is NOT matched by a meter named
+"Invoices Sent" or similar (a notification/dispatch event — the vendor's
+own system sending a document), even though both mention invoices/payments
+in casual language. If no meter genuinely measures the same event, set
+confidence below 0.4 regardless of which meter_key you name.
 
 Reply with ONLY a JSON object: {"meter_key": "<key>", "confidence": <0.0-1.0>}
 Choose the meter whose purpose best matches the contract metric. If none match well, set confidence below 0.4.`,
@@ -308,6 +320,20 @@ export async function GET(
             meter_key  = ai.meter_key
             confidence = ai.confidence
             freshCacheWrites[cacheKey] = { promptFingerprint: fingerprint, result: ai }
+          }
+
+          // Step 17C.3b, item B — deterministic safety net over the AI
+          // match above (fresh or cached): a transactional metric (payment
+          // request, transaction, charge) matched against a meter that is
+          // itself a notification/dispatch channel (email/sms/letter/
+          // reminder/"Invoices Sent") is a known false-positive shape —
+          // both merely mention "invoice"/"payment" in casual language,
+          // they do not measure the same underlying event. Caps confidence
+          // regardless of what the model itself claimed, so the no_match
+          // check below still applies.
+          const matchedMeter = availableMeters.find(m => m.meter_key === meter_key)
+          if (matchedMeter && isNotificationChannelMismatch(unitType, matchedMeter)) {
+            confidence = Math.min(confidence, NOTIFICATION_CHANNEL_MISMATCH_CONFIDENCE_CAP)
           }
         }
       }

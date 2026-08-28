@@ -14,7 +14,7 @@ import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, computeCommittedFixedFees, computeConditionalFixedFees, contractLifecycleStatus, type BaseTcvItem } from '@/lib/contract-tcv-calc'
 import { resolveCommittedFixedFeeValue, type CommittedFixedFeeResolution } from '@/lib/committed-fixed-fee-resolver'
 import { ruleCadenceLabel, cadenceNoun, contractMonthLabel, volumeTierCopy } from '@/lib/cadence-labels'
-import { optionsForRuleType, optionsForEdit, deriveSelectedOption, baseFeeHasExpiringWaiver, discountHasUnresolvedComponentScope, describeDiscountComponentScope, CREDIT_SURVIVAL_OPTIONS, type RuleType, type StructuredOption, type RuleProposal, type DiscountScopeContext } from '@/lib/rule-interpretation'
+import { optionsForRuleType, optionsForEdit, deriveSelectedOption, baseFeeHasExpiringWaiver, discountHasUnresolvedComponentScope, describeDiscountComponentScope, CREDIT_SURVIVAL_OPTIONS, looksLikeMalformedReasoning, truncateSentences, type RuleType, type StructuredOption, type RuleProposal, type DiscountScopeContext } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, isProvenanceResolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { isMonetaryBasisRecognitionApplicable, isPaidBasisFinalizationApplicable } from '@/lib/paid-basis-finalization'
@@ -351,22 +351,6 @@ type OperationalEventEvidence = {
 function fmt(n: number | null | undefined, cur = 'EUR') {
   if (n == null) return '—'
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
-}
-
-// AI reasoning defaults to 2-3 sentences on the review card — a full
-// chain-of-reasoning paragraph buries "what Verdix thinks / why / what it
-// costs" under prose the reviewer has to wade through. Splits on
-// sentence-ending punctuation rather than truncating by character count, so
-// it never cuts off mid-sentence.
-function truncateSentences(text: string, maxSentences = 3, maxChars = 220): { short: string; truncated: boolean } {
-  const sentences = text.match(/[^.!?]+[.!?]+(\s|$)/g) ?? [text]
-  const bySentence = sentences.length > maxSentences ? sentences.slice(0, maxSentences).join('').trim() : text
-  if (bySentence.length <= maxChars) return { short: bySentence, truncated: bySentence !== text }
-  // A hard character-length safety net — a single long run-on sentence (or
-  // several short ones with no terminal punctuation the regex could split
-  // on) would otherwise sail through the sentence-count check untouched.
-  const hardCut = bySentence.slice(0, maxChars).replace(/\s+\S*$/, '')
-  return { short: `${hardCut}…`, truncated: true }
 }
 
 // For per-unit rates which are often fractional (e.g. €0.05, SEK 0.035).
@@ -1128,7 +1112,13 @@ function PerformanceShareCard({
       ? { label: 'Checking…', color: '#57534E', background: '#F5F5F4' }
       : ready
         ? { label: 'Ready', color: '#15803D', background: '#DCFCE7' }
-        : { label: 'Executable — input mapping required', color: '#B45309', background: '#FEF3C7' }
+        // Step 17C.3b, item E — renamed from "input mapping required": the
+        // missing pieces here are monetary/manual operational FACTS a
+        // reviewer enters directly (paid_invoice_value, total invoice
+        // value, ...), never a billing-meter mapping choice — "mapping"
+        // implied picking from a meter list, which isn't what this
+        // readiness state actually asks the reviewer to do.
+        : { label: 'Executable — operational inputs required', color: '#B45309', background: '#FEF3C7' }
 
   return (
     <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
@@ -1157,10 +1147,15 @@ function PerformanceShareCard({
           <div className="mt-3 pt-3 space-y-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.08)' }}>
             {config && (
               <>
-                <p className="text-[11px] text-stone">
-                  Rate: {config.derived_metric.metric_key} = {config.derived_metric.numerator_input_key} / {config.derived_metric.denominator_input_key}
-                </p>
-                <p className="text-[11px] text-stone">Applied to basis: {config.basis_input_key}</p>
+                {/* Step 17C.3b, item E — "Derived metric"/"Charge basis" as
+                    two distinct, human-readable lines (not folded into a
+                    formula string). Raw operational inputs (numerator/
+                    denominator/basis's own dependency keys) are never
+                    repeated here — they already live in the Operational
+                    Data Inputs section, this card only names WHICH derived
+                    metric and WHICH basis this fee's rate uses. */}
+                <p className="text-[11px] text-stone">Derived metric: {config.derived_metric.metric_key}</p>
+                <p className="text-[11px] text-stone">Charge basis: {config.basis_input_key}</p>
                 <p className="text-[11px] text-stone">
                   {config.rate_schedule.bands.length} rate bands, {config.rate_schedule.min_selector_value}–{config.rate_schedule.max_selector_value ?? '∞'}
                   {config.derived_metric.output_unit === 'percentage' ? '%' : ''}
@@ -3091,15 +3086,28 @@ function RuleInterpretationCard({
               {(() => {
                 const text = aiProposal.reasoning || 'Contract does not specify how this should be handled — nothing is preselected.'
                 const { short, truncated } = truncateSentences(text, 1, 140)
+                // Step 17C.3b, item D — truncateSentences' own sentence-
+                // boundary regex can produce a meaningless fragment (e.g.
+                // "e." from text starting "E.g. ...") even though the full
+                // `text` is fine. Never render that fragment as Verdix's
+                // stated reasoning — omit the explanatory paragraph
+                // entirely and fall straight to the deterministic headline
+                // ("Decision required" above) + structured decision
+                // options below. The full, untruncated text is very likely
+                // fine on its own, so "More details" still offers it
+                // rather than losing real information over a bad cut point.
+                const shortIsMalformed = looksLikeMalformedReasoning(short)
                 return (
                   <>
-                    <p className="text-xs" style={{ color: '#7F1D1D' }}>{short}</p>
-                    {truncated && (
+                    {!shortIsMalformed && <p className="text-xs" style={{ color: '#7F1D1D' }}>{short}</p>}
+                    {(truncated || shortIsMalformed) && !looksLikeMalformedReasoning(text) && (
                       <button onClick={() => setShowFullReasoning(v => !v)} className="text-[11px] font-medium mt-1 hover:underline" style={{ color: '#991B1B' }}>
                         {showFullReasoning ? 'Hide details' : 'More details'}
                       </button>
                     )}
-                    {truncated && showFullReasoning && <p className="text-xs mt-1.5" style={{ color: '#7F1D1D' }}>{text}</p>}
+                    {(truncated || shortIsMalformed) && showFullReasoning && !looksLikeMalformedReasoning(text) && (
+                      <p className="text-xs mt-1.5" style={{ color: '#7F1D1D' }}>{text}</p>
+                    )}
                   </>
                 )
               })()}

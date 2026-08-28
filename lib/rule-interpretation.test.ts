@@ -24,6 +24,8 @@ import {
   getBaseFeeProrationOptions,
   SERVICE_CREDIT_OPTIONS,
   CREDIT_SURVIVAL_OPTIONS,
+  looksLikeMalformedReasoning,
+  truncateSentences,
   type MinimumCommitmentContext,
   type PartialPeriodContext,
   type EscalatorContext,
@@ -1360,5 +1362,52 @@ describe('CREDIT_SURVIVAL_OPTIONS + buildCreditSurvivalPrompt — inline unused-
   it('instructs the model never to invent a specific expiry_periods count or expiry_date the reviewer did not state', () => {
     const prompt = buildCreditSurvivalPrompt({ sourceClause: null, description: 'x' }, 'it carries forward')
     expect(prompt).toMatch(/never invent a count or date the reviewer didn't state/)
+  })
+})
+
+describe('truncateSentences + looksLikeMalformedReasoning — Step 17C.3b, item D', () => {
+  it('the real failure mode: a 1-sentence truncation of text containing "i.e." produces the meaningless fragment "e."', () => {
+    // The sentence-boundary regex requires whitespace right after a
+    // terminator to count as a match — "i." inside "i.e." isn't (immediately
+    // followed by "e", not a space), so it skips ahead and matches "e. "
+    // instead (immediately followed by a space), exactly reproducing the
+    // real reported artifact.
+    const text = 'The fee mechanism is unclear, i.e. the contract does not specify whether the rolling average includes the partial first month.'
+    const { short } = truncateSentences(text, 1, 140)
+    expect(short).toBe('e.')
+    // This is exactly the bug: the fragment alone looks malformed even
+    // though the full text is perfectly fine.
+    expect(looksLikeMalformedReasoning(short)).toBe(true)
+    expect(looksLikeMalformedReasoning(text)).toBe(false)
+  })
+
+  it('an ordinary sentence truncates to real content that is never flagged as malformed', () => {
+    const text = 'The contract does not state whether the partial period is prorated. A reviewer decision is required.'
+    const { short, truncated } = truncateSentences(text, 1, 140)
+    expect(short).toBe('The contract does not state whether the partial period is prorated.')
+    expect(truncated).toBe(true)
+    expect(looksLikeMalformedReasoning(short)).toBe(false)
+  })
+
+  it('looksLikeMalformedReasoning rejects empty/punctuation-only/short-letter-run text and accepts real prose', () => {
+    expect(looksLikeMalformedReasoning('')).toBe(true)
+    expect(looksLikeMalformedReasoning('g. g.')).toBe(true)
+    expect(looksLikeMalformedReasoning('...')).toBe(true)
+    expect(looksLikeMalformedReasoning('e.')).toBe(true)
+    expect(looksLikeMalformedReasoning('Clear.')).toBe(false)
+    expect(looksLikeMalformedReasoning('The rate schedule applies from month two.')).toBe(false)
+  })
+
+  it('a short text within maxChars is returned verbatim, untruncated', () => {
+    const text = 'Decision required.'
+    expect(truncateSentences(text, 1, 140)).toEqual({ short: text, truncated: false })
+  })
+
+  it('a single long run-on sentence with no terminal punctuation falls back to the hard character cut', () => {
+    const text = 'a '.repeat(200).trim()
+    const { short, truncated } = truncateSentences(text, 1, 140)
+    expect(truncated).toBe(true)
+    expect(short.endsWith('…')).toBe(true)
+    expect(short.length).toBeLessThanOrEqual(141)
   })
 })

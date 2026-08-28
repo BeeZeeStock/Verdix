@@ -143,21 +143,26 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
     // for an operational count — enforced structurally here, not merely by
     // the extraction prompt being followed.
     const isVariableRate = !!fee.metric_name && typeof fee.rate_per_unit === 'number' && fee.rate_per_unit > 0
-    // Step 17C.1 — a percentage-of-basis fee (e.g. Remembill's performance
-    // share) has the SAME "no fixed quantity until real operational data
-    // exists" shape as a variable-rate fee above — its rate is selected
-    // from a schedule at calculation time, never a stand-in for the
-    // contract's own billing-cycle count. Without this, such a fee would
-    // silently vanish from this TCV preview entirely (fee.amount stays 0
-    // and it doesn't match isVariableRate either) rather than staying
-    // visible at quantity 0 / total 0 like every other operational-only fee.
-    const isPercentageOfBasis = !!fee.percentage_of_basis
-    if (!fee.amount && !isVariableRate && !isPercentageOfBasis) continue
+    // Step 17C.3b, item A — a percentage-of-basis fee (fee.percentage_of_basis
+    // populated, e.g. Remembill's performance share) is now FULLY
+    // represented by its own dedicated PerformanceShareCard (DerivedMetric
+    // + RateSchedule + readiness state — see app/(dashboard)/configure/
+    // [id]/page.tsx). Step 17C.1 originally kept it visible here too (at
+    // quantity 0 / unit_price 0) so it wouldn't "vanish" before that card
+    // existed — now that it does, this generic committed/operational
+    // line-items table would only duplicate it as a misleading "Included
+    // usage tier / €0/unit" row. Skip it here exactly like the ordinary
+    // unresolved_kind: 'unsupported_semantics' shape (no percentage_of_basis)
+    // already always has — the executable percentage-of-basis
+    // representation is authoritative, this table is not a second place
+    // for it to also appear. A genuinely independent per-unit fee
+    // (isVariableRate, no percentage_of_basis — no dedicated card of its
+    // own) is unaffected and still shown here.
+    if (!fee.amount && !isVariableRate) continue
     const feeFreq = terms.billing_frequency ?? 'monthly'
     const { interval, intervalCount } = billingInterval(feeFreq)
     const feeMonthsPerPeriod = interval === 'year' ? 12 * intervalCount : intervalCount
     const periodCount = termMonths > 0 && feeMonthsPerPeriod > 0 ? Math.ceil(termMonths / feeMonthsPerPeriod) : 1
-    const isOperationalOnly = isVariableRate || isPercentageOfBasis
     items.push({
       product_name: fee.fee_label,
       // Mirrors one_time_fees' own isParked convention below: still
@@ -165,10 +170,10 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
       // contributing a quantity/amount until usage data supplies a real
       // count — quantity 0 / total 0 is the "operational, unresolved"
       // representation, not an invented committed figure.
-      quantity: isOperationalOnly ? 0 : periodCount,
-      unit_price: isPercentageOfBasis ? 0 : isVariableRate ? (fee.rate_per_unit ?? 0) : fee.amount,
+      quantity: isVariableRate ? 0 : periodCount,
+      unit_price: isVariableRate ? (fee.rate_per_unit ?? 0) : fee.amount,
       billing_period: feeFreq,
-      total_amount: isOperationalOnly ? 0 : Math.round(fee.amount * periodCount * 100) / 100,
+      total_amount: isVariableRate ? 0 : Math.round(fee.amount * periodCount * 100) / 100,
       currency: cur,
       confidence_score: conf,
       source_section: src.additional_recurring_fees ?? src.base_monthly_fee ?? null,

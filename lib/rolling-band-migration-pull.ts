@@ -79,6 +79,21 @@ export async function evaluateRollingBandMigrations(params: {
 
   for (const mechanism of mechanisms) {
     const config = mechanism.rolling_band_migration
+
+    // Step 17C.3b, item C — a contract that hasn't started yet has no
+    // billing periods to speak of at all; "0 of 3 periods closed" reads as
+    // if monitoring were already underway and merely behind. Distinguish
+    // "the agreement itself hasn't begun" from "the agreement is active
+    // but its first few periods haven't closed yet" (the ordinary,
+    // unchanged 0/3 -> 1/3 -> 2/3 progression once asOf >= contract_start_date).
+    if (asOfDate < anchorDate) {
+      results.push({
+        mechanismKind: mechanism.kind,
+        evaluation: { status: 'not_ready', reason: `Monitoring begins ${terms.contract_start_date}. No eligible billing periods have started yet.` },
+      })
+      continue
+    }
+
     const windows = getLastNCompletedCadenceWindows({
       anchorDate, cadence: terms.billing_frequency, asOf: asOfDate, n: config.aggregate.window_count,
     })

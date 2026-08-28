@@ -3,9 +3,10 @@ import {
   resolveNextContractPeriodStart, resolveNextRenewalTermStart, resolveEffectiveCommercialState,
   compileTransitionEffectiveRule, resolveEffectiveDateFromRule,
   resolveEffectiveContractedVolume, compileVolumeTransitionRule, resolveVolumeRuleVersionAsOf,
+  evaluateRollingBandMigrations,
   type PersistedVolumeTransitionRuleVersion,
 } from './rolling-band-migration-pull'
-import type { ContractTerms, FixedFeeBand } from './types'
+import type { ContractTerms, FixedFeeBand, RollingBandMigrationConfig, UnsupportedCommercialMechanism } from './types'
 
 describe('resolveNextContractPeriodStart — Step 17C.2', () => {
   it('no contract_start_date known -> null (Decision Required, never guessed)', () => {
@@ -310,5 +311,51 @@ describe('resolveVolumeRuleVersionAsOf — Step 17C.2d, item 1 (pure historical-
 
   it('a different transition_id never matches -> null', () => {
     expect(resolveVolumeRuleVersionAsOf(versions, 'tx-other', new Date('2027-06-01T00:00:00Z'))).toBeNull()
+  })
+})
+
+describe('evaluateRollingBandMigrations — Step 17C.3b, item C (contract-start-aware monitoring)', () => {
+  const rollingConfig: RollingBandMigrationConfig = {
+    aggregate: { input_key: 'issued_payment_request_count', window_count: 3, window_unit: 'billing_period', operation: 'mean', require_complete_windows: true },
+    trigger_comparator: 'greater_than',
+    compared_to: 'contracted_volume',
+    notice_required: true,
+  }
+  const mechanism: UnsupportedCommercialMechanism = {
+    kind: 'rolling_volume_pricing_transition', description: 'test', execution_status: 'executable',
+    rolling_band_migration: rollingConfig,
+  }
+
+  function termsWithFutureStart(): ContractTerms {
+    return {
+      contract_start_date: '2026-10-01', billing_frequency: 'monthly', base_fee_committed_volume: 5000,
+      base_fee_bands: [], unsupported_commercial_mechanisms: [mechanism],
+    } as unknown as ContractTerms
+  }
+
+  it('asOf before contract_start_date -> "Monitoring begins <date>" reason, never "0 of N periods closed"', async () => {
+    const results = await evaluateRollingBandMigrations({
+      jobId: 'test-job', terms: termsWithFutureStart(), asOf: '2026-08-28T00:00:00Z',
+    })
+    expect(results).toHaveLength(1)
+    expect(results[0].evaluation).toEqual({
+      status: 'not_ready',
+      reason: 'Monitoring begins 2026-10-01. No eligible billing periods have started yet.',
+    })
+    // The exact regression this fixes: never the pre-existing "0 of 3 ..."
+    // wording for a contract that hasn't even started yet.
+    if (results[0].evaluation.status === 'not_ready') {
+      expect(results[0].evaluation.reason).not.toMatch(/of the required/)
+    }
+  })
+
+  it('asOf exactly at contract_start_date is treated as active, not pre-start (falls through to the ordinary not-enough-periods-closed path)', async () => {
+    const results = await evaluateRollingBandMigrations({
+      jobId: 'test-job', terms: termsWithFutureStart(), asOf: '2026-10-01T00:00:00Z',
+    })
+    expect(results).toHaveLength(1)
+    if (results[0].evaluation.status === 'not_ready') {
+      expect(results[0].evaluation.reason).not.toMatch(/^Monitoring begins/)
+    }
   })
 })
