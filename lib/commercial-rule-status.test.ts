@@ -169,6 +169,75 @@ describe('computeCommercialRuleWorkload — "all confirmed" must check every rul
   })
 })
 
+describe('computeCommercialRuleWorkload — Step 17F.3, item 6: variable_invoice_timing participates in readiness (renamed from variable_settlement_timing)', () => {
+  it('an otherwise-fully-confirmed contract is NOT all_commercial_rules_confirmed while a percentage-of-basis fee\'s variable_invoice_timing is unresolved', () => {
+    const terms: CommercialRuleTerms = {
+      overage_tiers: [],
+      escalators: [],
+      discounts: [],
+      service_credits: [],
+      additional_recurring_fees: [
+        { fee_label: 'Performance share', variable_invoice_timing: { requires_confirmation: true } },
+      ],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).not.toBe('all_commercial_rules_confirmed')
+    expect(workload.blockers).toContain('variable_invoice_timing:Performance share')
+  })
+
+  it('the SAME contract with variable_invoice_timing confirmed IS all_commercial_rules_confirmed', () => {
+    const terms: CommercialRuleTerms = {
+      overage_tiers: [],
+      escalators: [],
+      discounts: [],
+      service_credits: [],
+      additional_recurring_fees: [
+        { fee_label: 'Performance share', variable_invoice_timing: { requires_confirmation: false } },
+      ],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+    expect(workload.blockers).not.toContain('variable_invoice_timing:Performance share')
+  })
+
+  it('a fee with no percentage_of_basis (no variable_invoice_timing at all) is never counted — nothing to resolve', () => {
+    const terms: CommercialRuleTerms = {
+      overage_tiers: [], escalators: [], discounts: [], service_credits: [],
+      additional_recurring_fees: [{ fee_label: 'Flat fee' }],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+})
+
+describe('computeCommercialRuleWorkload — Step 17F.3, item 3: fixed_fee_billing_timing participates in readiness', () => {
+  it('an otherwise-fully-confirmed contract is NOT all_commercial_rules_confirmed while fixed_fee_billing_timing is unresolved', () => {
+    const terms: CommercialRuleTerms = {
+      overage_tiers: [], escalators: [], discounts: [], service_credits: [],
+      fixed_fee_billing_timing: { requires_confirmation: true },
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).not.toBe('all_commercial_rules_confirmed')
+    expect(workload.blockers).toContain('fixed_fee_billing_timing')
+  })
+
+  it('the SAME contract with fixed_fee_billing_timing confirmed IS all_commercial_rules_confirmed', () => {
+    const terms: CommercialRuleTerms = {
+      overage_tiers: [], escalators: [], discounts: [], service_credits: [],
+      fixed_fee_billing_timing: { requires_confirmation: false },
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+    expect(workload.blockers).not.toContain('fixed_fee_billing_timing')
+  })
+
+  it('a contract with no fixed_fee_billing_timing rule at all (no fixed fee) is never counted', () => {
+    const terms: CommercialRuleTerms = { overage_tiers: [], escalators: [], discounts: [], service_credits: [] }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+})
+
 describe('isMinimumCommitmentModeUnresolved', () => {
   it('is resolved when mode is stated and no allowance exists, regardless of included_allowance_interaction', () => {
     expect(isMinimumCommitmentModeUnresolved({ mode: 'floor', included_allowance_interaction: 'unclear', requires_confirmation: true }, false)).toBe(false)

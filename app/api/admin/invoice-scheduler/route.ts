@@ -29,6 +29,7 @@ import type { ContractTerms } from '@/lib/types'
 import { isAuthorizedCronRequest } from '@/lib/cron-auth'
 import { resolveSchedulerScope } from '@/lib/invoice-scheduler-scope'
 import { isHeldHistoricalTerminalSettlement } from '@/lib/terminal-settlement-guard'
+import { resolveFixedFeeSchedulingDecision } from '@/lib/fixed-fee-invoice-scheduling'
 import { resolveVatTreatment, computeVat, reconcileGrossAmount } from '@/lib/vat'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import { getCustomerVatConfig, getInvoiceVatOverride } from '@/lib/vat-service'
@@ -388,6 +389,32 @@ export async function GET(req: NextRequest) {
 
       const terms = unwrapEmbedded(job.contract_terms as unknown as ContractTerms | ContractTerms[])
       if (!terms) throw new Error(`No contract terms for job ${row.job_id}`)
+
+      // Step 17F.6 — scheduler-side fail-closed gate for the fixed
+      // recurring component, independent of and in addition to the
+      // review-readiness UI. The bulk fetch above (period_start <= today)
+      // is a superset — it's the only SQL-level filter available and
+      // period_start <= period_end always, so it never excludes a row this
+      // check would otherwise need to see. 'hold' releases the row back to
+      // 'scheduled' for a later run once a reviewer resolves the timing;
+      // 'not_yet_due' does the same when a CONFIRMED bill_at_period_end
+      // means the row's real trigger date hasn't arrived yet even though
+      // its period_start has. Neither path ever touches an already-'sent'
+      // row (excluded by the scheduler's own query, never re-enters here).
+      const fixedFeeDecision = resolveFixedFeeSchedulingDecision(
+        { invoice_type: row.invoice_type, period_start: row.period_start, period_end: row.period_end },
+        terms.fixed_fee_billing_timing,
+        today,
+      )
+      if (fixedFeeDecision.action === 'hold') {
+        await supabaseServer.from('planned_invoices').update({ status: 'scheduled', processing_started_at: null }).eq('id', row.id)
+        results.push({ id: row.id, ok: false, held: true, error: fixedFeeDecision.reason })
+        continue
+      }
+      if (fixedFeeDecision.action === 'not_yet_due') {
+        await supabaseServer.from('planned_invoices').update({ status: 'scheduled', processing_started_at: null }).eq('id', row.id)
+        continue
+      }
 
       const customerId = (job.billing_customer_id as string | null)
         ?? (typeof job === 'object' && 'billing_customer_id' in job ? String(job.billing_customer_id) : null)

@@ -53,6 +53,8 @@ Rules:
   (b) a discount/waiver on this same fee (see discounts[]) has its OWN stated expiry (e.g. a day-stated pilot/introductory period) that does not land on a clean boundary of the fee's normal billing cadence — the fee resumes mid-cycle relative to its OWN normal periods, a partial-period question exactly as real as trigger (a), just created by the waiver's expiry rather than by calendar/contract-start misalignment. reset_anchor still describes the fee's own normal cadence anchor truthfully (e.g. "contract_start" if that's genuinely how the fee's periods run) — it is NOT restricted to "calendar" just because this trigger is in play; only prorate_partial_periods/requires_confirmation describe the actual open question.
     TRIGGER (b) IS A COMMON MISS — CHECK IT EXPLICITLY, DO NOT SKIP: whenever a discount/waiver targets this fee (affected_components or possibly_affected_components includes the fee's component, e.g. "base_recurring_fee") AND states a day-count duration (duration_days), you MUST actually add contract_start_date + duration_days and check whether that landing date is the LAST day of a calendar month. It almost never is, because calendar months are not 30/60/90/etc. days long — e.g. a 90-day pilot starting 2026-10-01 expires 2026-12-30 (31 days in October + 30 in November + 29 of December = 90), which is TWO DAYS SHORT of the next full month boundary (2027-01-01), even though 90 days "sounds like" 3 clean months. Do not skip this arithmetic just because the duration is a round number of days (90, 60, 30) or looks like it should equal whole months — verify it. If the landing date is not a clean month-end, base_fee_proration MUST be populated with requires_confirmation: true (per the schema above) — this holds regardless of whether trigger (a) also applies, and regardless of what day of the month the contract itself starts on.
   When either applies: { "reset_anchor": "contract_start"|"calendar", "prorate_partial_periods": true|false|"unclear", "requires_confirmation": <boolean>, "confirmation_reason": "<string or null>", "source_clause": "<verbatim or paraphrased, or null>" }. Whether a partial period bills in full or prorated is very rarely stated explicitly — unless the contract text actually says so, set prorate_partial_periods to "unclear" and requires_confirmation to true. NEVER default to full-charge or to proration as a "reasonable assumption" — this mirrors the exact discipline already required for a metric minimum commitment's own prorate_partial_periods field, generalized to the base/recurring fees themselves. Leave proration null/omitted entirely when NEITHER trigger applies (the common case: contract-start-anchored billing with no mid-cycle-expiring waiver on this fee).
+- fixed_fee_billing_timing (job-level, on base_monthly_fee/base_annual_fee only — a genuinely SEPARATE question from base_fee_proration above, which only ever governs a PARTIAL period's amount, never a full period's invoice timing): WHEN the recurring fixed fee's invoice is actually issued relative to its own billing period — at the BEGINNING (in advance/prepaid) or the END (in arrears) of that period. Populate ONLY when the contract text explicitly states this — e.g. "invoiced at the start of each month", "billed in advance", "payable in advance for the upcoming period" (→ "bill_at_period_start"), or "invoiced at the end of each period", "billed in arrears", "invoiced following each completed month" (→ "bill_at_period_end"). { "timing": "bill_at_period_start"|"bill_at_period_end"|"unclear", "requires_confirmation": <boolean>, "confirmation_reason": "<string or null>", "source_clause": "<verbatim or paraphrased, or null>" }.
+  DO NOT INFER THIS FROM: the billing cadence alone (a fee being "monthly" says nothing about which end of the month it's invoiced at), payment-terms wording (e.g. "payment due within 30 days of invoice" tells you how long the customer has to PAY an already-issued invoice — it says nothing about WHEN that invoice was issued relative to the period it covers), or any assumption about how billing software typically operates. These are three genuinely different facts and confusing them is a common, serious error. If the contract states a monthly fee and payment terms but never actually says whether the invoice issues at the start or end of the period, set timing to "unclear" and requires_confirmation to true — this is the common case; do not guess.
   CRITICAL RULE for "base price × users" language: SaaS contracts commonly state additional user fees separately (e.g. "base platform fee: €456,987/yr + additional users at €2,500/user/yr"). In this pattern, base_monthly_fee or base_annual_fee = the platform fee alone (€456,987), and the user fees go into overage_tiers or a separate line. NEVER multiply the platform fee by the user count — that would be double-counting. The only time you multiply a rate by users is when the contract EXPLICITLY states a per-seat price (e.g. "€500/user/month for 10 users = €5,000/month total") where the stated per-seat figure is small and clearly a unit rate. A base annual platform fee in the hundreds of thousands is never a per-seat rate.
 - base_annual_fee: annual fee if billed annually
 - year_pricing: year-by-year fee schedule as {"year1": 50000, "year2": 55000, ...}. Each value is the INVOICE AMOUNT DUE IN THAT YEAR ONLY — never cumulative totals.
@@ -401,6 +403,7 @@ export function mergeExtractions(results: ContractTerms[]): ContractTerms {
     base_fee_bands: coalesceScalar(results, 'base_fee_bands'),
     base_fee_committed_volume: coalesceScalar(results, 'base_fee_committed_volume'),
     base_fee_proration: coalesceScalar(results, 'base_fee_proration'),
+    fixed_fee_billing_timing: coalesceScalar(results, 'fixed_fee_billing_timing'),
     escalators: dedupe([...results.flatMap(r => r.escalators)], 'description'),
     discounts: dedupe([...results.flatMap(r => r.discounts)], 'description'),
     service_credits: dedupe([...results.flatMap(r => r.service_credits ?? [])], 'description'),
@@ -469,6 +472,7 @@ export function applyExtractionSafetyNets(terms: ContractTerms, contractText?: s
   terms.one_time_fees = flagAmbiguousOneTimeFees(terms.one_time_fees ?? [], terms.currency)
   terms.one_time_fees = normalizeBillabilityCondition(terms.one_time_fees ?? [], terms.contract_start_date)
   flagAmbiguousBaseFeeProration(terms, contractText)
+  flagUnresolvedFixedFeeBillingTiming(terms)
   if (contractText) preserveExclusionLanguage(terms, contractText)
 
   // Step 17C.3 (hardened 17C.3a) — attempt to compile the performance-
@@ -690,6 +694,32 @@ function flagAmbiguousBaseFeeProration(terms: ContractTerms, contractText?: stri
   }
 
   flagAmbiguousWaiverExpiryProration(terms)
+}
+
+// Step 17F.3, item 2/8 — unlike base_fee_proration (only a real question
+// under SPECIFIC trigger conditions — calendar/contract-start mismatch, or
+// a waiver expiring mid-cycle), WHEN a fixed fee's invoice is issued
+// relative to its own period is a question that genuinely applies to
+// EVERY fixed fee, always — there is no shape of fixed recurring fee for
+// which "start or end of period" isn't a real, applicable fact. So this is
+// a blanket safety net, not a conditional one: whenever a base fee exists
+// and the model produced no structured fixed_fee_billing_timing answer at
+// all, default to unresolved — never inferred from cadence ("monthly") or
+// payment-terms wording ("30 days"), and never silently defaulted to
+// bill_at_period_start just because that happens to be the invoice-
+// scheduler's own structural convention (Step 17F.3, item 1's audit
+// finding: that convention is an implementation detail, never contract
+// truth on its own). Never overrides an existing structured answer the
+// model itself produced from explicit contract text.
+function flagUnresolvedFixedFeeBillingTiming(terms: ContractTerms): void {
+  if (terms.fixed_fee_billing_timing) return // model already produced a structured answer — never override it
+  if (!terms.base_monthly_fee && !terms.base_annual_fee) return // nothing fixed to time
+  terms.fixed_fee_billing_timing = {
+    timing: 'unclear',
+    requires_confirmation: true,
+    confirmation_reason: 'The agreement does not state whether the recurring fixed fee is invoiced at the beginning or the end of its billing period.',
+    source_clause: terms.base_fee_proration?.source_clause ?? null,
+  }
 }
 
 // Step 17B0.1, item 1 — deterministic backstop for the prompt's own

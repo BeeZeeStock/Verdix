@@ -12,8 +12,30 @@ import { computePerformanceShareFee } from '@/lib/performance-share-fee'
 import { buildOperationalInputMap, findMonetaryCurrencyProblem, type OperationalInputPeriodValueRow } from '@/lib/operational-input-binding'
 import { isMonetaryOperationalInput } from '@/lib/operational-data-inputs'
 import { PERFORMANCE_SHARE_FEE_COMPONENT } from '@/lib/performance-share-materiality'
-import type { ContractTerms } from '@/lib/types'
+import type { ContractTerms, VariableInvoiceTimingRule } from '@/lib/types'
 import type { OverageLineItem } from '@/lib/usage-pull'
+
+// Step 17F.3, item 6 (renamed from isArrearsSettlementTimingConfirmed —
+// Step 17F.1, item 6) — extracted as its own pure, exported predicate (the
+// same "small typed gate, unit-tested in isolation" pattern this codebase
+// uses throughout — isProvenanceResolved, isMeterMappingResolved, etc.)
+// rather than left inline. Renamed to describe what it actually gates now:
+// WHEN the already-determined charge is invoiced, never WHETHER it's
+// determined in arrears (that's structural — see computePerformanceShareFee's
+// own 'not_ready' handling below, unconditional, no rule involved).
+// 'invoice_at_next_period_start' AND requires_confirmation false are BOTH
+// required — a fee whose rule was reset to 'unclear' pending re-review must
+// never execute merely because requires_confirmation briefly reads false
+// from stale data, and a confirmed-but-still-'unclear' timing (should never
+// happen, but not structurally impossible) must never be treated as
+// authorization either. 'invoice_at_period_end' is a resolvable VALUE (a
+// contract can state this arrangement) but has no distinct execution path
+// yet, so it is deliberately NOT authorized here either — held exactly
+// like an unresolved rule, never silently executed on the
+// next-period-start cycle as if it were the same arrangement.
+export function isVariableInvoiceTimingConfirmed(rule: VariableInvoiceTimingRule | null | undefined): boolean {
+  return !!rule && !rule.requires_confirmation && rule.timing === 'invoice_at_next_period_start'
+}
 
 export async function computePerformanceShareLineItemsForPeriod(params: {
   jobId: string
@@ -60,6 +82,22 @@ export async function computePerformanceShareLineItemsForPeriod(params: {
 
   for (const fee of feesWithConfig) {
     const config = fee.percentage_of_basis!
+
+    // Step 17F.3, item 6 — WHEN this already-determined charge is invoiced
+    // is a separate typed decision from whether its AMOUNT can be computed
+    // (config being present at all) and from whether it's determined in
+    // arrears (structural — the 'not_ready' check below runs unconditionally,
+    // with no rule gating it). Never silently assume the generic
+    // next-period-start invoice cycle applies — lib/commercial-mechanism-
+    // compiler.ts attaches this as unresolved by default; only a reviewer
+    // confirming it (requires_confirmation: false) authorizes real
+    // execution on this cycle. Held exactly like any other unresolved
+    // rule — never invoiced, never throws, visible to the workspace as a
+    // pending decision via the SAME missingDependencies path.
+    if (!isVariableInvoiceTimingConfirmed(fee.variable_invoice_timing)) {
+      console.warn(`[performance-share-pull] '${fee.fee_label}' held for job ${jobId}: variable invoice timing not yet confirmed`)
+      continue
+    }
 
     // Step 17C.1a/b, item 4/B — fail closed BEFORE ever attempting the
     // calculation: a monetary input's own recorded currency must be

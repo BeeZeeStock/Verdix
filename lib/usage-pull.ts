@@ -6,7 +6,7 @@
 import { supabaseServer } from '@/lib/supabase'
 import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining, isPartialWindow, isBillingWindowClosed, resolveWindowMinimum, clampWindowToContract, type CadenceAnchorMode } from '@/lib/tariff'
 import { pullMeterQuantity } from '@/lib/meter-quantity-pull'
-import { finalizeClosedPeriodUsageQuantity } from '@/lib/usage-quantity-resolver'
+import { finalizeClosedPeriodUsageQuantity, resolveUsageQuantityForPeriod } from '@/lib/usage-quantity-resolver'
 import { resolveQualifiedUnitAggregateQuantitySource } from '@/lib/qualified-unit-aggregation-service'
 import { resolveCommercialQuantity, requireReadyCommercialQuantity } from '@/lib/commercial-quantity-source'
 import { resolveEffectiveCommercialStateForPeriod } from '@/lib/rolling-band-migration-pull'
@@ -173,8 +173,21 @@ export async function computeOverageForPeriod(params: {
   // preview. Never set by invoice-scheduler — real billing must only ever
   // charge for windows that have actually closed.
   livePreviewAsOfUnix?: number
+  // Step 17F.2, item B — additive, opt-in only (default false — every
+  // EXISTING caller unchanged): for a period that has fully CLOSED but
+  // whose invoice hasn't actually been sent yet (consumption-summary's own
+  // 'pending' status), prefer an already-finalized resolved_usage_period_
+  // snapshots row (via resolveUsageQuantityForPeriod's 'closed_period_read'
+  // mode) over a fresh meter pull — so a source value that changed AFTER
+  // real billing close doesn't make the not-yet-invoiced period's DISPLAY
+  // disagree with the amount real billing already computed and pinned.
+  // Falls through to the existing fresh-pull behavior when no snapshot is
+  // pinned yet (billing close hasn't run) or the meter has no
+  // semantic_input_key — never combined with real billing (isRealBilling),
+  // which always pulls fresh and finalizes its own result.
+  preferClosedPeriodSnapshot?: boolean
 }): Promise<OverageLineItem[]> {
-  const { orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, currency, billingAsOfUnix, ignoreTestModeGate, includeZeroUsage, livePreviewAsOfUnix } = params
+  const { orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, currency, billingAsOfUnix, ignoreTestModeGate, includeZeroUsage, livePreviewAsOfUnix, preferClosedPeriodSnapshot } = params
   const billingAsOf = new Date(billingAsOfUnix * 1000)
   // Real billing only — preview is explicitly allowed to inspect an open
   // window (that's the entire point of livePreviewAsOfUnix), so this gate
@@ -362,17 +375,73 @@ export async function computeOverageForPeriod(params: {
             totalUnits = resolved.quantity
           }
         } else {
-          const pulled = await pullMeterQuantity({
-            orgId, meterKey: cfg.meter_key, def, customerId,
-            periodStart: window.measureStart,
-            periodEnd: new Date(windowEndUnix * 1000),
-            ignoreTestModeGate,
-          })
-          if (pulled.status === 'skip') {
-            console.warn(`[usage-pull] ${pulled.reason}`)
-            continue
+          // Step 17F.2, item B — a period that has fully closed but whose
+          // invoice hasn't been sent yet (the caller's own 'pending'
+          // display case) prefers an already-pinned snapshot over a fresh
+          // pull, so a source value that changed since real billing close
+          // never makes this not-yet-invoiced period's DISPLAY disagree
+          // with what was actually billed. Checked BEFORE the fresh pull
+          // below — when nothing is pinned yet, this resolves ready:false
+          // and execution falls through to the existing fresh-pull path
+          // completely unchanged (never a behavior change for real
+          // billing, which never sets this flag).
+          let pinnedTotalUnits: number | null = null
+          if (preferClosedPeriodSnapshot && !isRealBilling && cfg.semantic_input_key) {
+            const pinned = await resolveUsageQuantityForPeriod({
+              jobId, orgId, semanticInputKey: cfg.semantic_input_key,
+              periodStart: window.measureStart, periodEnd: new Date(windowEndUnix * 1000),
+              asOf: billingAsOf, mode: 'closed_period_read',
+            })
+            if (pinned.ready) pinnedTotalUnits = pinned.quantity
           }
-          totalUnits = pulled.totalUnits
+
+          let usedManualFallback = false
+          if (pinnedTotalUnits !== null) {
+            totalUnits = pinnedTotalUnits
+          } else {
+            const pulled = await pullMeterQuantity({
+              orgId, meterKey: cfg.meter_key, def, customerId,
+              periodStart: window.measureStart,
+              periodEnd: new Date(windowEndUnix * 1000),
+              ignoreTestModeGate,
+            })
+            if (pulled.status === 'skip') {
+              // Step 17F.1, item 3 — a metric genuinely configured for
+              // MANUAL entry (no meter_key at all — the real Remembill
+              // contract's own actual confirmed state) was previously
+              // skipped outright here: this loop only ever knew how to
+              // pull a real meter, with no fallback to usage_period_values
+              // at all, unlike lib/per-unit-fee-pull.ts's flat-fee path
+              // (which already goes through resolveUsageQuantityForPeriod's
+              // meter-then-manual fallback). Deliberately scoped to
+              // `!cfg.meter_key` ONLY — a metric that DOES have a real
+              // meter_key configured but whose pull just failed (connector
+              // error, wrong endpoint) must still fail closed exactly as
+              // before, never silently substituting a stale/absent manual
+              // figure that could mask a real connector problem (see this
+              // file's own real-meter-mapping-exists comment,
+              // computeOverageForPeriod's sibling early-return).
+              if (!cfg.meter_key && cfg.semantic_input_key) {
+                const manualResolved = await resolveUsageQuantityForPeriod({
+                  jobId, orgId, semanticInputKey: cfg.semantic_input_key,
+                  periodStart: window.measureStart, periodEnd: new Date(windowEndUnix * 1000),
+                  asOf: billingAsOf, mode: isRealBilling ? 'closed_period_finalize' : 'live',
+                })
+                if (manualResolved.ready) {
+                  totalUnits = manualResolved.quantity
+                  usedManualFallback = true // resolveUsageQuantityForPeriod already finalized (mode-dependent) — the meter-finalize call below must not also run.
+                } else {
+                  console.warn(`[usage-pull] ${pulled.reason}; manual fallback also not ready: ${manualResolved.reason}`)
+                  continue
+                }
+              } else {
+                console.warn(`[usage-pull] ${pulled.reason}`)
+                continue
+              }
+            } else {
+              totalUnits = pulled.totalUnits
+            }
+          } // end fresh-pull fallback (pinnedTotalUnits === null)
 
           // Step 17D.1, item H/I — real (non-preview) billing for a
           // genuinely closed window (guaranteed by the isRealBilling throw
@@ -384,9 +453,11 @@ export async function computeOverageForPeriod(params: {
           // snapshot is durable before this function returns, but any
           // internal failure is caught and logged here, never allowed to
           // fail the real invoice this loop iteration is building. Never
-          // runs for a live preview (isRealBilling false) or a meter with
-          // no declared semantic_input_key.
-          if (isRealBilling && cfg.semantic_input_key) {
+          // runs for a live preview (isRealBilling false), a meter with no
+          // declared semantic_input_key, or the manual fallback above
+          // (which already finalized itself, as source:'manual', inside
+          // resolveUsageQuantityForPeriod — this block is meter-only).
+          if (isRealBilling && cfg.semantic_input_key && !usedManualFallback) {
             await finalizeClosedPeriodUsageQuantity({
               jobId, orgId, semanticInputKey: cfg.semantic_input_key,
               periodStart: window.measureStart, periodEnd: new Date(windowEndUnix * 1000),

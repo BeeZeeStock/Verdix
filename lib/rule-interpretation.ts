@@ -15,7 +15,7 @@ import { cadenceNoun, contractMonthLabel } from './cadence-labels'
 // ai-guidance.ts itself has no database import at all).
 import { renderRulebookAIGuidance } from './rulebook/ai-guidance'
 
-export type RuleType = 'minimum_commitment' | 'escalator' | 'partial_period' | 'discount' | 'tier_calculation' | 'service_credit' | 'rule_interaction' | 'base_fee_proration' | 'recurring_fee_proration' | 'one_time_fee'
+export type RuleType = 'minimum_commitment' | 'escalator' | 'partial_period' | 'discount' | 'tier_calculation' | 'service_credit' | 'rule_interaction' | 'base_fee_proration' | 'recurring_fee_proration' | 'one_time_fee' | 'variable_invoice_timing' | 'fixed_fee_billing_timing'
 
 // Step 17B0, item A — a clause under review frequently cross-references an
 // appendix/exhibit/Bilaga by name (e.g. "see Bilaga 1"). The full contract
@@ -364,6 +364,39 @@ export const RULE_INTERACTION_OPTIONS: StructuredOption[] = [
   { id: 'other', label: 'Other / describe treatment', description: 'Tell Verdix how this should work in your own words.' },
 ]
 
+// Step 17F.3, item 6 (renamed/refactored from VARIABLE_SETTLEMENT_TIMING_
+// OPTIONS/'arrears_with_usage' — Step 17F.1, item 6). That question was
+// conceptually wrong: WHETHER a period-based charge is determined in
+// arrears is a structural fact of measurement, never a real choice (see
+// lib/performance-share-fee.ts/lib/performance-share-pull.ts, which now
+// always wait for period close + final inputs unconditionally). This
+// asks the genuinely separate, still-open question: once determined, WHEN
+// is the charge invoiced. 'invoice_at_next_period_start' is the only
+// option with a real execution path today (bills alongside the prior
+// period's closed-window usage overage, on the next period's invoice —
+// the same cycle every other variable charge already uses);
+// 'invoice_at_period_end' names a genuine alternative commercial
+// arrangement a contract could state, but has no execution path yet, so
+// choosing it still leaves the charge held (see
+// isVariableInvoiceTimingConfirmed) rather than silently executing it on
+// the wrong cycle. A reviewer choosing 'other' stays 'unclear'/held, same
+// as never confirming at all.
+export const VARIABLE_INVOICE_TIMING_OPTIONS: StructuredOption[] = [
+  { id: 'invoice_at_next_period_start', label: 'Invoice alongside next period’s usage charges', description: 'Bill alongside the prior period’s closed-window usage overage, on the next period’s invoice — the same cycle every other variable charge on this contract already uses.' },
+  { id: 'invoice_at_period_end', label: 'Invoice immediately at period end', description: 'Issue as soon as the measurement period closes, rather than waiting for the next period’s invoice run.' },
+  { id: 'other', label: 'Other / unclear', description: 'The agreement does not establish precise invoice timing — leave unresolved pending further review.' },
+]
+
+// Step 17F.3, item 2 — a reviewer's choice for WHEN a fixed recurring
+// fee's invoice is issued relative to its own billing period. Never
+// inferred from cadence ("monthly") or payment terms ("30 days") — see
+// lib/types.ts's FixedFeeBillingTimingRule.
+export const FIXED_FEE_BILLING_TIMING_OPTIONS: StructuredOption[] = [
+  { id: 'bill_at_period_start', label: 'Bill at beginning of billing period', description: 'Invoice issued at the start of each period, in advance.' },
+  { id: 'bill_at_period_end', label: 'Bill at end of billing period', description: 'Invoice issued at the end of each period, in arrears.' },
+  { id: 'other', label: 'Other / unclear', description: 'The agreement does not establish precise billing timing — leave unresolved pending further review.' },
+]
+
 export type DiscountScopeContext = { affectedComponents: string[] | null | undefined; possiblyAffectedComponents: string[] | null | undefined }
 
 export function optionsForRuleType(ruleType: RuleType, cadenceLabel?: string, contractPeriodLabel?: string | null, waiverExpiry?: boolean, discountScope?: DiscountScopeContext | null): StructuredOption[] {
@@ -396,6 +429,8 @@ export function optionsForRuleType(ruleType: RuleType, cadenceLabel?: string, co
     // time-fee.ts's buildOneTimeFeeConfirmation), not a "choose one of
     // these treatments" question.
     case 'one_time_fee': return []
+    case 'variable_invoice_timing': return VARIABLE_INVOICE_TIMING_OPTIONS
+    case 'fixed_fee_billing_timing': return FIXED_FEE_BILLING_TIMING_OPTIONS
   }
 }
 
@@ -462,6 +497,16 @@ export function deriveSelectedOption(ruleType: RuleType, approved: Record<string
     if (approved.resolution === 'pre_other_rule_basis') return 'pre_other_rule_basis'
     if (approved.resolution === 'post_other_rule_basis') return 'post_other_rule_basis'
     if (approved.resolution === 'independent_no_overlap') return 'independent_no_overlap'
+    return 'other'
+  }
+  if (ruleType === 'variable_invoice_timing') {
+    if (approved.timing === 'invoice_at_next_period_start') return 'invoice_at_next_period_start'
+    if (approved.timing === 'invoice_at_period_end') return 'invoice_at_period_end'
+    return 'other'
+  }
+  if (ruleType === 'fixed_fee_billing_timing') {
+    if (approved.timing === 'bill_at_period_start') return 'bill_at_period_start'
+    if (approved.timing === 'bill_at_period_end') return 'bill_at_period_end'
     return 'other'
   }
   return null
@@ -922,6 +967,13 @@ const REQUIRED_FIELDS: Record<RuleType, string[]> = {
   // FINDINGS.md), so this map is never actually consulted for it; empty
   // only to satisfy Record<RuleType, string[]>'s exhaustiveness.
   one_time_fee: [],
+  // variable_invoice_timing (Step 17F.3, item 6, renamed from
+  // variable_settlement_timing — Step 17F.1, item 6) and
+  // fixed_fee_billing_timing (Step 17F.3, item 2) — same shape: no AI-
+  // proposal-parsing flow, a direct reviewer choice via their own
+  // structured options only.
+  variable_invoice_timing: [],
+  fixed_fee_billing_timing: [],
 }
 
 // Only a tiered/volume discount needs its tier structure spelled out — a

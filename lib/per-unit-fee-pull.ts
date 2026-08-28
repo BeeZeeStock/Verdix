@@ -40,8 +40,18 @@ export async function computePerUnitFeeLineItemsForPeriod(params: {
   // of the SAME semantic input in this same run (e.g. overage) rather than
   // pulling twice. Never true for a preview/read-only request.
   finalize?: boolean
+  // Step 17F.2, item B — additive, opt-in only (default false, so every
+  // EXISTING caller's behavior is completely unchanged): for a period that
+  // has fully CLOSED but whose invoice hasn't been sent yet (consumption-
+  // summary's own 'pending' status), prefer an already-finalized snapshot
+  // (mode: 'closed_period_read') over a fresh live pull, so a source value
+  // that changed AFTER real billing close doesn't make a not-yet-sent
+  // period's DISPLAY disagree with what real billing already computed.
+  // Never combined with finalize:true (real billing always pulls fresh and
+  // finalizes its own result — this flag is read-only-preview-only).
+  preferClosedPeriodSnapshot?: boolean
 }): Promise<OverageLineItem[]> {
-  const { jobId, orgId, terms, currency, periodStart, periodEnd, includeZeroAmount, finalize } = params
+  const { jobId, orgId, terms, currency, periodStart, periodEnd, includeZeroAmount, finalize, preferClosedPeriodSnapshot } = params
   const asOf = params.asOf ?? new Date().toISOString()
   const asOfDate = new Date(asOf)
 
@@ -64,7 +74,7 @@ export async function computePerUnitFeeLineItemsForPeriod(params: {
       periodStart: new Date(periodStart + 'T00:00:00'),
       periodEnd: new Date(periodEnd + 'T23:59:59'),
       asOf: asOfDate,
-      mode: finalize ? 'closed_period_finalize' : 'live',
+      mode: finalize ? 'closed_period_finalize' : preferClosedPeriodSnapshot ? 'closed_period_read' : 'live',
     })
 
     if (!resolved.ready) {

@@ -247,7 +247,29 @@ export function compileExecutableCommercialMechanisms(terms: ContractTerms): Con
   const additional_recurring_fees = terms.additional_recurring_fees?.map(fee => {
     const compiled = compilePercentageOfBasisFee(fee)
     if (!compiled) return fee
-    return { ...fee, percentage_of_basis: compiled, unresolved_kind: null }
+    // Step 17F.3, item 6 (renamed/refactored from Step 17F.1, item 6) — a
+    // percentage-of-basis fee gains a real, executable amount calculation
+    // the moment percentage_of_basis compiles. WHETHER that amount is
+    // determined in arrears is now structural (never a gate — Step 17F.3,
+    // item 5); WHEN the determined charge is actually INVOICED remains a
+    // separate, genuinely open question this contract's typed fields never
+    // answer on their own. Attached here, unresolved by default, so
+    // lib/performance-share-pull.ts's real-billing wiring can gate on it
+    // rather than assuming the generic next-period-start invoice cycle
+    // applies — never silently inherited from percentage_of_basis
+    // compiling successfully. Preserves an ALREADY reviewer-confirmed
+    // timing (fee.variable_invoice_timing set and requires_confirmation:
+    // false) across a re-extraction/recompile, exactly like every other
+    // requires_confirmation field in this codebase.
+    const invoiceTiming = (fee.variable_invoice_timing && !fee.variable_invoice_timing.requires_confirmation)
+      ? fee.variable_invoice_timing
+      : {
+          timing: 'unclear' as const,
+          requires_confirmation: true,
+          confirmation_reason: 'The agreement does not state when this performance-based charge is invoiced once determined.',
+          source_clause: fee.source_clause ?? null,
+        }
+    return { ...fee, percentage_of_basis: compiled, unresolved_kind: null, variable_invoice_timing: invoiceTiming }
   })
 
   const unsupported_commercial_mechanisms = terms.unsupported_commercial_mechanisms?.map(mechanism => {

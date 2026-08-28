@@ -376,7 +376,20 @@ export type CommercialRuleTerms = {
   // minimum_commitment/tier_calculation checks above (this can apply even
   // to a contract with no usage-based tiers at all, a flat-fee-only deal).
   base_fee_proration?: ProrationLike
-  additional_recurring_fees?: Array<{ fee_label?: string; amount?: number; proration?: ProrationLike }> | null
+  // Step 17F.3, item 2/3 — WHEN the recurring fixed fee's invoice is
+  // issued relative to its own billing period, distinct from
+  // base_fee_proration above (which only ever governs a PARTIAL period's
+  // amount, never a full period's invoice timing). Job-level, like
+  // base_fee_proration itself.
+  fixed_fee_billing_timing?: ProrationLike
+  // Step 17F.3, item 6 — variable_invoice_timing (renamed from
+  // variable_settlement_timing — Step 17F.1/17F.2) is a genuinely separate
+  // open question from proration above (WHEN an already-determined
+  // percentage-of-basis charge is invoiced, not how a period boundary is
+  // treated) — a fee can have one resolved and the other not. Same
+  // ProrationLike-shaped requires_confirmation check as every other item
+  // in this function.
+  additional_recurring_fees?: Array<{ fee_label?: string; amount?: number; proration?: ProrationLike; variable_invoice_timing?: ProrationLike }> | null
   // Step 11 — optional so every existing caller/fixture that predates
   // OneTimeFee-awareness keeps behaving identically (absent/empty means
   // zero one-time-fee items counted, exactly like today).
@@ -641,9 +654,28 @@ export function computeCommercialRuleWorkload(
   if (terms?.base_fee_proration) {
     countItem('base_fee_proration', !!terms.base_fee_proration.requires_confirmation)
   }
+  // Step 17F.3, item 2/3 — an unresolved fixed-fee billing timing must
+  // remain a commercial blocker, same discipline as base_fee_proration
+  // itself: it prevents "Contract configuration: Ready" and creation of
+  // an authoritative fixed-fee invoice date until a reviewer confirms it
+  // (or the contract already states it explicitly).
+  if (terms?.fixed_fee_billing_timing) {
+    countItem('fixed_fee_billing_timing', !!terms.fixed_fee_billing_timing.requires_confirmation)
+  }
   for (const fee of terms?.additional_recurring_fees ?? []) {
     if (!fee.proration) continue
     countItem(`recurring_fee_proration:${fee.fee_label}`, !!fee.proration.requires_confirmation)
+  }
+  // Step 17F.3, item 6 (renamed from variable_settlement_timing — Step
+  // 17F.1/17F.2) — a percentage-of-basis fee whose variable_invoice_timing
+  // is still unresolved must count as a real configuration blocker,
+  // exactly like any other requires_confirmation item — an already-
+  // "review complete" contract that later acquires this rule (attached
+  // retroactively via compileExecutableCommercialMechanisms) must not
+  // silently stay "Ready" while it's open.
+  for (const fee of terms?.additional_recurring_fees ?? []) {
+    if (!fee.variable_invoice_timing) continue
+    countItem(`variable_invoice_timing:${fee.fee_label}`, !!fee.variable_invoice_timing.requires_confirmation)
   }
 
   const escalator = terms?.escalators?.[0]

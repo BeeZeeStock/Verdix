@@ -101,8 +101,20 @@ export async function GET(
       overageItems = (nextRow.overage_line_items ?? []) as OverageLineItem[]
     } else if ((status === 'current' || status === 'pending') && customerId && terms) {
       // Live read-only preview — same computation the real cron will run.
-      // 'current': usage-so-far, cycle still open. 'pending': the cycle has
-      // closed so this is the final figure, just not actually invoiced yet.
+      // 'current': usage-so-far, cycle still open — always a fresh live
+      // read (item B's explicit "Active period → live/fresh preview";
+      // unchanged from before). 'pending': the cycle has closed so this is
+      // the final figure, just not actually invoiced yet — Step 17F.2,
+      // item B: PREFERS an already-finalized resolved_usage_period_
+      // snapshots row (real billing close may have already run for this
+      // exact window even though the invoice itself hasn't been sent) over
+      // a fresh live pull, so a source value that drifted AFTER close
+      // never makes this display disagree with what was actually billed.
+      // Falls through to the identical fresh-pull behavior when nothing is
+      // pinned yet (billing close hasn't run) — never a behavior change
+      // for 'current', and never for 'pending' either until a snapshot
+      // genuinely exists.
+      const preferClosedPeriodSnapshot = status === 'pending'
       overageItems = await computeOverageForPeriod({
         orgId:           org.orgId,
         jobId,
@@ -120,17 +132,19 @@ export async function GET(
         // existing preview behavior at all.
         billingAsOfUnix:     Math.floor(Date.now() / 1000),
         livePreviewAsOfUnix: Math.floor(Date.now() / 1000),
+        preferClosedPeriodSnapshot,
       }).catch(() => [])
       // Step 17D.1, item J — the newly-executable per-unit fee (e.g. the
       // €0.38 request fee) gets the SAME live-preview treatment as
-      // overage: a fresh, non-durable read (finalize omitted/false —
-      // never pins resolved_usage_period_snapshots from a preview
-      // request), concatenated into the same OverageLineItem list this
-      // screen already renders.
+      // overage: a fresh, non-durable read for 'current' (finalize
+      // omitted/false — never pins resolved_usage_period_snapshots from a
+      // preview request); for 'pending', the SAME preferClosedPeriodSnapshot
+      // preference as overage above, concatenated into the same
+      // OverageLineItem list this screen already renders.
       overageItems = overageItems.concat(
         await computePerUnitFeeLineItemsForPeriod({
           jobId, orgId: org.orgId, terms, currency: row.currency ?? terms.currency ?? 'EUR',
-          periodStart, periodEnd, includeZeroAmount: true,
+          periodStart, periodEnd, includeZeroAmount: true, preferClosedPeriodSnapshot,
         }).catch(() => []),
       )
     } else if (status === 'future' && terms) {

@@ -75,6 +75,24 @@ const OPERATIONAL_INPUT_KEY_ALIASES: Record<string, string> = {
   // paraphrase must fail closed rather than silently mint a new identity.
   total_invoice_value_of_issued_payment_requests: 'total_invoice_value_of_issued_requests',
   total_invoice_value_of_issued_requests: 'total_invoice_value_of_issued_requests',
+  // Step 17F.1 — the real Remembill job (a4459e99) was extracted before
+  // additional_recurring_fees/overage_tiers.semantic_input_key existed in
+  // the extraction prompt (commit 3c1fe52b7, 2026-08-28 16:24, ~2 hours
+  // after this job's own extraction at 14:41 the same day — confirmed via
+  // git blame, not guessed). Its real stored metric_name/unit_type values
+  // are "issued_payment_request"/"payment request"/"completed_payment" —
+  // each an individually observed, real paraphrase of a recognized
+  // concept (the missing "_count" suffix, and unit_type's missing
+  // "issued_" prefix), registered here the same way every other entry in
+  // this table was: a specific paraphrase actually seen, not a generic
+  // pattern. Used by lib/semantic-input-key-reconciliation.ts to resolve
+  // ALREADY-STORED metric_name/unit_type (a controlled, extraction-typed
+  // field describing the counted unit — never fee_label/tier_label free
+  // text) into the canonical key a pre-17D.1 contract's fee/tier never
+  // received directly.
+  issued_payment_request: 'issued_payment_request_count',
+  payment_request: 'issued_payment_request_count',
+  completed_payment: 'completed_payment_count',
 }
 
 // Step 17C.3c, item 2 — the CLOSED set of operational-input concepts this

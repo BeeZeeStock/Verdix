@@ -11,6 +11,19 @@ describe('canonicalizeOperationalInputKey — Step 17C.3a item A, explicit alias
     expect(canonicalizeOperationalInputKey('total_invoice_value_of_issued_requests')).toBe('total_invoice_value_of_issued_requests')
   })
 
+  // Step 17F.1 — the real Remembill job's own pre-17D.1 metric_name/
+  // unit_type values, registered as explicit, individually observed
+  // paraphrases (see this table's own Step 17F.1 comment), never a
+  // generic pattern.
+  it('resolves the real Remembill job\'s pre-17D.1 metric_name/unit_type paraphrases to their canonical keys', () => {
+    expect(canonicalizeOperationalInputKey('issued_payment_request')).toBe('issued_payment_request_count')
+    expect(canonicalizeOperationalInputKey('payment_request')).toBe('issued_payment_request_count')
+    expect(canonicalizeOperationalInputKey('completed_payment')).toBe('completed_payment_count')
+    expect(resolveRecognizedOperationalInputKey('issued_payment_request')).toBe('issued_payment_request_count')
+    expect(resolveRecognizedOperationalInputKey('payment_request')).toBe('issued_payment_request_count')
+    expect(resolveRecognizedOperationalInputKey('completed_payment')).toBe('completed_payment_count')
+  })
+
   it('is a no-op on an already-canonical, non-aliased key', () => {
     expect(canonicalizeOperationalInputKey('paid_invoice_value')).toBe('paid_invoice_value')
     expect(canonicalizeOperationalInputKey('issued_payment_request_count')).toBe('issued_payment_request_count')

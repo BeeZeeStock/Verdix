@@ -24,7 +24,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
 import type { RuleType, UnresolvedReason } from '@/lib/rule-interpretation'
-import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation, PeriodProrationRule, AdditionalRecurringFee, FieldProvenance, OneTimeFee } from '@/lib/types'
+import type { MinimumCommitment, EscalatorInterpretation, DiscountInterpretation, TierCalculationMethod, ServiceCreditInterpretation, PeriodProrationRule, AdditionalRecurringFee, FieldProvenance, OneTimeFee, VariableInvoiceTimingRule, FixedFeeBillingTimingRule } from '@/lib/types'
 import { buildCreditApplicationRule } from '@/lib/credit-application-rule'
 import { buildServiceCreditInterpretation } from '@/lib/service-credit-interpretation'
 import { buildOneTimeFeeConfirmation, OneTimeFeeCapabilityBlockedError, OneTimeFeeValueMutationRejectedError } from '@/lib/one-time-fee'
@@ -118,6 +118,34 @@ function buildPeriodProrationRule(approved: Record<string, unknown>, existing: P
   return {
     reset_anchor: (approved.reset_anchor as PeriodProrationRule['reset_anchor']) ?? existing?.reset_anchor ?? 'calendar',
     prorate_partial_periods: (approved.prorate_partial_periods as PeriodProrationRule['prorate_partial_periods']) ?? existing?.prorate_partial_periods ?? 'unclear',
+    source_clause: (approved.source_clause as string | undefined) ?? existing?.source_clause ?? null,
+    requires_confirmation: false,
+    confirmation_reason: null,
+  }
+}
+
+// Step 17F.3, item 6 (renamed from buildVariableSettlementTimingRule —
+// Step 17F.1, item 6) — same shape as buildPeriodProrationRule above: a
+// reviewer's explicit choice, never a default sneaking through
+// unconfirmed. A reviewer may only ever set requires_confirmation to
+// false by actually confirming here (approvedInterpretation.timing must
+// be an actual choice, not merely "whatever was already there") — the
+// compiler's own default never sets requires_confirmation false itself.
+function buildVariableInvoiceTimingRule(approved: Record<string, unknown>, existing: VariableInvoiceTimingRule | null | undefined): VariableInvoiceTimingRule {
+  return {
+    timing: (approved.timing as VariableInvoiceTimingRule['timing']) ?? existing?.timing ?? 'unclear',
+    source_clause: (approved.source_clause as string | undefined) ?? existing?.source_clause ?? null,
+    requires_confirmation: false,
+    confirmation_reason: null,
+  }
+}
+
+// Step 17F.3, item 2 — same shape as buildPeriodProrationRule; a
+// reviewer's explicit choice for WHEN the fixed recurring fee's invoice is
+// issued relative to its own billing period.
+function buildFixedFeeBillingTimingRule(approved: Record<string, unknown>, existing: FixedFeeBillingTimingRule | null | undefined): FixedFeeBillingTimingRule {
+  return {
+    timing: (approved.timing as FixedFeeBillingTimingRule['timing']) ?? existing?.timing ?? 'unclear',
     source_clause: (approved.source_clause as string | undefined) ?? existing?.source_clause ?? null,
     requires_confirmation: false,
     confirmation_reason: null,
@@ -351,7 +379,7 @@ export async function POST(
   // buildOneTimeFeeConfirmation from what the client explicitly asserts,
   // not derived from this value.
   const decisionProvenance: 'reviewer_policy' | 'contract_derived' =
-    ruleType === 'partial_period' || ruleType === 'base_fee_proration' || ruleType === 'recurring_fee_proration' || ruleType === 'one_time_fee' ? 'reviewer_policy'
+    ruleType === 'partial_period' || ruleType === 'base_fee_proration' || ruleType === 'recurring_fee_proration' || ruleType === 'one_time_fee' || ruleType === 'variable_invoice_timing' || ruleType === 'fixed_fee_billing_timing' ? 'reviewer_policy'
       : cachedProposal?.state === 'clear_from_source' ? 'contract_derived'
       : 'reviewer_policy'
 
@@ -494,6 +522,37 @@ export async function POST(
       const { error } = await supabaseServer.from('contract_terms').update({ additional_recurring_fees: newFees }).eq('id', termsRow.id)
       propagation['contract_terms'] = error ? 'failed' : 'applied'
     }
+  } else if (ruleType === 'variable_invoice_timing') {
+    // Step 17F.3, item 6 (renamed from variable_settlement_timing — Step
+    // 17F.1, item 6) — same "contractUnitType repurposed to carry
+    // fee_label" addressing as recurring_fee_proration above; a reviewer
+    // confirming WHEN an already-determined percentage-of-basis charge is
+    // invoiced, never WHETHER it's determined in arrears (structural, no
+    // longer a decision) or WHAT it computes to (that stays
+    // percentage_of_basis, untouched here).
+    if (!contractUnitType) {
+      propagation['contract_terms'] = 'failed'
+    } else {
+      const fees = ((termsRow as { additional_recurring_fees?: AdditionalRecurringFee[] | null }).additional_recurring_fees ?? []) as AdditionalRecurringFee[]
+      const newFees = fees.map(f =>
+        f.fee_label === contractUnitType
+          ? { ...f, variable_invoice_timing: buildVariableInvoiceTimingRule(approvedInterpretation, f.variable_invoice_timing) }
+          : f
+      )
+      const { error } = await supabaseServer.from('contract_terms').update({ additional_recurring_fees: newFees }).eq('id', termsRow.id)
+      propagation['contract_terms'] = error ? 'failed' : 'applied'
+    }
+  } else if (ruleType === 'fixed_fee_billing_timing') {
+    // Step 17F.3, item 2 — job-level, like base_fee_proration (base_monthly_fee/
+    // base_annual_fee are singular fields, not addressed by fee_label).
+    // Reviewer confirming WHEN the fixed recurring fee's invoice is issued
+    // relative to its own billing period — never WHAT the amount is or how
+    // a partial period is treated (base_fee_proration, untouched here).
+    const existingTiming = (termsRow as { fixed_fee_billing_timing?: FixedFeeBillingTimingRule | null }).fixed_fee_billing_timing
+    const { error } = await supabaseServer.from('contract_terms')
+      .update({ fixed_fee_billing_timing: buildFixedFeeBillingTimingRule(approvedInterpretation, existingTiming) })
+      .eq('id', termsRow.id)
+    propagation['contract_terms'] = error ? 'failed' : 'applied'
   } else if (ruleType === 'one_time_fee') {
     // Step 11B, final security correction — the minimal review path
     // lib/one-time-fee.ts's buildOneTimeFeeConfirmation exists for.

@@ -17,6 +17,7 @@ import { collectOperationalDataInputs, collectDerivedMetrics } from '@/lib/opera
 import { isNotificationChannelMismatch, NOTIFICATION_CHANNEL_MISMATCH_CONFIDENCE_CAP } from '@/lib/meter-suggestion-guard'
 import { resolveRecognizedOperationalInputKey } from '@/lib/operational-input-canonicalization'
 import { buildUsageMappingGroups } from '@/lib/meter-mapping-groups'
+import { normaliseCadence } from '@/lib/billing-cadence'
 
 // ── Auto-mapping heuristic ────────────────────────────────────────────────────
 const METER_RULES: Array<{ patterns: string[]; key: string; confidence: number }> = [
@@ -113,20 +114,9 @@ Choose the meter whose purpose best matches the contract metric. If none match w
   return { meter_key: availableMeters[0].meter_key, confidence: 0.2 }
 }
 
-// ── Billing cycle normaliser ──────────────────────────────────────────────────
-// Vocabulary matches OverageTier['measurement_period'] and
-// lib/tariff.ts's enumerateCadenceWindows — 'annual', not 'yearly', and
-// semi-annual is checked before the generic "annual" substring match (a
-// contract's own "semi-annual" would otherwise wrongly match "annual" first
-// and get treated as a full year).
-function normaliseCycle(freq: string | null | undefined): string {
-  if (!freq) return 'monthly'
-  const f = freq.toLowerCase()
-  if (f.includes('semi') || f.includes('half'))     return 'semi-annual'
-  if (f.includes('annual') || f.includes('year'))   return 'annual'
-  if (f.includes('quarter'))                        return 'quarterly'
-  return 'monthly'
-}
+// Billing-cycle normaliser — lib/billing-cadence.ts (shared with
+// lib/billing-period-workspace.ts, Step 17F).
+const normaliseCycle = normaliseCadence
 
 // ── GET ───────────────────────────────────────────────────────────────────────
 export async function GET(

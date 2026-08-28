@@ -5,6 +5,8 @@ import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
 import { BillingSummaryCard } from '@/app/_components/BillingSummaryCard'
+import { BillingPeriodWorkspaceCard } from '@/app/_components/BillingPeriodWorkspaceCard'
+import type { ContractTerms } from '@/lib/types'
 import { VatConfigRow } from '@/app/_components/VatConfigRow'
 import { useVatConfig } from '@/app/_components/useVatConfig'
 import { MeterMappingPanel, ManualInputEntry } from '@/app/_components/MeterMappingPanel'
@@ -19,7 +21,8 @@ import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, isProvenanceResolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { isMonetaryBasisRecognitionApplicable, isPaidBasisFinalizationApplicable } from '@/lib/paid-basis-finalization'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
-import { buildUsageSourceCards } from '@/lib/usage-source-cards'
+import { buildUsageSourceCards, type UsageSourceCard } from '@/lib/usage-source-cards'
+import { buildPricingDependencyGroups } from '@/lib/pricing-dependency'
 import { describeDiscountForBrief } from '@/lib/discount-brief-summary'
 import { describeOperationalInputConsumers, type OperationalInputConsumer } from '@/lib/operational-input-usage-display'
 import { hasContractStarted } from '@/lib/performance-share-timing'
@@ -216,6 +219,13 @@ type PeriodProrationRule = {
   confirmation_reason?: string | null
   source_clause?: string | null
 }
+// Step 17F.3, item 2 — mirrors lib/types.ts's FixedFeeBillingTimingRule.
+type FixedFeeBillingTimingRule = {
+  timing: 'bill_at_period_start' | 'bill_at_period_end' | 'unclear'
+  requires_confirmation: boolean
+  confirmation_reason?: string | null
+  source_clause?: string | null
+}
 // Step 17B0.4 — see lib/types.ts's identical SourceLocator for the full
 // rationale: exact_source_heading is the ONLY value ever passed to the PDF
 // viewer (copied verbatim from the original document — never translated,
@@ -266,6 +276,14 @@ type AdditionalRecurringFee = {
     }
     basis_input_key: string
   } | null
+  // Step 17F.3, item 6 — mirrors lib/types.ts's VariableInvoiceTimingRule
+  // (renamed from variable_settlement_timing — Step 17F.1, item 6).
+  variable_invoice_timing?: {
+    timing: 'invoice_at_next_period_start' | 'invoice_at_period_end' | 'unclear'
+    requires_confirmation: boolean
+    confirmation_reason?: string | null
+    source_clause?: string | null
+  } | null
 }
 // Step 17C.2 — mirrors lib/types.ts's own RollingBandMigrationConfig; kept
 // as a local structural type here rather than importing, matching this
@@ -310,6 +328,7 @@ type Terms = {
   base_fee_bands?: { from_unit: number; to_unit: number | null; monthly_fee: number | null }[] | null
   base_fee_committed_volume?: number | null
   base_fee_proration?: PeriodProrationRule | null
+  fixed_fee_billing_timing?: FixedFeeBillingTimingRule | null
   billing_frequency?: string; payment_terms_days?: number; payment_terms_text?: string
   included_units?: number; included_unit_type?: string
   year_pricing?: Record<string, number>
@@ -727,6 +746,50 @@ function MeterMappingStatusChip({ total, confirmed, onClick }: { total: number; 
       </div>
       <span className="text-xs font-medium text-forest">{allConfirmed ? 'View' : 'Resolve'} →</span>
     </button>
+  )
+}
+
+// Step 17F, item 1/2 — one tile per lib/usage-source-cards.ts UsageSourceCard,
+// extracted out of the Usage sources section so it can be reused wherever a
+// usage source needs to render (this standalone section today, potentially
+// a billing-period workspace tomorrow). status/sourceName are the SAME
+// already-corrected fields the lib now derives via isMeterMappingResolved
+// (item 2's fix) — this component never re-decides confirmation state
+// itself, only renders what it's given.
+function UsageSourceCardTile({ card, onConfirm }: { card: UsageSourceCard; onConfirm: () => void }) {
+  return (
+    <div className="rounded-xl border p-3" style={{ borderColor: card.status === 'confirmed' ? 'rgba(26,61,43,0.1)' : '#FAC775' }}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[12px] font-medium text-ink truncate">{card.label}</p>
+          {card.semanticInputKey && <p className="text-[10px] font-mono text-stone/60 truncate">{card.semanticInputKey}</p>}
+        </div>
+        <button onClick={onConfirm} className="text-[11px] font-medium text-stone hover:text-ink flex-shrink-0">{card.status === 'confirmed' ? 'Change' : 'Confirm'}</button>
+      </div>
+      <div className="mt-1.5 space-y-0.5 text-[11px]">
+        <p className="text-stone">Source: <span className="text-ink font-medium">{card.sourceName}</span></p>
+        {card.sourceType === 'api_meter' && <p className="text-stone">Type: <span className="text-ink">API meter</span></p>}
+        {card.sourceType === 'manual' && <p className="text-stone">Type: <span className="text-ink">Manual usage</span></p>}
+        <p className="text-stone">
+          Status:{' '}
+          <span className="font-medium" style={card.status === 'confirmed' ? { color: '#0B5C36' } : { color: '#B45309' }}>
+            {card.status === 'confirmed' ? 'Confirmed' : 'Not yet confirmed'}
+          </span>
+        </p>
+      </div>
+      {card.consumers.length > 0 && (
+        <div className="mt-2 pt-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.06)' }}>
+          <p className="text-[10px] font-semibold text-stone uppercase tracking-wide mb-1">Used by</p>
+          <ul className="space-y-0.5">
+            {card.consumers.map((consumer, i) => (
+              <li key={i} className="text-[11px] text-stone flex items-start gap-1.5">
+                <span className="text-stone/40">•</span>{consumer}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1824,7 +1887,7 @@ function SectionHeader({ title, section, onSection }: { title: string; section?:
 // 'discount' is never produced by classifyItem (discounts aren't LineItems)
 // — it exists purely so RuleInterpretationCard's kind→ruleType mapping can
 // be reused for the Review panel's dedicated Discounts section below.
-type ItemKind = 'overage_tier' | 'escalator' | 'escalator_interpretation' | 'base_fee' | 'user_seat' | 'one_time' | 'minimum_commitment' | 'partial_period' | 'tier_calculation' | 'discount' | 'service_credit' | 'rule_interaction' | 'base_fee_proration' | 'recurring_fee_proration' | 'unknown'
+type ItemKind = 'overage_tier' | 'escalator' | 'escalator_interpretation' | 'base_fee' | 'user_seat' | 'one_time' | 'minimum_commitment' | 'partial_period' | 'tier_calculation' | 'discount' | 'service_credit' | 'rule_interaction' | 'base_fee_proration' | 'recurring_fee_proration' | 'variable_invoice_timing' | 'fixed_fee_billing_timing' | 'unknown'
 // The subset of ItemKind that's metric-scoped rather than tied to any one
 // tariff-tier row — a single metric can need more than one of these at
 // once (see metricNeededKinds in ReviewPanel).
@@ -2097,6 +2160,8 @@ const ITEM_KIND_TO_RULE_TYPE: Partial<Record<ItemKind, RuleType>> = {
   rule_interaction: 'rule_interaction',
   base_fee_proration: 'base_fee_proration',
   recurring_fee_proration: 'recurring_fee_proration',
+  variable_invoice_timing: 'variable_invoice_timing',
+  fixed_fee_billing_timing: 'fixed_fee_billing_timing',
 }
 
 // base_fee_proration is job-level (one instance per job, unlike every other
@@ -2319,7 +2384,14 @@ function RuleInterpretationCard({
   // what's already approved, not a fresh AI proposal — only a first-time
   // review runs the propose-first flow.
   const isEditFlow = !!(initialSelectedOption || initialFreeText)
-  const [phase, setPhase] = useState<RulePhase>(isEditFlow ? 'input' : 'proposing')
+  // Step 17F.2/17F.3 — variable_invoice_timing and fixed_fee_billing_timing
+  // (like one_time_fee) have no propose-rule/AI-proposal pipeline at all
+  // (lib/rule-interpretation.ts's REQUIRED_FIELDS map documents this
+  // explicitly) — starting at 'proposing' would call propose-rule with an
+  // unrecognized ruleType and hit its "Unknown ruleType" 400. Skips
+  // straight to the structured-option picker, same as the edit flow.
+  const skipsProposal = kind === 'variable_invoice_timing' || kind === 'fixed_fee_billing_timing'
+  const [phase, setPhase] = useState<RulePhase>(isEditFlow || skipsProposal ? 'input' : 'proposing')
   const [selectedOption, setSelectedOption] = useState<string | null>(initialSelectedOption ?? null)
   const [freeText, setFreeText] = useState(initialFreeText ?? '')
   const [proposal, setProposal] = useState<Record<string, unknown> | null>(null)
@@ -4676,6 +4748,7 @@ function ReviewPanel({
   baseFeeAmount,
   baseFeeCommittedVolume,
   baseFeeProration,
+  fixedFeeBillingTiming,
   additionalRecurringFees,
   oneTimeFees,
   unsupportedCommercialMechanisms,
@@ -4711,6 +4784,10 @@ function ReviewPanel({
   // volume, not just a label.
   baseFeeCommittedVolume?: number | null
   baseFeeProration?: PeriodProrationRule | null
+  // Step 17F.3, item 2 — WHEN the fixed recurring fee's invoice is issued
+  // relative to its own billing period, distinct from baseFeeProration
+  // above (which only ever governs a PARTIAL period's amount).
+  fixedFeeBillingTiming?: FixedFeeBillingTimingRule | null
   additionalRecurringFees?: AdditionalRecurringFee[]
   // Step 11B — the minimal OneTimeFee review path.
   oneTimeFees?: OneTimeFee[]
@@ -5537,6 +5614,102 @@ function ReviewPanel({
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Step 17F.3, item 6 — variable_invoice_timing (renamed from
+              variable_settlement_timing — Step 17F.1, item 6; WHETHER a
+              period-based charge is determined in arrears is now
+              structural, never a decision — see item 5) is a genuinely
+              separate open question from proration above (WHEN an
+              already-determined percentage-of-basis charge is invoiced,
+              not a calendar-boundary treatment) — its own section, same
+              RuleInterpretationCard mechanism, addressed by fee_label like
+              recurring_fee_proration. Only surfaced while genuinely
+              unresolved; an already-confirmed timing shows nothing here. */}
+          {(() => {
+            const unresolvedTimingFees = (additionalRecurringFees ?? []).filter(f => f.percentage_of_basis && f.variable_invoice_timing?.requires_confirmation)
+            if (unresolvedTimingFees.length === 0) return null
+            return (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Variable invoice timing</p>
+                  <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                </div>
+                <div className="space-y-3">
+                  {unresolvedTimingFees.map((f, i) => (
+                    <div key={f.fee_label ?? i} className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
+                      <div className="px-4 pt-4 pb-3">
+                        <div className="flex items-center gap-1.5 mb-2.5">
+                          <i className="ti ti-calendar-exclamation text-stone" style={{ fontSize: 12 }} />
+                          <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">{f.fee_label}: when is this invoiced?</span>
+                          <SourceClauseLink section={findSourceSection(f.fee_label)} onViewSource={onViewSource} />
+                        </div>
+                        {/* Step 17F.5 — the source establishes the charge is
+                            calculated in arrears (after the period closes),
+                            which is already treated as structural, not this
+                            question. It does not say when the resulting
+                            invoice is transmitted — never let "in arrears"
+                            read as an answer to that. */}
+                        <p className="text-[10px] text-stone/60 leading-relaxed mb-2.5">The source states this charge is calculated after the period closes, but not when the resulting invoice is transmitted. Relevant fee clause shown for context.</p>
+                        <RuleInterpretationCard
+                          jobId={jobId}
+                          kind="variable_invoice_timing"
+                          contractUnitType={f.fee_label}
+                          sourceClause={f.variable_invoice_timing?.source_clause ?? f.source_clause ?? ''}
+                          currency={cur ?? 'EUR'}
+                          onApplied={onRefresh}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Step 17F.3, item 2 — fixed recurring fee billing timing: WHEN
+              the invoice is issued relative to its own billing period
+              (start vs. end), never inferred from cadence ("monthly") or
+              payment terms ("30 days"). Job-level, like base_fee_proration
+              (base_monthly_fee is a singular field). Only surfaced when
+              there's a real fixed fee to time AND the question is
+              genuinely unresolved. */}
+          {(() => {
+            const timingUnresolved = !!baseFeeAmount && !!fixedFeeBillingTiming?.requires_confirmation
+            if (!timingUnresolved) return null
+            return (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Fixed-fee billing timing</p>
+                  <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
+                </div>
+                <div className="space-y-3">
+                  <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
+                    <div className="px-4 pt-4 pb-3">
+                      <div className="flex items-center gap-1.5 mb-2.5">
+                        <i className="ti ti-calendar-exclamation text-stone" style={{ fontSize: 12 }} />
+                        <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">When is the platform fee invoiced?</span>
+                        <SourceClauseLink section={fieldSources?.base_monthly_fee ?? fieldSources?.base_annual_fee} onViewSource={onViewSource} />
+                      </div>
+                      {/* Step 17F.5 — the linked clause is the fee's own
+                          definition (pilot/hybrid-fee terms), not a
+                          billing-timing statement. Say so explicitly rather
+                          than letting a "View source clause" link imply the
+                          fee clause resolves this question. */}
+                      <p className="text-[10px] text-stone/60 leading-relaxed mb-2.5">No explicit billing-timing clause found. Relevant fee clause shown for context.</p>
+                      <RuleInterpretationCard
+                        jobId={jobId}
+                        kind="fixed_fee_billing_timing"
+                        contractUnitType={BASE_FEE_PRORATION_SENTINEL}
+                        sourceClause={fixedFeeBillingTiming?.source_clause ?? ''}
+                        currency={cur ?? 'EUR'}
+                        onApplied={onRefresh}
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
             )
@@ -7299,6 +7472,33 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     chargingGroups.get(key)!.push({ tier: tiers[i], origIdx: i })
   }
 
+  // Step 17F, item 1/2 — Usage sources is the authoritative configuration
+  // section ("which semantic usage metric is supplied by which meter") and
+  // must reflect EVERY confirmed metric, not only the ones that also
+  // happen to have an overage tier. Previously this was scoped to
+  // `chargedUnitTypes` (derived from chargingGroups, i.e. overage_tiers
+  // only) — a flat per-unit fee with no tier of its own (e.g. Remembill's
+  // "SEK 0.38 per issued payment request") was silently excluded, which is
+  // exactly the reported bug: 2/2 metrics confirmed, only 1 source card
+  // shown. meterInputRows (GET /api/jobs/[id]/meter-mappings' own
+  // `suggestions`) is ALREADY the complete, server-computed set of
+  // metrics this contract actually needs a source for (built via
+  // lib/meter-mapping-groups.ts's buildUsageMappingGroups, covering
+  // overage_tiers + flat additional_recurring_fees + rolling mechanisms) —
+  // passed through directly, with no second, narrower client-side filter.
+  // buildUsageSourceCards itself already excludes derived/persisted_balance
+  // rows (see its own header), so nothing further needs excluding here.
+  // Computed at top level (not nested inside the "Confirmed billing rules"
+  // block below, which can legitimately have zero cards) so Usage sources
+  // is never accidentally hidden by an unrelated section being empty.
+  const usageSourceCards = buildUsageSourceCards({
+    mappings: meterInputRows,
+    meters: availableMeters,
+    fees: terms?.additional_recurring_fees ?? [],
+    tiers: terms?.overage_tiers ?? [],
+    rollingMechanisms: terms?.unsupported_commercial_mechanisms ?? [],
+  })
+
   // Keep backward-compat refs used by buildContractSummary
   const userTiers  = tiers.filter(t => t.unit_type?.toLowerCase().includes('user'))
   const apiTiers   = tiers.filter(t => t.unit_type?.toLowerCase().includes('api') || t.unit_type?.toLowerCase().includes('call'))
@@ -8813,6 +9013,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                  picked a billing platform must already see these). ── */}
             {reviewComplete && (
               <>
+                {/* Step 17F, items 4/5/6/7/9/10/13 — the period-based
+                    operating surface. Placed first in this block since it
+                    is meant to be the PRIMARY place a reviewer now acts
+                    (item 4/6) — OperationalInputsSection right below
+                    remains as a contract-level summary, unchanged. */}
+                {terms && <BillingPeriodWorkspaceCard jobId={id} terms={terms as unknown as ContractTerms} currency={cur} usageSourceCards={usageSourceCards} performanceShareResults={performanceShareStatus} />}
                 <OperationalInputsSection
                   jobId={id}
                   inputs={operationalDataInputs}
@@ -8947,8 +9153,15 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                  read-only status chip on the main Commercial GUI, not a
                  second editable panel — two independent full MeterMappingPanel
                  mounts here previously meant two independent fetches and two
-                 independent confirm actions for the same underlying data. */}
-            {tiers.length > 0 && (
+                 independent confirm actions for the same underlying data.
+                 Step 17F, item 1 — once every metric is confirmed AND the
+                 Usage sources section below has cards to show, this chip is
+                 pure duplication of that section (same total/confirmed
+                 facts, no additional information) — suppressed at that
+                 point. Still shown while anything is unconfirmed (it's the
+                 call-to-action to go resolve it) or before Usage sources
+                 has anything to render yet. */}
+            {tiers.length > 0 && !(meterMappingSummary.total > 0 && meterMappingSummary.confirmed >= meterMappingSummary.total && usageSourceCards.length > 0) && (
               <MeterMappingStatusChip
                 total={meterMappingSummary.total}
                 confirmed={meterMappingSummary.confirmed}
@@ -9590,25 +9803,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               // separately-invented count.
               const confirmedCountLabel = deriveConfirmedRulesLabel(cards.length, cards.flatMap(c => c.provenance.map(p => p.value)))
 
-              // Step 17E, items 7/8 — replaces the old raw contract_unit_type
-              // row list (which also had the "payment request: Meter: "
-              // blank-name bug — a `??` chain never falling through an
-              // empty-string meter_key) with lib/usage-source-cards.ts's
-              // canonical-identity grouping: ONE card per confirmed
-              // semantic_input_key, listing every commercial rule (fee/
-              // overage/rolling migration) that consumes it, derived from
-              // the compiled terms — never hard-coded to Remembill. Only
-              // metrics this contract actually meters (chargingGroups) are
-              // in scope, same restriction as before.
-              const chargedUnitTypes = new Set(chargingGroups.keys())
-              const usageSourceCards = buildUsageSourceCards({
-                mappings: meterInputRows.filter(r => chargedUnitTypes.has(r.contract_unit_type)),
-                meters: availableMeters,
-                fees: terms?.additional_recurring_fees ?? [],
-                tiers: terms?.overage_tiers ?? [],
-                rollingMechanisms: terms?.unsupported_commercial_mechanisms ?? [],
-              })
-
               return (
                 <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
                   <button
@@ -9646,48 +9840,111 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           />
                         ))}
                       </div>
-                      {usageSourceCards.length > 0 && (
-                        <div className="px-6 pb-6 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
-                          <p className="text-[10px] font-bold uppercase tracking-widest text-stone mb-2">Usage sources</p>
-                          <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
-                            {usageSourceCards.map(c => (
-                              <div key={c.key} className="rounded-xl border p-3" style={{ borderColor: c.status === 'confirmed' ? 'rgba(26,61,43,0.1)' : '#FAC775' }}>
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="min-w-0">
-                                    <p className="text-[12px] font-medium text-ink truncate">{c.label}</p>
-                                    {c.semanticInputKey && <p className="text-[10px] font-mono text-stone/60 truncate">{c.semanticInputKey}</p>}
-                                  </div>
-                                  <button onClick={() => setReviewPanelOpen(true)} className="text-[11px] font-medium text-stone hover:text-ink flex-shrink-0">{c.status === 'confirmed' ? 'Change' : 'Confirm'}</button>
-                                </div>
-                                <div className="mt-1.5 space-y-0.5 text-[11px]">
-                                  <p className="text-stone">Source: <span className="text-ink font-medium">{c.sourceName}</span></p>
-                                  {c.sourceType === 'api_meter' && <p className="text-stone">Type: <span className="text-ink">API meter</span></p>}
-                                  <p className="text-stone">
-                                    Status:{' '}
-                                    <span className="font-medium" style={c.status === 'confirmed' ? { color: '#0B5C36' } : { color: '#B45309' }}>
-                                      {c.status === 'confirmed' ? 'Confirmed' : 'Not yet confirmed'}
-                                    </span>
-                                  </p>
-                                </div>
-                                {c.consumers.length > 0 && (
-                                  <div className="mt-2 pt-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.06)' }}>
-                                    <p className="text-[10px] font-semibold text-stone uppercase tracking-wide mb-1">Used by</p>
-                                    <ul className="space-y-0.5">
-                                      {c.consumers.map((consumer, i) => (
-                                        <li key={i} className="text-[11px] text-stone flex items-start gap-1.5">
-                                          <span className="text-stone/40">•</span>{consumer}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                     </>
                   )}
+                </div>
+              )
+            })()}
+
+            {/* ── Usage sources (Step 17F, item 1) ──
+                 The authoritative usage-configuration section: which
+                 semantic usage metric is supplied by which meter (or
+                 manual entry). Standalone and always visible (never
+                 nested inside "Confirmed billing rules," which can
+                 legitimately render zero cards) — this is exactly the
+                 "usage sources = configuration" responsibility item 1
+                 establishes, distinct from "billing-period usage" (a
+                 specific period's runtime measurement, shown in the
+                 Billing period workspace below). MeterMappingStatusChip
+                 right below is suppressed once every metric is confirmed
+                 AND this section has cards to show — at that point it
+                 would be pure duplication of what's rendered here. */}
+            {usageSourceCards.length > 0 && (
+              <div className="bg-white rounded-2xl border border-forest/10 p-6">
+                <div className="mb-3">
+                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Usage sources</h2>
+                  <p className="text-[11px] text-stone mt-1">Which semantic usage metric is supplied by which meter — the configuration every usage-based charge and billing-period measurement reads from.</p>
+                </div>
+                <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
+                  {usageSourceCards.map(c => (
+                    <UsageSourceCardTile key={c.key} card={c} onConfirm={() => setReviewPanelOpen(true)} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Pricing dependencies (Step 17F, item 3) ──
+                 Replaces the broad "Variable pricing" label (still used
+                 below, unchanged, for the platform-push line-items table —
+                 a different job: configuring what gets sent to Stripe/
+                 Remembill) with a clear split of what each commercial
+                 component actually DEPENDS ON to produce an amount: a
+                 fixed schedule figure, a usage-meter reading, or an
+                 operational-input-derived performance calculation.
+                 lib/pricing-dependency.ts derives this from the same typed
+                 additional_recurring_fees/overage_tiers already used
+                 everywhere else on this page, and looks up each usage-meter
+                 component's source from the SAME usageSourceCards computed
+                 above — never a second, independent meter lookup. */}
+            {(() => {
+              const groups = buildPricingDependencyGroups({
+                baseMonthlyFee: terms?.base_monthly_fee, fees: terms?.additional_recurring_fees ?? [],
+                tiers: terms?.overage_tiers ?? [], usageSources: usageSourceCards,
+              })
+              if (groups.fixed.length === 0 && groups.usageMeter.length === 0 && groups.performanceBased.length === 0) return null
+              return (
+                <div className="bg-white rounded-2xl border border-forest/10 p-6">
+                  <div className="mb-4">
+                    <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Pricing dependencies</h2>
+                    <p className="text-[11px] text-stone mt-1">What each commercial component&apos;s amount actually depends on.</p>
+                  </div>
+                  <div className="space-y-5">
+                    {groups.fixed.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-semibold text-stone uppercase tracking-wide mb-2">Fixed pricing</p>
+                        <div className="space-y-1.5">
+                          {groups.fixed.map(f => (
+                            <div key={f.key} className="flex items-center justify-between text-[12px]">
+                              <span className="text-ink">{f.label}</span>
+                              <span className="text-stone tabular-nums">{fmt(f.amount, cur)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {groups.usageMeter.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-semibold text-stone uppercase tracking-wide mb-2">Usage-meter pricing</p>
+                        <div className="space-y-2">
+                          {groups.usageMeter.map(u => (
+                            <div key={u.key} className="text-[12px]">
+                              <p className="text-ink">{u.label}</p>
+                              <p className="text-stone/70 text-[11px]">
+                                {fmtUnit(u.ratePerUnit, cur)} × {typeof u.includedUnits === 'number' ? `max(${u.semanticInputKey ?? 'usage'} − ${u.includedUnits.toLocaleString()}, 0)` : (u.semanticInputKey ?? 'usage')}
+                              </p>
+                              <p className="text-stone/50 text-[11px]">Source: {u.sourceName ?? 'Not yet confirmed'}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {groups.performanceBased.length > 0 && (
+                      <div>
+                        <p className="text-[10px] font-semibold text-stone uppercase tracking-wide mb-2">Performance-based pricing</p>
+                        <div className="space-y-2">
+                          {groups.performanceBased.map(p => (
+                            <div key={p.key} className="text-[12px]">
+                              <p className="text-ink">{p.label}</p>
+                              <p className="text-stone/70 text-[11px]">
+                                Inputs: {p.numeratorKey} (operational input) · {p.denominatorKey} (operational input)
+                              </p>
+                              <p className="text-stone/50 text-[11px]">Derived rate → contractual rate schedule → percentage of {p.basisKey}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )
             })()}
@@ -10037,6 +10294,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           baseFeeAmount={terms?.base_monthly_fee ?? terms?.base_annual_fee ?? null}
           baseFeeCommittedVolume={terms?.base_fee_committed_volume}
           baseFeeProration={terms?.base_fee_proration}
+          fixedFeeBillingTiming={terms?.fixed_fee_billing_timing}
           additionalRecurringFees={terms?.additional_recurring_fees}
           oneTimeFees={terms?.one_time_fees}
           unsupportedCommercialMechanisms={terms?.unsupported_commercial_mechanisms}

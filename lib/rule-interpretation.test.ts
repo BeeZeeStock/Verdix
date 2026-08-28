@@ -219,6 +219,17 @@ describe('deriveSelectedOption', () => {
   it('returns null when there is no approved interpretation to derive from', () => {
     expect(deriveSelectedOption('minimum_commitment', null)).toBeNull()
   })
+  it('Step 17F.3, item 6 — maps timing: invoice_at_next_period_start back to its own option for variable_invoice_timing (renamed from variable_settlement_timing)', () => {
+    expect(deriveSelectedOption('variable_invoice_timing', { timing: 'invoice_at_next_period_start' })).toBe('invoice_at_next_period_start')
+  })
+  it('Step 17F.3, item 6 — variable_invoice_timing falls back to "other" for anything else', () => {
+    expect(deriveSelectedOption('variable_invoice_timing', { timing: 'unclear' })).toBe('other')
+  })
+  it('Step 17F.3, item 2 — maps timing: bill_at_period_start/end back to their own options for fixed_fee_billing_timing', () => {
+    expect(deriveSelectedOption('fixed_fee_billing_timing', { timing: 'bill_at_period_start' })).toBe('bill_at_period_start')
+    expect(deriveSelectedOption('fixed_fee_billing_timing', { timing: 'bill_at_period_end' })).toBe('bill_at_period_end')
+    expect(deriveSelectedOption('fixed_fee_billing_timing', { timing: 'unclear' })).toBe('other')
+  })
   it('maps reset_anchor: contract_start back to the contract_month option for base_fee_proration, regardless of prorate_partial_periods', () => {
     expect(deriveSelectedOption('base_fee_proration', { reset_anchor: 'contract_start', prorate_partial_periods: false })).toBe('contract_month')
   })
@@ -289,6 +300,16 @@ describe('optionsForRuleType', () => {
       expect(options.length).toBeGreaterThan(1) // structured choices exist, not free-text-only
       expect(options.some(o => o.id === 'other')).toBe(true)
     }
+  })
+
+  it('Step 17F.3, item 6 — variable_invoice_timing (renamed from variable_settlement_timing) offers next-period-start, period-end, and an escape hatch', () => {
+    const options = optionsForRuleType('variable_invoice_timing')
+    expect(options.map(o => o.id)).toEqual(['invoice_at_next_period_start', 'invoice_at_period_end', 'other'])
+  })
+
+  it('Step 17F.3, item 2 — fixed_fee_billing_timing offers start, end, and an escape hatch', () => {
+    const options = optionsForRuleType('fixed_fee_billing_timing')
+    expect(options.map(o => o.id)).toEqual(['bill_at_period_start', 'bill_at_period_end', 'other'])
   })
 })
 

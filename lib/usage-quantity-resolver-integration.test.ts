@@ -84,7 +84,14 @@ afterAll(async () => {
     await supabaseServer.from('org_memberships').delete().eq('org_id', orgId)
     await supabaseServer.from('organizations').delete().eq('id', orgId)
   }
-})
+// Step 17F.1 — this file's own cleanup list has grown (now ~14 orgs/jobs)
+// past vitest's 10s default hook timeout when run against real Postgres;
+// the timeout only ever hits the cleanup step itself, never a test
+// assertion, but a timed-out afterAll can leave rows behind for the NEXT
+// run to trip over. Explicit, generous timeout — this hook does real
+// sequential network I/O, not CPU work, so it scales with row count, not
+// complexity.
+}, 60_000)
 
 describeIf('Step 17D.1 — tenant ownership (org_id is the sole ownership column)', () => {
   it('a meter owned by org A is invisible to org B via org_id-scoped query', async () => {
@@ -769,5 +776,250 @@ describeIf('Step 17D.2, item F — end-to-end acceptance', () => {
     const { data: mappingAfter } = await supabaseServer
       .from('contract_meter_mappings').select('meter_key, confirmed').eq('job_id', jobId).eq('semantic_input_key', 'issued_payment_request_count').single()
     expect(mappingAfter).toMatchObject({ meter_key: meterKey, confirmed: true })
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Step 17F.1, item 3 — the exact invoice-scheduler wiring order (computeOverage
+// ForPeriod THEN computePerUnitFeeLineItemsForPeriod, both real billing —
+// see app/api/admin/invoice-scheduler/route.ts's own comment on this
+// ordering) proving all three charges coexist AND that the per-unit-fee
+// pull genuinely REUSES the snapshot the overage pull already finalized —
+// never a second, independent meter pull for the same semantic key in the
+// same real-billing run.
+// ═══════════════════════════════════════════════════════════════════════════
+describeIf('Step 17F.1, item 3 — flat per-unit fee execution coexists with tiered overage, sharing one finalized quantity', () => {
+  it('SEK 0.38/request + SEK 0.60 overage + SEK 1.70/completed-payment all coexist; the overage pull\'s finalize is what the per-unit-fee pull reuses (no second real pull)', async () => {
+    const orgId = await createTestOrg('17F.1 flat-fee coexistence org')
+    const jobId = await createTestJob(orgId)
+
+    let issuedValue = 8000
+    const issuedServer = await startMockUsageServer(() => issuedValue)
+    const completedServer = await startMockUsageServer(() => 2100)
+
+    const issuedMeterKey = `issued_payment_request_${Date.now()}`
+    const completedMeterKey = `completed_payment_${Date.now()}`
+    await supabaseServer.from('billing_meters').insert([
+      { org_id: orgId, meter_key: issuedMeterKey, display_name: 'Payment Requests Issued', unit_label: 'request', mode: 'live', pull_endpoint_url: issuedServer.url, semantic_input_key: 'issued_payment_request_count' },
+      { org_id: orgId, meter_key: completedMeterKey, display_name: 'Completed Payments', unit_label: 'payment', mode: 'live', pull_endpoint_url: completedServer.url, semantic_input_key: 'completed_payment_count' },
+    ])
+    // The tiered overage row carries the meter mapping's own semantic_input_key
+    // (the SEPARATE storage location lib/usage-pull.ts reads to decide
+    // whether to finalize a snapshot — Step 17F.1, item 1's second finding).
+    await supabaseServer.from('contract_meter_mappings').insert([
+      { job_id: jobId, contract_unit_type: 'payment request', semantic_input_key: 'issued_payment_request_count', meter_key: issuedMeterKey, confirmed: true, included_units: 5000, overage_tiers: [{ from_unit: 5001, to_unit: null, rate_per_unit: 0.6 }] },
+      // completed_payment_count has no overage tier of its own — a flat
+      // per-unit fee only — but still needs its own confirmed source
+      // binding for resolveUsageQuantityForPeriod to resolve it.
+      { job_id: jobId, contract_unit_type: 'completed payment', semantic_input_key: 'completed_payment_count', meter_key: completedMeterKey, confirmed: true, included_units: 0, overage_tiers: [] },
+    ])
+
+    const terms = {
+      currency: 'EUR', contract_start_date: '2026-01-01', billing_frequency: 'monthly',
+      additional_recurring_fees: [
+        { fee_label: 'Per-issued payment request fee', amount: 0, description: null, metric_name: 'issued_payment_request', rate_per_unit: 0.38, semantic_input_key: 'issued_payment_request_count' },
+        { fee_label: 'Per-completed payment success fee', amount: 0, description: null, metric_name: 'completed_payment', rate_per_unit: 1.70, semantic_input_key: 'completed_payment_count' },
+      ],
+      overage_tiers: [], base_fee_bands: [],
+    } as unknown as ContractTerms
+
+    const periodStart = '2027-03-01', periodEnd = '2027-03-31'
+    const billingAsOf = '2027-04-01T00:00:00Z'
+
+    try {
+      // Same order invoice-scheduler.ts uses: overage first (finalizes
+      // issued_payment_request_count), THEN per-unit fees.
+      const overageItems = await computeOverageForPeriod({
+        orgId, jobId, terms, customerId: 'cust-test',
+        periodStartUnix: Math.floor(new Date(periodStart).getTime() / 1000),
+        periodEndUnix: Math.floor(new Date(periodEnd).getTime() / 1000),
+        currency: 'EUR', billingAsOfUnix: Math.floor(new Date(billingAsOf).getTime() / 1000),
+      })
+      const overageItem = overageItems.find(i => i.meter_key === issuedMeterKey)
+      expect(overageItem?.amount).toBeCloseTo(3000 * 0.6, 2) // SEK 1,800
+
+      // The mock meter's value changes AFTER the overage pull finalized —
+      // if the per-unit-fee pull below reused the snapshot (correct), it
+      // must still see 8,000, never the changed value.
+      issuedValue = 9999
+
+      const perUnitItems = await computePerUnitFeeLineItemsForPeriod({
+        jobId, orgId, terms, currency: 'EUR', periodStart, periodEnd, asOf: billingAsOf, finalize: true,
+      })
+      expect(perUnitItems).toHaveLength(2)
+      const perRequest = perUnitItems.find(i => i.description.startsWith('Per-issued'))!
+      const perCompleted = perUnitItems.find(i => i.description.startsWith('Per-completed'))!
+      expect(perRequest.total_units).toBe(8000) // reused the pinned snapshot, not the changed 9999
+      expect(perRequest.amount).toBeCloseTo(8000 * 0.38, 2) // SEK 3,040
+      expect(perCompleted.amount).toBeCloseTo(2100 * 1.70, 2) // SEK 3,570
+
+      // Exactly one snapshot row for issued_payment_request_count — proving
+      // no second, independent pull ever happened for the shared key.
+      const { data: snapshots } = await supabaseServer
+        .from('resolved_usage_period_snapshots')
+        .select('semantic_input_key, quantity')
+        .eq('job_id', jobId).eq('semantic_input_key', 'issued_payment_request_count')
+        .eq('period_start', periodStart).eq('period_end', periodEnd)
+      expect(snapshots).toHaveLength(1)
+      expect(Number(snapshots![0].quantity)).toBe(8000)
+    } finally {
+      await issuedServer.close()
+      await completedServer.close()
+    }
+  })
+
+  // Step 17F.1, item 3 (found via the real Remembill job's own actual
+  // state — confirmed via manual entry, no real meter at all) —
+  // computeOverageForPeriod previously had NO manual-entry fallback at
+  // all: a contract_meter_mappings row with an empty meter_key always hit
+  // pullMeterQuantity's "no pull endpoint" skip and produced zero overage,
+  // regardless of a genuinely finalized manual usage_period_values row.
+  it('a tiered-overage metric confirmed via MANUAL entry (no meter_key at all) now resolves real overage — never silently zero', async () => {
+    const orgId = await createTestOrg('17F.1 manual-overage org')
+    const jobId = await createTestJob(orgId)
+
+    await supabaseServer.from('contract_meter_mappings').insert({
+      job_id: jobId, contract_unit_type: 'payment request', semantic_input_key: 'issued_payment_request_count',
+      meter_key: '', confirmed: true, included_units: 5000, overage_tiers: [{ from_unit: 5001, to_unit: null, rate_per_unit: 0.6 }],
+      input_classification: 'meter', manual_value_configured: true,
+    })
+    await supabaseServer.from('usage_period_values').insert({
+      job_id: jobId, org_id: orgId, semantic_input_key: 'issued_payment_request_count',
+      period_start: '2027-05-01', period_end: '2027-05-31', quantity: 8000, status: 'active',
+      recorded_at: new Date().toISOString(), finalized_at: new Date().toISOString(), recorded_by: 'test',
+    })
+
+    const terms = { currency: 'EUR', overage_tiers: [], base_fee_bands: [] } as unknown as ContractTerms
+    const overageItems = await computeOverageForPeriod({
+      orgId, jobId, terms, customerId: 'cust-test',
+      periodStartUnix: Math.floor(new Date('2027-05-01').getTime() / 1000),
+      periodEndUnix: Math.floor(new Date('2027-05-31').getTime() / 1000),
+      currency: 'EUR', billingAsOfUnix: Math.floor(new Date('2027-06-01').getTime() / 1000),
+    })
+    expect(overageItems).toHaveLength(1)
+    expect(overageItems[0].amount).toBeCloseTo((8000 - 5000) * 0.6, 2)
+
+    // Real (non-preview) billing finalizes the manual value as an
+    // authoritative snapshot too, source: 'manual' — same durability
+    // guarantee as a real meter pull.
+    const { data: snapshot } = await supabaseServer
+      .from('resolved_usage_period_snapshots').select('quantity, source')
+      .eq('job_id', jobId).eq('semantic_input_key', 'issued_payment_request_count')
+      .eq('period_start', '2027-05-01').eq('period_end', '2027-05-31').maybeSingle()
+    expect(snapshot).toMatchObject({ quantity: 8000, source: 'manual' })
+  })
+
+  it('a real meter_key configured but its pull fails still fails closed — the manual fallback never masks a genuine connector problem', async () => {
+    const orgId = await createTestOrg('17F.1 connector-failure org')
+    const jobId = await createTestJob(orgId)
+    const meterKey = `broken_meter_${Date.now()}`
+    // No billing_meters row at all for this key — pullMeterQuantity fails
+    // with "no pull endpoint", same failure shape as the manual case, but
+    // meter_key is NON-empty here, so the fallback must not engage.
+    await supabaseServer.from('contract_meter_mappings').insert({
+      job_id: jobId, contract_unit_type: 'payment request', semantic_input_key: 'issued_payment_request_count',
+      meter_key: meterKey, confirmed: true, included_units: 5000, overage_tiers: [{ from_unit: 5001, to_unit: null, rate_per_unit: 0.6 }],
+    })
+    // Even though a manual value ALSO happens to exist, it must be ignored —
+    // a configured-but-broken meter must never silently fall back to it.
+    await supabaseServer.from('usage_period_values').insert({
+      job_id: jobId, org_id: orgId, semantic_input_key: 'issued_payment_request_count',
+      period_start: '2027-06-01', period_end: '2027-06-30', quantity: 9999, status: 'active',
+      recorded_at: new Date().toISOString(), finalized_at: new Date().toISOString(), recorded_by: 'test',
+    })
+
+    const terms = { currency: 'EUR', overage_tiers: [], base_fee_bands: [] } as unknown as ContractTerms
+    const overageItems = await computeOverageForPeriod({
+      orgId, jobId, terms, customerId: 'cust-test',
+      periodStartUnix: Math.floor(new Date('2027-06-01').getTime() / 1000),
+      periodEndUnix: Math.floor(new Date('2027-06-30').getTime() / 1000),
+      currency: 'EUR', billingAsOfUnix: Math.floor(new Date('2027-07-01').getTime() / 1000),
+    })
+    expect(overageItems).toHaveLength(0)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Step 17F.2, item B — the exact scenario the task specifies: live during
+// the period = 7,900; billing close pins 8,000; source later drifts to
+// 8,100. A 'pending' display (period closed, invoice not yet sent) must
+// show the PINNED 8,000 — via computeOverageForPeriod's new
+// preferClosedPeriodSnapshot flag — never a fresh 8,100 read, while an
+// ordinary 'current' (still-open) preview keeps seeing live, unpinned data
+// exactly as before (the flag is opt-in and additive only).
+// ═══════════════════════════════════════════════════════════════════════════
+describeIf('Step 17F.2, item B — closed-but-not-yet-invoiced periods prefer the pinned snapshot over a fresh live read', () => {
+  it('preview 7,900 (live, unpinned) -> billing close pins 8,000 -> source drifts to 8,100 -> a pending-style preview with preferClosedPeriodSnapshot sees 8,000, not 8,100', async () => {
+    let sourceValue = 7900
+    const mock = await startMockUsageServer(() => sourceValue)
+    try {
+      const orgId = await createTestOrg('17F.2 pending-period org')
+      const jobId = await createTestJob(orgId)
+      const meterKey = `pending_period_meter_${Date.now()}`
+      await supabaseServer.from('billing_meters').insert({
+        org_id: orgId, meter_key: meterKey, display_name: 'Pending Period Meter', unit_label: 'request',
+        mode: 'live', pull_endpoint_url: mock.url, semantic_input_key: 'issued_payment_request_count',
+      })
+      await supabaseServer.from('contract_meter_mappings').insert({
+        job_id: jobId, contract_unit_type: 'payment request', semantic_input_key: 'issued_payment_request_count',
+        meter_key: meterKey, confirmed: true, included_units: 5000, overage_tiers: [{ from_unit: 5001, to_unit: null, rate_per_unit: 0.6 }],
+      })
+
+      const terms = { currency: 'EUR', overage_tiers: [], base_fee_bands: [] } as unknown as ContractTerms
+      const periodStartUnix = Math.floor(new Date('2027-08-01').getTime() / 1000)
+      const periodEndUnix = Math.floor(new Date('2027-08-31').getTime() / 1000)
+
+      // Step 1 — a 'current' (still-open) live preview, exactly as
+      // consumption-summary already does today: sees 7,900, pins nothing.
+      const currentPreview = await computeOverageForPeriod({
+        orgId, jobId, terms, customerId: 'cust-test', periodStartUnix, periodEndUnix,
+        currency: 'EUR', billingAsOfUnix: Math.floor(new Date('2027-08-15').getTime() / 1000),
+        ignoreTestModeGate: true, livePreviewAsOfUnix: Math.floor(new Date('2027-08-15').getTime() / 1000),
+      })
+      expect(currentPreview.find(i => i.meter_key === meterKey)?.total_units).toBe(7900)
+      const { data: afterCurrent } = await supabaseServer
+        .from('resolved_usage_period_snapshots').select('id')
+        .eq('job_id', jobId).eq('semantic_input_key', 'issued_payment_request_count')
+        .eq('period_start', '2027-08-01').eq('period_end', '2027-08-31')
+      expect(afterCurrent ?? []).toHaveLength(0)
+
+      // Step 2 — the period closes at its true final value.
+      sourceValue = 8000
+
+      // Step 3 — real billing close: fresh authoritative pull, pins 8,000.
+      const closeResult = await computeOverageForPeriod({
+        orgId, jobId, terms, customerId: 'cust-test', periodStartUnix, periodEndUnix,
+        currency: 'EUR', billingAsOfUnix: Math.floor(new Date('2027-09-01').getTime() / 1000),
+      })
+      expect(closeResult.find(i => i.meter_key === meterKey)?.total_units).toBe(8000)
+      expect(closeResult.find(i => i.meter_key === meterKey)?.amount).toBeCloseTo(3000 * 0.6, 2) // 1,800
+
+      // Step 4 — source drifts AFTER close (a late correction upstream).
+      sourceValue = 8100
+
+      // Step 5 — a 'pending' display preview (period closed, invoice not
+      // yet sent) with preferClosedPeriodSnapshot: true must see the
+      // PINNED 8,000, never the drifted 8,100.
+      const pendingPreview = await computeOverageForPeriod({
+        orgId, jobId, terms, customerId: 'cust-test', periodStartUnix, periodEndUnix,
+        currency: 'EUR', billingAsOfUnix: Math.floor(new Date('2027-09-02').getTime() / 1000),
+        livePreviewAsOfUnix: Math.floor(new Date('2027-09-02').getTime() / 1000),
+        preferClosedPeriodSnapshot: true,
+      })
+      expect(pendingPreview.find(i => i.meter_key === meterKey)?.total_units).toBe(8000)
+      expect(pendingPreview.find(i => i.meter_key === meterKey)?.amount).toBeCloseTo(3000 * 0.6, 2)
+
+      // Without the flag (today's existing behavior, unchanged), the SAME
+      // preview would see the drifted live value instead.
+      const withoutFlag = await computeOverageForPeriod({
+        orgId, jobId, terms, customerId: 'cust-test', periodStartUnix, periodEndUnix,
+        currency: 'EUR', billingAsOfUnix: Math.floor(new Date('2027-09-02').getTime() / 1000),
+        livePreviewAsOfUnix: Math.floor(new Date('2027-09-02').getTime() / 1000),
+        ignoreTestModeGate: true,
+      })
+      expect(withoutFlag.find(i => i.meter_key === meterKey)?.total_units).toBe(8100)
+    } finally {
+      await mock.close()
+    }
   })
 })

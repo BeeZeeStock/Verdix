@@ -821,6 +821,52 @@ export interface PeriodProrationRule {
   source_clause?: string | null
 }
 
+// Step 17F.3, item 6 — RENAMED from VariableSettlementTimingRule /
+// 'arrears_with_usage' (Step 17F.1). That name/value conflated two
+// different questions: (1) "is this period-based charge DETERMINED in
+// arrears" — which is a structural fact of measurement, never a real
+// choice (17F.3, item 5 — removed as a Decision Required entirely, see
+// lib/performance-share-fee.ts/lib/performance-share-pull.ts, which now
+// ALWAYS wait for period close + final inputs with no rule gating that),
+// and (2) "WHEN is the completed charge actually INVOICED once
+// determined" — the genuinely separate, still-open question this type
+// now exclusively captures. 'invoice_at_next_period_start' is the only
+// currently-wired execution timing (settles alongside the prior period's
+// closed-window usage overage, on the invoice issued for the FOLLOWING
+// period — see lib/performance-share-pull.ts); 'invoice_at_period_end' is
+// a resolvable VALUE (a contract can state this arrangement) but has no
+// distinct execution path yet — confirming it holds the charge exactly
+// like an unresolved 'unclear' would, never silently executed on the
+// next-period-start cycle as if it were the same thing. 'unclear' means
+// the contract doesn't establish precise invoice timing and a reviewer
+// decision is required before this charge may be invoiced at all,
+// regardless of how confidently its AMOUNT is computed.
+export interface VariableInvoiceTimingRule {
+  timing: 'invoice_at_next_period_start' | 'invoice_at_period_end' | 'unclear'
+  requires_confirmation: boolean
+  confirmation_reason?: string | null
+  source_clause?: string | null
+}
+
+// Step 17F.3, item 2 — WHEN a fixed recurring fee's invoice is issued
+// relative to its own billing period, distinct from PeriodProrationRule
+// above (which only ever governs a PARTIAL period's amount, never the
+// full-period invoice's own timing) and distinct from the invoice-
+// scheduler's own structural default (period_start-anchored row
+// selection — a scheduler IMPLEMENTATION detail, never contract truth).
+// Never inferred from "monthly" cadence or payment-terms wording (e.g.
+// "30 days") — neither establishes whether the invoice issues at the
+// start or the end of the period it covers. 'unclear' means the contract
+// is silent/ambiguous and a reviewer decision is required; only an
+// explicit contract statement or an explicit reviewer choice may set
+// requires_confirmation false.
+export interface FixedFeeBillingTimingRule {
+  timing: 'bill_at_period_start' | 'bill_at_period_end' | 'unclear'
+  requires_confirmation: boolean
+  confirmation_reason?: string | null
+  source_clause?: string | null
+}
+
 export interface AdditionalRecurringFee {
   fee_label: string
   // Amount per billing period — 0 (falsy) when this fee has NO fixed
@@ -959,6 +1005,23 @@ export interface AdditionalRecurringFee {
    *  for the actual execution, and lib/performance-share-fee.ts for how
    *  this composes with pilot/waiver materiality gating and readiness. */
   percentage_of_basis?: PercentageOfBasisConfig | null
+  /** Step 17F.3, item 6 (renamed/refactored from variable_settlement_timing
+   *  — Step 17F.1, item 6) — WHEN a percentage-of-basis charge is
+   *  INVOICED once determined, distinct from how it's CALCULATED
+   *  (percentage_of_basis above) and distinct from WHETHER it's determined
+   *  in arrears (a structural fact of measurement — Step 17F.3, item 5 —
+   *  never a reviewer decision; removed as a gate entirely). A contract
+   *  stating "monthly performance fee" establishes the charge's own
+   *  cadence, not necessarily whether the resulting invoice issues
+   *  alongside the prior period's usage overage on the next period's
+   *  invoice or on some other cycle — that is a genuinely separate, often-
+   *  unstated question. Auto-attached (as unresolved) by
+   *  lib/commercial-mechanism-compiler.ts's compileExecutableCommercial
+   *  Mechanisms whenever percentage_of_basis compiles; never silently
+   *  defaulted to 'invoice_at_next_period_start' — see
+   *  lib/performance-share-pull.ts's own gate. Absent entirely for any fee
+   *  with no percentage_of_basis (nothing to time). */
+  variable_invoice_timing?: VariableInvoiceTimingRule | null
   /** Step 17A, item 12 — same convention as OneTimeFee.unresolved_kind
    *  (see that field's own comment). 'unsupported_semantics' marks a
    *  commercial mechanism this shape genuinely cannot represent/execute
@@ -1379,6 +1442,18 @@ export interface ContractTerms {
    *  they need their own proration slot rather than a per-item one like
    *  AdditionalRecurringFee.proration. */
   base_fee_proration?: PeriodProrationRule | null
+  /** Step 17F.3, item 2 — WHEN the recurring fixed fee's invoice is issued
+   *  relative to its own billing period (start vs. end) — a genuinely
+   *  separate question from base_fee_proration above (which only ever
+   *  governs a PARTIAL period's amount, never a full period's invoice
+   *  timing) and from the invoice-scheduler's own structural default
+   *  (period_start-anchored row selection — an implementation detail,
+   *  never contract truth on its own). Never inferred from "monthly"
+   *  cadence or from payment-terms wording (e.g. "30 days") — see
+   *  lib/contract-extractor.ts's own extraction-prompt rule. Job-level,
+   *  like base_fee_proration, since base_monthly_fee/base_annual_fee are
+   *  singular fields. */
+  fixed_fee_billing_timing?: FixedFeeBillingTimingRule | null
   billing_frequency: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
   payment_terms_days: number | null
   payment_terms_text: string | null

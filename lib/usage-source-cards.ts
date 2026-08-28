@@ -16,9 +16,22 @@
 // type string instead), so nothing becomes invisible merely because
 // extraction didn't state a canonical identity for it.
 //
+import { isMeterMappingResolved } from './meter-mapping-status'
+
 // Pure, DB-free, React-free — takes exactly the shapes already available
 // from GET /api/jobs/[id]/meter-mappings (suggestions/available_meters)
 // and the job's own contract_terms, so no new API surface is needed.
+//
+// Step 17F, item 2 — status is derived via lib/meter-mapping-status.ts's
+// isMeterMappingResolved, never the raw `confirmed` flag alone. A legacy
+// contract_meter_mappings row can carry confirmed:true with an empty
+// meter_key (written before that invariant existed — see that module's
+// own header) — trusting `confirmed` directly produced the reported
+// contradiction ("Status: Confirmed" next to "Source: Not yet
+// confirmed"). isMeterMappingResolved is the same predicate that already
+// gates whether org_billing_config is ever written for a mapping, so a
+// card can never claim "Confirmed" for a row real billing itself would
+// still treat as unresolved.
 export interface UsageSourceMapping {
   contract_unit_type: string
   semantic_input_key?: string | null
@@ -115,7 +128,19 @@ export function buildUsageSourceCards(params: {
 
     const semanticInputKey = representative.semantic_input_key || null
     const meter = representative.meter_key ? meterByKey.get(representative.meter_key) : undefined
-    const isManual = representative.input_classification === 'meter_or_manual_input' && !!representative.manual_value_configured && !representative.meter_key
+    // Step 17F, item 2 (found via the item-14 acceptance walkthrough
+    // against the real Remembill contract) — this used to require
+    // input_classification === 'meter_or_manual_input' specifically, but
+    // lib/meter-mapping-status.ts's own header (17D.2, item C) already
+    // established that classification is a text-matching GUESS, never a
+    // gate on whether manual entry is a valid resolution: a row
+    // classified 'meter' with manual_value_configured:true (the real
+    // production Remembill job's actual current state) resolves to
+    // status:'confirmed' via isMeterMappingResolved below, and must show
+    // a matching, non-contradictory source name — not silently fall
+    // through to "Not yet confirmed" merely because its classification
+    // guess happened to be 'meter' instead of 'meter_or_manual_input'.
+    const isManual = !!representative.manual_value_configured && !representative.meter_key
 
     let sourceName: string
     let sourceType: UsageSourceCard['sourceType']
@@ -167,6 +192,13 @@ export function buildUsageSourceCards(params: {
       }
     }
 
+    const resolved = isMeterMappingResolved({
+      classification: representative.input_classification ?? 'meter',
+      confirmed: representative.confirmed,
+      meter_key: representative.meter_key,
+      manual_value_configured: representative.manual_value_configured,
+    })
+
     cards.push({
       key,
       contractUnitType: representative.contract_unit_type,
@@ -174,7 +206,7 @@ export function buildUsageSourceCards(params: {
       label,
       sourceName,
       sourceType,
-      status: representative.confirmed ? 'confirmed' : 'not_confirmed',
+      status: resolved ? 'confirmed' : 'not_confirmed',
       consumers,
     })
   }
