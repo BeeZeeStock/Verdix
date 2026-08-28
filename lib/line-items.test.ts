@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLineItems } from './line-items'
+import { buildLineItems, isRecurringBaseFeeLineItem } from './line-items'
 import { computeBaseTcv, computeCommittedFixedFees } from './contract-tcv-calc'
 import { buildRemembillFixtureTerms } from './remembill-fixture'
 import type { ContractTerms } from './types'
@@ -151,5 +151,81 @@ describe('Step 17C.3b, item A — a percentage-of-basis fee is never duplicated 
     })
     const items = buildLineItems(terms, 'EUR')
     expect(items.find(i => i.product_name === 'Performance share')).toBeUndefined()
+  })
+
+  // Step 17E, item 3 — the OLD guard (`!fee.amount && !isVariableRate`)
+  // only worked because a percentage_of_basis fee never ALSO had
+  // metric_name/rate_per_unit set. That was never structurally enforced —
+  // a fee could in principle carry both shapes. This proves the fix is
+  // unconditional: percentage_of_basis alone is enough to suppress the
+  // row, even when isVariableRate would independently have been true.
+  it('percentage_of_basis suppresses the row even when the fee ALSO looks like a variable-rate per-unit fee', () => {
+    const terms = baseTerms({
+      contract_start_date: '2026-10-01', contract_term_months: 12, billing_frequency: 'monthly',
+      additional_recurring_fees: [{
+        fee_label: 'Performance share', amount: 0, description: null, unresolved_kind: null,
+        metric_name: 'value-weighted payment rate', rate_per_unit: 5,
+        percentage_of_basis: {
+          derived_metric: {
+            metric_key: 'value_weighted_payment_rate', operation: 'ratio',
+            numerator_input_key: 'paid_invoice_value', denominator_input_key: 'total_invoice_value_of_issued_requests',
+            output_unit: 'percentage', min_output_value: 0, max_output_value: 100,
+          },
+          rate_schedule: { schedule_key: 'x', bands: [{ from: 0, to: null, rate_pct: 1 }], min_selector_value: 0, max_selector_value: 100 },
+          basis_input_key: 'total_invoice_value_of_issued_requests',
+        },
+      }],
+    })
+    const items = buildLineItems(terms, 'EUR')
+    expect(items.find(i => i.product_name === 'Performance share')).toBeUndefined()
+  })
+})
+
+describe('Step 17E, item 4 — confirmed base_fee_proration clears the stale "Pending interpretation" state', () => {
+  it('unresolved requires_confirmation:true emits the placeholder marker row (Qty 0 / Total 0), resolved requires_confirmation:false emits the real computed schedule — never both, never the placeholder once resolved', () => {
+    const sharedFields: Partial<ContractTerms> = {
+      contract_start_date: '2026-01-01', contract_term_months: 12, billing_frequency: 'monthly',
+      base_monthly_fee: 2000,
+    }
+
+    const unresolved = baseTerms({
+      ...sharedFields,
+      base_fee_proration: { reset_anchor: 'calendar', prorate_partial_periods: 'unclear', requires_confirmation: true, confirmation_reason: 'pilot waiver expiry unclear' },
+    })
+    const unresolvedItems = buildLineItems(unresolved, 'EUR').filter(i => isRecurringBaseFeeLineItem(i.product_name))
+    expect(unresolvedItems).toHaveLength(1)
+    expect(unresolvedItems[0]).toMatchObject({ product_name: 'Recurring base fee — partial-period treatment unresolved', quantity: 0, total_amount: 0 })
+
+    // This is EXACTLY what confirm-rule/route.ts's base_fee_proration
+    // branch does after the reviewer confirms: the SAME terms with only
+    // requires_confirmation flipped to false (buildPeriodProrationRule's
+    // own guaranteed output shape).
+    const resolved = baseTerms({
+      ...sharedFields,
+      base_fee_proration: { reset_anchor: 'calendar', prorate_partial_periods: true, requires_confirmation: false, confirmation_reason: null },
+    })
+    const resolvedItems = buildLineItems(resolved, 'EUR').filter(i => isRecurringBaseFeeLineItem(i.product_name))
+    expect(resolvedItems.length).toBeGreaterThan(0)
+    expect(resolvedItems.every(i => i.product_name !== 'Recurring base fee — partial-period treatment unresolved')).toBe(true)
+    expect(resolvedItems.some(i => i.total_amount > 0)).toBe(true)
+    expect(resolvedItems.some(i => i.product_name === 'Recurring base fee')).toBe(true)
+  })
+})
+
+describe('Step 17E, item 4 — isRecurringBaseFeeLineItem identifies exactly the recurring-base-fee-block product_name shapes', () => {
+  it('matches every shape the recurring-base-fee block can produce', () => {
+    expect(isRecurringBaseFeeLineItem('Base subscription')).toBe(true)
+    expect(isRecurringBaseFeeLineItem('Recurring base fee')).toBe(true)
+    expect(isRecurringBaseFeeLineItem('Recurring base fee — partial-period treatment unresolved')).toBe(true)
+    expect(isRecurringBaseFeeLineItem('Recurring base fee (periods 1–3)')).toBe(true)
+    expect(isRecurringBaseFeeLineItem('Recurring base fee (periods 4–12)')).toBe(true)
+  })
+
+  it('never matches an unrelated row — overage tiers, one-time fees, other additional recurring fees, escalators', () => {
+    expect(isRecurringBaseFeeLineItem('Per payment request fee')).toBe(false)
+    expect(isRecurringBaseFeeLineItem('Included SMS reminders 1–500')).toBe(false)
+    expect(isRecurringBaseFeeLineItem('Implementation fee')).toBe(false)
+    expect(isRecurringBaseFeeLineItem('Price escalator (3% cpi)')).toBe(false)
+    expect(isRecurringBaseFeeLineItem('Performance share')).toBe(false)
   })
 })

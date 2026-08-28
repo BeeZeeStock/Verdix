@@ -26,6 +26,7 @@ import {
   CREDIT_SURVIVAL_OPTIONS,
   looksLikeMalformedReasoning,
   truncateSentences,
+  baseFeeHasExpiringWaiver,
   type MinimumCommitmentContext,
   type PartialPeriodContext,
   type EscalatorContext,
@@ -1409,5 +1410,36 @@ describe('truncateSentences + looksLikeMalformedReasoning — Step 17C.3b, item 
     expect(truncated).toBe(true)
     expect(short.endsWith('…')).toBe(true)
     expect(short.length).toBeLessThanOrEqual(141)
+  })
+})
+
+describe('baseFeeHasExpiringWaiver — Step 17E, item 6 (committed fixed-fee €0 display needs pilot context)', () => {
+  it('true for a dated discount affecting base_recurring_fee (a pilot waiver)', () => {
+    expect(baseFeeHasExpiringWaiver([
+      { affected_components: ['base_recurring_fee'], end_date: '2026-12-31' },
+    ])).toBe(true)
+  })
+
+  it('true when the component is only POSSIBLY affected but the window is still dated', () => {
+    expect(baseFeeHasExpiringWaiver([
+      { possibly_affected_components: ['base_recurring_fee'], duration_days: 90 },
+    ])).toBe(true)
+  })
+
+  it('false when no discount targets the base fee at all — genuinely nothing configured, not a waiver', () => {
+    expect(baseFeeHasExpiringWaiver([
+      { affected_components: ['transaction_processing'], end_date: '2026-12-31' },
+    ])).toBe(false)
+  })
+
+  it('false for a permanent (undated) discount on the base fee — an expiring waiver specifically needs a duration/end_date', () => {
+    expect(baseFeeHasExpiringWaiver([
+      { affected_components: ['base_recurring_fee'] },
+    ])).toBe(false)
+  })
+
+  it('false for null/empty discounts — the post-pilot, no-discount-at-all case', () => {
+    expect(baseFeeHasExpiringWaiver(null)).toBe(false)
+    expect(baseFeeHasExpiringWaiver([])).toBe(false)
   })
 })

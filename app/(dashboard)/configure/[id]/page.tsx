@@ -7,7 +7,7 @@ import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
 import { BillingSummaryCard } from '@/app/_components/BillingSummaryCard'
 import { VatConfigRow } from '@/app/_components/VatConfigRow'
 import { useVatConfig } from '@/app/_components/useVatConfig'
-import { MeterMappingPanel } from '@/app/_components/MeterMappingPanel'
+import { MeterMappingPanel, ManualInputEntry } from '@/app/_components/MeterMappingPanel'
 import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCard'
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
@@ -19,6 +19,8 @@ import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, isProvenanceResolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { isMonetaryBasisRecognitionApplicable, isPaidBasisFinalizationApplicable } from '@/lib/paid-basis-finalization'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
+import { buildUsageSourceCards } from '@/lib/usage-source-cards'
+import { describeDiscountForBrief } from '@/lib/discount-brief-summary'
 import { describeBillabilityCondition, isChangeOrderConditional, resolveOneTimeFeeTypeLabel } from '@/lib/billability-condition'
 import { formatEligibleComponentsFact, formatCarryForwardFact, formatCashRedeemableFact, formatEarningBasisFact, computeExcludedFromEarningBasisKeys } from '@/lib/review-card-format'
 import { getCreditRepresentationCapability } from '@/lib/connectors/billing/types'
@@ -50,7 +52,13 @@ type Escalator = {
 }
 type Discount   = {
   discount_rule_id?: string
-  discount_pct?: number; discount_amount?: number; discount_type?: string; start_date?: string; end_date?: string; duration_months?: number; applies_to?: string; description?: string
+  discount_pct?: number; discount_amount?: number; discount_type?: string; start_date?: string; end_date?: string; duration_months?: number
+  // Step 17E, item 10 — a day-granular pilot window (e.g. "90-day pilot")
+  // is genuinely distinct from duration_months (see lib/types.ts's own
+  // doc: never both populated for the same window) — was previously
+  // absent from this page's local type entirely.
+  duration_days?: number | null
+  applies_to?: string; description?: string
   // Step 17A hardening (review pass 6)/17B0, item B — typed component
   // targeting (see lib/types.ts's Discount.affected_components/
   // possibly_affected_components) — used to detect a genuinely open
@@ -168,6 +176,10 @@ type Tier       = {
   // depends on (e.g. the raw usage count AND the contracted volume that
   // defines where the tier starts) — see lib/types.ts's OverageTier.
   required_operational_inputs?: string[] | null
+  // Step 17E, item 7/8 — the canonical fact this tier's rate multiplies
+  // (Step 17D.1's extraction field), used to group this tier's source
+  // card with any fee/rolling-migration referencing the same identity.
+  semantic_input_key?: string | null
 }
 
 type OneTimeFee = {
@@ -220,6 +232,8 @@ type AdditionalRecurringFee = {
   // formula/percentage schedule). See lib/types.ts's AdditionalRecurringFee.
   metric_name?: string | null
   rate_per_unit?: number | null
+  // Step 17E, item 7/8 — see Tier.semantic_input_key's identical doc above.
+  semantic_input_key?: string | null
   required_operational_inputs?: string[] | null
   unresolved_kind?: 'unsupported_semantics' | null
   source_clause?: string | null
@@ -537,11 +551,11 @@ function buildContractSummary(
     }
   }
   if (terms.discounts && terms.discounts.length > 0) {
-    const d    = terms.discounts[0]
-    const pct  = d.discount_pct != null ? `${d.discount_pct}%` : ''
-    const type = d.discount_type ? ` ${d.discount_type.replace(/_/g, ' ')}` : ''
-    const till = d.end_date ? ` through ${fmtDate(d.end_date)}` : ''
-    extras.push(`${pct}${type} discount${till}`.trim())
+    // Step 17E, item 10 — see lib/discount-brief-summary.ts's header: a
+    // bare "100% introductory discount" reads as "the whole contract is
+    // free," wrong for a pilot waiving only one component. Rendered from
+    // the discount's own typed scope fields, never free-form prose.
+    extras.push(describeDiscountForBrief(terms.discounts[0], fmtDate))
   }
   if (userTiers.length > 0) {
     const min = Math.min(...userTiers.map(t => t.rate_per_unit ?? 0).filter(v => v > 0))
@@ -1168,6 +1182,125 @@ function PerformanceShareCard({
             <p className="text-[11px] text-stone/60">Amount calculates automatically each period once real operational values are entered and finalized for that period — never estimated or substituted.</p>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+function humanizeKey(key: string): string {
+  return key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())
+}
+
+// Step 17E, item 1 — the persistent, always-visible (once approved)
+// counterpart to MeterMappingPanel's operationalDataInputsSection, which
+// only ever rendered inside the review drawer and vanished the moment
+// every review item was resolved — even though these monetary facts
+// (paid_invoice_value, total_invoice_value_of_issued_requests, ...) are
+// needed EVERY billing period, not just during review. Reuses the exact
+// same <ManualInputEntry> widget (same operational_input_period_values
+// API/versioning) — no second persistence path, just a persistent place
+// to reach it from.
+function OperationalInputCard({ jobId, input }: { jobId: string; input: { key: string; sources: string[] } }) {
+  return (
+    <div className="rounded-xl border p-4" style={{ borderColor: 'rgba(26,61,43,0.1)' }}>
+      <p className="text-sm font-medium text-ink">{humanizeKey(input.key)}</p>
+      <p className="text-[11px] font-mono text-stone/60 mt-0.5">{input.key}</p>
+      <p className="text-[11px] text-stone mt-1">Source method: Manual entry</p>
+      <p className="text-[10px] text-stone/50 mt-0.5">Used by: {input.sources.join(' · ')}</p>
+      <ManualInputEntry jobId={jobId} inputKey={input.key} />
+    </div>
+  )
+}
+
+function OperationalInputsSection({ jobId, inputs }: { jobId: string; inputs: Array<{ key: string; sources: string[] }> }) {
+  if (inputs.length === 0) return null
+  return (
+    <div className="bg-white rounded-2xl border border-forest/10 p-6 space-y-4">
+      <div>
+        <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Operational inputs</h2>
+        <p className="text-[11px] text-stone mt-1">Recurring monetary facts this agreement needs every billing period — enter and finalize the current period&apos;s value here.</p>
+      </div>
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
+        {inputs.map(input => <OperationalInputCard key={input.key} jobId={jobId} input={input} />)}
+      </div>
+    </div>
+  )
+}
+
+// Step 17E, item 2/3 — the persistent, always-visible counterpart to
+// PerformanceShareCard (which only ever lived inside the review drawer,
+// and only showed a readiness BADGE, never the actual derived state).
+// Fetches GET /api/jobs/[id]/performance-share, which reuses the SAME
+// compiled percentage_of_basis config and lib/performance-share-fee.ts
+// runtime output real billing uses — never a separately-invented display
+// calculation, and never computed from a draft (the route itself only
+// ever resolves a period where every required input is active+finalized).
+type PerformanceShareResult = {
+  feeLabel: string
+  status: 'ready' | 'waived' | 'not_ready' | 'invalid'
+  reason?: string
+  periodStart?: string | null
+  periodEnd?: string | null
+  numeratorKey?: string; numeratorValue?: number
+  denominatorKey?: string; denominatorValue?: number
+  derivedPct?: number; selectedRatePct?: number
+  basisKey?: string; basisValue?: number; amount?: number
+  currency?: string
+  // Step 17E, item 5 — required input keys with no active+finalized value
+  // on record at all, for a genuinely period-level readiness banner.
+  missingKeys?: string[]
+}
+
+function PerformanceShareDisplay({ jobId, currency, onLoaded }: { jobId: string; currency: string; onLoaded?: (fees: PerformanceShareResult[]) => void }) {
+  const [fees, setFees] = useState<PerformanceShareResult[] | null>(null)
+
+  useEffect(() => {
+    let dead = false
+    fetch(`/api/jobs/${jobId}/performance-share`).then(r => r.json())
+      .then((res: { fees?: PerformanceShareResult[] }) => {
+        if (dead) return
+        const loaded = res.fees ?? []
+        setFees(loaded)
+        onLoaded?.(loaded)
+      })
+      .catch(() => { if (!dead) setFees([]) })
+    return () => { dead = true }
+    // onLoaded is a stable per-render callback the caller controls; only
+    // jobId identifies a genuinely new fetch target.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId])
+
+  if (fees === null || fees.length === 0) return null
+
+  return (
+    <div className="bg-white rounded-2xl border border-forest/10 p-6 space-y-4">
+      <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Performance share</h2>
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
+        {fees.map(f => (
+          <div key={f.feeLabel} className="rounded-xl border p-4" style={{ borderColor: 'rgba(26,61,43,0.1)' }}>
+            <p className="text-sm font-medium text-ink mb-2">{f.feeLabel}</p>
+            {(f.status === 'ready' || f.status === 'waived') ? (
+              <div className="space-y-1 text-[12px]">
+                {f.numeratorKey && <p className="text-stone">{humanizeKey(f.numeratorKey)}: <span className="text-ink font-medium">{fmt(f.numeratorValue, f.currency ?? currency)}</span></p>}
+                {f.denominatorKey && <p className="text-stone">{humanizeKey(f.denominatorKey)}: <span className="text-ink font-medium">{fmt(f.denominatorValue, f.currency ?? currency)}</span></p>}
+                <p className="text-stone">Payment rate: <span className="text-ink font-medium">{f.derivedPct?.toFixed(2)}%</span></p>
+                <p className="text-stone">Selected rate: <span className="text-ink font-medium">{f.selectedRatePct?.toFixed(2)}%</span></p>
+                <p className="text-stone pt-1.5 mt-1 border-t" style={{ borderColor: 'rgba(26,61,43,0.06)' }}>
+                  Performance share:{' '}
+                  <span className="text-ink font-semibold">
+                    {f.status === 'waived' ? `${fmt(0, f.currency ?? currency)} — waived (pilot)` : fmt(f.amount, f.currency ?? currency)}
+                  </span>
+                </p>
+                {f.periodStart && <p className="text-[10px] text-stone/50 mt-1">For period {f.periodStart} – {f.periodEnd}</p>}
+              </div>
+            ) : (
+              <div>
+                <p className="text-[12px] font-medium" style={{ color: '#B45309' }}>Pending operational inputs</p>
+                {f.reason && f.reason !== 'Pending operational inputs' && <p className="text-[11px] text-stone/60 mt-0.5">{f.reason}</p>}
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -6438,9 +6571,28 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // section, which need to say WHERE each metric's data actually comes from
   // (a specific meter, manual entry, derived, or the credit ledger), not
   // just a confirmed/outstanding count.
-  type MeterInputRow = { contract_unit_type: string; meter_key: string; confirmed: boolean; input_classification?: 'meter' | 'meter_or_manual_input' | 'derived' | 'persisted_balance'; manual_value_configured?: boolean }
+  // Step 17E, item 7/8 — semantic_input_key added: already returned by
+  // GET /api/jobs/[id]/meter-mappings (both per-suggestion and per-
+  // available-meter) since Step 17D, just not previously threaded through
+  // this page's own local types. Needed to group confirmed sources by
+  // canonical identity (lib/usage-source-cards.ts) instead of by raw
+  // contract_unit_type.
+  type MeterInputRow = { contract_unit_type: string; semantic_input_key?: string | null; meter_key: string; confirmed: boolean; input_classification?: 'meter' | 'meter_or_manual_input' | 'derived' | 'persisted_balance'; manual_value_configured?: boolean }
   const [meterInputRows, setMeterInputRows] = useState<MeterInputRow[]>([])
-  const [availableMeters, setAvailableMeters] = useState<Array<{ meter_key: string; display_name: string }>>([])
+  const [availableMeters, setAvailableMeters] = useState<Array<{ meter_key: string; display_name: string; semantic_input_key?: string | null }>>([])
+  // Step 17E, item 1 — the SAME operational_data_inputs (monetary kind)
+  // the review drawer's MeterMappingPanel already receives from this exact
+  // endpoint, captured here too so the persistent Operational Inputs
+  // section (outside the drawer) can render them without a second fetch
+  // or a second persistence path.
+  type OperationalDataInputRow = { key: string; kind: 'monetary' | 'countable'; sources: string[] }
+  const [operationalDataInputs, setOperationalDataInputs] = useState<OperationalDataInputRow[]>([])
+  // Step 17E, item 5 — lifted from PerformanceShareDisplay's own fetch (via
+  // its onLoaded callback) so the period-readiness banner below can name
+  // exactly which percentage-of-basis fee(s) are blocking the CURRENT
+  // period, not just whether the static contract configuration is
+  // confirmed. null = not yet fetched (never treated as "no blockers").
+  const [performanceShareStatus, setPerformanceShareStatus] = useState<PerformanceShareResult[] | null>(null)
   useEffect(() => {
     // Same out-of-order-response guard as fetchJob's own fetchJobSeq — this
     // effect re-runs on every refreshSignal bump (meter-mapping confirm,
@@ -6452,7 +6604,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     let cancelled = false
     fetch(`/api/jobs/${id}/meter-mappings`)
       .then(r => r.json())
-      .then((res: { suggestions?: MeterInputRow[]; available_meters?: Array<{ meter_key: string; display_name: string }> }) => {
+      .then((res: { suggestions?: MeterInputRow[]; available_meters?: Array<{ meter_key: string; display_name: string; semantic_input_key?: string | null }>; operational_data_inputs?: OperationalDataInputRow[] }) => {
         if (cancelled) return
         const suggestions = res.suggestions ?? []
         setMeterMappingSummary({
@@ -6461,6 +6613,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
         })
         setMeterInputRows(suggestions)
         setAvailableMeters(res.available_meters ?? [])
+        setOperationalDataInputs((res.operational_data_inputs ?? []).filter(i => i.kind === 'monetary'))
       })
       .catch(() => {})
     return () => { cancelled = true }
@@ -8429,9 +8582,24 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         <tr style={{ borderTop: '2px solid rgba(26,61,43,0.10)' }}>
                           <td colSpan={3} className="pt-3 text-[10px] font-bold text-stone uppercase tracking-[0.1em]">Committed fixed fees</td>
                           <td className="pt-3 text-[13px] font-semibold text-ink text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            {/* Step 17E, item 6 — this is the whole-initial-
+                                term contract-level committed total (never a
+                                current-period charge — see computeCommittedFixedFees'
+                                own doc), but previously rendered a bare
+                                fmt(0, cur) with no context whenever it
+                                genuinely computed to zero (e.g. a dated
+                                pilot/waiver covering the entire committed
+                                span) — indistinguishable from "nothing
+                                configured". Every OTHER rendering of this
+                                same figure on this page (Card A, the
+                                Contract Overview Stat) already withholds/
+                                caveats a zero total; this table footer did
+                                not. */}
                             {committedFixedFeeReadiness.status === 'unresolved'
                               ? <span className="text-amber-600 font-normal text-[11px]">Not yet determinable</span>
-                              : fmt(committedFixedFeeTotal, cur)}
+                              : committedFixedFeeTotal === 0
+                                ? <span className="text-stone/50 font-normal text-[11px]">{baseFeeHasExpiringWaiver(terms?.discounts) ? 'Pilot waiver active' : 'None'}</span>
+                                : fmt(committedFixedFeeTotal, cur)}
                           </td>
                           <td />
                         </tr>
@@ -8502,6 +8670,59 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 </div>
               )}
             </div>
+
+            {/* ── Step 17E, items 1/2/9/13/14 — persistent, approved-contract
+                 operating sections. Deliberately OUTSIDE ReviewPanel (which
+                 only renders while reviewPanelOpen, closed by default and
+                 with no auto-open — see MeterMappingPanel/PerformanceShareCard/
+                 RollingBandMigrationCard's original mounts, all inside that
+                 drawer): these are recurring OPERATIONAL facts a reviewer
+                 must reach every billing period, not one-time review-and-
+                 forget configuration. "Operate the agreement every billing
+                 period... do not force users back into the review panel for
+                 recurring operational work." Gated on isConfigured alone
+                 (not the stricter billingPlatform/subId condition Section 8
+                 below uses) — these matter as soon as the contract is
+                 approved, even before a real subscription exists yet. ── */}
+            {isConfigured && (
+              <>
+                <OperationalInputsSection jobId={id} inputs={operationalDataInputs} />
+                <PerformanceShareDisplay jobId={id} currency={cur} onLoaded={setPerformanceShareStatus} />
+                {(() => {
+                  const rollingBandMechanisms = (terms?.unsupported_commercial_mechanisms ?? []).filter(
+                    (m): m is UnsupportedCommercialMechanism & { rolling_band_migration: RollingBandMigrationConfig } =>
+                      m.execution_status === 'executable' && !!m.rolling_band_migration,
+                  )
+                  if (rollingBandMechanisms.length === 0) return null
+                  return (
+                    <div className="bg-white rounded-2xl border border-forest/10 p-6 space-y-4">
+                      <div>
+                        <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Commercial monitoring</h2>
+                        <p className="text-[11px] text-stone mt-1">Rolling volume-band pricing transitions this agreement is currently being monitored against.</p>
+                      </div>
+                      <div className="space-y-3">
+                        {rollingBandMechanisms.map((m, i) => (
+                          <RollingBandMigrationCard
+                            key={`rbm-persistent:${i}`}
+                            jobId={id}
+                            mechanismKind={m.kind}
+                            title={m.kind.replace(/_/g, ' ')}
+                            description={m.description}
+                            sourceClause={m.source_clause}
+                            requiredInputs={m.required_operational_inputs}
+                            config={m.rolling_band_migration}
+                            sections={m.source_sections}
+                            onViewSource={openPDF}
+                            currency={cur}
+                            contractedVolume={terms?.base_fee_committed_volume}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })()}
+              </>
+            )}
 
             {/* ── 8. Billing Setup ── */}
             {isConfigured && (billingPlatform === 'stripe' || billingPlatform === 'remembill') && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (
@@ -8737,7 +8958,26 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               // capability check in this codebase, rather than guessing.
               const creditCapability = getCreditRepresentationCapability(selectedBillingPlatform ?? '')
               const creditCapabilityBlocked = hasServiceCredits && creditCapability === 'unsupported_pending_vendor_guidance'
-              const billingReady = vatConfigured === true && !creditCapabilityBlocked
+              // Step 17E, item 5/12 — "Billing readiness: ready to push" used
+              // to conflate three genuinely independent questions: is the
+              // contract's STATIC configuration (rules/mappings/VAT/credit
+              // capability) confirmed; is a billing platform actually
+              // selected; and can the CURRENT period specifically be
+              // finalized/billed right now (which depends on runtime
+              // operational-input data, never static configuration alone —
+              // a contract could show fully configured while a percentage-
+              // of-basis fee still has no operational inputs entered for
+              // this period, and the old single flag hid that entirely).
+              // Split into three independent, separately-labeled signals.
+              const configurationReady = vatConfigured === true && !creditCapabilityBlocked
+              // Step 17E, item 5 — period blockers derived from the SAME
+              // live performance-share fetch the persistent card above
+              // uses (lifted via onLoaded) — never a second, separately-
+              // invented readiness computation. null = still checking.
+              const periodBlockers = (performanceShareStatus ?? [])
+                .filter(f => f.status === 'not_ready' || f.status === 'invalid')
+                .flatMap(f => (f.missingKeys && f.missingKeys.length > 0 ? f.missingKeys : [f.feeLabel]))
+              const periodReady = performanceShareStatus !== null && periodBlockers.length === 0
               return (
                 <div className="bg-white rounded-2xl border px-7 py-5" style={{ borderColor: 'rgba(11,92,54,0.2)', background: '#F8FDF9' }}>
                   <p className="text-sm font-semibold flex items-center gap-1.5 mb-1" style={{ color: '#0B5C36' }}>
@@ -8751,18 +8991,51 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       <p key={i}><span className="text-stone">{line.label}:</span> <span className="font-medium text-ink">{line.value}</span></p>
                     ))}
                   </div>
+
+                  {/* Contract configuration readiness — static config only. */}
                   <div className="mt-3 pt-3 flex items-center gap-1.5" style={{ borderTop: '1px solid rgba(11,92,54,0.12)' }}>
-                    <i className={`ti ${billingReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: billingReady ? '#0B5C36' : '#D97706' }} />
-                    <p className="text-[11px] font-medium" style={{ color: billingReady ? '#0B5C36' : '#92400E' }}>
+                    <i className={`ti ${configurationReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: configurationReady ? '#0B5C36' : '#D97706' }} />
+                    <p className="text-[11px] font-medium" style={{ color: configurationReady ? '#0B5C36' : '#92400E' }}>
                       {vatConfigured !== true
-                        ? 'Billing readiness: VAT treatment still required before push'
-                        : billingReady
-                          ? 'Billing readiness: ready to push'
-                          : !selectedBillingPlatform
-                            ? 'Billing readiness: select a billing platform below to check credit-adjustment support'
-                            : `Billing readiness: normal invoices ready — invoices carrying a credit will fail closed (${selectedBillingPlatform} cannot yet represent a contractual credit adjustment)`}
+                        ? 'Contract configuration: VAT treatment still required'
+                        : configurationReady
+                          ? 'Contract configuration: Ready'
+                          : `Contract configuration: normal invoices ready — invoices carrying a credit will fail closed (${selectedBillingPlatform} cannot yet represent a contractual credit adjustment)`}
                     </p>
                   </div>
+
+                  {/* Billing platform selection — item 12: never implied by
+                      configuration readiness above, shown as its own fact. */}
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <i className={`ti ${selectedBillingPlatform ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: selectedBillingPlatform ? '#0B5C36' : '#D97706' }} />
+                    <p className="text-[11px] font-medium" style={{ color: selectedBillingPlatform ? '#0B5C36' : '#92400E' }}>
+                      {selectedBillingPlatform ? `Billing platform: ${selectedBillingPlatform}` : 'Billing platform: not yet selected'}
+                    </p>
+                  </div>
+
+                  {/* Current-period billing readiness — item 5: an entirely
+                      separate, runtime question from the two above. Never
+                      hidden behind a "configured" state once approved —
+                      but PerformanceShareDisplay (the sole source of
+                      performanceShareStatus) only ever mounts in the
+                      isConfigured-gated persistent section, so before
+                      approval performanceShareStatus can never resolve
+                      away from null. Without this guard that read as a
+                      perpetual "checking…" spinner for every not-yet-
+                      approved contract, not a genuine in-flight fetch. */}
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <i className={`ti ${!isConfigured ? 'ti-clock' : performanceShareStatus === null ? 'ti-loader-2' : periodReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: !isConfigured ? '#A8A29E' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }} />
+                    <p className="text-[11px] font-medium" style={{ color: !isConfigured ? '#78716C' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }}>
+                      {!isConfigured
+                        ? 'Current-period billing: Available after contract configuration'
+                        : performanceShareStatus === null
+                          ? 'Current-period billing: checking…'
+                          : periodReady
+                            ? 'Current-period billing: Ready'
+                            : `Current-period billing: waiting for ${periodBlockers.join(', ')}`}
+                    </p>
+                  </div>
+
                   {hasServiceCredits && (
                     <div className="mt-2 flex items-center gap-1.5">
                       <i className={`ti ${creditCapability === 'supported' ? 'ti-circle-check-filled' : 'ti-shield-exclamation'}`} style={{ fontSize: 13, color: creditCapability === 'supported' ? '#0B5C36' : '#D97706' }} />
@@ -9165,22 +9438,23 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
               if (cards.length === 0) return null
 
-              // 7. Usage input configuration — not full commercial-rule
-              // cards (no interpretation/provenance to confirm), just where
-              // each metric's data is expected to come from. Only metrics
-              // this contract actually meters (chargingGroups) are shown.
-              const usageRows = Array.from(chargingGroups.keys()).map(unitType => {
-                const row = meterInputRows.find(r => r.contract_unit_type === unitType)
-                const classification = row?.input_classification ?? 'meter'
-                const meter = row?.meter_key ? availableMeters.find(m => m.meter_key === row.meter_key) : undefined
-                const resolved = row ? isMeterMappingResolved({ classification, confirmed: row.confirmed, meter_key: row.meter_key, manual_value_configured: row.manual_value_configured }) : false
-                let description: string
-                if (!resolved) description = 'Not yet confirmed'
-                else if (classification === 'derived') description = 'Derived from other confirmed usage data — no separate meter needed'
-                else if (classification === 'persisted_balance') description = 'Tracked via the credit ledger — no meter needed'
-                else if (classification === 'meter_or_manual_input' && row?.manual_value_configured && !row.meter_key) description = 'Manual monthly entry'
-                else description = `Meter: ${meter?.display_name ?? row?.meter_key ?? '—'}`
-                return { unitType, description, resolved }
+              // Step 17E, items 7/8 — replaces the old raw contract_unit_type
+              // row list (which also had the "payment request: Meter: "
+              // blank-name bug — a `??` chain never falling through an
+              // empty-string meter_key) with lib/usage-source-cards.ts's
+              // canonical-identity grouping: ONE card per confirmed
+              // semantic_input_key, listing every commercial rule (fee/
+              // overage/rolling migration) that consumes it, derived from
+              // the compiled terms — never hard-coded to Remembill. Only
+              // metrics this contract actually meters (chargingGroups) are
+              // in scope, same restriction as before.
+              const chargedUnitTypes = new Set(chargingGroups.keys())
+              const usageSourceCards = buildUsageSourceCards({
+                mappings: meterInputRows.filter(r => chargedUnitTypes.has(r.contract_unit_type)),
+                meters: availableMeters,
+                fees: terms?.additional_recurring_fees ?? [],
+                tiers: terms?.overage_tiers ?? [],
+                rollingMechanisms: terms?.unsupported_commercial_mechanisms ?? [],
               })
 
               return (
@@ -9220,14 +9494,41 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           />
                         ))}
                       </div>
-                      {usageRows.length > 0 && (
+                      {usageSourceCards.length > 0 && (
                         <div className="px-6 pb-6 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
-                          <p className="text-[10px] font-bold uppercase tracking-widest text-stone mb-2">Usage input configuration</p>
-                          <div className="grid gap-x-8 gap-y-1.5 text-[12px]" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
-                            {usageRows.map(r => (
-                              <div key={r.unitType} className="flex items-center justify-between gap-2">
-                                <p><span className="text-stone capitalize">{r.unitType}:</span> <span className={`font-medium ${r.resolved ? 'text-ink' : ''}`} style={!r.resolved ? { color: '#B45309' } : undefined}>{r.description}</span></p>
-                                <button onClick={() => setReviewPanelOpen(true)} className="text-[11px] font-medium text-stone hover:text-ink flex-shrink-0">{r.resolved ? 'Change' : 'Confirm'}</button>
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-stone mb-2">Usage sources</p>
+                          <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
+                            {usageSourceCards.map(c => (
+                              <div key={c.key} className="rounded-xl border p-3" style={{ borderColor: c.status === 'confirmed' ? 'rgba(26,61,43,0.1)' : '#FAC775' }}>
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="text-[12px] font-medium text-ink truncate">{c.label}</p>
+                                    {c.semanticInputKey && <p className="text-[10px] font-mono text-stone/60 truncate">{c.semanticInputKey}</p>}
+                                  </div>
+                                  <button onClick={() => setReviewPanelOpen(true)} className="text-[11px] font-medium text-stone hover:text-ink flex-shrink-0">{c.status === 'confirmed' ? 'Change' : 'Confirm'}</button>
+                                </div>
+                                <div className="mt-1.5 space-y-0.5 text-[11px]">
+                                  <p className="text-stone">Source: <span className="text-ink font-medium">{c.sourceName}</span></p>
+                                  {c.sourceType === 'api_meter' && <p className="text-stone">Type: <span className="text-ink">API meter</span></p>}
+                                  <p className="text-stone">
+                                    Status:{' '}
+                                    <span className="font-medium" style={c.status === 'confirmed' ? { color: '#0B5C36' } : { color: '#B45309' }}>
+                                      {c.status === 'confirmed' ? 'Confirmed' : 'Not yet confirmed'}
+                                    </span>
+                                  </p>
+                                </div>
+                                {c.consumers.length > 0 && (
+                                  <div className="mt-2 pt-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.06)' }}>
+                                    <p className="text-[10px] font-semibold text-stone uppercase tracking-wide mb-1">Used by</p>
+                                    <ul className="space-y-0.5">
+                                      {c.consumers.map((consumer, i) => (
+                                        <li key={i} className="text-[11px] text-stone flex items-start gap-1.5">
+                                          <span className="text-stone/40">•</span>{consumer}
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
                               </div>
                             ))}
                           </div>
@@ -9319,6 +9620,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                           <p className="text-[20px] font-medium text-stone/60">Usage-based</p>
                         ) : discountReadinessUnresolved ? (
                           <p className="text-[20px] font-medium text-stone/60">Not yet determinable</p>
+                        ) : committedFixedFeeTotal === 0 && datesResolved && baseFeeHasExpiringWaiver(terms?.discounts) ? (
+                          // Step 17E, item 6 — a genuine €0 contract-level
+                          // committed total driven by a dated waiver
+                          // covering the whole committed span reads as
+                          // "nothing configured" without this — never shown
+                          // as an unexplained figure.
+                          <>
+                            <FinancialAmount amount={0} currency={cur} basis="net" size="xl" />
+                            <p className="text-[10px] text-stone/50 mt-1">Pilot waiver active</p>
+                          </>
                         ) : (
                           <p className="text-[32px] font-semibold text-stone/30" style={{ fontVariantNumeric: 'tabular-nums' }}>—</p>
                         )}

@@ -158,6 +158,15 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
     // for it to also appear. A genuinely independent per-unit fee
     // (isVariableRate, no percentage_of_basis — no dedicated card of its
     // own) is unaffected and still shown here.
+    // Step 17E, item 3 — explicit, unconditional: a percentage-of-basis fee
+    // (Remembill's performance share) must NEVER appear in this table under
+    // any circumstance, not merely "when it also happens to have amount:0
+    // and isn't shaped like a per-unit fee." Stated directly rather than
+    // relying on that combination always holding, so a future extraction
+    // shape that also sets metric_name/rate_per_unit alongside
+    // percentage_of_basis can never resurrect the misleading "€0 / Usage-
+    // based" row the dedicated PerformanceShareCard replaced.
+    if (fee.percentage_of_basis) continue
     if (!fee.amount && !isVariableRate) continue
     const feeFreq = terms.billing_frequency ?? 'monthly'
     const { interval, intervalCount } = billingInterval(feeFreq)
@@ -235,4 +244,25 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
   }
 
   return items
+}
+
+// Step 17E, item 4 — the recurring-base-fee block above (the ONLY
+// buildLineItems block with a genuinely stale-row risk: an unresolved
+// base_fee_proration emits a placeholder row keyed by a fixed product_name
+// string, so once the reviewer confirms the proration, the STORED copy of
+// that placeholder row must be replaced with the real, now-computable
+// schedule — never left to render "Pending interpretation" forever purely
+// because nothing re-ran buildLineItems). Every product_name this specific
+// block (and only this block — never additional_recurring_fees/overage_
+// tiers/one_time_fees/escalators) can ever produce, so a caller can
+// identify exactly which stored rows are safe to delete-and-replace
+// without touching any other row (including a reviewer's own manual
+// per-row corrections on unrelated line items). See
+// app/api/jobs/[id]/confirm-rule/route.ts's base_fee_proration branch, the
+// only caller.
+export function isRecurringBaseFeeLineItem(productName: string): boolean {
+  return productName === 'Base subscription'
+    || productName === 'Recurring base fee'
+    || productName === 'Recurring base fee — partial-period treatment unresolved'
+    || /^Recurring base fee \(periods \d+–\d+\)$/.test(productName)
 }

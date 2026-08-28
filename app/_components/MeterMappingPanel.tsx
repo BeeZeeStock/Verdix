@@ -93,7 +93,13 @@ type OperationalInputValueRow = {
 // never a parallel mechanism, so nothing here assumes manual entry is
 // permanent. No CSV upload, no Remembill connector — a single period's
 // value, typed in and saved, is the entire surface.
-function ManualInputEntry({ jobId, inputKey }: { jobId: string; inputKey: string }) {
+// Step 17E, item 1 — exported so the approved-contract GUI's persistent
+// Operational Inputs section (app/(dashboard)/configure/[id]/page.tsx) can
+// reuse this EXACT entry widget (same operational_input_period_values
+// API, same append/revoke/finality discipline) instead of a second
+// persistence path — this component was previously only reachable inside
+// the review drawer, which is precisely the bug item 1 fixes.
+export function ManualInputEntry({ jobId, inputKey }: { jobId: string; inputKey: string }) {
   const [periodStart, setPeriodStart] = useState('')
   const [periodEnd, setPeriodEnd] = useState('')
   const [value, setValue] = useState('')
