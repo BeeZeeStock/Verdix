@@ -614,5 +614,12 @@ async function handlePlannedInvoicesPath({
     billingPlatform:  billingPlatform ?? 'stripe',
     hasOverageTerms:  (terms?.overage_tiers?.length ?? 0) > 0,
     overageMeterTypes: Array.from(new Set((terms?.overage_tiers ?? []).map(t => t.unit_type).filter(Boolean))),
+    // Step 17F.8 — a not-yet-issued 'subscription'/period timeline entry
+    // must not claim a definite "Will be issued <date>" while the fixed
+    // fee's own invoice-issuance timing is still an open reviewer
+    // decision (lib/types.ts's FixedFeeBillingTimingRule). Threaded
+    // through so the timeline can show "Pending decision" instead for
+    // exactly those entries — never for already-issued history.
+    fixedFeeBillingTiming: terms?.fixed_fee_billing_timing ?? null,
   })
 }

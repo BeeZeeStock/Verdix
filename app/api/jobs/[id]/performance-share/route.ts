@@ -17,6 +17,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { computePerformanceShareFee } from '@/lib/performance-share-fee'
+import { isVariableInvoiceTimingConfirmed } from '@/lib/performance-share-pull'
 import { buildOperationalInputMap, type OperationalInputPeriodValueRow } from '@/lib/operational-input-binding'
 import { hasContractStarted } from '@/lib/performance-share-timing'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
@@ -56,6 +57,7 @@ export async function GET(
       fees: feesWithConfig.map(fee => ({
         feeLabel: fee.fee_label, status: 'not_started' as const,
         contractStartDate: terms?.contract_start_date,
+        variableInvoiceTimingUnresolved: !isVariableInvoiceTimingConfirmed(fee.variable_invoice_timing),
       })),
     })
   }
@@ -69,6 +71,15 @@ export async function GET(
   const results = feesWithConfig.map(fee => {
     const config = fee.percentage_of_basis!
     const requiredKeys = [config.derived_metric.numerator_input_key, config.derived_metric.denominator_input_key, config.basis_input_key]
+    // Step 17F.8, item 6 — this display must not claim readiness the real
+    // scheduler wouldn't grant: lib/performance-share-pull.ts's
+    // computePerformanceShareLineItemsForPeriod holds this exact fee when
+    // variable_invoice_timing isn't confirmed, regardless of whether the
+    // amount itself is fully computable. Surfaced as an additional fact on
+    // whatever status is returned below (never replacing it — the amount
+    // can be genuinely "known" while its invoice timing is still open,
+    // same known-vs-final distinction the billing-period workspace makes).
+    const variableInvoiceTimingUnresolved = !isVariableInvoiceTimingConfirmed(fee.variable_invoice_timing)
 
     // Every distinct (period_start, period_end) pair this job has ANY
     // recorded value for, most recent first — the first one where every
@@ -88,7 +99,7 @@ export async function GET(
         contractStartDate: terms?.contract_start_date, contractEndDate: terms?.contract_end_date,
       })
       if (result.status === 'not_ready' || result.status === 'invalid') {
-        return { feeLabel: fee.fee_label, status: result.status, reason: result.reason, periodStart, periodEnd }
+        return { feeLabel: fee.fee_label, status: result.status, reason: result.reason, periodStart, periodEnd, variableInvoiceTimingUnresolved }
       }
       return {
         feeLabel: fee.fee_label,
@@ -104,6 +115,7 @@ export async function GET(
         basisKey: result.trace.basis.input_key,
         basisValue: result.trace.basis.value,
         amount: result.amount,
+        variableInvoiceTimingUnresolved,
       }
     }
 
@@ -114,7 +126,7 @@ export async function GET(
     // generic "pending" state.
     const everFinalized = new Set(valueRows.filter(r => r.status === 'active' && r.finalized_at != null).map(r => r.input_key))
     const missingKeys = requiredKeys.filter(k => !everFinalized.has(k))
-    return { feeLabel: fee.fee_label, status: 'not_ready' as const, reason: 'Pending operational inputs', periodStart: null, periodEnd: null, missingKeys }
+    return { feeLabel: fee.fee_label, status: 'not_ready' as const, reason: 'Pending operational inputs', periodStart: null, periodEnd: null, missingKeys, variableInvoiceTimingUnresolved }
   })
 
   return NextResponse.json({ fees: results })

@@ -11,7 +11,6 @@ import { VatConfigRow } from '@/app/_components/VatConfigRow'
 import { useVatConfig } from '@/app/_components/useVatConfig'
 import { MeterMappingPanel, ManualInputEntry } from '@/app/_components/MeterMappingPanel'
 import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
-import { ConsumptionTimelineCard } from '@/app/_components/ConsumptionTimelineCard'
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
 import { computeBaseTcv, computeCommittedFixedFees, computeConditionalFixedFees, contractLifecycleStatus, type BaseTcvItem } from '@/lib/contract-tcv-calc'
 import { resolveCommittedFixedFeeValue, type CommittedFixedFeeResolution } from '@/lib/committed-fixed-fee-resolver'
@@ -37,6 +36,10 @@ import { BillingReconciliationPanel } from '@/app/_components/BillingReconciliat
 import { describeMatchConditions, describeEffectivePeriod } from '@/lib/rulebook/organization-rulebook-display'
 import { formatRenewalNoticePeriod } from '@/lib/contract-notice-period'
 import { resolveFixedFeeBand } from '@/lib/fixed-fee-band'
+import {
+  hasOperationalBillingModel as hasOperationalBillingModelPredicate,
+  configuredBadgeSuffix as configuredBadgeSuffixPredicate,
+} from '@/lib/operational-section-visibility'
 import type { OrganizationRuleRecord } from '@/lib/rulebook/organization-rules'
 
 const PDFViewer = dynamic(() => import('@/app/_components/PDFViewer'), { ssr: false })
@@ -356,6 +359,12 @@ type Job = {
   id: string; name: string; execute_status: string; currency: string
   contract_pdf_url?: string; error_message?: string
   billing_subscription_id?: string; billing_platform?: string; billing_customer_id?: string
+  // Step 17F.9, item 2 — whether at least one real planned_invoices row
+  // exists for this job (GET /api/jobs/[id]'s own existence check) — the
+  // durable "operational billing" signal; billing_customer_id alone can
+  // exist after a push's customer-creation step succeeds but a later
+  // step (the first invoice/schedule write) fails.
+  hasPersistedSchedule?: boolean
   line_items: LineItem[]; contract_terms: Terms[]
   // Canonical figures from getContractSummaries (lib/contract-tcv.ts) — see
   // the terminology-standardisation plan: Billed to date is every
@@ -1377,6 +1386,12 @@ type PerformanceShareResult = {
   // on record at all, for a genuinely period-level readiness banner.
   missingKeys?: string[]
   contractStartDate?: string | null
+  // Step 17F.8, item 6 — an ADDITIONAL fact orthogonal to status: real
+  // execution (lib/performance-share-pull.ts) holds this fee whenever its
+  // own variable_invoice_timing isn't confirmed, independent of whether
+  // the amount is otherwise computable. Never folded into status itself —
+  // an amount can be "known" while its invoice timing is still open.
+  variableInvoiceTimingUnresolved?: boolean
 }
 
 function PerformanceShareDisplay({ jobId, currency, onLoaded }: { jobId: string; currency: string; onLoaded?: (fees: PerformanceShareResult[]) => void }) {
@@ -1420,16 +1435,31 @@ function PerformanceShareDisplay({ jobId, currency, onLoaded }: { jobId: string;
                   </span>
                 </p>
                 {f.periodStart && <p className="text-[10px] text-stone/50 mt-1">For period {f.periodStart} – {f.periodEnd}</p>}
+                {/* Step 17F.8, item 6 — the amount above is genuinely
+                    "known"; this is a separate, additional fact about
+                    whether it can actually be TRANSMITTED yet — matches
+                    the billing-period workspace's own known-vs-final
+                    doctrine, never silently implying readiness the real
+                    scheduler wouldn't grant. */}
+                {f.variableInvoiceTimingUnresolved && (
+                  <p className="text-[11px] font-medium mt-1" style={{ color: '#B45309' }}>Variable invoice timing: Decision required</p>
+                )}
               </div>
             ) : f.status === 'not_started' ? (
               <div>
                 <p className="text-[12px] font-medium text-stone/60">Awaiting first billing period</p>
                 {f.contractStartDate && <p className="text-[11px] text-stone/50 mt-0.5">Contract begins {fmtDate(f.contractStartDate)}</p>}
+                {f.variableInvoiceTimingUnresolved && (
+                  <p className="text-[11px] font-medium mt-1" style={{ color: '#B45309' }}>Variable invoice timing: Decision required</p>
+                )}
               </div>
             ) : (
               <div>
                 <p className="text-[12px] font-medium" style={{ color: '#B45309' }}>Pending operational inputs</p>
                 {f.reason && f.reason !== 'Pending operational inputs' && <p className="text-[11px] text-stone/60 mt-0.5">{f.reason}</p>}
+                {f.variableInvoiceTimingUnresolved && (
+                  <p className="text-[11px] font-medium mt-1" style={{ color: '#B45309' }}>Variable invoice timing: Decision required</p>
+                )}
               </div>
             )}
           </div>
@@ -7572,6 +7602,25 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // to carry.
   const reviewComplete = commercialRuleWorkload.status === 'all_commercial_rules_confirmed'
 
+  // Step 17F.8, item 1 — reviewComplete alone is a POINT-IN-TIME snapshot:
+  // a re-extraction, a new confirmed extraction detail, or simply a
+  // contract that's never been fully reviewed can all make it false again
+  // AFTER the contract has already reached a real operational billing
+  // model (pushed to Remembill/Stripe, planned_invoices generated,
+  // periods actively running). Gating the operational sections solely on
+  // reviewComplete made them disappear the moment new review items
+  // surfaced on an already-configured contract — exactly backwards, since
+  // those sections are what a reviewer needs to see the operational
+  // consequence of the new blocker (e.g. "fixed component blocked" on the
+  // billing-period workspace), not to lose the whole operating surface.
+  // job.billing_customer_id is the durable, DB-persisted signal that a
+  // real push already happened (survives reload, never resets itself when
+  // a new blocker appears) — OR-ed with reviewComplete so a contract that
+  // has never been pushed but IS fully reviewed still sees these (the
+  // original 17E.1 intent, preserved). Pure predicate in lib/operational-
+  // section-visibility.ts — see that file for the regression coverage.
+  const hasOperationalBillingModel = hasOperationalBillingModelPredicate({ reviewComplete, hasPersistedSchedule: job.hasPersistedSchedule })
+
   // ── Unified readiness model ── The single source every readiness
   // indicator on this page reads from — the top "items to review" callout,
   // the meter-mapping summary chip, and the Approve footer's blocked state
@@ -7624,6 +7673,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     approvalBlockersOutstanding > 0 && `${approvalBlockersOutstanding} unresolved execution blocker${approvalBlockersOutstanding > 1 ? 's' : ''}`,
   ].filter((x): x is string => typeof x === 'string')
   const totalOutstanding = commercialDecisionsOutstanding + usageMappingsOutstanding + (vatOutstanding ? 1 : 0) + needsReview + approvalBlockersOutstanding
+
+  // Step 17F.9, item 1 — "Configured in Remembill" states a fact about
+  // the EXTERNAL platform (a push already happened) that must never be
+  // retracted or hidden once true. But it must not be read as "current
+  // Verdix commercial configuration is fully executable" when it isn't —
+  // qualified with "· Action required" whenever totalOutstanding > 0,
+  // the SAME aggregate the "N items to review" callout below uses.
+  // reviewComplete alone (commercial-rule status only) under-counted a
+  // contract with 0 commercial decisions outstanding but a still-
+  // unmapped usage source — that contract is not fully configured
+  // either, and the badge must say so.
+  const configuredBadgeSuffix = configuredBadgeSuffixPredicate(totalOutstanding)
 
   // Readiness audit — "ready to approve" (totalOutstanding === 0) and
   // "every fee is billable now" are two different questions (Approve gates
@@ -7779,8 +7840,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             </div>
           </div>
           {isConfigured ? (
-            <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: '#4A7C59' }}>
-              <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> {hasUnresolvedTierCalculation ? 'Fixed fees configured in' : 'Configured in'} {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
+            <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: configuredBadgeSuffix ? '#B45309' : '#4A7C59' }}>
+              <i className={`ti ${configuredBadgeSuffix ? 'ti-alert-triangle' : 'ti-circle-check'}`} style={{ fontSize: 13 }} /> {hasUnresolvedTierCalculation ? 'Fixed fees configured in' : 'Configured in'} {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}{configuredBadgeSuffix}
             </span>
           ) : isFailed ? (
             <span className="text-xs font-medium flex items-center gap-1.5 text-red-500">
@@ -8659,9 +8720,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   )}
                   {isConfigured && (
                     <span className="text-xs font-semibold px-3 py-2 rounded-xl flex items-center gap-1.5"
-                      style={{ background: '#D4EAD9', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.3)' }}>
-                      <i className="ti ti-circle-check" style={{ fontSize: 12 }} />
-                      {hasUnresolvedTierCalculation ? 'Fixed fees configured in' : 'Configured in'} {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}
+                      style={configuredBadgeSuffix
+                        ? { background: '#FEF3C7', color: '#92400E', border: '1px solid rgba(180,83,9,0.3)' }
+                        : { background: '#D4EAD9', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.3)' }}>
+                      <i className={`ti ${configuredBadgeSuffix ? 'ti-alert-triangle' : 'ti-circle-check'}`} style={{ fontSize: 12 }} />
+                      {hasUnresolvedTierCalculation ? 'Fixed fees configured in' : 'Configured in'} {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}{configuredBadgeSuffix}
                     </span>
                   )}
                 </div>
@@ -8997,21 +9060,25 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               )}
             </div>
 
-            {/* ── Step 17E, items 1/2/9/13/14 (regated in 17E.1, item A) —
-                 persistent, post-review operating sections. Deliberately
-                 OUTSIDE ReviewPanel (which only renders while
-                 reviewPanelOpen, closed by default and with no auto-open
-                 — see MeterMappingPanel/PerformanceShareCard/
-                 RollingBandMigrationCard's original mounts, all inside
-                 that drawer): these are recurring OPERATIONAL facts a
-                 reviewer must reach every billing period, not one-time
-                 review-and-forget configuration. Gated on reviewComplete
-                 (commercial review/configuration finished), NEVER
-                 isConfigured (which means "already pushed to a billing
-                 platform" — a genuinely later, separate fact; a reviewer
-                 who has resolved every commercial rule but hasn't yet
-                 picked a billing platform must already see these). ── */}
-            {reviewComplete && (
+            {/* ── Step 17E, items 1/2/9/13/14 (regated in 17E.1, item A;
+                 widened in 17F.8, item 1) — persistent, post-review
+                 operating sections. Deliberately OUTSIDE ReviewPanel
+                 (which only renders while reviewPanelOpen, closed by
+                 default and with no auto-open — see MeterMappingPanel/
+                 PerformanceShareCard/RollingBandMigrationCard's original
+                 mounts, all inside that drawer): these are recurring
+                 OPERATIONAL facts a reviewer must reach every billing
+                 period, not one-time review-and-forget configuration.
+                 Gated on hasOperationalBillingModel (reviewComplete OR
+                 already pushed to a billing platform) — NOT reviewComplete
+                 alone, which flips back to false the moment ANY new
+                 blocker appears (a re-extraction, a newly-surfaced timing
+                 decision) and would otherwise make an already-operational
+                 contract's entire operating surface vanish. Each section
+                 below shows its own blocked/pending state for whatever's
+                 actually unresolved — it never means "everything is
+                 ready." ── */}
+            {hasOperationalBillingModel && (
               <>
                 {/* Step 17F, items 4/5/6/7/9/10/13 — the period-based
                     operating surface. Placed first in this block since it
@@ -9074,9 +9141,19 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   />
                 )}
                 <ManualInvoiceCard jobId={id} />
-                {(terms?.overage_tiers?.length ?? 0) > 0 && (
-                  <ConsumptionTimelineCard jobId={id} />
-                )}
+                {/* Step 17F.8, item 3/14 — ConsumptionTimelineCard removed:
+                    the billing-period workspace above (Step 17F.8) is now
+                    the single authoritative period timeline, sourced from
+                    the SAME GET consumption-summary data this card used to
+                    render on its own, with richer per-period content
+                    (fixed/usage/performance/known-vs-final) — a second,
+                    narrower period view showing only overage totals would
+                    be exactly the "two competing period views" item 3
+                    forbids. BillingSummaryCard below is NOT redundant with
+                    it — it's the real Stripe/Remembill invoice ledger
+                    (actual sent/draft objects, VAT, hosted PDF links),
+                    a genuinely different fact from "what should happen
+                    this period." */}
                 <BillingSummaryCard jobId={id} key={(rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial') + ':' + parkedEvidenceTick} onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} onSentOneTimeInvoices={setSentOneTimeInvoices} />
                 {/* Rebuild banner — shown when customer exists but no planned schedule yet */}
                 {!subId && !rebuildDone && scheduleExists === false && (() => {
@@ -9368,19 +9445,20 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       hidden behind a "configured" state once review is
                       complete — but PerformanceShareDisplay (the sole
                       source of performanceShareStatus) only ever mounts
-                      once reviewComplete is true, so before that
-                      performanceShareStatus can never resolve away from
-                      null. Without this guard that read as a perpetual
-                      "checking…" spinner for every not-yet-reviewed
-                      contract, not a genuine in-flight fetch. Step 17E.1,
-                      item B — a contract whose start date hasn't arrived
-                      yet gets its own "Not started" state, never
-                      "waiting for <inputs>" (there is no eligible period
-                      to enter them for). */}
+                      once hasOperationalBillingModel is true (Step 17F.8,
+                      item 1 — reviewComplete OR already pushed), so before
+                      that performanceShareStatus can never resolve away
+                      from null. Without this guard that read as a
+                      perpetual "checking…" spinner for every
+                      not-yet-operational contract, not a genuine in-flight
+                      fetch. Step 17E.1, item B — a contract whose start
+                      date hasn't arrived yet gets its own "Not started"
+                      state, never "waiting for <inputs>" (there is no
+                      eligible period to enter them for). */}
                   <div className="mt-2 flex items-center gap-1.5">
-                    <i className={`ti ${!reviewComplete ? 'ti-clock' : performanceShareStatus === null ? 'ti-loader-2' : periodNotStartedEntry ? 'ti-clock' : periodReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: !reviewComplete || periodNotStartedEntry ? '#A8A29E' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }} />
-                    <p className="text-[11px] font-medium" style={{ color: !reviewComplete || periodNotStartedEntry ? '#78716C' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }}>
-                      {!reviewComplete
+                    <i className={`ti ${!hasOperationalBillingModel ? 'ti-clock' : performanceShareStatus === null ? 'ti-loader-2' : periodNotStartedEntry ? 'ti-clock' : periodReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: !hasOperationalBillingModel || periodNotStartedEntry ? '#A8A29E' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }} />
+                    <p className="text-[11px] font-medium" style={{ color: !hasOperationalBillingModel || periodNotStartedEntry ? '#78716C' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }}>
+                      {!hasOperationalBillingModel
                         ? 'Current-period billing: Available after contract configuration'
                         : performanceShareStatus === null
                           ? 'Current-period billing: checking…'

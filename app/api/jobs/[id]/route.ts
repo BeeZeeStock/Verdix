@@ -367,12 +367,27 @@ export async function GET(
     }
   }
 
+  // Step 17F.9, item 2 — billing_customer_id alone is NOT proof the
+  // contract ever reached an operational billing state: lib/billing-
+  // writer.ts persists it the moment a Remembill/Stripe CUSTOMER is
+  // created (the very first push operation), before any invoice/schedule
+  // row exists — a push that fails on the next operation leaves
+  // billing_customer_id set with zero planned_invoices. A real,
+  // persisted schedule (at least one planned_invoices row — Stage A
+  // actually completed) is the durable fact that means "operational,"
+  // reused here rather than inventing a new column.
+  const { count: plannedInvoiceCount } = await supabaseServer
+    .from('planned_invoices')
+    .select('id', { count: 'exact', head: true })
+    .eq('job_id', id)
+
   return NextResponse.json({
     ...job,
     line_items: responseLineItems,
     contract_terms: normalizedTerms ? [normalizedTerms] : [],
     billedToDate: summary?.billedToDate ?? 0,
     committedContractValue: summary?.committedContractValue ?? 0,
+    hasPersistedSchedule: (plannedInvoiceCount ?? 0) > 0,
     // Step 17A hardening (review pass 2), item 3 — the same
     // readiness-aware resolution every other surface exposes; the page's
     // own inline resolveCommittedFixedFeeValue call (using live, possibly

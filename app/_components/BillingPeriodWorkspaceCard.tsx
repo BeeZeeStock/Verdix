@@ -1,13 +1,21 @@
 'use client'
 
-// Step 17F (revised 17F.1) — the contract GUI's "operate billing by
-// period" workspace. Surfaces the single currently-relevant billing period
-// (the one containing today, or the first period before the contract has
-// started) with its fixed/usage/performance components, readiness state,
-// and known-vs-final totals.
+// Step 17F (revised 17F.1, 17F.3, 17F.6, widened to a multi-period
+// timeline in 17F.8) — the contract GUI's "operate billing by period"
+// workspace. Step 17F.8, item 3/14: this is now THE authoritative period
+// timeline — each real billing period (past, current, and upcoming, from
+// GET /api/jobs/[id]/consumption-summary) gets its own card with fixed/
+// usage/performance components, readiness state, and known-vs-final
+// totals, replacing the old ConsumptionTimelineCard (removed from
+// page.tsx — same consumption-summary data, richer per-period content, no
+// second competing period view). The period containing "today" (or the
+// first period, before the contract has started) is expanded by default;
+// every other period is collapsed to a summary row, matching the
+// established expand-on-demand pattern the old Consumption/Billing-
+// timeline cards already used.
 //
-// Step 17F.1, item 7 — REWRITTEN to consume the SAME authoritative
-// execution services real billing uses, never a parallel GUI calculation:
+// Step 17F.1, item 7 — consumes the SAME authoritative execution services
+// real billing uses, never a parallel GUI calculation:
 //   - Usage-meter charges (both tiered overage AND flat per-unit fees, e.g.
 //     the €0.38 per-request fee) come from GET /api/jobs/[id]/consumption-
 //     summary, which itself calls lib/usage-pull.ts's computeOverageForPeriod
@@ -15,28 +23,28 @@
 //     LIVE PREVIEW mode (finalize omitted — never persists a snapshot; see
 //     that route's own header). This is the exact function pair the real
 //     invoice-scheduler cron calls with finalize:true at billing close —
-//     same inputs, same math, only the finalize flag differs. The earlier
-//     17F version computed its own quantity × rate projection
-//     (lib/usage-charge-projection.ts) from a manually-typed "what-if"
-//     quantity; that file/approach is retired — a GUI-side recomputation
-//     of billing math is exactly what item 7 forbids.
+//     same inputs, same math, only the finalize flag differs.
 //   - Performance share comes from GET /api/jobs/[id]/performance-share
 //     (page.tsx's own existing fetch, passed down — no second request),
 //     which itself calls lib/performance-share-fee.ts's
 //     computePerformanceShareFee — the SAME function
 //     lib/performance-share-pull.ts wraps for real invoice-scheduler
-//     execution. Already consistent since Step 17E; unchanged here except
-//     for variable_invoice_timing awareness (Step 17F.3, item 6, renamed
-//     from variable_settlement_timing — Step 17F.1, item 6).
+//     execution. That route resolves the single most-recent period with
+//     recorded data, so its real figures are only ever attributed to the
+//     ONE period they actually belong to (matched by periodStart); every
+//     other period's performance component falls back to the same
+//     generic pending/not_started derivation the single-period card
+//     always used before a real result existed — never a wrong period's
+//     numbers borrowed for a different period's card.
 //   - lib/billing-period-workspace.ts for period bounds/fixed-fee amount
-//     (billing-writer.ts's own Stage-A arithmetic)/readiness — unchanged.
-//   - /api/jobs/[id]/operational-input-values (item 5) for this period's
-//     manual-entry action, dates derived automatically — unchanged.
-// Anchored with id={period.anchorId} for deep-linking (item 13).
+//     (lib/tariff.ts's Stage-A-equivalent pure arithmetic)/readiness.
+//   - /api/jobs/[id]/operational-input-values (item 5) for the expanded
+//     period's manual-entry action, dates derived automatically.
+// Anchored with id={period.anchorId} per card for deep-linking (item 13).
 import { useState, useCallback, useEffect } from 'react'
 import {
   deriveBillingPeriod, computeFixedComponentForPeriod, buildBillingPeriodWorkspace,
-  type UsageComponentState, type PerformanceComponentState,
+  type UsageComponentState, type PerformanceComponentState, type BillingPeriodBounds,
 } from '@/lib/billing-period-workspace'
 import { buildPricingDependencyGroups, type PricingDependencyFee, type PricingDependencyTier } from '@/lib/pricing-dependency'
 import { hasContractStarted } from '@/lib/performance-share-timing'
@@ -49,6 +57,7 @@ type PerformanceShareResult = {
   reason?: string
   missingKeys?: string[]
   amount?: number
+  periodStart?: string | null
 }
 
 // Mirrors GET /api/jobs/[id]/consumption-summary's own OverageLineItem
@@ -66,6 +75,7 @@ type ConsumptionPeriod = {
   periodEnd: string
   status: 'past' | 'current' | 'pending' | 'future'
   overageItems: ConsumptionOverageItem[]
+  overageTotal: number
 }
 
 function fmt(n: number, cur = 'EUR') {
@@ -76,6 +86,13 @@ function fmtUnit(n: number, cur = 'EUR') {
 }
 function fmtDate(iso: string) {
   return new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+function periodLabelFor(start: string, end: string) {
+  const s = new Date(start + 'T00:00:00'), e = new Date(end + 'T00:00:00')
+  if (s.getFullYear() === e.getFullYear() && s.getMonth() === e.getMonth()) {
+    return s.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }).toUpperCase()
+  }
+  return `${s.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} – ${e.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
 }
 
 const READINESS_LABEL: Record<string, { label: string; color: string; background: string }> = {
@@ -95,6 +112,12 @@ const READINESS_LABEL: Record<string, { label: string; color: string; background
   parked:                         { label: 'Parked',                       color: '#DC2626', background: '#FEE2E2' },
   ready_to_invoice:                { label: 'Ready to invoice',            color: '#0B5C36', background: '#EEF9F2' },
   invoiced:                        { label: 'Invoiced',                    color: '#0B5C36', background: '#EEF9F2' },
+  // Step 17F.8, item 14 — a genuinely past, already-closed period this
+  // card set has real usage figures for but no separate "invoiced" signal
+  // wired up yet (that lives in BillingSummaryCard's real invoice ledger,
+  // not recomputed here) — distinct neutral label, never implying either
+  // "ready" or "parked" for a period that has simply already happened.
+  past:                            { label: 'Billed',                      color: '#27AE60', background: '#EEF9F2' },
 }
 
 function performanceStatusOf(r: PerformanceShareResult): PerformanceComponentState {
@@ -168,29 +191,25 @@ function PeriodOperationalInputEntry({ jobId, inputKey, periodStart, periodEnd }
   )
 }
 
-export function BillingPeriodWorkspaceCard({
-  jobId, terms, currency, usageSourceCards, performanceShareResults,
+// One period's full operating card — identical content/logic to the
+// original single-period BillingPeriodWorkspaceCard, now parameterized so
+// the outer component can render one per real billing period.
+function PeriodCard({
+  jobId, terms, currency, usageSourceCards, period, consumptionPeriod, performanceShareResults, defaultOpen,
 }: {
   jobId: string
   terms: ContractTerms
   currency: string
   usageSourceCards: UsageSourceCard[]
+  period: BillingPeriodBounds
+  consumptionPeriod: ConsumptionPeriod | null
+  // null while performance-share is still loading; [] once loaded with no
+  // fees configured. Attribution to THIS period only happens when a
+  // result's own periodStart matches — see the header comment.
   performanceShareResults: PerformanceShareResult[] | null
+  defaultOpen: boolean
 }) {
-  const [consumptionPeriods, setConsumptionPeriods] = useState<ConsumptionPeriod[] | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    fetch(`/api/jobs/${jobId}/consumption-summary`)
-      .then(r => r.json())
-      .then((res: { periods?: ConsumptionPeriod[] }) => { if (!cancelled) setConsumptionPeriods(res.periods ?? []) })
-      .catch(() => { if (!cancelled) setConsumptionPeriods([]) })
-    return () => { cancelled = true }
-  }, [jobId])
-
-  const period = deriveBillingPeriod({ contractStartDate: terms.contract_start_date, billingFrequency: terms.billing_frequency, asOf: new Date() })
-  if (!period) return null
-
+  const [open, setOpen] = useState(defaultOpen)
   const started = hasContractStarted(terms.contract_start_date)
 
   const pricingGroups = buildPricingDependencyGroups({
@@ -205,45 +224,66 @@ export function BillingPeriodWorkspaceCard({
     billingTimingRule: terms.fixed_fee_billing_timing,
   })
 
-  // The consumption-summary row whose window matches this workspace's
-  // derived period — null while still loading, or when no billing
-  // schedule exists yet for this contract (nothing to correlate against).
-  const matchingConsumptionPeriod = consumptionPeriods?.find(p => p.periodStart === period.start) ?? null
-
   const usage: UsageComponentState[] = pricingGroups.usageMeter.map(fact => {
     if (!started) return { key: fact.key, label: fact.label, semanticInputKey: fact.semanticInputKey, sourceName: fact.sourceName, status: 'awaiting_period' }
     if (!fact.sourceName) return { key: fact.key, label: fact.label, semanticInputKey: fact.semanticInputKey, sourceName: null, status: 'awaiting_source' }
-    if (consumptionPeriods === null) return { key: fact.key, label: fact.label, semanticInputKey: fact.semanticInputKey, sourceName: fact.sourceName, status: 'pending_usage' }
-    const item = matchingConsumptionPeriod ? findMatchingConsumptionItem(fact, matchingConsumptionPeriod.overageItems) : null
+    if (consumptionPeriod === null) return { key: fact.key, label: fact.label, semanticInputKey: fact.semanticInputKey, sourceName: fact.sourceName, status: 'pending_usage' }
+    const item = findMatchingConsumptionItem(fact, consumptionPeriod.overageItems)
     if (!item) return { key: fact.key, label: fact.label, semanticInputKey: fact.semanticInputKey, sourceName: fact.sourceName, status: 'pending_usage' }
     return { key: fact.key, label: fact.label, semanticInputKey: fact.semanticInputKey, sourceName: fact.sourceName, status: 'computed', quantity: item.total_units, amount: item.amount }
   })
 
-  // performanceShareResults is the already-fetched /api/jobs/[id]/
-  // performance-share response (page.tsx's own existing state, no second
-  // fetch here) — null only while that request is still in flight, in
-  // which case every percentage_of_basis component is shown as pending
-  // rather than silently omitted.
-  const performance: PerformanceComponentState[] = performanceShareResults
-    ? performanceShareResults.map(performanceStatusOf)
-    : pricingGroups.performanceBased.map(p => ({ feeLabel: p.label, status: 'pending_operational_inputs' as const }))
+  // Real figures only ever attributed to the period they were actually
+  // computed for (GET /performance-share resolves ONE most-recent period
+  // with recorded data) — a result is only ever attributed to a period
+  // whose own periodStart it genuinely matches, or to a not-yet-started
+  // period when the result itself says 'not_started' (both describing the
+  // same contract-wide fact). Every other period falls back to its OWN
+  // started-derived generic pending/not_started state — never borrowing
+  // one period's real figures, or its "still collecting inputs" status,
+  // for a DIFFERENT period that may not even have begun yet.
+  const resultsForThisPeriod = performanceShareResults?.filter(r =>
+    r.periodStart === period.start || (r.status === 'not_started' && !started),
+  ) ?? null
+  const performance: PerformanceComponentState[] = resultsForThisPeriod && resultsForThisPeriod.length > 0
+    ? resultsForThisPeriod.map(performanceStatusOf)
+    : pricingGroups.performanceBased.map(p => ({ feeLabel: p.label, status: started ? 'pending_operational_inputs' as const : 'not_started' as const }))
 
-  const workspace = buildBillingPeriodWorkspace({ period, started, alreadyInvoiced: false, fixed, usage, performance })
-  const readiness = READINESS_LABEL[workspace.readiness]
+  const workspace = buildBillingPeriodWorkspace({ period, started, alreadyInvoiced: consumptionPeriod?.status === 'past', fixed, usage, performance })
+  const readiness = consumptionPeriod?.status === 'past' && workspace.readiness === 'upcoming'
+    ? READINESS_LABEL.past
+    : READINESS_LABEL[workspace.readiness]
 
   return (
-    <div id={period.anchorId} className="bg-white rounded-2xl border border-forest/10 overflow-hidden scroll-mt-6">
-      <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-        <div>
-          <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Billing period workspace</h2>
-          <p className="text-[13px] font-medium text-ink mt-1">{period.label}</p>
+    <div id={period.anchorId} className="border-b last:border-b-0 scroll-mt-6" style={{ borderColor: 'rgba(26,61,43,0.07)' }}>
+      <div
+        className="p-6 flex items-center justify-between cursor-pointer"
+        onClick={() => setOpen(o => !o)}
+        role="button" tabIndex={0}
+        onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') setOpen(o => !o) }}
+      >
+        <div className="flex items-start gap-1.5">
+          <i className={`ti ti-chevron-right flex-shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
+            style={{ fontSize: 12, color: '#9CA3AF', marginTop: 3 }} />
+          <div>
+            <p className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">{period.label}</p>
+            <p className="text-[11px] text-stone mt-0.5">{fmtDate(period.start)} – {fmtDate(period.end)}</p>
+          </div>
         </div>
-        <span className="text-[10px] font-semibold uppercase tracking-wider px-2.5 py-1 rounded-full" style={{ color: readiness.color, background: readiness.background }}>
-          {readiness.label}
-        </span>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          {!open && (
+            <span className="text-[12px] font-medium text-ink tabular-nums">
+              {workspace.finalTotal != null ? fmt(workspace.finalTotal, currency) : `${fmt(fixed.amount, currency)} known · TBD final`}
+            </span>
+          )}
+          <span className="text-[10px] font-semibold uppercase tracking-wider px-2.5 py-1 rounded-full" style={{ color: readiness.color, background: readiness.background }}>
+            {readiness.label}
+          </span>
+        </div>
       </div>
 
-      <div className="p-6 space-y-5">
+      {open && (
+      <div className="px-6 pb-6 space-y-5">
         {/* Step 17F.3, item 9 — FIXED FEE is its own visually distinct
             stream from USAGE / PERFORMANCE below: the fixed component's
             eligibility date and the usage/performance measurement-close
@@ -382,6 +422,63 @@ export function BillingPeriodWorkspaceCard({
           )}
         </div>
       </div>
+      )}
+    </div>
+  )
+}
+
+export function BillingPeriodWorkspaceCard({
+  jobId, terms, currency, usageSourceCards, performanceShareResults,
+}: {
+  jobId: string
+  terms: ContractTerms
+  currency: string
+  usageSourceCards: UsageSourceCard[]
+  performanceShareResults: PerformanceShareResult[] | null
+}) {
+  const [consumptionPeriods, setConsumptionPeriods] = useState<ConsumptionPeriod[] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`/api/jobs/${jobId}/consumption-summary`)
+      .then(r => r.json())
+      .then((res: { periods?: ConsumptionPeriod[] }) => { if (!cancelled) setConsumptionPeriods(res.periods ?? []) })
+      .catch(() => { if (!cancelled) setConsumptionPeriods([]) })
+    return () => { cancelled = true }
+  }, [jobId])
+
+  const currentPeriod = deriveBillingPeriod({ contractStartDate: terms.contract_start_date, billingFrequency: terms.billing_frequency, asOf: new Date() })
+  if (!currentPeriod) return null
+
+  // Step 17F.8, item 3/14 — the full real billing-period list, sourced
+  // from the SAME consumption-summary data the old ConsumptionTimelineCard
+  // used (never a second, independently-derived period list). Falls back
+  // to just the current period while that fetch is still in flight, so
+  // the card renders immediately rather than waiting on a second request.
+  const periods: BillingPeriodBounds[] = consumptionPeriods && consumptionPeriods.length > 0
+    ? consumptionPeriods.map(cp => ({
+        start: cp.periodStart, end: cp.periodEnd,
+        label: periodLabelFor(cp.periodStart, cp.periodEnd),
+        anchorId: `billing-period-${cp.periodStart.slice(0, 7)}`,
+      }))
+    : [currentPeriod]
+
+  return (
+    <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
+      <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+        <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Billing periods</h2>
+        <p className="text-[11px] text-stone mt-1">The authoritative operating timeline — one card per real billing period.</p>
+      </div>
+      {periods.map(period => (
+        <PeriodCard
+          key={period.start}
+          jobId={jobId} terms={terms} currency={currency} usageSourceCards={usageSourceCards}
+          period={period}
+          consumptionPeriod={consumptionPeriods?.find(cp => cp.periodStart === period.start) ?? null}
+          performanceShareResults={performanceShareResults}
+          defaultOpen={period.start === currentPeriod.start}
+        />
+      ))}
     </div>
   )
 }

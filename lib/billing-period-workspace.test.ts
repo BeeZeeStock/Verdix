@@ -174,6 +174,25 @@ describe('buildBillingPeriodWorkspace', () => {
     expect(workspace.missingDependencies).toContain('Fixed-fee billing timing — decision required')
   })
 
+  // Step 17F.8, item 16 — "pilot SEK 0 does not become final invoice
+  // SEK 0" and "known fixed amount != final total," named explicitly as
+  // their own regression (the general shape is already exercised above,
+  // this asserts the specific real Remembill January scenario from the
+  // task's own worked example: fixed timing still unresolved post-pilot,
+  // variable components pending).
+  it('January post-pilot: known fixed amount is a real SEK 2,000, but final total stays TBD while billing timing and variable components remain unresolved', () => {
+    const workspace = buildBillingPeriodWorkspace({
+      period, started: true, alreadyInvoiced: false,
+      fixed: { amount: 2000, currency: 'SEK', waived: false, billingTiming: unresolvedTiming },
+      usage: [{ key: 'issued_payment_request_count', label: 'Payment requests issued', semanticInputKey: 'issued_payment_request_count', sourceName: 'Manual usage', status: 'pending_usage' }],
+      performance: [{ feeLabel: 'Performance share', status: 'pending_operational_inputs', missingKeys: ['paid_invoice_value'] }],
+    })
+    expect(workspace.fixed.amount).toBe(2000)
+    expect(workspace.finalTotal).toBeNull()
+    expect(workspace.readiness).toBe('fixed_billing_timing_required')
+    expect(workspace.missingDependencies).toContain('Fixed-fee billing timing — decision required')
+  })
+
   it('missingDependencies names exactly what is blocking — a missing usage source and missing operational inputs (billing timing resolved)', () => {
     const workspace = buildBillingPeriodWorkspace({
       period, started: true, alreadyInvoiced: false,

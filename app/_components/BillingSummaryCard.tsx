@@ -5,6 +5,7 @@ import { partialPeriodLabel } from '@/lib/cadence-labels'
 import { VatConfigRow } from './VatConfigRow'
 import { useVatConfig } from './useVatConfig'
 import { resolveInvoiceVatDisplay } from '@/lib/vat'
+import { isGenuinelyIssuedInvoice } from '@/lib/invoice-history-classification'
 import { FinancialAmount } from './FinancialAmount'
 
 type SubscriptionInfo = {
@@ -125,6 +126,10 @@ type Summary = {
   billingPlatform?: string
   hasOverageTerms?: boolean
   overageMeterTypes?: string[]
+  // Step 17F.8 — when present and requires_confirmation, a not-yet-issued
+  // 'subscription' timeline entry must show "Pending decision" instead of
+  // a definite planned date (see renderEntry's dateLabel override below).
+  fixedFeeBillingTiming?: { timing: string; requires_confirmation: boolean } | null
 }
 
 function fmt(n: number, cur = 'EUR') {
@@ -304,7 +309,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
 
   if (!summary) return null
 
-  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, commercialRuleEvents, paymentSchedule, oneTimeFees, currency, paymentTermsDays, contractStart, hasOverageTerms, overageMeterTypes } = summary
+  const { subscription: sub, invoices, annualDraftInvoices, oneTimeInvoices, commercialRuleEvents, paymentSchedule, oneTimeFees, currency, paymentTermsDays, contractStart, hasOverageTerms, overageMeterTypes, fixedFeeBillingTiming } = summary
   const meterTypes = overageMeterTypes ?? []
 
 
@@ -374,6 +379,13 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
           // present vs. null (only once invoice-scheduler actually sent it).
           vatMode?: 'rate' | 'zero_rated' | null; vatRatePct?: number | null; vatSource?: 'customer_default' | 'override' | null
           netAmount?: number | null; vatAmount?: number | null; grossAmount?: number | null
+          // Step 17F.8 — true only for entries representing the recurring
+          // FIXED-FEE/period component (the sortedSubInvoices loop below) —
+          // never overage, one-time fees, or commercial-rule entries. Only
+          // these are subject to the fixedFeeBillingTiming override, since
+          // that rule governs exclusively the fixed component's own
+          // invoice-issuance date.
+          isFixedFeeComponent?: boolean
           // commercial-rule only: a confirmed metric-level commitment whose
           // cadence window hasn't closed yet, so no real invoice row exists.
           commercialRule?: { meterKey: string; mode: string; cadence: string; windowEnd: string; partialPeriod: CommercialRuleEvent['partialPeriod']; isDeterministic: boolean }
@@ -433,6 +445,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
             errorMessage: inv.errorMessage ?? null,
             vatMode: inv.vatMode, vatRatePct: inv.vatRatePct, vatSource: inv.vatSource,
             netAmount: inv.netAmount, vatAmount: inv.vatAmount, grossAmount: inv.grossAmount,
+            isFixedFeeComponent: true,
           })
         }
 
@@ -457,6 +470,7 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
               overageTotal: inv.overageTotal ?? 0,
               vatMode: inv.vatMode, vatRatePct: inv.vatRatePct, vatSource: inv.vatSource,
               netAmount: inv.netAmount, vatAmount: inv.vatAmount, grossAmount: inv.grossAmount,
+              isFixedFeeComponent: true,
             })
           }
         }
@@ -537,9 +551,27 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
 
         const today = new Date()
 
-        // Contract date is the gate: past = billing event has occurred per schedule.
-        const pastEntries   = entries.filter(e => e.date <= today)
-        const futureEntries = entries.filter(e => e.date >  today)
+        // Step 17F.9, item 1 — classification is the invoice's own
+        // LIFECYCLE STATE (e.status, computed upstream by mapPlanned from
+        // real provider/paid/failed/sent facts — never recomputed here),
+        // not its calendar date. A row that is still status='scheduled'/
+        // 'draft' (no provider invoice id, no sent_at) stays under
+        // "Planned schedule" even once its planned date has passed —
+        // exactly the shape a row held by the fixed-fee-timing scheduler
+        // gate (lib/fixed-fee-invoice-scheduling.ts) can take: genuinely
+        // overdue by date, but never sent. Only a status the provider
+        // actually assigned (paid/failed/open/sent) counts as real
+        // invoice history — date alone must never promote a row into it.
+        const pastEntries   = entries.filter(e => isGenuinelyIssuedInvoice(e.status))
+        const futureEntries = entries.filter(e => !isGenuinelyIssuedInvoice(e.status))
+        // Purely a visual reference WITHIN the planned-schedule list (which
+        // of these are overdue vs. genuinely still ahead) — never a
+        // classifier: every planned entry renders with isPast=false
+        // regardless of which side of "today" it falls on, so an overdue
+        // one-time fee still gets its "Move to parked" action rather than
+        // being silently treated as settled history.
+        const overduePlanned  = futureEntries.filter(e => e.date <= today)
+        const upcomingPlanned = futureEntries.filter(e => e.date >  today)
 
         const timelineIcon = (status: string | null): { icon: string; color: string } => {
           if (status === 'paid')    return { icon: 'ti-circle-check',  color: '#27AE60' }
@@ -573,6 +605,16 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
           const effectiveStatus = e.kind === 'commercial-rule' ? 'scheduled' : (isPast ? e.status : 'draft')
           const canPark = !isPast && e.kind === 'one-time'
           const isOpen = expanded.has(e.id)
+          // Step 17F.8 — a not-yet-issued fixed-fee entry must never claim
+          // a definite "Will be issued <date>" while fixed_fee_billing_timing
+          // is still an open reviewer decision — the scheduler itself holds
+          // this exact row until it's resolved (lib/fixed-fee-invoice-
+          // scheduling.ts), so showing a confident date here would
+          // contradict what the system will actually do. Only applies to
+          // not-yet-issued fixed-fee entries — already-issued history and
+          // every other entry kind (overage, one-time, commercial-rule)
+          // are untouched.
+          const timingUnresolvedForThisEntry = !isPast && e.isFixedFeeComponent && !!fixedFeeBillingTiming?.requires_confirmation
           return (
           <div key={e.id} className="flex gap-4 group">
             {/* Icon */}
@@ -597,8 +639,17 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
                   <div className="min-w-0">
                     <p className={`text-[12px] font-medium leading-tight ${isPast ? 'text-ink' : 'text-ink/80'}`}>{e.label}</p>
                     <p className="text-[10px] text-stone mt-0.5">
-                      <span className="text-stone/50">{e.dateLabel} </span>
-                      {e.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      {timingUnresolvedForThisEntry ? (
+                        <>
+                          <span className="text-stone/50">Planned invoice date </span>
+                          <span className="font-medium" style={{ color: '#B45309' }}>Pending decision</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-stone/50">{e.dateLabel} </span>
+                          {e.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        </>
+                      )}
                     </p>
                     {effectiveStatus === 'failed' && e.errorMessage && (
                       <p className="text-[10px] mt-1 flex items-start gap-1" style={{ color: '#DC2626' }}>
@@ -831,26 +882,56 @@ export function BillingSummaryCard({ jobId, onHasSchedule, onParkedInvoices, onS
             )}
 
             <div>
-              {/* Past invoices */}
+              {/* Step 17F.9, item 1/3 — this card mixes two genuinely
+                  different facts: real invoice objects the provider
+                  actually created (paid/failed/open/sent — genuine
+                  history), and bare local planned_invoices rows with no
+                  provider object at all (still status='scheduled'/'draft').
+                  Classified by the invoice's own LIFECYCLE STATE
+                  (e.status, computed upstream from real provider/paid/
+                  sent facts), never by calendar date — a row held by the
+                  fixed-fee-timing scheduler gate (lib/fixed-fee-invoice-
+                  scheduling.ts) can have a planned date already in the
+                  past while still never having been sent, and must stay
+                  under "Planned schedule" regardless. The Billing Periods
+                  workspace above remains the sole authoritative source
+                  for current per-period figures. */}
+              {pastEntries.length > 0 && (
+                <p className="text-[10px] font-bold text-stone uppercase tracking-widest mb-2">Invoice history</p>
+              )}
               {pastEntries.map(e => renderEntry(e, true))}
 
-              {/* Today marker */}
-              <div className="flex gap-4 my-1">
-                <div className="flex flex-col items-center flex-shrink-0" style={{ width: 20 }}>
-                  <div className="w-3.5 h-3.5 rounded-full flex-shrink-0 flex items-center justify-center mt-0.5"
-                    style={{ background: '#1A3D2B' }}>
-                    <div className="w-1.5 h-1.5 rounded-full bg-white" />
+              {futureEntries.length > 0 && (
+                <div className="mb-2" style={{ marginTop: pastEntries.length > 0 ? 12 : 0 }}>
+                  <p className="text-[10px] font-bold text-stone uppercase tracking-widest">Planned schedule</p>
+                  <p className="text-[10px] text-stone/60 mt-0.5">Local projection — not yet created in {isRememhill ? 'Remembill' : 'Stripe'}. For current per-period figures, see Billing Periods above.</p>
+                </div>
+              )}
+              {/* Overdue-but-still-unsent entries first (e.g. held by the
+                  fixed-fee-timing gate) — a purely visual "Today" divider
+                  marks where genuinely-still-ahead entries begin; it is
+                  never what decides Invoice history vs. Planned schedule
+                  above. Every planned entry renders with isPast=false
+                  regardless of which side it falls on, so an overdue
+                  one-time fee still gets its "Move to parked" action
+                  rather than being silently treated as settled. */}
+              {overduePlanned.map(e => renderEntry(e, false))}
+              {overduePlanned.length > 0 && upcomingPlanned.length > 0 && (
+                <div className="flex gap-4 my-1">
+                  <div className="flex flex-col items-center flex-shrink-0" style={{ width: 20 }}>
+                    <div className="w-3.5 h-3.5 rounded-full flex-shrink-0 flex items-center justify-center mt-0.5"
+                      style={{ background: '#1A3D2B' }}>
+                      <div className="w-1.5 h-1.5 rounded-full bg-white" />
+                    </div>
+                    <div className="flex-1 w-px mt-1" style={{ background: 'rgba(26,61,43,0.06)', minHeight: 12 }} />
                   </div>
-                  {futureEntries.length > 0 && <div className="flex-1 w-px mt-1" style={{ background: 'rgba(26,61,43,0.06)', minHeight: 12 }} />}
+                  <div className="pb-4">
+                    <p className="text-[10px] font-bold text-[#1A3D2B] uppercase tracking-widest leading-tight mt-0.5">Today</p>
+                    <p className="text-[10px] text-stone/60">{today.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+                  </div>
                 </div>
-                <div className="pb-4">
-                  <p className="text-[10px] font-bold text-[#1A3D2B] uppercase tracking-widest leading-tight mt-0.5">Today</p>
-                  <p className="text-[10px] text-stone/60">{today.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
-                </div>
-              </div>
-
-              {/* Upcoming invoices */}
-              {futureEntries.map(e => renderEntry(e, false))}
+              )}
+              {upcomingPlanned.map(e => renderEntry(e, false))}
             </div>
           </div>
         )
