@@ -145,6 +145,22 @@ export function computeDiscountMultiplier(terms: ContractTerms, d: Date): number
   return 1
 }
 
+// Step 17C.2b, item D — the ONE pure fixed-fee-period arithmetic step:
+// (base component + additional component) * escalator * discount. Both
+// computeBillingSchedule branches below (the calendar-anchored one and the
+// flat/contract-anchored one) and lib/rolling-band-schedule-
+// reconciliation.ts's future-only reconciliation all previously computed
+// this same expression inline, independently — a second/third copy that
+// could silently drift from Stage A's own arithmetic. Extracted here,
+// exported alongside computeMonthlyBaseRate/computeEscalatorMultiplier/
+// computeDiscountMultiplier (the same established pattern), and reused
+// verbatim by every caller. Deliberately just the arithmetic — no DB
+// lookup, no rounding beyond what a caller does at its own boundary — so
+// it stays trivially pure and unit-testable on its own.
+export function computeFixedFeePeriodAmount(baseComponent: number, additionalComponent: number, escalatorMultiplier: number, discountMultiplier: number): number {
+  return (baseComponent + additionalComponent) * escalatorMultiplier * discountMultiplier
+}
+
 // Scales a full-period component amount for a partial calendar window per
 // the confirmed (or not-yet-confirmed) PeriodProrationRule — the exact same
 // three-way answer lib/tariff.ts's resolveWindowMinimum already applies to a
@@ -238,7 +254,7 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
           return s + (partial ? applyProrationRule(feeAmt, f.proration, overlapDays, windowDays) : feeAmt)
         }, 0)
 
-        baseAmount += (baseContribution + feesContribution) * escMult * discMult
+        baseAmount += computeFixedFeePeriodAmount(baseContribution, feesContribution, escMult, discMult)
       }
 
       periods.push({
@@ -285,7 +301,7 @@ function computeBillingSchedule(terms: ContractTerms): BillingPeriod[] {
       const escMult = computeEscalatorMultiplier(terms, d)
       const discMult = computeDiscountMultiplier(terms, d)
 
-      baseAmount += (base + additionalMonthlyFlat) * escMult * discMult
+      baseAmount += computeFixedFeePeriodAmount(base, additionalMonthlyFlat, escMult, discMult)
     }
 
     periodsFlat.push({ yearNum, periodIndex: periodIdx, periodStart, periodEnd, baseAmount })

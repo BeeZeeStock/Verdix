@@ -20,6 +20,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl } from '@/lib/billing-writer'
 import { computeOverageForPeriod, type OverageLineItem } from '@/lib/usage-pull'
 import { computePerformanceShareLineItemsForPeriod } from '@/lib/performance-share-pull'
+import { evaluateRollingBandMigrations, persistTriggeredRollingBandMigrations, reconcileActiveRollingBandTransitions } from '@/lib/rolling-band-migration-pull'
 import { QuantitySourceNotReadyError } from '@/lib/commercial-quantity-source'
 import { applyCreditLedgerForPeriod } from '@/lib/credit-ledger-service'
 import type { ContractTerms } from '@/lib/types'
@@ -532,6 +533,31 @@ export async function GET(req: NextRequest) {
                 }),
               )
             }
+          }
+
+          // Step 17C.2 (revised 17C.2a) — rolling-window volume-band
+          // pricing transition detection + future-schedule reconciliation.
+          // Purely additive: never touches overageLineItems, never affects
+          // THIS invoice's own amount, and failure here must never block
+          // the invoice this loop iteration is actually building.
+          // detect_rolling_band_pricing_transition/_pricing_required_event
+          // (item 12) are themselves advisory-locked/idempotent, so a
+          // second scheduler run safely converges on the same persisted
+          // row rather than creating a duplicate. reconcileActiveRollingBandTransitions
+          // (17C.2a items 4/5) is itself idempotent by construction — see
+          // its own header — so running it on every tick is safe.
+          try {
+            const rollingBandEvaluations = await evaluateRollingBandMigrations({
+              jobId: row.job_id, terms, asOf: billingAsOf.toISOString(),
+            })
+            await persistTriggeredRollingBandMigrations({
+              jobId: row.job_id, orgId: job.org_id, terms, evaluations: rollingBandEvaluations,
+            })
+            await reconcileActiveRollingBandTransitions({
+              jobId: row.job_id, orgId: job.org_id, terms, asOf: billingAsOf,
+            })
+          } catch (rollingBandErr) {
+            console.error(`[invoice-scheduler] rolling-band migration detection failed for job ${row.job_id}:`, rollingBandErr)
           }
         } else if (row.invoice_type === 'terminal_settlement') {
           // Deterministic settlement target — never a backward "previous

@@ -52,7 +52,7 @@ describe('17B0.2 — fresh-output acceptance regression (Remembill fixture, post
     expect(payload.unsupported_commercial_mechanisms).toHaveLength(1)
     const rolling = payload.unsupported_commercial_mechanisms![0]
     expect(rolling.kind).toBe('rolling_volume_pricing_transition')
-    expect(rolling.execution_status).toBe('unsupported')
+    expect(rolling.execution_status).toBe('executable')
     expect(rolling.required_operational_inputs).toEqual(['issued_payment_request_count'])
   })
 
@@ -77,7 +77,7 @@ describe('17B0.2 — fresh-output acceptance regression (Remembill fixture, post
 
   it('5. fixed-band provenance (contracted volume / selected band / fee) resolves from the persisted payload shape', () => {
     expect(payload.base_fee_committed_volume).toBe(5000)
-    expect(payload.base_fee_bands).toHaveLength(4) // includes the open-ended 150,001+ "Offereras" band (Step 17B0.3)
+    expect(payload.base_fee_bands).toHaveLength(6) // includes the two higher bands (Step 17C.2) and the open-ended 150,001+ "Offereras" band (Step 17B0.3)
     const resolution = resolveFixedFeeBand(payload.base_fee_bands, payload.base_fee_committed_volume)
     expect(resolution).toEqual({ status: 'resolved', band: { from_unit: 1501, to_unit: 5000, monthly_fee: 2000 } })
   })

@@ -163,17 +163,18 @@ describe('17B0 item E — overage threshold is never mislabeled "from unit 1"', 
 describe('17B0 item F — unsupported mechanisms are extracted and never silently droppable', () => {
   const terms = buildRemembillFixtureTerms()
 
-  it('the rolling volume transition remains unsupported; the performance fee no longer does (Step 17C.1 gave it real execution support)', () => {
+  it('neither the rolling volume transition nor the performance fee remains unsupported (Step 17C.1 gave the fee real execution support; Step 17C.2 gave the transition its own)', () => {
     const unsupportedFees = (terms.additional_recurring_fees ?? []).filter(f => f.unresolved_kind === 'unsupported_semantics')
     expect(unsupportedFees).toHaveLength(0)
     const perf = terms.additional_recurring_fees!.find(f => f.fee_label === 'Performance share (value-weighted payment rate)')!
     expect(perf.unresolved_kind).toBeNull()
     expect(perf.percentage_of_basis).toBeTruthy()
 
-    const unsupportedMechanisms = terms.unsupported_commercial_mechanisms ?? []
-    expect(unsupportedMechanisms).toHaveLength(1)
-    expect(unsupportedMechanisms[0].kind).toBe('rolling_volume_pricing_transition')
-    expect(unsupportedMechanisms[0].execution_status).toBe('unsupported')
+    const mechanisms = terms.unsupported_commercial_mechanisms ?? []
+    expect(mechanisms).toHaveLength(1)
+    expect(mechanisms[0].kind).toBe('rolling_volume_pricing_transition')
+    expect(mechanisms[0].execution_status).toBe('executable')
+    expect(mechanisms[0].rolling_band_migration?.trigger_comparator).toBe('greater_than')
   })
 
   it('the performance fee still carries a source_clause and required_operational_inputs — nothing to render is ever missing', () => {

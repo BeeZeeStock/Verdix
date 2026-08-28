@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { monthCursor, computeDiscountMultiplier, computeEscalatorMultiplier, computeBillingSchedule } from './billing-writer'
+import { monthCursor, computeDiscountMultiplier, computeEscalatorMultiplier, computeBillingSchedule, computeFixedFeePeriodAmount } from './billing-writer'
 import type { ContractTerms } from './types'
 
 // Only a handful of ContractTerms fields are ever read by the functions
@@ -24,6 +24,25 @@ describe('monthCursor', () => {
     expect(monthCursor(start, 0)).toEqual(new Date(2026, 7, 11))
     expect(monthCursor(start, 1)).toEqual(new Date(2026, 8, 11))
     expect(monthCursor(start, 3)).toEqual(new Date(2026, 10, 11))
+  })
+})
+
+describe('computeFixedFeePeriodAmount — Step 17C.2b, item D (the one shared fixed-fee-period arithmetic step)', () => {
+  it('(base + additional) * escalator * discount, no surprises', () => {
+    expect(computeFixedFeePeriodAmount(2000, 500, 1, 1)).toBe(2500)
+    expect(computeFixedFeePeriodAmount(2000, 0, 1.1, 1)).toBeCloseTo(2200, 6)
+    expect(computeFixedFeePeriodAmount(2000, 0, 1, 0.75)).toBe(1500)
+    expect(computeFixedFeePeriodAmount(5000, 200, 1.05, 0.9)).toBeCloseTo((5000 + 200) * 1.05 * 0.9, 6)
+  })
+
+  it('is EXACTLY the function computeBillingSchedule\'s own flat/contract-anchored branch uses for a simple one-month period — proving there is no second, independently-drifting copy of this formula', () => {
+    const contractTerms = terms({
+      contract_start_date: '2027-01-01', contract_term_months: 1, billing_frequency: 'monthly',
+      base_monthly_fee: 2000, additional_recurring_fees: [{ fee_label: 'Extra', amount: 300, description: null, source_clause: null, required_operational_inputs: null, unresolved_kind: null, derived_metric: null, percentage_of_basis: null, proration: null, source_sections: null, billing_frequency: null }],
+    })
+    const periods = computeBillingSchedule(contractTerms)
+    expect(periods).toHaveLength(1)
+    expect(periods[0].baseAmount).toBe(computeFixedFeePeriodAmount(2000, 300, 1, 1))
   })
 })
 

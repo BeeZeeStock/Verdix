@@ -947,7 +947,21 @@ export interface UnsupportedCommercialMechanism {
    *  section. */
   source_sections?: SourceLocator[] | null
   required_operational_inputs?: string[] | null
-  execution_status: 'unsupported'
+  /** Step 17C.2 — widened from the single literal 'unsupported'. A
+   *  mechanism becomes 'executable' once a typed, deterministic execution
+   *  config exists for it (e.g. rolling_band_migration below) — mirrors
+   *  AdditionalRecurringFee's own derived_metric/percentage_of_basis
+   *  pairing (Step 17C.1): a mechanism can be preserved-but-unsupported
+   *  at extraction time, then made executable in a later step, without
+   *  ever rewriting the originally-extracted description/clause. */
+  execution_status: 'unsupported' | 'executable'
+  /** Step 17C.2 — the typed, executable configuration for a rolling-
+   *  window volume-band pricing migration (e.g. Remembill's "if the
+   *  rolling 3-month average exceeds the contracted volume, move to the
+   *  corresponding band from the next contract period"). Populated only
+   *  when execution_status is 'executable'; absent/null otherwise. See
+   *  lib/rolling-window-aggregate.ts and lib/rolling-band-transition.ts. */
+  rolling_band_migration?: RollingBandMigrationConfig | null
 }
 
 // Step 17A, item 13 — one row of a committed-volume fixed-fee band table
@@ -964,6 +978,147 @@ export interface FixedFeeBand {
    *  "—/month" that reads as missing data rather than a real, deliberate
    *  contractual state. */
   monthly_fee: number | null
+}
+
+// Step 17C.2 — the generic execution chain for a rolling-window pricing
+// transition: raw monthly operational inputs -> RollingWindowAggregate
+// (arithmetic mean over N complete billing periods) -> compare to the
+// contract's committed volume -> select the corresponding FixedFeeBand ->
+// a versioned, notice-gated PricingTransition. See
+// lib/rolling-window-aggregate.ts, lib/rolling-band-transition.ts.
+
+// The smallest generic primitive for "average this operational input over
+// the last N complete billing periods." 'mean' is the only operation
+// implemented; window_unit is always 'billing_period' (never ambient
+// calendar days — see lib/tariff.ts's enumerateCadenceWindows, which this
+// reuses for period boundaries). require_complete_windows: true is not
+// optional/configurable in this step — an incomplete/still-open current
+// period is never averaged in.
+export interface RollingWindowAggregateConfig {
+  input_key: string
+  window_count: number
+  window_unit: 'billing_period'
+  operation: 'mean'
+  require_complete_windows: true
+}
+
+// Step 17C.2 — ties a RollingWindowAggregate to an UPWARD-only trigger
+// against the contract's own committed volume, plus whether advance
+// notice is required before a detected transition may take effect.
+export interface RollingBandMigrationConfig {
+  aggregate: RollingWindowAggregateConfig
+  /** 'greater_than' is the ONLY implemented member — the source contract
+   *  states an upward-only trigger ("if the average EXCEEDS the
+   *  contracted volume..."). This is not merely unimplemented for a
+   *  downward direction; the type has no member to express one, so an
+   *  undocumented auto-downgrade rule is inexpressible in this config,
+   *  not just unused. See lib/rolling-band-transition.ts's own header. */
+  trigger_comparator: 'greater_than'
+  /** What the aggregate is compared against. 'contracted_volume' is the
+   *  only implemented member — always resolved fresh from
+   *  ContractTerms.base_fee_committed_volume at evaluation time, never a
+   *  number baked into this config (which would risk going stale if the
+   *  committed volume itself is ever corrected). */
+  compared_to: 'contracted_volume'
+  /** Stated explicitly in the contract ("after advance notice"), never
+   *  inferred. When true, a detected transition never activates until a
+   *  separate notice-confirmation action exists for it — see
+   *  lib/rolling-band-transition.ts's lifecycle status resolution. */
+  notice_required: boolean
+  /** Step 17C.2a, item 1 — when the CONTRACT ITSELF states unambiguously
+   *  what "next contract period"/"after advance notice" resolves to (e.g.
+   *  a clause explicit enough to compile straight into one of the typed
+   *  TransitionEffectiveRule kinds below), extraction may populate this
+   *  with provenance: 'contract_derived' and a detected transition
+   *  auto-resolves its own effective_rule at detection time, no reviewer
+   *  step needed. Absent/null (the case for every contract this codebase
+   *  extracts today — no extraction-prompt change was made in this step)
+   *  means the meaning is NOT yet established, and every transition this
+   *  mechanism detects starts life at decision_required until a reviewer
+   *  resolves it explicitly. Never inferred from cadence/the word
+   *  "monthly" — see lib/rolling-band-migration-pull.ts's own header. */
+  effective_rule?: TransitionEffectiveRule | null
+  /** Step 17C.2c — a SEPARATE typed decision from effective_rule above:
+   *  which pricing band applies (and when) says nothing about which
+   *  CONTRACTED/INCLUDED VOLUME governs future overage once that band is
+   *  active — that is never derived automatically from the new band's own
+   *  upper bound. Same contract_derived/reviewer_policy duality as
+   *  effective_rule; absent/null (every contract today) means every
+   *  transition this mechanism detects starts with volume treatment
+   *  unresolved, until a reviewer picks one via
+   *  lib/rolling-band-migration-pull.ts's compileVolumeTransitionRule. */
+  volume_transition_rule?: VolumeTransitionRule | null
+}
+
+// Step 17C.2a, item 1 — the typed authority for what a transition's own
+// "effective from" language actually means. Deliberately NOT derived from
+// cadence alone ("monthly" does not imply "next calendar month" is the
+// contractually correct effective date) — a value here is only ever
+// EITHER lifted verbatim from the contract (provenance: 'contract_derived',
+// via RollingBandMigrationConfig.effective_rule above) OR an explicit
+// reviewer pick compiled through lib/rolling-band-migration-pull.ts's
+// compileTransitionEffectiveRule (provenance: 'reviewer_policy') — never
+// guessed by the calculation engine itself. `kind` is a closed, generic
+// vocabulary a reviewer can always pick from regardless of which specific
+// contract this is; 'specific_date' is the escape hatch for "other
+// structured treatment" the contract or reviewer states explicitly.
+export type TransitionEffectiveRuleKind = 'next_billing_period' | 'next_renewal_term' | 'specific_date'
+export interface TransitionEffectiveRule {
+  kind: TransitionEffectiveRuleKind
+  /** Only meaningful (and required) when kind === 'specific_date'; null/
+   *  absent otherwise. An ISO date string, never a Date object — mirrors
+   *  every other date field on ContractTerms. */
+  specific_date?: string | null
+  provenance: 'contract_derived' | 'reviewer_policy'
+  /** The clause this was lifted from, when provenance is 'contract_derived'.
+   *  Absent for a reviewer_policy rule — there's no contract text to cite. */
+  source_clause?: string | null
+}
+
+// Step 17C.2c — the typed authority for WHICH contracted/included volume
+// governs future overage once a rolling-band pricing transition is active.
+// Deliberately separate from TransitionEffectiveRule/FixedFeeBand: a
+// pricing band's own upper bound (to_unit) is NOT automatically the new
+// included volume — that would be silently assuming a specific commercial
+// interpretation the contract may never actually state. `kind` is a
+// closed, generic vocabulary (never arbitrary formula/free-text
+// execution): band_upper_bound explicitly opts INTO the "band capacity
+// becomes the included volume" reading; rolling_average uses the SAME
+// trigger_value the transition itself was detected from, CEILED to whole
+// units (Step 17C.2d, item 2) — issued_payment_request_count and every
+// other countable metric this mechanism supports is a whole-unit quantity,
+// so a fractional 3-period mean (e.g. 5000.333...) can never become a
+// fractional contracted-volume threshold; the raw, unrounded average
+// remains permanently available via the transition's own immutable
+// trigger_value (the audit trace this rounding must never lose); specific_volume
+// is the escape hatch for a reviewer- or contract-stated number that
+// matches neither; unchanged keeps the ORIGINAL signed committed volume
+// even though the price moved. Only ever lifted verbatim from the
+// contract (provenance: 'contract_derived', via
+// RollingBandMigrationConfig.volume_transition_rule) or an explicit
+// reviewer pick compiled through lib/rolling-band-migration-pull.ts's
+// compileVolumeTransitionRule (provenance: 'reviewer_policy') — never
+// guessed by the calculation engine itself.
+//
+// Step 17C.2d — a resolved rule is itself HISTORICALLY REPLAYABLE: see
+// supabase/migrations/20260904000001_rolling_band_pricing_transitions.sql's
+// rolling_band_volume_rule_versions table and lib/rolling-band-migration-
+// pull.ts's resolveVolumeRuleVersionAsOf. This type describes the SHAPE of
+// one version's own rule; which version governs a given instant is a
+// separate, append/versioned fact never stored inline on this type.
+export type VolumeTransitionRuleKind = 'band_upper_bound' | 'rolling_average' | 'specific_volume' | 'unchanged'
+export interface VolumeTransitionRule {
+  kind: VolumeTransitionRuleKind
+  /** Only meaningful (and required) when kind === 'specific_volume'; null/
+   *  absent otherwise — band_upper_bound/rolling_average/unchanged each
+   *  derive their own number at resolution time (from the transition's own
+   *  to_band/trigger_value, or the contract's original committed volume)
+   *  rather than needing one snapshotted here. */
+  value?: number | null
+  provenance: 'contract_derived' | 'reviewer_policy'
+  /** The clause this was lifted from, when provenance is 'contract_derived'.
+   *  Absent for a reviewer_policy rule — there's no contract text to cite. */
+  source_clause?: string | null
 }
 
 // Step 17C.1 — the generic execution chain: raw operational inputs ->

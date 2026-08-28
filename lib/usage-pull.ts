@@ -8,6 +8,7 @@ import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, fin
 import { createRemembillUsageConnector } from '@/lib/connectors/usage/remembill'
 import { resolveQualifiedUnitAggregateQuantitySource } from '@/lib/qualified-unit-aggregation-service'
 import { resolveCommercialQuantity, requireReadyCommercialQuantity } from '@/lib/commercial-quantity-source'
+import { resolveEffectiveCommercialStateForPeriod } from '@/lib/rolling-band-migration-pull'
 import type { ContractTerms, MinimumCommitment, TierCalculationMethod } from '@/lib/types'
 
 // Fail-closed real-billing invariant — thrown by computeOverageForPeriod
@@ -391,7 +392,62 @@ export async function computeOverageForPeriod(params: {
           minimum_commitment: t.minimum_commitment ?? null,
           tier_calculation: t.tier_calculation ?? null,
         }))
-        const includedUnits = cfg.included_units ?? 0
+        // Step 17C.2b item A, revised 17C.2c — a rolling-band pricing
+        // transition, once active as of this WINDOW's own start (mirroring
+        // the fixed-fee reconciler's identical "periodStart >= effectiveFrom"
+        // rule for consistency between the two "which state governs this
+        // period" decisions), MAY raise the volume covered before overage
+        // applies — but only when the transition's own typed
+        // volume_transition_rule has actually been resolved (item A of
+        // 17C.2c: a pricing band's upper bound is never automatically the
+        // new included volume). Matched via contract_unit_type (what this
+        // meter measures, per MeterCfg's own doc) against the mechanism's
+        // aggregate.input_key, never meter_key (an arbitrary, org-side
+        // connector identifier with no reason to equal it).
+        //
+        // Three distinct outcomes:
+        //   no active transition yet       -> cfg.included_units, untouched
+        //                                      (pre-17C.2 behavior, exactly).
+        //   active + volume rule resolved  -> the resolver's own
+        //                                      effective_contracted_volume
+        //                                      (band_upper_bound/rolling_average/
+        //                                      specific_volume/unchanged).
+        //   active + volume rule UNRESOLVED -> HELD: this meter/window is
+        //                                      skipped entirely (no line
+        //                                      item, no charge) rather than
+        //                                      silently keeping the old
+        //                                      volume or guessing the new
+        //                                      band's capacity. The base
+        //                                      platform fee is completely
+        //                                      unaffected by this hold —
+        //                                      only this meter's overage is.
+        //
+        // Historical windows are unaffected either way: a window whose
+        // START predates the transition's effective_from resolves back to
+        // provenance 'contract_derived' (no transition active yet), via the
+        // SAME asOf-gated resolver every other "which state governs this
+        // period" decision in this codebase uses.
+        let includedUnits = cfg.included_units ?? 0
+        const rollingBandMechanism = (terms.unsupported_commercial_mechanisms ?? []).find(
+          m => m.execution_status === 'executable' && m.rolling_band_migration && cfg.contract_unit_type === m.rolling_band_migration.aggregate.input_key,
+        )
+        if (rollingBandMechanism) {
+          // asOf stays period-anchored (was this window covered by the
+          // pricing transition itself); volumeRuleAsOf is the REAL billing
+          // execution instant — a reviewer's volume-treatment decision has
+          // no calendar tie to the period being billed, and arrears
+          // billing means billingAsOf is always later than window.start
+          // (see resolveEffectiveCommercialStateForPeriod's own header for
+          // the real-Postgres-discovered defect this fixes).
+          const effectiveState = await resolveEffectiveCommercialStateForPeriod({ jobId, terms, asOf: window.start, volumeRuleAsOf: billingAsOf })
+          if (effectiveState.provenance === 'transition_active') {
+            if (effectiveState.effective_contracted_volume == null) {
+              console.warn(`[usage-pull] meter '${cfg.meter_key}' org ${orgId} job ${jobId}: an active rolling-band transition has no resolved contracted-volume treatment — holding this window's overage (Decision Required) rather than guessing`)
+              continue
+            }
+            includedUnits = effectiveState.effective_contracted_volume
+          }
+        }
         // A minimum commitment guarantees a full cadence period's worth of
         // payment — never applied to a window that hasn't closed (isOpen).
         // For a window the contract wasn't in effect for the whole of

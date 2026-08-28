@@ -83,6 +83,15 @@ export function buildRemembillFixtureTerms(): ContractTerms {
       { from_unit: 1, to_unit: 500, monthly_fee: 500 },
       { from_unit: 501, to_unit: 1500, monthly_fee: 1200 },
       { from_unit: 1501, to_unit: 5000, monthly_fee: 2000 },
+      // Step 17C.2 — the two higher bands the rolling volume-band
+      // migration mechanism (below) actually transitions INTO once the
+      // 3-month average exceeds base_fee_committed_volume (5,000). These
+      // were never previously captured: prior steps only ever needed
+      // bands up to the committed volume itself plus the open-ended top
+      // band — the mechanism that reads the bands ABOVE 5,000 didn't
+      // exist yet. No gap between 5,000 and 150,001 now.
+      { from_unit: 5001, to_unit: 15000, monthly_fee: 5000 },
+      { from_unit: 15001, to_unit: 150000, monthly_fee: 12000 },
       // Step 17B0.3 — the real contract's band table has an open-ended top
       // band above 150,000 with no stated fixed fee ("Offereras" — quoted
       // on request), confirmed live. monthly_fee: null, never 0 or a
@@ -275,7 +284,24 @@ export function buildRemembillFixtureTerms(): ContractTerms {
           { exact_source_heading: '4. Fast plattform efter avtalad volym', display_label: 'Bilaga 1' },
         ],
         required_operational_inputs: ['issued_payment_request_count'],
-        execution_status: 'unsupported',
+        // Step 17C.2 — now executable via the generic RollingWindowAggregate
+        // -> BandSelector -> PricingTransition chain (lib/rolling-window-
+        // aggregate.ts, lib/rolling-band-transition.ts,
+        // lib/rolling-band-migration-pull.ts). Reuses base_fee_bands/
+        // base_fee_committed_volume directly — no second tariff table.
+        execution_status: 'executable',
+        rolling_band_migration: {
+          aggregate: {
+            input_key: 'issued_payment_request_count',
+            window_count: 3,
+            window_unit: 'billing_period',
+            operation: 'mean',
+            require_complete_windows: true,
+          },
+          trigger_comparator: 'greater_than',
+          compared_to: 'contracted_volume',
+          notice_required: true,
+        },
       },
     ],
     one_time_fees: [],

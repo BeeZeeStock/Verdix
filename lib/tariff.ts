@@ -469,6 +469,44 @@ export function isBillingWindowClosed(window: { end: Date }, billingAsOf: Date):
   return billingAsOf.getTime() >= nextDayStart.getTime()
 }
 
+// Step 17C.2 — a thin, direct composition of enumerateCadenceWindows +
+// isBillingWindowClosed (both above), not a new date-arithmetic
+// implementation: "the N most recently completed billing periods as of a
+// given instant" — the exact semantics
+// lib/rolling-window-aggregate.ts's RollingWindowAggregateConfig needs
+// (window_unit: 'billing_period', never ambient calendar days). Reusing
+// these two functions directly means this inherits their existing
+// DST-safety (calendar-FIELD arithmetic throughout, confirmed by
+// enumerateCadenceWindows' own header) rather than risking a fresh
+// instance of the exact bug class Step 17C.1a found and fixed in
+// lib/performance-share-materiality.ts's own (unrelated) date math.
+//
+// "At month close, evaluate the 3 most recently completed billing
+// periods" — a period is only ever included once fully closed as of asOf
+// (isBillingWindowClosed); the currently-open/in-progress period is never
+// among the results, matching require_complete_windows: true. Returns
+// oldest-first; fewer than n entries when fewer than n periods have
+// closed yet since anchorDate (the caller's own aggregate function is
+// what turns "fewer than requested" into a not_ready result — this
+// function itself never pads or invents a period).
+export function getLastNCompletedCadenceWindows(params: {
+  anchorDate: Date
+  cadence: string | null | undefined
+  anchorMode?: CadenceAnchorMode
+  asOf: Date
+  n: number
+}): Array<{ start: Date; end: Date }> {
+  const { anchorDate, cadence, asOf, n } = params
+  const anchorMode = params.anchorMode ?? 'contract_start'
+  // rangeStart = anchorDate itself — generous enough to capture every
+  // window that could possibly exist for this contract; enumerateCadenceWindows
+  // already stops once a window's start exceeds rangeEnd, so this is not
+  // an unbounded scan.
+  const allWindows = enumerateCadenceWindows(anchorDate, cadence, anchorDate, asOf, anchorMode)
+  const closedWindows = allWindows.filter(w => isBillingWindowClosed(w, asOf))
+  return closedWindows.slice(-n)
+}
+
 // Clamps a cadence window's boundaries to the contract's actual
 // [contractStartDate, contractEndDate] span. A metric's TRUE cadence
 // window (e.g. a calendar month) must stay UNCLAMPED for resolveWindowMinimum's

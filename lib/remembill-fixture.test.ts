@@ -99,7 +99,7 @@ describe('Remembill fixture — expected first-pass extraction result', () => {
     expect(terms.additional_recurring_fees!.some(f => f.fee_label === 'Rolling three-month average repricing transition')).toBe(false)
     const rolling = terms.unsupported_commercial_mechanisms!.find(m => m.kind === 'rolling_volume_pricing_transition')!
     expect(rolling).toBeDefined()
-    expect(rolling.execution_status).toBe('unsupported')
+    expect(rolling.execution_status).toBe('executable')
     expect(rolling.source_clause).toContain('tremånaderssnitt')
   })
 
