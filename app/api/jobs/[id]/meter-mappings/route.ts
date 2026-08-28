@@ -10,13 +10,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
-import { auth } from '@/lib/auth'
-import { isAdminEmail, isRemembillTeam } from '@/lib/admin'
 import { getFastAIClient } from '@/lib/ai-client'
 import { allMeterMappingsResolved } from '@/lib/meter-mapping-status'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import { collectOperationalDataInputs, collectDerivedMetrics } from '@/lib/operational-data-inputs'
 import { isNotificationChannelMismatch, NOTIFICATION_CHANNEL_MISMATCH_CONFIDENCE_CAP } from '@/lib/meter-suggestion-guard'
+import { resolveRecognizedOperationalInputKey } from '@/lib/operational-input-canonicalization'
+import { buildUsageMappingGroups } from '@/lib/meter-mapping-groups'
 
 // ── Auto-mapping heuristic ────────────────────────────────────────────────────
 const METER_RULES: Array<{ patterns: string[]; key: string; confidence: number }> = [
@@ -134,7 +134,12 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   let org
-  try { org = await requireOrg('admin') } catch (res) { return res as Response }
+  // Step 17D, item 6 — viewing suggestions/current mappings never touches
+  // billing_meters endpoint/credential fields, so a normal org member may
+  // reach this (loosened from 'admin'); only /api/meters and
+  // /api/admin/meters (which edit a meter's own endpoint/token) require
+  // org admin/owner.
+  try { org = await requireOrg('member') } catch (res) { return res as Response }
 
   const { id: jobId } = await params
 
@@ -161,6 +166,11 @@ export async function GET(
       minimum_commitment?: import('@/lib/types').MinimumCommitment | null
       reset_anchor?: 'contract_start' | 'calendar' | null
       required_operational_inputs?: string[] | null
+      // Step 17D.1, item D — the EXPLICIT extracted canonical identity for
+      // this tier (validated/canonicalized at extraction time by
+      // lib/commercial-mechanism-compiler.ts's resolveExtractedSemanticInputKeys),
+      // preferred over runtime string-matching the raw unit_type below.
+      semantic_input_key?: string | null
     }>
     billing_frequency?: string | null
     included_units?: number | null
@@ -171,11 +181,29 @@ export async function GET(
     // collectOperationalDataInputs for how these surface instead.
     additional_recurring_fees?: Array<{
       fee_label?: string
+      metric_name?: string | null
+      rate_per_unit?: number | null
+      // Step 17D.2, item E — the same explicit, extraction-canonicalized
+      // identity overage_tiers carry (see semantic_input_key above), read
+      // here so a per-unit fee with NO overage_tiers entry of its own
+      // (e.g. a flat per-request fee, no tiered overage at all) still gets
+      // a mapping card — see the group-synthesis pass below.
+      semantic_input_key?: string | null
       required_operational_inputs?: string[] | null
       derived_metric?: { raw_inputs?: string[] } | null
     }>
     one_time_fees?: Array<{ fee_label?: string; required_operational_inputs?: string[] | null }>
-    unsupported_commercial_mechanisms?: Array<{ kind?: string; required_operational_inputs?: string[] | null }>
+    unsupported_commercial_mechanisms?: Array<{
+      kind?: string
+      description?: string
+      execution_status?: string
+      required_operational_inputs?: string[] | null
+      // Step 17D.2, item E — already the STRICT, resolved canonical key
+      // (lib/commercial-mechanism-compiler.ts's compileRollingBandMigration
+      // only ever compiles this from a recognized identity) — never
+      // re-resolved here, only read.
+      rolling_band_migration?: { aggregate?: { input_key?: string | null } | null } | null
+    }>
   }
   const terms = unwrapEmbedded(job.contract_terms as unknown as MeterMappingTerms | MeterMappingTerms[]) ?? {}
 
@@ -209,30 +237,18 @@ export async function GET(
   // metric's measurement_period (when the contract states one) overrides
   // the contract-level cadence for that metric specifically — e.g. a
   // metric measured half-yearly inside an otherwise-monthly contract.
-  const unitGroups = new Map<string, Array<{
-    from_unit: number | null
-    to_unit: number | null
-    rate_per_unit: number
-    minimum_period_amount: number | null
-    minimum_commitment: import('@/lib/types').MinimumCommitment | null
-    reset_anchor: 'contract_start' | 'calendar' | null
-  }>>()
-  const unitCycles = new Map<string, string>()
-  for (const t of overageTiers) {
-    if (!t.unit_type) continue
-    if (!unitGroups.has(t.unit_type)) unitGroups.set(t.unit_type, [])
-    unitGroups.get(t.unit_type)!.push({
-      from_unit:    t.from_unit ?? null,
-      to_unit:      t.to_unit   ?? null,
-      rate_per_unit: t.rate_per_unit ?? 0,
-      minimum_period_amount: t.minimum_period_amount ?? null,
-      minimum_commitment: t.minimum_commitment ?? null,
-      reset_anchor: t.reset_anchor ?? null,
-    })
-    if (t.measurement_period && !unitCycles.has(t.unit_type)) {
-      unitCycles.set(t.unit_type, normaliseCycle(t.measurement_period))
-    }
-  }
+  // Step 17D.2, item E — a per-unit additional_recurring_fee or an
+  // executable rolling volume-band migration referencing the SAME
+  // canonical semantic_input_key as an overage-tier group merges into
+  // that one group (never its own separate card); one referencing an
+  // UNCOVERED canonical key gets its own card, so it's never silently
+  // invisible to the review UI either. See lib/meter-mapping-groups.ts.
+  const { unitGroups, unitCycles, extractedSemanticKeys } = buildUsageMappingGroups({
+    overageTiers,
+    additionalRecurringFees: terms.additional_recurring_fees ?? [],
+    unsupportedMechanisms: terms.unsupported_commercial_mechanisms ?? [],
+    normaliseCycle,
+  })
 
   // Fetch any existing DB mappings for this job
   const { data: existing } = await supabaseServer
@@ -242,25 +258,28 @@ export async function GET(
 
   const existingMap = new Map((existing ?? []).map((r: Record<string, unknown>) => [r.contract_unit_type as string, r]))
 
-  // Fetch available meters: only this org's registered meters, plus platform
-  // meters (org_id IS NULL) for Verdix admins processing their own contracts
-  // and for Remembill/CoAccept's team — they own the Remembill-connector
-  // meters and need them selectable when mapping their customers' contracts,
-  // exactly like Verdix admins need the platform 'sync' meter for their own.
-  const session = await auth()
-  const email = session?.user?.email ?? ''
-  const canSeePlatformMeters = isAdminEmail(email) || isRemembillTeam(email)
+  // Step 17D.1, item A/F — search ONLY the current organization's own
+  // configured meters. billing_meters.org_id (the sole ownership column —
+  // no separate owner_org_id) is the sole visibility boundary — no more
+  // isAdminEmail()/isRemembillTeam() domain carve-out here either; once
+  // the 5 Remembill meters are migrated to org_id = CoAccept's org
+  // (item 15), CoAccept's own reviewers see them through this exact same
+  // query, and no other org ever does.
+  // Step 17D.2, item A — is_platform_meter=false, explicit: a genuine
+  // Verdix system meter (sync/api_call/user) must never be an AI/source-
+  // mapping candidate for a customer's contract, regardless of org_id
+  // coincidence.
   const meterQuery = supabaseServer
     .from('billing_meters')
-    .select('meter_key, display_name, unit_label, org_id')
+    .select('meter_key, display_name, unit_label, org_id, semantic_input_key')
+    .eq('org_id', job.org_id)
+    .eq('is_platform_meter', false)
     .order('meter_key')
 
-  const { data: meters } = await (canSeePlatformMeters
-    ? meterQuery.or(`org_id.is.null,org_id.eq.${job.org_id}`)
-    : meterQuery.eq('org_id', job.org_id))
+  const { data: meters } = await meterQuery
 
   // Build suggestions — use AI matching when rule-based result doesn't exist in this org
-  const availableMeters = (meters ?? []) as Array<{ meter_key: string; display_name: string; unit_label: string | null }>
+  const availableMeters = (meters ?? []) as Array<{ meter_key: string; display_name: string; unit_label: string | null; semantic_input_key: string | null }>
   // Accumulates fresh aiMatch() results this request actually computed, so
   // reopening the panel later (same tiers, same available meters) reuses
   // the cached call instead of re-hitting Claude every time — this endpoint
@@ -293,10 +312,33 @@ export async function GET(
 
       let meter_key: string
       let confidence: number
+      // Step 17D.1, item D — the canonical fact this contract requirement
+      // actually needs. The EXTRACTED semantic_input_key (an explicit,
+      // extraction-stated field — never inferred from unit_type text at
+      // billing time) wins when present; runtime resolution via
+      // lib/operational-input-canonicalization.ts is only a display-time
+      // fallback for a contract extracted before this field existed. Null
+      // when neither resolves — the suggestion pipeline below falls back
+      // to today's exact rule/AI text-matching behavior in that case,
+      // never blocked by it.
+      const unitSemanticKey = extractedSemanticKeys.has(unitType)
+        ? resolveRecognizedOperationalInputKey(extractedSemanticKeys.get(unitType)!)
+        : resolveRecognizedOperationalInputKey(unitType)
+      const semanticMatch = unitSemanticKey
+        ? availableMeters.find(m => m.semantic_input_key === unitSemanticKey)
+        : undefined
 
       if (db) {
         meter_key  = db.meter_key  as string
         confidence = db.confidence as number
+      } else if (semanticMatch) {
+        // A meter that DECLARES it supplies exactly this canonical fact is
+        // authoritative — never merely a text-similarity guess. Confidence
+        // is fixed, not AI-derived, and deliberately high (never forced to
+        // 100%, since the reviewer still always confirms — item 5's own
+        // "The user always confirms").
+        meter_key  = semanticMatch.meter_key
+        confidence = 0.96
       } else {
         const auto = autoMap(unitType)
         const ruleMatchExists = availableMeters.some(m => m.meter_key === auto.meter_key)
@@ -349,6 +391,11 @@ export async function GET(
 
       return {
         contract_unit_type: unitType,
+        // Step 17D, item 4/5 — the canonical requirement, shown alongside
+        // the raw contract wording so the review UI can render "Contract
+        // requires: Payment requests issued / semantic input:
+        // issued_payment_request_count" without re-deriving it client-side.
+        semantic_input_key: db ? ((db.semantic_input_key as string | null) ?? unitSemanticKey) : unitSemanticKey,
         meter_key: no_match ? '' : meter_key,
         confidence,
         no_match,
@@ -409,7 +456,10 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   let org
-  try { org = await requireOrg('admin') } catch (res) { return res as Response }
+  // Step 17D, item 6 — confirming/selecting a mapping never touches
+  // billing_meters endpoint/credential fields (only contract_meter_mappings
+  // rows below) — a normal org member may confirm; loosened from 'admin'.
+  try { org = await requireOrg('member') } catch (res) { return res as Response }
 
   const { id: jobId } = await params
 
@@ -430,6 +480,11 @@ export async function POST(
   const body = await req.json() as {
     mappings: Array<{
       contract_unit_type: string
+      // Step 17D, item 4 — the canonical fact this mapping resolves, as
+      // computed by the GET suggestion pass; persisted here rather than
+      // re-derived at write time so a mapping's semantic identity is a
+      // stable, reviewed fact, not silently recomputed on a later request.
+      semantic_input_key?: string | null
       meter_key: string
       confirmed: boolean
       included_units: number
@@ -488,6 +543,7 @@ export async function POST(
     return {
       job_id:             jobId,
       contract_unit_type: m.contract_unit_type,
+      semantic_input_key: m.semantic_input_key ?? null,
       meter_key:          m.meter_key,
       confidence:         m.confidence ?? null,
       confirmed:          m.confirmed,

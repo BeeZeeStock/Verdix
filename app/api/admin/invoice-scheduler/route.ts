@@ -20,7 +20,9 @@ import { supabaseServer } from '@/lib/supabase'
 import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl } from '@/lib/billing-writer'
 import { computeOverageForPeriod, type OverageLineItem } from '@/lib/usage-pull'
 import { computePerformanceShareLineItemsForPeriod } from '@/lib/performance-share-pull'
+import { computePerUnitFeeLineItemsForPeriod } from '@/lib/per-unit-fee-pull'
 import { evaluateRollingBandMigrations, persistTriggeredRollingBandMigrations, reconcileActiveRollingBandTransitions } from '@/lib/rolling-band-migration-pull'
+import { resolveUsageQuantityForPeriod } from '@/lib/usage-quantity-resolver'
 import { QuantitySourceNotReadyError } from '@/lib/commercial-quantity-source'
 import { applyCreditLedgerForPeriod } from '@/lib/credit-ledger-service'
 import type { ContractTerms } from '@/lib/types'
@@ -532,6 +534,49 @@ export async function GET(req: NextRequest) {
                   asOf: billingAsOf.toISOString(),
                 }),
               )
+              // Step 17D, item 10 — same additive, never-blocks-the-invoice
+              // producer pattern as performance-share above; a generic
+              // per-unit additional_recurring_fee (e.g. the €0.38 request
+              // fee) now has a real quantity source instead of never being
+              // billable at all.
+              overageLineItems = overageLineItems.concat(
+                await computePerUnitFeeLineItemsForPeriod({
+                  jobId: row.job_id, orgId: job.org_id, terms, currency: cur, periodStart: scanStart, periodEnd: scanEnd,
+                  asOf: billingAsOf.toISOString(), finalize: true,
+                }),
+              )
+            }
+          }
+
+          // Step 17D.2, item D — a usage fact that feeds ONLY a rolling
+          // volume-band migration (no overage tier, no per-unit fee
+          // referencing the same semantic_input_key) would otherwise never
+          // get its closed-period value pinned by anything:
+          // computeOverageForPeriod/computePerUnitFeeLineItemsForPeriod
+          // above only finalize the semantic keys that actually produced a
+          // line item on THIS invoice. Finalizing the rolling migration's
+          // own required input(s) here, for the SAME closed window this
+          // tick just billed, closes that gap. Idempotent
+          // (finalizeClosedPeriodUsageQuantity never rewrites an existing
+          // pin) — when the key was ALREADY finalized above (because it
+          // also feeds an overage tier or per-unit fee), this is a pure
+          // snapshot-table read, never a second meter/API pull; when it
+          // wasn't, this is that input's one and only pull for this
+          // period, done through the authoritative finalize path rather
+          // than left to drift as an unpinned 'closed_period_read' forever
+          // (which evaluateRollingBandMigrations below only ever performs).
+          if (scanStart && scanEnd) {
+            const rollingInputKeys = new Set(
+              (terms.unsupported_commercial_mechanisms ?? [])
+                .filter(m => m.execution_status === 'executable' && m.rolling_band_migration?.aggregate?.input_key)
+                .map(m => m.rolling_band_migration!.aggregate.input_key),
+            )
+            for (const inputKey of rollingInputKeys) {
+              await resolveUsageQuantityForPeriod({
+                jobId: row.job_id, orgId: job.org_id, semanticInputKey: inputKey,
+                periodStart: new Date(scanStart + 'T00:00:00'), periodEnd: new Date(scanEnd + 'T23:59:59'),
+                asOf: billingAsOf, mode: 'closed_period_finalize',
+              }).catch(err => console.error(`[invoice-scheduler] failed to finalize rolling-migration input '${inputKey}' for job ${row.job_id}:`, err))
             }
           }
 
@@ -548,7 +593,7 @@ export async function GET(req: NextRequest) {
           // its own header — so running it on every tick is safe.
           try {
             const rollingBandEvaluations = await evaluateRollingBandMigrations({
-              jobId: row.job_id, terms, asOf: billingAsOf.toISOString(),
+              jobId: row.job_id, orgId: job.org_id, terms, asOf: billingAsOf.toISOString(),
             })
             await persistTriggeredRollingBandMigrations({
               jobId: row.job_id, orgId: job.org_id, terms, evaluations: rollingBandEvaluations,
@@ -585,6 +630,12 @@ export async function GET(req: NextRequest) {
               await computePerformanceShareLineItemsForPeriod({
                 jobId: row.job_id, terms, currency: cur, periodStart: scanStart, periodEnd: scanEnd,
                 asOf: billingAsOf.toISOString(),
+              }),
+            )
+            overageLineItems = overageLineItems.concat(
+              await computePerUnitFeeLineItemsForPeriod({
+                jobId: row.job_id, orgId: job.org_id, terms, currency: cur, periodStart: scanStart, periodEnd: scanEnd,
+                asOf: billingAsOf.toISOString(), finalize: true,
               }),
             )
           }

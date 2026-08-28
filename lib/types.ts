@@ -80,6 +80,19 @@ export interface OverageTier {
    *  volume that defines where the tier starts — both preserved rather
    *  than only the metric already implied by unit_type. */
   required_operational_inputs?: string[] | null
+  /** Step 17D.1, item D — the canonical fact this tier's surcharge counts
+   *  against (e.g. 'issued_payment_request_count'), resolved through the
+   *  SAME closed recognized-key/alias registry every other execution path
+   *  uses (lib/operational-input-canonicalization.ts, Step 17C.3c) — never
+   *  inferred from unit_type's own free-text spelling at billing time.
+   *  NULL means this tier has no recognized canonical identity yet (the
+   *  historical/legacy case, or a genuinely novel metric the registry
+   *  doesn't cover) — lib/usage-quantity-resolver.ts simply cannot be fed
+   *  by a confirmed meter mapping keyed on semantic_input_key in that
+   *  case; the tier still executes via meter_key exactly as before, just
+   *  without the cross-rule reuse this field enables (see
+   *  contract_meter_mappings.semantic_input_key). */
+  semantic_input_key?: string | null
 }
 
 // A reviewer's resolved reading of an escalator whose actual rate can't be
@@ -831,6 +844,20 @@ export interface AdditionalRecurringFee {
    *  usage data exists, never the contract's own term/cycle count. */
   metric_name?: string | null
   rate_per_unit?: number | null
+  /** Step 17D, item 4/10 — the canonical fact this fee's per-unit rate
+   *  actually multiplies (e.g. 'issued_payment_request_count'), resolved
+   *  through the SAME closed recognized-key/alias registry every other
+   *  execution path uses (lib/operational-input-canonicalization.ts, Step
+   *  17C.3c) — never inferred from metric_name's own free-text spelling,
+   *  which is display-only and not guaranteed to match the canonical form
+   *  syntactically. NULL means this fee has no execution path yet (the
+   *  historical/legacy case) — lib/per-unit-fee-pull.ts skips any fee
+   *  without one, exactly like the Unsupported-card fail-closed
+   *  convention elsewhere in this codebase. See
+   *  lib/usage-quantity-resolver.ts for how this key is what lets the
+   *  SAME configured meter feed this fee, an overage tier, and the
+   *  rolling migration simultaneously, without three separate mappings. */
+  semantic_input_key?: string | null
   /** Step 17A, item 11 (refined by hardening item 5) — the distinct
    *  operational quantities/measurements THIS fee's own rate directly
    *  depends on, when that's more than a single metric_name/rate_per_unit

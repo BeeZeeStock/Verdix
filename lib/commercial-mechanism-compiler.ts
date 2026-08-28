@@ -204,6 +204,40 @@ export function compileRollingBandMigration(mechanism: UnsupportedCommercialMech
   }
 }
 
+// Step 17D.1, item D — validates the EXPLICIT semantic_input_key field
+// extraction stated on a per-unit additional_recurring_fee or an
+// overage_tiers row (never inferred from metric_name/unit_type's own
+// free-text spelling — see this codebase's extraction prompt for the
+// analogous instruction to the model). Runs the same resolution the
+// compiler uses everywhere else (resolveRecognizedOperationalInputKey) so
+// the persisted field always holds either a canonical, recognized key or
+// null — never a raw, unvetted paraphrase a later billing-time reader
+// could be tricked into treating as a real identity. Fail closed: an
+// unrecognized value is nulled out, never left in place — this is what
+// "strict recognized canonical identities" means operationally, not
+// merely a display convention.
+export function resolveExtractedSemanticInputKeys(terms: ContractTerms): ContractTerms {
+  const additional_recurring_fees = terms.additional_recurring_fees?.map(fee => {
+    if (!fee.semantic_input_key) return fee
+    const resolved = resolveRecognizedOperationalInputKey(fee.semantic_input_key)
+    if (resolved === fee.semantic_input_key) return fee
+    return { ...fee, semantic_input_key: resolved }
+  })
+
+  const overage_tiers = terms.overage_tiers.map(tier => {
+    if (!tier.semantic_input_key) return tier
+    const resolved = resolveRecognizedOperationalInputKey(tier.semantic_input_key)
+    if (resolved === tier.semantic_input_key) return tier
+    return { ...tier, semantic_input_key: resolved }
+  })
+
+  return {
+    ...terms,
+    additional_recurring_fees: additional_recurring_fees ?? terms.additional_recurring_fees,
+    overage_tiers,
+  }
+}
+
 // Step 17C.3 — the single entry point lib/contract-extractor.ts's
 // applyExtractionSafetyNets calls. Maps compilePercentageOfBasisFee /
 // compileRollingBandMigration over every fee/mechanism on a freshly

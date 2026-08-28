@@ -43,11 +43,14 @@ export async function POST(req: NextRequest) {
   const quantity    = Math.max(1, Number(body.quantity ?? 1))
   const occurredAt  = body.occurred_at ? new Date(body.occurred_at).toISOString() : new Date().toISOString()
 
-  // Validate meter_key belongs to this org (or is a platform meter)
+  // Validate meter_key belongs to this org (or is a Verdix-platform system
+  // meter — Step 17D.1, item A: org_id is the sole ownership column, no
+  // more org_id IS NULL convention; is_platform_meter is the explicit,
+  // constraint-enforced escape hatch for 'sync'/'api_call'/'user'.
   const { data: meter } = await supabaseServer
     .from('billing_meters')
     .select('id')
-    .or(`org_id.is.null,org_id.eq.${sub.org_id}`)
+    .or(`is_platform_meter.eq.true,org_id.eq.${sub.org_id}`)
     .eq('meter_key', meterKey)
     .maybeSingle()
 

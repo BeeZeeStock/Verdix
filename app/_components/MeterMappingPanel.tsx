@@ -13,6 +13,12 @@ type MinimumCommitment = {
 
 type MeterSuggestion = {
   contract_unit_type: string
+  // Step 17D.1, item D/G — the canonical fact this contract requirement
+  // needs (e.g. 'issued_payment_request_count'), when extraction/runtime
+  // resolution recognized one. Drives which usage_period_values row a
+  // manual-entry fallback below writes to and reads back — never the raw
+  // contract_unit_type string, which is free text and not a stable key.
+  semantic_input_key?: string | null
   meter_key: string
   confidence: number
   // Server-computed: the best guess it could produce was still below a
@@ -175,6 +181,120 @@ function ManualInputEntry({ jobId, inputKey }: { jobId: string; inputKey: string
           {rows.map(r => (
             <p key={r.id} className="text-[10px] text-stone/70 font-mono">
               {r.period_start} – {r.period_end}: {r.value}{r.currency ? ` ${r.currency}` : ''} — {r.finalized_at ? 'final' : 'draft'}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Step 17D, item 13 / 17D.1, item G — one row as returned by
+// GET /api/jobs/[id]/usage-values (same append/revoke/finality discipline
+// as OperationalInputValueRow above, but a distinct table/model:
+// usage_period_values, keyed by semantic_input_key, backs this metric's
+// PRODUCTION billing quantity — never operational_input_period_values
+// (a different fact family, KPIs like paid_invoice_value) and never a
+// meter's mode='test'/test_usage_value (a per-meter simulation aid, not a
+// real recorded quantity).
+type UsagePeriodValueRow = {
+  id: string
+  semantic_input_key: string
+  period_start: string
+  period_end: string
+  quantity: number
+  finalized_at: string | null
+  status: 'active' | 'revoked'
+}
+
+// The actual data-entry surface for a metric a reviewer chose "Configure
+// manually instead" for (input_classification: 'meter_or_manual_input').
+// Writes through resolveUsageQuantityForPeriod's own manual fallback path
+// (lib/usage-quantity-resolver.ts), so a value entered here is what real
+// per-unit-fee/overage/rolling-migration execution actually reads — not a
+// preview-only or cosmetic field.
+function ManualUsageEntry({ jobId, semanticInputKey }: { jobId: string; semanticInputKey: string }) {
+  const [periodStart, setPeriodStart] = useState('')
+  const [periodEnd, setPeriodEnd] = useState('')
+  const [quantity, setQuantity] = useState('')
+  const [saving, setSaving] = useState<'draft' | 'final' | null>(null)
+  const [rows, setRows] = useState<UsagePeriodValueRow[]>([])
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    fetch(`/api/jobs/${jobId}/usage-values`)
+      .then(r => r.json())
+      .then((res: { values?: UsagePeriodValueRow[] }) => {
+        setRows((res.values ?? []).filter(v => v.semantic_input_key === semanticInputKey && v.status === 'active'))
+      })
+      .catch(() => {})
+  }, [jobId, semanticInputKey])
+
+  useEffect(() => { load() }, [load])
+
+  const save = async (isFinal: boolean) => {
+    const numericQuantity = Number(quantity)
+    if (!periodStart || !periodEnd || quantity.trim() === '' || !Number.isFinite(numericQuantity)) {
+      setMsg('Enter a period and a numeric quantity first.')
+      return
+    }
+    setSaving(isFinal ? 'final' : 'draft')
+    setMsg(null)
+    const res = await fetch(`/api/jobs/${jobId}/usage-values`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        semantic_input_key: semanticInputKey, period_start: periodStart, period_end: periodEnd,
+        quantity: numericQuantity, is_final: isFinal,
+      }),
+    }).catch(() => null)
+    setSaving(null)
+    if (!res?.ok) { setMsg('Save failed — try again.'); return }
+    setMsg(isFinal ? 'Marked final.' : 'Draft saved.')
+    setQuantity('')
+    load()
+  }
+
+  return (
+    <div className="mt-2 pt-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.06)' }}>
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-stone/70 mb-1.5">Enter usage manually</p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <input
+          type="date" value={periodStart} onChange={e => setPeriodStart(e.target.value)}
+          aria-label={`${semanticInputKey} period start`}
+          className="text-[11px] border rounded px-1.5 py-1" style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+        />
+        <span className="text-[11px] text-stone/60">–</span>
+        <input
+          type="date" value={periodEnd} onChange={e => setPeriodEnd(e.target.value)}
+          aria-label={`${semanticInputKey} period end`}
+          className="text-[11px] border rounded px-1.5 py-1" style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+        />
+        <input
+          type="number" placeholder="Quantity" value={quantity} onChange={e => setQuantity(e.target.value)}
+          aria-label={`${semanticInputKey} quantity`}
+          className="text-[11px] border rounded px-1.5 py-1 w-24" style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+        />
+        <button
+          onClick={() => save(false)} disabled={saving !== null}
+          className="text-[11px] font-medium text-stone hover:text-ink px-2 py-1 rounded border disabled:opacity-50"
+          style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+        >
+          {saving === 'draft' ? 'Saving…' : 'Save draft'}
+        </button>
+        <button
+          onClick={() => save(true)} disabled={saving !== null}
+          className="text-[11px] font-medium text-white px-2 py-1 rounded bg-forest hover:bg-sage disabled:opacity-50"
+        >
+          {saving === 'final' ? 'Saving…' : 'Mark final'}
+        </button>
+      </div>
+      {msg && <p className="text-[10px] text-stone/70 mt-1">{msg}</p>}
+      {rows.length > 0 && (
+        <div className="mt-1.5 space-y-0.5">
+          {rows.map(r => (
+            <p key={r.id} className="text-[10px] text-stone/70 font-mono">
+              {r.period_start} – {r.period_end}: {r.quantity} — {r.finalized_at ? 'final' : 'draft'}
             </p>
           ))}
         </div>
@@ -603,7 +723,15 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
           const matchedMeter = meters.find(m => m.meter_key === meterKey)
           const minCommitment = resolveMinimumCommitment(s)
           const classification = s.input_classification ?? 'meter'
-          const manualConfigured = classification === 'meter_or_manual_input' && get(s.contract_unit_type, 'manual_value_configured', s.manual_value_configured ?? false)
+          // Step 17D.2, item C — manual entry is available for ANY usage
+          // metric (anything reaching this point at all — derived/
+          // persisted_balance already returned above), never gated on the
+          // 'meter_or_manual_input' text-classification guess. The type of
+          // the commercial fact (a real usage metric needing a source) is
+          // what makes manual entry meaningful; classifyInput's
+          // chargeback/downtime pattern-match was never more than a weak
+          // hint about which source a reviewer might prefer by default.
+          const manualConfigured = get(s.contract_unit_type, 'manual_value_configured', s.manual_value_configured ?? false)
           const chooseManual = () => {
             setEdit(s.contract_unit_type, 'manual_value_configured', true)
             setEdit(s.contract_unit_type, 'meter_key', '')
@@ -682,16 +810,28 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
                         <i className="ti ti-user-check" style={{ fontSize: 11 }} /> Reviewer-confirmed mapping
                       </p>
                     )}
+                    {/* Step 17D.1, item G — this is the actual data-entry
+                        surface for the "manual entry" choice above; without
+                        it a reviewer could confirm manual entry with no way
+                        to ever record a real quantity. semantic_input_key
+                        must be present (extraction/runtime resolved it) —
+                        if not, there is no stable key to write against, so
+                        nothing is shown rather than guessing one. */}
+                    {manualConfigured && s.semantic_input_key && (
+                      <ManualUsageEntry jobId={jobId} semanticInputKey={s.semantic_input_key} />
+                    )}
                   </div>
                 ) : (
                   <>
                     {noMatch ? (
                       <div className="rounded-xl p-3 mb-3" style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}>
                         <p className="text-xs font-semibold flex items-center gap-1.5" style={{ color: '#991B1B' }}>
-                          <i className="ti ti-alert-triangle" style={{ fontSize: 13 }} /> No suitable meter found
+                          <i className="ti ti-alert-triangle" style={{ fontSize: 13 }} /> No suitable meter configured
                         </p>
                         <p className="text-[11px] mt-1" style={{ color: '#7F1D1D' }}>
-                          None of the registered meters is a clear semantic match for this contract term — select the correct one below, or register a new meter first.
+                          None of the registered meters is a clear semantic match for this contract term — select the correct one below,{' '}
+                          <a href="/settings/meters" className="underline underline-offset-2 font-medium hover:text-[#991B1B]">connect a new meter</a>,
+                          {' '}or enter usage manually instead (below).
                         </p>
                       </div>
                     ) : matchedMeter ? (
@@ -716,25 +856,23 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
                       ))}
                     </div>
 
-                    {/* meter_or_manual_input is the only classification where
-                        a reviewer legitimately has no meter to pick — the
-                        contract still needs a value each period, just not
-                        one Verdix pulls automatically. Shown as a peer
-                        choice to the meter list above, not a replacement
-                        for it — transaction-count-style metrics never see
-                        this option (classification stays 'meter'). */}
-                    {classification === 'meter_or_manual_input' && (
-                      <div className="mt-2 pt-2" style={{ borderTop: '1px dashed rgba(26,61,43,0.15)' }}>
-                        <label className="flex items-start gap-2 p-2 rounded-lg cursor-pointer transition-colors"
-                          style={{ background: 'transparent', border: '1px solid rgba(26,61,43,0.1)' }}>
-                          <input type="radio" name={`meter-${s.contract_unit_type}`} className="mt-0.5" checked={false} onChange={chooseManual} />
-                          <span>
-                            <span className="block text-xs font-semibold text-ink">Configure manually instead</span>
-                            <span className="block text-[11px] text-stone">No billing meter — the reviewer enters this value each period.</span>
-                          </span>
-                        </label>
-                      </div>
-                    )}
+                    {/* Step 17D.2, item C — every usage metric (any row
+                        that reaches this point at all — derived/
+                        persisted_balance never do) may be satisfied by
+                        manual entry, not only ones classifyInput happened
+                        to text-match as 'meter_or_manual_input'. Shown as
+                        a peer choice to the meter list above, never a
+                        replacement for it. */}
+                    <div className="mt-2 pt-2" style={{ borderTop: '1px dashed rgba(26,61,43,0.15)' }}>
+                      <label className="flex items-start gap-2 p-2 rounded-lg cursor-pointer transition-colors"
+                        style={{ background: 'transparent', border: '1px solid rgba(26,61,43,0.1)' }}>
+                        <input type="radio" name={`meter-${s.contract_unit_type}`} className="mt-0.5" checked={false} onChange={chooseManual} />
+                        <span>
+                          <span className="block text-xs font-semibold text-ink">Enter usage manually instead</span>
+                          <span className="block text-[11px] text-stone">No billing meter — the reviewer enters this value each period.</span>
+                        </span>
+                      </label>
+                    </div>
                   </>
                 )}
               </div>

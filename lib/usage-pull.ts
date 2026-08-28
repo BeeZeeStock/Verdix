@@ -5,7 +5,8 @@
 // silently diverge from each other.
 import { supabaseServer } from '@/lib/supabase'
 import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, findCadenceWindowContaining, isPartialWindow, isBillingWindowClosed, resolveWindowMinimum, clampWindowToContract, type CadenceAnchorMode } from '@/lib/tariff'
-import { createRemembillUsageConnector } from '@/lib/connectors/usage/remembill'
+import { pullMeterQuantity } from '@/lib/meter-quantity-pull'
+import { finalizeClosedPeriodUsageQuantity } from '@/lib/usage-quantity-resolver'
 import { resolveQualifiedUnitAggregateQuantitySource } from '@/lib/qualified-unit-aggregation-service'
 import { resolveCommercialQuantity, requireReadyCommercialQuantity } from '@/lib/commercial-quantity-source'
 import { resolveEffectiveCommercialStateForPeriod } from '@/lib/rolling-band-migration-pull'
@@ -52,6 +53,12 @@ type MeterCfg = {
   // commercially without ever depending on the arbitrary meter_key — see
   // lib/commercial-component-scope.ts.
   contract_unit_type: string | null
+  // Step 17D.1, item H/I — when set, a real (non-preview) closed-window
+  // pull for this mapping also finalizes the SAME pulled quantity into
+  // resolved_usage_period_snapshots (lib/usage-quantity-resolver.ts's
+  // finalizeClosedPeriodUsageQuantity) — one pull, one authoritative
+  // record, never a second independent pull just to snapshot.
+  semantic_input_key: string | null
   overage_tiers: Array<{
     from_unit?: number | null
     to_unit?: number | null
@@ -183,7 +190,7 @@ export async function computeOverageForPeriod(params: {
   // genuinely per-agreement.
   const { data: meterConfigs } = await supabaseServer
     .from('contract_meter_mappings')
-    .select('meter_key, included_units, overage_tiers, billing_cycle, contract_unit_type')
+    .select('meter_key, included_units, overage_tiers, billing_cycle, contract_unit_type, semantic_input_key')
     .eq('job_id', jobId)
     .eq('confirmed', true)
 
@@ -208,11 +215,18 @@ export async function computeOverageForPeriod(params: {
       const cadenceAnchor: CadenceAnchorMode =
         cfg.overage_tiers?.some(t => t.reset_anchor === 'calendar') ? 'calendar' : 'contract_start'
 
+      // Step 17D.1, item A — billing_meters.org_id is the sole ownership
+      // column (no more org_id IS NULL platform-catalog fallback — every
+      // real business meter now has a real owning org). Step 17D.2, item A
+      // — is_platform_meter=false stated explicitly too: a customer
+      // contract's overage/per-unit execution must never resolve against a
+      // genuine Verdix system meter.
       const { data: meterDef } = await supabaseServer
         .from('billing_meters')
         .select('pull_endpoint_url, pull_auth_token, pull_param_name, mode, test_usage_value, connector, response_metric_key')
-        .or(`org_id.is.null,org_id.eq.${orgId}`)
+        .eq('org_id', orgId)
         .eq('meter_key', cfg.meter_key)
+        .eq('is_platform_meter', false)
         .maybeSingle()
 
       const def = meterDef as MeterDef | null
@@ -292,35 +306,26 @@ export async function computeOverageForPeriod(params: {
         // Actual usage query uses measureStart/measureEnd (clamped to the
         // contract's real start/end), never the true unclamped cadence
         // start/end — see the comment on the windows construction above.
-        const windowStartUnix = Math.floor(window.measureStart.getTime() / 1000)
-        const windowEndUnix   = Math.floor(window.measureEnd.getTime()   / 1000) + 86_399 // 23:59:59 on the end date
+        const windowEndUnix = Math.floor(window.measureEnd.getTime() / 1000) + 86_399 // 23:59:59 on the end date
 
         // Test mode swaps the input source to the admin's last-simulated
         // reading instead of the real endpoint — that's the whole point of
         // testing it. Real billing (invoice-scheduler) still refuses to
         // invoice off a test-mode meter at all, regardless of this value.
+        //
+        // Step 17D, item 11 — the test/remembill/generic-endpoint dispatch
+        // itself now lives in lib/meter-quantity-pull.ts's
+        // pullMeterQuantity, shared with lib/usage-quantity-resolver.ts,
+        // rather than only existing inline here. Behavior unchanged: same
+        // order, same fallback, same continue-with-a-log-line-never-throw
+        // discipline. periodEnd passed below is the ALREADY window-end-of-
+        // day-adjusted instant (windowEndUnix above) — Remembill's own
+        // connector only reads the calendar-date portion (unaffected by
+        // time-of-day), and the generic pull_endpoint_url branch needs
+        // exactly this adjusted value as its own period_end query param,
+        // matching this code's pre-extraction behavior exactly.
         let totalUnits: number
-        if (def?.mode === 'test') {
-          if (!ignoreTestModeGate) {
-            console.warn(`[usage-pull] meter '${cfg.meter_key}' org ${orgId} still in test mode — skipping real overage`)
-            continue
-          }
-          if (def.test_usage_value == null) continue
-          totalUnits = def.test_usage_value
-        } else if (def?.connector === 'remembill') {
-          try {
-            const readings = await createRemembillUsageConnector(orgId).pullUsage({
-              customerId,
-              periodStart: window.measureStart,
-              periodEnd:   window.measureEnd,
-            })
-            const metricKey = def.response_metric_key ?? cfg.meter_key.toUpperCase()
-            totalUnits = readings.find(r => r.metric === metricKey)?.quantity ?? 0
-          } catch (err) {
-            console.error(`[usage-pull] remembill pull failed for meter '${cfg.meter_key}' org ${orgId}:`, err)
-            continue
-          }
-        } else if (def?.connector === 'qualified_unit_aggregate') {
+        if (def?.connector === 'qualified_unit_aggregate') {
           // Step 16B.4 — a Verdix-owned, contractually-qualified quantity
           // (lib/qualified-unit-aggregation.ts) is a legitimate commercial
           // quantity source in its own right, not a fake external meter —
@@ -357,28 +362,37 @@ export async function computeOverageForPeriod(params: {
             totalUnits = resolved.quantity
           }
         } else {
-          if (!def?.pull_endpoint_url) {
-            console.warn(`[usage-pull] no pull endpoint for meter '${cfg.meter_key}' org ${orgId}`)
+          const pulled = await pullMeterQuantity({
+            orgId, meterKey: cfg.meter_key, def, customerId,
+            periodStart: window.measureStart,
+            periodEnd: new Date(windowEndUnix * 1000),
+            ignoreTestModeGate,
+          })
+          if (pulled.status === 'skip') {
+            console.warn(`[usage-pull] ${pulled.reason}`)
             continue
           }
+          totalUnits = pulled.totalUnits
 
-          const pullUrl = new URL(def.pull_endpoint_url)
-          pullUrl.searchParams.set('customer_id',  customerId)
-          pullUrl.searchParams.set('period_start', String(windowStartUnix))
-          pullUrl.searchParams.set('period_end',   String(windowEndUnix))
-          pullUrl.searchParams.set(def.pull_param_name ?? 'billing_parameter', cfg.meter_key)
-
-          const pullHeaders: Record<string, string> = {}
-          if (def.pull_auth_token) pullHeaders['Authorization'] = `Bearer ${def.pull_auth_token}`
-
-          const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
-          if (!pullRes.ok) {
-            console.error(`[usage-pull] pull failed for meter '${cfg.meter_key}' (${pullRes.status})`)
-            continue
+          // Step 17D.1, item H/I — real (non-preview) billing for a
+          // genuinely closed window (guaranteed by the isRealBilling throw
+          // check above) finalizes the EXACT quantity just pulled as the
+          // authoritative closed-period measurement — one pull, reused for
+          // both the invoice and the durable snapshot, never a second
+          // independent pull. Idempotent (finalizeClosedPeriodUsageQuantity
+          // never overwrites an existing pin). Best-effort: awaited so the
+          // snapshot is durable before this function returns, but any
+          // internal failure is caught and logged here, never allowed to
+          // fail the real invoice this loop iteration is building. Never
+          // runs for a live preview (isRealBilling false) or a meter with
+          // no declared semantic_input_key.
+          if (isRealBilling && cfg.semantic_input_key) {
+            await finalizeClosedPeriodUsageQuantity({
+              jobId, orgId, semanticInputKey: cfg.semantic_input_key,
+              periodStart: window.measureStart, periodEnd: new Date(windowEndUnix * 1000),
+              quantity: totalUnits, source: 'meter', meterKey: cfg.meter_key,
+            }).catch(err => console.error(`[usage-pull] failed to finalize closed-period snapshot for meter '${cfg.meter_key}' org ${orgId}:`, err))
           }
-
-          const usageData = await pullRes.json() as { total_billable_units?: number | string }
-          totalUnits = Number(usageData.total_billable_units ?? 0)
         }
         if (totalUnits <= 0 && !includeZeroUsage) continue
 

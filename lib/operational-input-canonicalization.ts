@@ -89,6 +89,11 @@ const RECOGNIZED_CANONICAL_OPERATIONAL_INPUT_KEYS = new Set<string>([
   'paid_invoice_value',
   'total_invoice_value_of_issued_requests',
   'issued_payment_request_count',
+  // Step 17D — the €0.38 per-unit fee's sibling €1.70 success fee depends
+  // on this same countable concept; recognized here so both
+  // lib/usage-quantity-resolver.ts (meter/manual source matching) and any
+  // future compiled execution config can resolve it consistently.
+  'completed_payment_count',
 ])
 
 function slugify(rawLabel: string): string {

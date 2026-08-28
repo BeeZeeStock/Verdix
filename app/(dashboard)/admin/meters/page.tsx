@@ -5,17 +5,20 @@ import { useEffect, useState, useCallback } from 'react'
 type Meter = {
   id:                  string
   org_id:              string | null
+  is_platform_meter:   boolean
   org_name:            string | null
   meter_key:           string
   display_name:        string
   unit_label:          string
   description:         string | null
+  semantic_input_key:  string | null
   pull_endpoint_url:   string | null
   pull_param_name:     string
   pull_auth_token_set: boolean
   mode:                'test' | 'live'
   test_usage_value:    number | null
   connector:           string | null
+  response_metric_key: string | null
   created_at:          string
 }
 
@@ -28,29 +31,46 @@ function RemembillLogo() {
 }
 
 type EditState = {
-  display_name:      string
-  unit_label:        string
-  description:       string
-  pull_endpoint_url: string
-  pull_param_name:   string
-  pull_auth_token:   string
-  replace_token:     boolean
-  clear_token:       boolean
+  display_name:       string
+  unit_label:         string
+  description:        string
+  semantic_input_key: string
+  pull_endpoint_url:  string
+  pull_param_name:    string
+  pull_auth_token:    string
+  replace_token:      boolean
+  clear_token:        boolean
 }
 
+// Step 17D.2, item B — the admin add-meter form must actually be able to
+// create a meter at all (it previously never sent target_org_id, so every
+// submission unconditionally 400'd server-side — see handleAdd's fix
+// below), and must support the same connector/response_metric_key/
+// semantic_input_key fields the customer-facing form does, since this IS
+// the "authorized Verdix admin acting for a design partner" path item B
+// describes — the org itself still comes from an explicit target, never
+// an arbitrary client-side default, and is validated server-side via
+// resolveSourceManagementAuthorization regardless of what's entered here.
+type SourceType = 'generic' | 'remembill'
+
 type AddState = {
-  meter_key:         string
-  display_name:      string
-  unit_label:        string
-  description:       string
-  pull_endpoint_url: string
-  pull_param_name:   string
-  pull_auth_token:   string
+  target_org_id:       string
+  meter_key:           string
+  display_name:        string
+  unit_label:          string
+  description:         string
+  semantic_input_key:  string
+  source_type:         SourceType
+  response_metric_key: string
+  pull_endpoint_url:   string
+  pull_param_name:     string
+  pull_auth_token:     string
 }
 
 const EMPTY_ADD: AddState = {
-  meter_key: '', display_name: '', unit_label: '',
-  description: '', pull_endpoint_url: '', pull_param_name: 'billing_parameter', pull_auth_token: '',
+  target_org_id: '', meter_key: '', display_name: '', unit_label: '',
+  description: '', semantic_input_key: '', source_type: 'generic', response_metric_key: '',
+  pull_endpoint_url: '', pull_param_name: 'billing_parameter', pull_auth_token: '',
 }
 
 function TokenField({
@@ -88,7 +108,7 @@ export default function AdminMetersPage() {
   const [loading,  setLoading]  = useState(true)
   const [editId,   setEditId]   = useState<string | null>(null)
   const [editVals, setEditVals] = useState<EditState>({
-    display_name: '', unit_label: '', description: '',
+    display_name: '', unit_label: '', description: '', semantic_input_key: '',
     pull_endpoint_url: '', pull_param_name: 'billing_parameter',
     pull_auth_token: '', replace_token: false, clear_token: false,
   })
@@ -126,14 +146,15 @@ export default function AdminMetersPage() {
   const startEdit = (m: Meter) => {
     setEditId(m.id)
     setEditVals({
-      display_name:      m.display_name,
-      unit_label:        m.unit_label,
-      description:       m.description ?? '',
-      pull_endpoint_url: m.pull_endpoint_url ?? '',
-      pull_param_name:   m.pull_param_name ?? 'billing_parameter',
-      pull_auth_token:   '',
-      replace_token:     false,
-      clear_token:       false,
+      display_name:       m.display_name,
+      unit_label:         m.unit_label,
+      description:        m.description ?? '',
+      semantic_input_key: m.semantic_input_key ?? '',
+      pull_endpoint_url:  m.pull_endpoint_url ?? '',
+      pull_param_name:    m.pull_param_name ?? 'billing_parameter',
+      pull_auth_token:    '',
+      replace_token:      false,
+      clear_token:        false,
     })
     setMsg(null)
   }
@@ -142,13 +163,14 @@ export default function AdminMetersPage() {
     if (!editId) return
     setSaving(true); setMsg(null)
     const body: Record<string, unknown> = {
-      action:            'update',
-      id:                editId,
-      display_name:      editVals.display_name,
-      unit_label:        editVals.unit_label,
-      description:       editVals.description || null,
-      pull_endpoint_url: editVals.pull_endpoint_url || null,
-      pull_param_name:   editVals.pull_param_name || 'billing_parameter',
+      action:             'update',
+      id:                 editId,
+      display_name:       editVals.display_name,
+      unit_label:         editVals.unit_label,
+      description:        editVals.description || null,
+      semantic_input_key: editVals.semantic_input_key || null,
+      pull_endpoint_url:  editVals.pull_endpoint_url || null,
+      pull_param_name:    editVals.pull_param_name || 'billing_parameter',
     }
     if (editVals.clear_token)                          body.clear_auth_token = true
     else if (editVals.replace_token && editVals.pull_auth_token) body.pull_auth_token = editVals.pull_auth_token
@@ -182,16 +204,27 @@ export default function AdminMetersPage() {
 
   const handleAdd = async () => {
     setAdding(true); setMsg(null)
+    // Step 17D.2, item B — target_org_id must actually be sent: the server
+    // (app/api/admin/meters/route.ts) requires it and validates it via
+    // resolveSourceManagementAuthorization — previously omitted here
+    // entirely, so every submission of this form 400'd unconditionally.
     const row: Record<string, unknown> = {
-      action:            'add',
-      meter_key:         addForm.meter_key,
-      display_name:      addForm.display_name,
-      unit_label:        addForm.unit_label,
-      description:       addForm.description || null,
-      pull_endpoint_url: addForm.pull_endpoint_url || null,
-      pull_param_name:   addForm.pull_param_name || 'billing_parameter',
+      action:              'add',
+      target_org_id:       addForm.target_org_id.trim(),
+      meter_key:           addForm.meter_key,
+      display_name:        addForm.display_name,
+      unit_label:          addForm.unit_label,
+      description:         addForm.description || null,
+      semantic_input_key:  addForm.semantic_input_key || undefined,
     }
-    if (addForm.pull_auth_token) row.pull_auth_token = addForm.pull_auth_token
+    if (addForm.source_type === 'remembill') {
+      row.connector = 'remembill'
+      row.response_metric_key = addForm.response_metric_key
+    } else {
+      row.pull_endpoint_url = addForm.pull_endpoint_url || null
+      row.pull_param_name   = addForm.pull_param_name || 'billing_parameter'
+      if (addForm.pull_auth_token) row.pull_auth_token = addForm.pull_auth_token
+    }
     const { ok, data } = await post(row)
     if (ok) {
       setMsg({ ok: true, text: `Added '${data.meter?.meter_key}' ✓` })
@@ -205,8 +238,13 @@ export default function AdminMetersPage() {
   if (loading) return <div className="p-8 text-stone text-sm">Loading…</div>
 
   const remembillMeters = meters.filter(m => m.connector === 'remembill')
-  const platformMeters  = meters.filter(m => m.org_id === null && m.connector !== 'remembill')
-  const orgMeters       = meters.filter(m => m.org_id !== null && m.connector !== 'remembill')
+  // Step 17D.2, item A — is_platform_meter is the real, explicit signal
+  // for "genuine Verdix system meter" now, not an org_id === null
+  // coincidence (a customer-owned meter could theoretically also carry
+  // org_id null in some future state; is_platform_meter never can without
+  // meaning it).
+  const platformMeters  = meters.filter(m => m.is_platform_meter && m.connector !== 'remembill')
+  const orgMeters       = meters.filter(m => !m.is_platform_meter && m.connector !== 'remembill')
   const orgGroups      = new Map<string, { name: string; meters: Meter[] }>()
   for (const m of orgMeters) {
     const key = m.org_id!
@@ -237,6 +275,13 @@ export default function AdminMetersPage() {
               <input value={editVals.description}
                 onChange={e => setEditVals(v => ({ ...v, description: e.target.value }))}
                 className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest" />
+            </div>
+            <div>
+              <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Semantic input key</label>
+              <input value={editVals.semantic_input_key}
+                onChange={e => setEditVals(v => ({ ...v, semantic_input_key: e.target.value }))}
+                placeholder="e.g. issued_payment_request_count"
+                className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
             </div>
           </div>
           <div className="border-t border-forest/8 pt-3 space-y-3">
@@ -299,10 +344,15 @@ export default function AdminMetersPage() {
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-ink">{m.display_name}</div>
           {m.description && <div className="text-xs text-stone">{m.description}</div>}
+          {m.semantic_input_key && (
+            <div className="text-[10px] text-stone/50 font-mono truncate">↳ {m.semantic_input_key}</div>
+          )}
           {m.connector === 'remembill' ? (
             <div className="text-[10px] font-mono text-stone/50 truncate mt-1 flex items-center gap-1">
               <RemembillLogo />
-              <span className="not-italic font-sans">Pulled via the Remembill connector — no endpoint to configure</span>
+              <span className="not-italic font-sans">
+                Pulled via the Remembill connector{m.response_metric_key ? ` — response metric: ${m.response_metric_key}` : ''} — no endpoint to configure
+              </span>
             </div>
           ) : m.pull_endpoint_url ? (
             <div className="text-[10px] font-mono text-stone/50 truncate mt-1">
@@ -389,24 +439,43 @@ export default function AdminMetersPage() {
 
           {showAdd && (
             <div className="px-6 py-5 border-t border-forest/8 bg-forest/2 space-y-4">
-              <div className="text-xs font-semibold text-stone uppercase tracking-widest">New platform meter</div>
+              {/* Step 17D.2, item B — this creates a meter OWNED by a
+                  target organization (a design-partner, e.g. Remembill) —
+                  never a new platform-system meter (sync/api_call/user are
+                  a fixed, already-seeded set; there is no "add" flow for
+                  them, since is_platform_meter is never settable through
+                  this form). target_org_id is validated server-side via
+                  resolveSourceManagementAuthorization — the org typed here
+                  is a real target, never an arbitrary client-trusted value. */}
+              <div>
+                <div className="text-xs font-semibold text-stone uppercase tracking-widest">New meter for a design-partner organization</div>
+                <p className="text-[10px] text-stone/60 mt-0.5">Platform meters (sync, api_call, user) are fixed and already registered — this creates an org-owned meter, the same as an org admin could through their own Settings → Billing meters.</p>
+              </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">
+                  Target organization ID <span className="text-red-400 normal-case font-normal">required</span>
+                </label>
+                <input value={addForm.target_org_id} onChange={e => setAdd('target_org_id')(e.target.value)}
+                  placeholder="org UUID — visible below once the org has a meter, or ask the org"
+                  className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
+              </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div>
                   <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Key</label>
                   <input value={addForm.meter_key} onChange={e => setAdd('meter_key')(e.target.value)}
-                    placeholder="e.g. api_call"
+                    placeholder="e.g. payment_requests_issued"
                     className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
                 </div>
                 <div>
                   <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Display name</label>
                   <input value={addForm.display_name} onChange={e => setAdd('display_name')(e.target.value)}
-                    placeholder="e.g. API Call"
+                    placeholder="e.g. Payment Requests Issued"
                     className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest" />
                 </div>
                 <div>
                   <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Unit</label>
                   <input value={addForm.unit_label} onChange={e => setAdd('unit_label')(e.target.value)}
-                    placeholder="e.g. call"
+                    placeholder="e.g. request"
                     className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest" />
                 </div>
                 <div>
@@ -416,27 +485,59 @@ export default function AdminMetersPage() {
                     className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest" />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div className="col-span-2">
-                  <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Pull endpoint URL</label>
-                  <input type="url" value={addForm.pull_endpoint_url} onChange={e => setAdd('pull_endpoint_url')(e.target.value)}
-                    placeholder="https://…/usage  or  /api/internal/usage"
-                    className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Param name</label>
-                  <input value={addForm.pull_param_name} onChange={e => setAdd('pull_param_name')(e.target.value)}
-                    className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
-                </div>
-              </div>
               <div>
-                <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Auth token (Bearer)</label>
-                <input type="password" value={addForm.pull_auth_token} onChange={e => setAdd('pull_auth_token')(e.target.value)}
-                  placeholder="For /api/internal/usage use INTERNAL_API_SECRET value"
+                <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Semantic input key</label>
+                <input value={addForm.semantic_input_key} onChange={e => setAdd('semantic_input_key')(e.target.value)}
+                  placeholder="e.g. issued_payment_request_count (optional)"
                   className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
               </div>
+
+              <div className="flex gap-2">
+                {(['generic', 'remembill'] as SourceType[]).map(t => (
+                  <button key={t} type="button" onClick={() => setAddForm(f => ({ ...f, source_type: t }))}
+                    className={`flex-1 text-left px-3 py-2.5 rounded-xl border text-xs transition-colors ${addForm.source_type === t ? 'border-forest/40 bg-white' : 'border-forest/15 hover:bg-white/60'}`}>
+                    <span className="block font-semibold text-ink">{t === 'generic' ? 'Generic HTTP endpoint' : 'Remembill'}</span>
+                  </button>
+                ))}
+              </div>
+
+              {addForm.source_type === 'remembill' ? (
+                <div>
+                  <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">
+                    Response metric key <span className="text-red-400 normal-case font-normal">required</span>
+                  </label>
+                  <input value={addForm.response_metric_key} onChange={e => setAdd('response_metric_key')(e.target.value)}
+                    placeholder="e.g. PAYMENT_REQUEST_ISSUED"
+                    className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
+                  <p className="text-[10px] text-stone/60 mt-1">Requires the target org to have an active Remembill connection.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="col-span-2">
+                      <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Pull endpoint URL</label>
+                      <input type="url" value={addForm.pull_endpoint_url} onChange={e => setAdd('pull_endpoint_url')(e.target.value)}
+                        placeholder="https://…/usage  or  /api/internal/usage"
+                        className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Param name</label>
+                      <input value={addForm.pull_param_name} onChange={e => setAdd('pull_param_name')(e.target.value)}
+                        className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1">Auth token (Bearer)</label>
+                    <input type="password" value={addForm.pull_auth_token} onChange={e => setAdd('pull_auth_token')(e.target.value)}
+                      placeholder="For /api/internal/usage use INTERNAL_API_SECRET value"
+                      className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
+                  </div>
+                </>
+              )}
+
               <div className="flex items-center gap-2">
-                <button onClick={handleAdd} disabled={adding || !addForm.meter_key || !addForm.display_name || !addForm.unit_label}
+                <button onClick={handleAdd}
+                  disabled={adding || !addForm.target_org_id.trim() || !addForm.meter_key || !addForm.display_name || !addForm.unit_label || (addForm.source_type === 'remembill' && !addForm.response_metric_key.trim())}
                   className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-forest text-white hover:bg-sage transition-colors disabled:opacity-40">
                   {adding ? 'Adding…' : 'Add'}
                 </button>

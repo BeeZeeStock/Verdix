@@ -62,10 +62,13 @@ function clampToContractEffectivePeriod(
 async function pullMetricUsageForWindow(params: {
   orgId: string; meterKey: string; customerId: string; windowStart: Date; windowEnd: Date
 }): Promise<number> {
+  // Step 17D.1, item A — org_id is the sole ownership column; a genuine
+  // Verdix-platform system meter (is_platform_meter) resolves for any
+  // calling org, never via a bare org_id IS NULL convention.
   const { data: meterDef } = await supabaseServer
     .from('billing_meters')
     .select('pull_endpoint_url, pull_auth_token, pull_param_name, mode, test_usage_value, connector, response_metric_key')
-    .or(`org_id.is.null,org_id.eq.${params.orgId}`)
+    .or(`is_platform_meter.eq.true,org_id.eq.${params.orgId}`)
     .eq('meter_key', params.meterKey)
     .maybeSingle()
 

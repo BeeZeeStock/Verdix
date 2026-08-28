@@ -23,23 +23,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { requireAdmin } from '@/lib/admin'
+import { resolveSourceManagementAuthorization } from '@/lib/org-lifecycle'
 import { getOrgSubscription, getPlan } from '@/lib/billing'
 import { computeMetricOverage, describeTieredUsage } from '@/lib/tariff'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { OverageTier, TierCalculationMethod } from '@/lib/types'
-
-async function resolveOrgId(req: NextRequest, bodyOrgId: string | undefined): Promise<string | Response> {
-  if (bodyOrgId) {
-    try { await requireAdmin() } catch (res) { return res as Response }
-    return bodyOrgId
-  }
-  try {
-    const org = await requireOrg('admin')
-    return org.orgId
-  } catch (res) {
-    return res as Response
-  }
-}
 
 export async function POST(req: NextRequest) {
   const body = await req.json() as { meter_id?: string; test_value?: number; org_id?: string; job_id?: string }
@@ -49,26 +37,67 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'meter_id and a non-negative test_value are required' }, { status: 400 })
   }
 
-  const orgIdOrRes = await resolveOrgId(req, body.org_id)
-  if (orgIdOrRes instanceof Response) return orgIdOrRes
-  const orgId = orgIdOrRes
-
   const { data: meter } = await supabaseServer
     .from('billing_meters')
-    .select('id, org_id, meter_key, display_name, unit_label')
+    .select('id, org_id, is_platform_meter, meter_key, display_name, unit_label')
     .eq('id', meterId)
     .maybeSingle()
-
   if (!meter) return NextResponse.json({ error: 'Meter not found' }, { status: 404 })
-  if (meter.org_id !== null && meter.org_id !== orgId) {
-    return NextResponse.json({ error: 'Meter does not belong to this organisation' }, { status: 403 })
+
+  // Step 17D.2, item A — the meter's own shape (is_platform_meter vs a
+  // real customer-owned org_id) decides which access path is valid, not
+  // merely whether body.org_id was supplied. A genuine platform-system
+  // meter (sync/api_call/user) is what makes "internal Verdix subscription
+  // billing can still resolve sync/api_call/user" true for THIS preview
+  // route too — every org's own admin may preview their own self-serve
+  // bill against it, and a Verdix platform admin may additionally do so
+  // (or persist a QA test reading) for any org. A real customer-owned
+  // meter (Remembill's, or any future org's) is the thing that must never
+  // be editable cross-tenant except through the SAME design-partner-gated
+  // authorization every other cross-tenant source-management route uses —
+  // a blanket requireAdmin() here would have let ANY Verdix admin mutate
+  // ANY org's own meter (including a production customer's), bypassing
+  // the whole lifecycle_stage model.
+  let orgId: string
+  let persistTestValue = true
+  if (meter.is_platform_meter) {
+    if (body.org_id) {
+      try { await requireAdmin() } catch (res) { return res as Response }
+      orgId = body.org_id
+    } else {
+      try { orgId = (await requireOrg('admin')).orgId } catch (res) { return res as Response }
+      // An ordinary org's own self-serve preview of the shared platform
+      // meter must never persist onto that single, org-independent row —
+      // that would let one org's preview silently clobber what every
+      // other org (and Verdix's own internal engine) reads next. Only a
+      // genuine Verdix platform admin (the body.org_id branch above) may
+      // record a real test reading on it.
+      persistTestValue = false
+    }
+  } else {
+    if (body.org_id) {
+      let adminEmail: string
+      try { adminEmail = await requireAdmin() } catch (res) { return res as Response }
+      const authz = await resolveSourceManagementAuthorization(body.org_id, adminEmail)
+      if (!authz.canManageSources) {
+        return NextResponse.json({ error: `Not authorized to manage sources for this organization (${authz.reason})` }, { status: 403 })
+      }
+      orgId = body.org_id
+    } else {
+      try { orgId = (await requireOrg('admin')).orgId } catch (res) { return res as Response }
+    }
+    if (meter.org_id !== orgId) {
+      return NextResponse.json({ error: 'Meter does not belong to this organisation' }, { status: 403 })
+    }
   }
 
-  // Persist the simulated reading on the meter so it's visible in the Meters GUI too.
-  await supabaseServer
-    .from('billing_meters')
-    .update({ test_usage_value: testValue, test_usage_updated_at: new Date().toISOString() })
-    .eq('id', meterId)
+  if (persistTestValue) {
+    // Persist the simulated reading on the meter so it's visible in the Meters GUI too.
+    await supabaseServer
+      .from('billing_meters')
+      .update({ test_usage_value: testValue, test_usage_updated_at: new Date().toISOString() })
+      .eq('id', meterId)
+  }
 
   let mappingsQuery = supabaseServer
     .from('contract_meter_mappings')

@@ -34,6 +34,7 @@
 import { supabaseServer } from '@/lib/supabase'
 import { getLastNCompletedCadenceWindows } from '@/lib/tariff'
 import { resolveInputValueAsOf, type OperationalInputPeriodValueRow } from '@/lib/operational-input-binding'
+import { resolveUsageQuantityForPeriod } from '@/lib/usage-quantity-resolver'
 import { resolveFixedFeeBand } from '@/lib/fixed-fee-band'
 import { evaluateRollingBandTransition, resolveTransitionLifecycleStatus, type RollingBandTransitionEvaluation } from '@/lib/rolling-band-transition'
 import { reconcileFutureScheduleForTransition, type ScheduleReconciliationResult } from '@/lib/rolling-band-schedule-reconciliation'
@@ -60,13 +61,33 @@ function formatLongDate(iso: string): string {
 
 // Read-only: resolves the rolling aggregate + trigger + band selection for
 // every 'executable' rolling_band_migration mechanism on this contract, as
-// of the given instant. Never writes to the database.
+// of the given instant. Never writes to the database (except, indirectly,
+// resolveUsageQuantityForPeriod's own closed-period snapshot pin — see
+// its own header; this function's OWN semantics — RollingWindowAggregate /
+// PricingTransition — are unchanged, Step 17D item 12's explicit
+// constraint).
+//
+// Step 17D.1, item H/I — orgId is optional so any caller that hasn't been
+// updated keeps its exact prior behavior (manual
+// operational_input_period_values entry only, never attempting meter
+// resolution). When supplied, a CLOSED period first tries the confirmed
+// usage-meter source via lib/usage-quantity-resolver.ts's mode:
+// 'closed_period_read' — this function ONLY ever reads an already-
+// finalized snapshot (or, absent one, a fresh non-persisting read); it
+// never itself pins the authoritative closed-period measurement (that is
+// reserved for the real billing-close execution path — see
+// finalizeClosedPeriodUsageQuantity), so calling this speculatively/
+// repeatedly (a preview route, a cron tick before the real close event)
+// can never accidentally decide history. Falls back to the existing
+// manual entry when nothing is available, preserving every existing
+// historical/audit guarantee either way.
 export async function evaluateRollingBandMigrations(params: {
   jobId: string
+  orgId?: string
   terms: ContractTerms
   asOf?: string
 }): Promise<RollingBandMigrationMechanismEvaluation[]> {
-  const { jobId, terms } = params
+  const { jobId, orgId, terms } = params
   const asOf = params.asOf ?? new Date().toISOString()
   const asOfDate = new Date(asOf)
 
@@ -131,10 +152,19 @@ export async function evaluateRollingBandMigrations(params: {
     }
 
     const valueRows = (rows ?? []) as OperationalInputPeriodValueRow[]
-    const periodValues: RollingWindowPeriodValue[] = periodBounds.map(p => ({
-      period_start: p.start,
-      period_end: p.end,
-      value: resolveInputValueAsOf(valueRows, config.aggregate.input_key, p.start, p.end, asOf),
+    const periodValues: RollingWindowPeriodValue[] = await Promise.all(periodBounds.map(async p => {
+      if (orgId) {
+        const resolved = await resolveUsageQuantityForPeriod({
+          jobId, orgId, semanticInputKey: config.aggregate.input_key,
+          periodStart: new Date(p.start + 'T00:00:00'), periodEnd: new Date(p.end + 'T23:59:59'),
+          asOf: asOfDate, mode: 'closed_period_read',
+        })
+        if (resolved.ready) return { period_start: p.start, period_end: p.end, value: resolved.quantity }
+      }
+      // No confirmed meter mapping for this fact (or orgId not supplied) —
+      // fall back to manual operational_input_period_values entry, exactly
+      // as before Step 17D.
+      return { period_start: p.start, period_end: p.end, value: resolveInputValueAsOf(valueRows, config.aggregate.input_key, p.start, p.end, asOf) }
     }))
 
     const evaluation = evaluateRollingBandTransition({

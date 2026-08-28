@@ -96,7 +96,7 @@ export async function GET(
   const owned = await loadOwnedJobWithTerms(jobId, org.orgId)
   if (!owned) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
-  const evaluations = owned.terms ? await evaluateRollingBandMigrations({ jobId, terms: owned.terms }) : []
+  const evaluations = owned.terms ? await evaluateRollingBandMigrations({ jobId, orgId: owned.orgId, terms: owned.terms }) : []
 
   const { data: rows, error } = await supabaseServer
     .from('rolling_band_pricing_transitions')

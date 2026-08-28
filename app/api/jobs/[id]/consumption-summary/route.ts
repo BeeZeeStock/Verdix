@@ -20,6 +20,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { computeOverageForPeriod, type OverageLineItem } from '@/lib/usage-pull'
+import { computePerUnitFeeLineItemsForPeriod } from '@/lib/per-unit-fee-pull'
 import { isPartialWindow } from '@/lib/tariff'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { ContractTerms } from '@/lib/types'
@@ -120,6 +121,18 @@ export async function GET(
         billingAsOfUnix:     Math.floor(Date.now() / 1000),
         livePreviewAsOfUnix: Math.floor(Date.now() / 1000),
       }).catch(() => [])
+      // Step 17D.1, item J — the newly-executable per-unit fee (e.g. the
+      // €0.38 request fee) gets the SAME live-preview treatment as
+      // overage: a fresh, non-durable read (finalize omitted/false —
+      // never pins resolved_usage_period_snapshots from a preview
+      // request), concatenated into the same OverageLineItem list this
+      // screen already renders.
+      overageItems = overageItems.concat(
+        await computePerUnitFeeLineItemsForPeriod({
+          jobId, orgId: org.orgId, terms, currency: row.currency ?? terms.currency ?? 'EUR',
+          periodStart, periodEnd, includeZeroAmount: true,
+        }).catch(() => []),
+      )
     } else if (status === 'future' && terms) {
       const seen = new Set<string>()
       const contractStart = terms.contract_start_date ? new Date(terms.contract_start_date + 'T00:00:00') : null

@@ -104,11 +104,16 @@ export async function runBillingForOrg(
       let count = 0
       let pulledFromEndpoint = false
 
-      // Try registered pull endpoint first
+      // Try registered pull endpoint first. Step 17D.1, item A — org_id
+      // is the sole ownership column now; 'sync'/'api_call'/'user' stay
+      // resolvable for every org via the explicit is_platform_meter flag
+      // (never a bare org_id IS NULL convention — see that migration's
+      // own header for why this is a deliberately justified exception,
+      // not a reintroduced default).
       const { data: meterDef } = await supabaseServer
         .from('billing_meters')
         .select('pull_endpoint_url, pull_auth_token, pull_param_name')
-        .or(`org_id.is.null,org_id.eq.${orgId}`)
+        .or(`is_platform_meter.eq.true,org_id.eq.${orgId}`)
         .eq('meter_key', cfg.meter_key)
         .maybeSingle()
 

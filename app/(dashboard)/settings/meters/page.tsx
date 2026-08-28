@@ -9,12 +9,14 @@ type Meter = {
   display_name:        string
   unit_label:          string
   description:         string | null
+  semantic_input_key:  string | null
   pull_endpoint_url:   string | null
   pull_param_name:     string
   pull_auth_token_set: boolean
   mode:                'test' | 'live'
   test_usage_value:    number | null
   connector:           string | null
+  response_metric_key: string | null
   created_at:          string
 }
 
@@ -60,24 +62,39 @@ function ConnectorLogo({ connector }: { connector: string }) {
   )
 }
 
+// Step 17D.2, item B — a customer org admin creates a connector-backed
+// meter (e.g. Remembill's) through this same form now, not just a
+// generic pull-endpoint one. 'generic' keeps today's exact endpoint/token
+// fields; a real connector (currently only 'remembill') replaces them
+// with response_metric_key — the field the connector dispatch actually
+// keys its pull on (lib/meter-quantity-pull.ts) — which must therefore be
+// a real, editable field here, never display-only.
+type SourceType = 'generic' | 'remembill'
+
 type FormState = {
   meter_key:           string
   display_name:        string
   unit_label:          string
   description:         string
+  semantic_input_key:  string
+  source_type:         SourceType
+  response_metric_key: string
   pull_endpoint_url:   string
   pull_auth_token:     string
   pull_param_name:     string
 }
 
 type EndpointDraft = {
-  url:        string
-  token:      string
-  paramName:  string
+  url:               string
+  token:             string
+  paramName:         string
+  semanticKey:       string
+  responseMetricKey: string
 }
 
 const EMPTY_FORM: FormState = {
-  meter_key: '', display_name: '', unit_label: '', description: '',
+  meter_key: '', display_name: '', unit_label: '', description: '', semantic_input_key: '',
+  source_type: 'generic', response_metric_key: '',
   pull_endpoint_url: '', pull_auth_token: '', pull_param_name: '',
 }
 
@@ -116,8 +133,12 @@ function StatusBadge({ configured }: { configured: boolean }) {
 }
 
 export default function MetersSettingsPage() {
-  const [orgMeters,      setOrgMeters]      = useState<Meter[]>([])
-  const [platformMeters, setPlatformMeters] = useState<Meter[]>([])
+  // Step 17D.1 — /api/meters returns one flat, org-scoped list (item A:
+  // org_id is the sole ownership column — there is no separate
+  // platform-wide catalog to merge in here). Connector-backed meters
+  // (e.g. Remembill) and self-configured pull-endpoint meters are simply
+  // grouped client-side by whether `connector` is set, for display only.
+  const [meters,      setMeters]      = useState<Meter[]>([])
   const [loading,     setLoading]     = useState(true)
   const [msg,         setMsg]         = useState<{ ok: boolean; text: string } | null>(null)
   const [showForm,    setShowForm]    = useState(false)
@@ -131,21 +152,23 @@ export default function MetersSettingsPage() {
 
   const set = (k: keyof FormState) => (v: string) => setForm(f => ({ ...f, [k]: v }))
 
-  const applyData = useCallback((res: { org_meters: Meter[]; platform_meters?: Meter[] }) => {
-    setOrgMeters(res.org_meters ?? [])
-    setPlatformMeters(res.platform_meters ?? [])
+  const applyData = useCallback((res: { meters?: Meter[] }) => {
+    setMeters(res.meters ?? [])
   }, [])
 
   useEffect(() => {
     fetch('/api/meters').then(r => r.json())
-      .then(res => { applyData(res as { org_meters: Meter[]; platform_meters?: Meter[] }); setLoading(false) })
+      .then(res => { applyData(res as { meters: Meter[] }); setLoading(false) })
       .catch(() => setLoading(false))
   }, [applyData])
 
   const reload = useCallback(async () => {
     const res = await fetch('/api/meters').then(r => r.json()).catch(() => null)
-    if (res) applyData(res as { org_meters: Meter[]; platform_meters?: Meter[] })
+    if (res) applyData(res as { meters: Meter[] })
   }, [applyData])
+
+  const connectorMeters = meters.filter(m => m.connector)
+  const orgMeters        = meters.filter(m => !m.connector)
 
   const openEndpoint = (m: Meter) => {
     if (expandedId === m.id) { setExpandedId(null); return }
@@ -153,9 +176,11 @@ export default function MetersSettingsPage() {
     setDrafts(d => ({
       ...d,
       [m.id]: d[m.id] ?? {
-        url:       m.pull_endpoint_url ?? '',
-        token:     '',
-        paramName: m.pull_param_name ?? 'billing_parameter',
+        url:               m.pull_endpoint_url ?? '',
+        token:             '',
+        paramName:         m.pull_param_name ?? 'billing_parameter',
+        semanticKey:       m.semantic_input_key ?? '',
+        responseMetricKey: m.response_metric_key ?? '',
       },
     }))
   }
@@ -169,8 +194,17 @@ export default function MetersSettingsPage() {
     setSaving(m.id)
     const body: Record<string, unknown> = {
       id:                 m.id,
-      pull_endpoint_url:  draft.url.trim() || null,
-      pull_param_name:    draft.paramName.trim() || 'billing_parameter',
+      semantic_input_key: draft.semanticKey.trim() || null,
+    }
+    // A connector-backed meter (e.g. Remembill) has no pull endpoint of
+    // its own to edit — response_metric_key is the only thing this panel
+    // can change for it. A generic meter keeps the existing endpoint/
+    // token/param fields untouched.
+    if (m.connector) {
+      body.response_metric_key = draft.responseMetricKey.trim() || null
+    } else {
+      body.pull_endpoint_url = draft.url.trim() || null
+      body.pull_param_name   = draft.paramName.trim() || 'billing_parameter'
     }
     if (draft.token.trim()) body.pull_auth_token = draft.token.trim()
 
@@ -193,10 +227,16 @@ export default function MetersSettingsPage() {
       display_name: form.display_name.trim(),
       unit_label:   form.unit_label.trim(),
       description:  form.description.trim() || undefined,
-      pull_param_name: form.pull_param_name.trim() || 'billing_parameter',
+      semantic_input_key: form.semantic_input_key.trim() || undefined,
     }
-    if (form.pull_endpoint_url.trim()) body.pull_endpoint_url = form.pull_endpoint_url.trim()
-    if (form.pull_auth_token.trim())   body.pull_auth_token   = form.pull_auth_token.trim()
+    if (form.source_type === 'remembill') {
+      body.connector = 'remembill'
+      body.response_metric_key = form.response_metric_key.trim()
+    } else {
+      body.pull_param_name = form.pull_param_name.trim() || 'billing_parameter'
+      if (form.pull_endpoint_url.trim()) body.pull_endpoint_url = form.pull_endpoint_url.trim()
+      if (form.pull_auth_token.trim())   body.pull_auth_token   = form.pull_auth_token.trim()
+    }
 
     const res  = await fetch('/api/meters', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
     const data = await res.json()
@@ -227,7 +267,7 @@ export default function MetersSettingsPage() {
   const handleDelete = async (id: string, key: string) => {
     if (!confirm(`Remove meter '${key}'? This cannot be undone.`)) return
     setDeleting(id); setMsg(null)
-    const res  = await fetch('/api/admin/meters', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'delete', id }) })
+    const res  = await fetch(`/api/meters?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
     const data = await res.json()
     if (res.ok) { setMsg({ ok: true, text: `Removed '${key}' ✓` }); await reload() }
     else          setMsg({ ok: false, text: (data as { error: string }).error ?? 'Delete failed' })
@@ -250,24 +290,31 @@ export default function MetersSettingsPage() {
         </p>
       </div>
 
-      {/* ── Pre-configured meters (Verdix-managed connectors, e.g. Remembill) ── */}
-      {platformMeters.length > 0 && (
+      {/* ── Connector-backed meters (Verdix-managed connectors, e.g. Remembill) ── */}
+      {connectorMeters.length > 0 && (
         <div className="space-y-4">
           <div>
-            <h2 className="text-sm font-semibold text-ink">Pre-configured meters</h2>
+            <h2 className="text-sm font-semibold text-ink">Connector-backed meters</h2>
             <p className="text-xs text-stone">Wired up by Verdix already — nothing to set up, just confirm them when mapping a contract.</p>
           </div>
 
           <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden">
             <div className="divide-y divide-forest/5">
-              {platformMeters.map(m => (
-                <div key={m.id} className="px-6 py-4 flex items-center gap-4">
+              {connectorMeters.map(m => {
+                const isExpanded = expandedId === m.id
+                const draft      = drafts[m.id]
+                return (
+                <div key={m.id}>
+                <div className="px-6 py-4 flex items-center gap-4">
                   <code className="text-xs font-mono font-semibold text-forest bg-forest/8 px-2 py-1 rounded-lg w-36 flex-shrink-0 truncate">
                     {m.meter_key}
                   </code>
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-ink">{m.display_name}</div>
                     {m.description && <div className="text-xs text-stone truncate">{m.description}</div>}
+                    {m.semantic_input_key && (
+                      <div className="text-[10px] text-stone/50 font-mono truncate">↳ {m.semantic_input_key}</div>
+                    )}
                   </div>
                   <div className="text-xs text-stone/60 font-mono flex-shrink-0">{m.unit_label}</div>
                   {m.connector && (
@@ -285,13 +332,79 @@ export default function MetersSettingsPage() {
                     <span className="w-1.5 h-1.5 rounded-full" style={{ background: m.mode === 'live' ? '#0B5C36' : '#C2410C' }} />
                     {m.mode === 'live' ? 'Live' : 'Test'}
                   </span>
+                  {/* Step 17D.2, item B — response_metric_key must be a
+                      real, editable field for a connector-backed meter,
+                      not display-only. Reuses the exact same
+                      openEndpoint/updateDraft/saveEndpoint machinery the
+                      generic-meter list below uses; saveEndpoint already
+                      branches on m.connector to patch response_metric_key
+                      instead of endpoint/param fields. */}
+                  <button
+                    onClick={() => openEndpoint(m)}
+                    className="text-xs font-medium px-2.5 py-1 rounded-lg border border-forest/20 text-stone hover:bg-forest/5 transition-colors flex-shrink-0 flex items-center gap-1"
+                  >
+                    <i className={`ti ${isExpanded ? 'ti-chevron-up' : 'ti-settings'}`} style={{ fontSize: 11 }} />
+                    {isExpanded ? 'Close' : 'Edit'}
+                  </button>
+                  <button
+                    onClick={() => handleDelete(m.id, m.meter_key)}
+                    disabled={deleting === m.id}
+                    className="text-xs px-2.5 py-1 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40 flex-shrink-0">
+                    {deleting === m.id ? '…' : 'Remove'}
+                  </button>
                 </div>
-              ))}
+                {isExpanded && draft && (
+                  <div className="px-6 pb-5 pt-1 bg-forest/2 border-t border-forest/6">
+                    <div className="text-[10px] font-semibold text-stone uppercase tracking-widest mb-3 pt-3">
+                      Connector config — <span className="font-mono normal-case">{m.meter_key}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="col-span-2">
+                        <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Response metric key</label>
+                        <input
+                          value={draft.responseMetricKey}
+                          onChange={e => updateDraft(m.id, 'responseMetricKey', e.target.value)}
+                          placeholder="e.g. PAYMENT_REQUEST_ISSUED"
+                          autoComplete="off"
+                          className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono"
+                        />
+                        <p className="text-[10px] text-stone/60 mt-1">The exact metric name {m.connector} returns in its usage response.</p>
+                      </div>
+                      <div className="col-span-2">
+                        <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Semantic input key</label>
+                        <input
+                          value={draft.semanticKey}
+                          onChange={e => updateDraft(m.id, 'semanticKey', e.target.value)}
+                          placeholder="e.g. issued_payment_request_count (optional)"
+                          className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 mt-4">
+                      <button
+                        onClick={() => saveEndpoint(m)}
+                        disabled={saving === m.id}
+                        className="bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors disabled:opacity-40"
+                      >
+                        {saving === m.id ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        onClick={() => setExpandedId(null)}
+                        className="text-sm px-4 py-2 rounded-xl border border-forest/20 text-stone hover:bg-forest/5 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+                </div>
+                )
+              })}
             </div>
           </div>
 
           {/* Connector-specific docs — one block per distinct connector present */}
-          {Array.from(new Set(platformMeters.map(m => m.connector).filter((c): c is string => !!c)))
+          {Array.from(new Set(connectorMeters.map(m => m.connector).filter((c): c is string => !!c)))
             .map(connector => {
               const docs = CONNECTOR_DOCS[connector]
               if (!docs) return null
@@ -395,7 +508,7 @@ Authorization: Bearer <your-auth-token>`}</pre>
       <div>
         <div className="flex items-center justify-between mb-3">
           <div>
-            <h2 className="text-sm font-semibold text-ink">{platformMeters.length > 0 ? 'Your own meters' : 'Your meters'}</h2>
+            <h2 className="text-sm font-semibold text-ink">{connectorMeters.length > 0 ? 'Your own meters' : 'Your meters'}</h2>
             <p className="text-xs text-stone">Configure one pull endpoint per meter</p>
           </div>
           <div className="flex items-center gap-2">
@@ -493,44 +606,89 @@ Authorization: Bearer <your-auth-token>`}</pre>
                     autoComplete="off"
                     className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest" />
                 </div>
+                <div className="col-span-2">
+                  <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Semantic input key</label>
+                  <input value={form.semantic_input_key} onChange={e => set('semantic_input_key')(e.target.value)}
+                    placeholder="e.g. issued_payment_request_count (optional)"
+                    autoComplete="off"
+                    className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
+                  <p className="text-[10px] text-stone/60 mt-1">The canonical contract fact this meter supplies — lets a contract&apos;s per-unit fee, overage, and rolling pricing all reuse this one meter. Leave blank if unsure; a reviewer can set it later when mapping a contract.</p>
+                </div>
               </div>
 
-              {/* Pull endpoint */}
-              <div className="border-t border-forest/8 pt-4 space-y-4">
-                <div>
-                  <div className="text-[10px] font-semibold text-stone uppercase tracking-widest">Pull endpoint</div>
-                  <p className="text-[10px] text-amber-700 mt-0.5">Required for billing to work — configure before the first billing cycle runs.</p>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="col-span-2">
-                    <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Endpoint URL</label>
-                    <input value={form.pull_endpoint_url} onChange={e => set('pull_endpoint_url')(e.target.value)}
-                      placeholder="https://your-api.example.com/billing/usage"
-                      autoComplete="url"
-                      className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Bearer token</label>
-                    <input value={form.pull_auth_token} onChange={e => set('pull_auth_token')(e.target.value)}
-                      type="password"
-                      autoComplete="new-password"
-                      placeholder="Token Verdix will send in Authorization header"
-                      className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest" />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Meter key param name</label>
-                    <input value={form.pull_param_name} onChange={e => set('pull_param_name')(e.target.value)}
-                      placeholder="billing_parameter"
-                      autoComplete="off"
-                      className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
-                    <p className="text-[10px] text-stone/60 mt-1">Query param name that carries the meter key</p>
-                  </div>
+              {/* Step 17D.2, item B — source type. A connector-backed
+                  meter (currently only Remembill) is dispatched by
+                  lib/meter-quantity-pull.ts's own connector client, keyed
+                  on response_metric_key — it has no pull endpoint of its
+                  own to configure, and requires the org's Remembill
+                  integration to already be connected (Settings →
+                  Integrations). */}
+              <div className="border-t border-forest/8 pt-4 space-y-3">
+                <div className="text-[10px] font-semibold text-stone uppercase tracking-widest">Source type</div>
+                <div className="flex gap-2">
+                  {(['generic', 'remembill'] as SourceType[]).map(t => (
+                    <button key={t} type="button" onClick={() => set('source_type')(t)}
+                      className={`flex-1 text-left px-3 py-2.5 rounded-xl border text-xs transition-colors ${form.source_type === t ? 'border-forest/40 bg-forest/5' : 'border-forest/15 hover:bg-forest/5'}`}>
+                      <span className="block font-semibold text-ink">{t === 'generic' ? 'Generic HTTP endpoint' : 'Remembill'}</span>
+                      <span className="block text-stone/70 mt-0.5">
+                        {t === 'generic' ? 'Verdix pulls usage from a URL you configure' : 'Pulled via your connected Remembill integration'}
+                      </span>
+                    </button>
+                  ))}
                 </div>
               </div>
+
+              {form.source_type === 'remembill' ? (
+                <div className="border-t border-forest/8 pt-4 space-y-3">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">
+                      Response metric key <span className="text-red-400 normal-case font-normal">required</span>
+                    </label>
+                    <input value={form.response_metric_key} onChange={e => set('response_metric_key')(e.target.value)}
+                      placeholder="e.g. PAYMENT_REQUEST_ISSUED"
+                      autoComplete="off"
+                      className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
+                    <p className="text-[10px] text-stone/60 mt-1">The exact metric name Remembill returns in its usage response — this is what Verdix reads at billing time, not a display label.</p>
+                  </div>
+                  <p className="text-[10px] text-amber-700">Requires an active Remembill connection under Settings → Integrations.</p>
+                </div>
+              ) : (
+                <div className="border-t border-forest/8 pt-4 space-y-4">
+                  <div>
+                    <div className="text-[10px] font-semibold text-stone uppercase tracking-widest">Pull endpoint</div>
+                    <p className="text-[10px] text-amber-700 mt-0.5">Required for billing to work — configure before the first billing cycle runs.</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="col-span-2">
+                      <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Endpoint URL</label>
+                      <input value={form.pull_endpoint_url} onChange={e => set('pull_endpoint_url')(e.target.value)}
+                        placeholder="https://your-api.example.com/billing/usage"
+                        autoComplete="url"
+                        className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Bearer token</label>
+                      <input value={form.pull_auth_token} onChange={e => set('pull_auth_token')(e.target.value)}
+                        type="password"
+                        autoComplete="new-password"
+                        placeholder="Token Verdix will send in Authorization header"
+                        className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Meter key param name</label>
+                      <input value={form.pull_param_name} onChange={e => set('pull_param_name')(e.target.value)}
+                        placeholder="billing_parameter"
+                        autoComplete="off"
+                        className="w-full bg-cream border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono" />
+                      <p className="text-[10px] text-stone/60 mt-1">Query param name that carries the meter key</p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="flex items-center gap-2 pt-1">
                 <button onClick={handleAdd}
-                  disabled={adding || !form.meter_key || !form.display_name || !form.unit_label}
+                  disabled={adding || !form.meter_key || !form.display_name || !form.unit_label || (form.source_type === 'remembill' && !form.response_metric_key.trim())}
                   className="bg-forest text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-sage transition-colors disabled:opacity-40">
                   {adding ? 'Registering…' : 'Register meter'}
                 </button>
@@ -570,6 +728,9 @@ Authorization: Bearer <your-auth-token>`}</pre>
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium text-ink">{m.display_name}</div>
                         {m.description && <div className="text-xs text-stone truncate">{m.description}</div>}
+                        {m.semantic_input_key && (
+                          <div className="text-[10px] text-stone/50 font-mono truncate">↳ {m.semantic_input_key}</div>
+                        )}
                       </div>
                       <div className="text-xs text-stone/60 font-mono flex-shrink-0">{m.unit_label}</div>
                       <StatusBadge configured={Boolean(m.pull_endpoint_url)} />
@@ -638,6 +799,16 @@ Authorization: Bearer <your-auth-token>`}</pre>
                               className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono"
                             />
                             <p className="text-[10px] text-stone/60 mt-1">Query param name Verdix uses to pass the meter key</p>
+                          </div>
+                          <div className="col-span-2">
+                            <label className="block text-[10px] font-semibold text-stone uppercase tracking-widest mb-1.5">Semantic input key</label>
+                            <input
+                              value={draft.semanticKey}
+                              onChange={e => updateDraft(m.id, 'semanticKey', e.target.value)}
+                              placeholder="e.g. issued_payment_request_count (optional)"
+                              className="w-full bg-white border border-forest/15 rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-forest font-mono"
+                            />
+                            <p className="text-[10px] text-stone/60 mt-1">The canonical contract fact this meter supplies — lets one meter satisfy a per-unit fee, an overage tier, and a rolling pricing rule from the same contract.</p>
                           </div>
                         </div>
 

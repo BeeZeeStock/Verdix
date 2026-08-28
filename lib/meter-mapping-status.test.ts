@@ -14,6 +14,17 @@ describe('isMeterMappingResolved (scenario: TEST-PAY-002 — meter confirmation 
     expect(isMeterMappingResolved({ classification: 'meter', confirmed: false, meter_key: 'transactions' })).toBe(false)
   })
 
+  // Step 17D.2, item C — "Do not make production manual usage dependent on
+  // the old meter_or_manual_input keyword classification... weak text
+  // classification should not determine whether manual entry is
+  // permitted." 'meter' (the default classification for e.g.
+  // issued_payment_request_count/completed_payment_count/email_sent) must
+  // resolve via manual entry exactly like 'meter_or_manual_input' does —
+  // the classification is informational only now, never a resolution gate.
+  it('meter: resolved via manual_value_configured even with no meter_key — manual entry is not gated by classification', () => {
+    expect(isMeterMappingResolved({ classification: 'meter', confirmed: true, meter_key: '', manual_value_configured: true })).toBe(true)
+  })
+
   it('meter_or_manual_input: resolved via manual_value_configured even with no meter_key', () => {
     expect(isMeterMappingResolved({ classification: 'meter_or_manual_input', confirmed: true, meter_key: '', manual_value_configured: true })).toBe(true)
   })
