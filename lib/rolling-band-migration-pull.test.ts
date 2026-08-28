@@ -340,7 +340,7 @@ describe('evaluateRollingBandMigrations — Step 17C.3b, item C (contract-start-
     expect(results).toHaveLength(1)
     expect(results[0].evaluation).toEqual({
       status: 'not_ready',
-      reason: 'Monitoring begins 2026-10-01. No eligible billing periods have started yet.',
+      reason: 'Monitoring begins 1 October 2026. No eligible billing periods have started yet.',
     })
     // The exact regression this fixes: never the pre-existing "0 of 3 ..."
     // wording for a contract that hasn't even started yet.

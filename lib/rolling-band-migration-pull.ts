@@ -49,6 +49,15 @@ function dateOnly(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+// Step 17C.3b, item C (acceptance-pass refinement) — the "Monitoring
+// begins ..." message is pure display copy (nothing downstream parses this
+// reason string back into a date), so it's formatted human-readably at the
+// source rather than surfacing the raw ISO date a reviewer would have to
+// mentally reparse — e.g. "1 October 2026", not "2026-10-01".
+function formatLongDate(iso: string): string {
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(iso + 'T00:00:00'))
+}
+
 // Read-only: resolves the rolling aggregate + trigger + band selection for
 // every 'executable' rolling_band_migration mechanism on this contract, as
 // of the given instant. Never writes to the database.
@@ -89,7 +98,7 @@ export async function evaluateRollingBandMigrations(params: {
     if (asOfDate < anchorDate) {
       results.push({
         mechanismKind: mechanism.kind,
-        evaluation: { status: 'not_ready', reason: `Monitoring begins ${terms.contract_start_date}. No eligible billing periods have started yet.` },
+        evaluation: { status: 'not_ready', reason: `Monitoring begins ${formatLongDate(terms.contract_start_date)}. No eligible billing periods have started yet.` },
       })
       continue
     }
