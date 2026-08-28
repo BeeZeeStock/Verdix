@@ -56,7 +56,7 @@ import type {
   UnsupportedCommercialMechanism,
 } from './types'
 import { validateRateSchedule } from './rate-schedule'
-import { canonicalizeOperationalInputKey, isValidCanonicalKey } from './operational-input-canonicalization'
+import { canonicalizeOperationalInputKey, resolveRecognizedOperationalInputKey, isValidCanonicalKey } from './operational-input-canonicalization'
 
 // The derived metric's own output is always a 0–100% ratio bound
 // (numerator contractually a subset of denominator — see lib/types.ts's
@@ -69,11 +69,30 @@ import { canonicalizeOperationalInputKey, isValidCanonicalKey } from './operatio
 const RATIO_PERCENTAGE_MIN = 0
 const RATIO_PERCENTAGE_MAX = 100
 
-// A resolved+validated canonical key, or null the moment the raw field is
-// missing/blank or fails to produce a well-formed key. Centralizes the
-// "explicit field present AND canonicalizes successfully" check (item B/C)
-// so every operand resolution below applies it identically.
+// Step 17C.3c, item 2 — a resolved, execution-authoritative canonical key,
+// or null the moment the raw field is missing/blank OR does not resolve to
+// a RECOGNIZED operational-input concept (via its own canonical spelling
+// or the explicit alias registry). Centralizes this check so every operand
+// resolution below (numerator, denominator, charge basis, rolling input)
+// applies it identically. Deliberately NOT canonicalizeOperationalInputKey
+// (which always succeeds by falling back to plain slugification) — that
+// fallback is exactly what let an unrecognized paraphrase silently mint a
+// brand new runtime input identity; see lib/operational-input-
+// canonicalization.ts's own header for the live incident this fixes.
 function resolveExplicitKey(raw: string | null | undefined): string | null {
+  if (!raw || !raw.trim()) return null
+  return resolveRecognizedOperationalInputKey(raw)
+}
+
+// A derived metric's own metric_name/metric_key (e.g.
+// "value_weighted_payment_rate") is NOT an operational-input concept — it
+// is never looked up against operational_input_period_values, only used
+// as this fee's own internal label/schedule_key. It must NOT go through
+// resolveExplicitKey's recognized-operational-input gate above (which
+// would wrongly reject every real metric name, since none of them are
+// members of RECOGNIZED_CANONICAL_OPERATIONAL_INPUT_KEYS). Lenient
+// slugify + well-formedness check only, same as before 17C.3c.
+function resolveDisplayLabelKey(raw: string | null | undefined): string | null {
   if (!raw || !raw.trim()) return null
   const canonical = canonicalizeOperationalInputKey(raw)
   return isValidCanonicalKey(canonical) ? canonical : null
@@ -130,7 +149,7 @@ export function compilePercentageOfBasisFee(fee: AdditionalRecurringFee): Percen
   const basisKey = resolveExplicitKey(fee.charge_basis_input_key)
   if (!basisKey) return null
 
-  const metricKey = resolveExplicitKey(dm.metric_name)
+  const metricKey = resolveDisplayLabelKey(dm.metric_name)
   if (!metricKey) return null
 
   const schedule = compileRateSchedule(metricKey + '_schedule', fee.rate_schedule_bands)

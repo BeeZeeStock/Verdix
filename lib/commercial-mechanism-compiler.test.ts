@@ -160,6 +160,110 @@ describe('compilePercentageOfBasisFee — Step 17C.3a item B/C', () => {
   })
 })
 
+describe('compilePercentageOfBasisFee — Step 17C.3c (canonical operational identity hardening)', () => {
+  it('the live-observed paraphrase "total_invoice_value_of_issued_payment_requests" resolves to the canonical execution key and compiles', () => {
+    const config = compilePercentageOfBasisFee(performanceShareFee({
+      derived_metric: {
+        metric_name: 'value_weighted_payment_rate',
+        formula: 'paid_invoice_value / total_invoice_value_of_issued_payment_requests',
+        raw_inputs: ['paid_invoice_value', 'total_invoice_value_of_issued_payment_requests'],
+        operation: 'ratio',
+        numerator_input_key: 'paid_invoice_value',
+        denominator_input_key: 'total_invoice_value_of_issued_payment_requests',
+      },
+      required_operational_inputs: ['total_invoice_value_of_issued_payment_requests'],
+      charge_basis_input_key: 'total_invoice_value_of_issued_payment_requests',
+    }))
+    expect(config).not.toBeNull()
+    expect(config!.derived_metric.denominator_input_key).toBe('total_invoice_value_of_issued_requests')
+    expect(config!.basis_input_key).toBe('total_invoice_value_of_issued_requests')
+  })
+
+  it('an UNKNOWN new paraphrase (not registered, not the canonical spelling) fails closed — mechanism stays Unsupported, never mints a new identity', () => {
+    const config = compilePercentageOfBasisFee(performanceShareFee({
+      derived_metric: {
+        metric_name: 'value_weighted_payment_rate',
+        formula: 'paid_invoice_value / sum_of_invoiced_amounts_for_issued_requests',
+        raw_inputs: ['paid_invoice_value', 'sum_of_invoiced_amounts_for_issued_requests'],
+        operation: 'ratio',
+        numerator_input_key: 'paid_invoice_value',
+        // A genuinely new paraphrase no extraction pass has produced before
+        // — not in the alias registry, not the canonical spelling itself.
+        denominator_input_key: 'sum_of_invoiced_amounts_for_issued_requests',
+      },
+      required_operational_inputs: ['sum_of_invoiced_amounts_for_issued_requests'],
+      charge_basis_input_key: 'sum_of_invoiced_amounts_for_issued_requests',
+    }))
+    expect(config).toBeNull()
+  })
+
+  it('an unrecognized charge_basis_input_key alone fails closed even when numerator/denominator are recognized', () => {
+    const config = compilePercentageOfBasisFee(performanceShareFee({
+      charge_basis_input_key: 'grand_total_of_all_invoiced_amounts', // not registered
+    }))
+    expect(config).toBeNull()
+  })
+
+  it('proves saved operational period data under the canonical key is reused: every recognized paraphrase compiles to the IDENTICAL denominator_input_key/basis_input_key', () => {
+    const paraphrases = [
+      'total_invoice_value_in_payment_requests',
+      'total_invoice_value_of_payment_requests',
+      'total_invoice_value_in_issued_payment_requests',
+      'total_invoice_value_of_issued_payment_requests',
+      'total_invoice_value_of_issued_requests',
+    ]
+    const resolvedKeys = paraphrases.map(paraphrase => {
+      const config = compilePercentageOfBasisFee(performanceShareFee({
+        derived_metric: {
+          metric_name: 'value_weighted_payment_rate',
+          formula: `paid_invoice_value / ${paraphrase}`,
+          raw_inputs: ['paid_invoice_value', paraphrase],
+          operation: 'ratio',
+          numerator_input_key: 'paid_invoice_value',
+          denominator_input_key: paraphrase,
+        },
+        required_operational_inputs: [paraphrase],
+        charge_basis_input_key: paraphrase,
+      }))
+      expect(config).not.toBeNull()
+      return { denominator: config!.derived_metric.denominator_input_key, basis: config!.basis_input_key }
+    })
+    // Every extraction pass — regardless of which recognized paraphrase it
+    // produced — resolves to the exact same runtime key. A reviewer's
+    // operational_input_period_values row saved under
+    // 'total_invoice_value_of_issued_requests' is therefore found by ALL
+    // of these, never fragmented into five separate identities.
+    expect(resolvedKeys.every(k => k.denominator === 'total_invoice_value_of_issued_requests')).toBe(true)
+    expect(resolvedKeys.every(k => k.basis === 'total_invoice_value_of_issued_requests')).toBe(true)
+  })
+
+  it('original wording is never rewritten by canonicalization — source_clause/formula/required_operational_inputs stay verbatim on the compiled fee', () => {
+    const fee = performanceShareFee({
+      derived_metric: {
+        metric_name: 'value_weighted_payment_rate',
+        formula: 'paid invoice value divided by total invoice value of issued payment requests',
+        raw_inputs: ['paid_invoice_value', 'total_invoice_value_of_issued_payment_requests'],
+        operation: 'ratio',
+        numerator_input_key: 'paid_invoice_value',
+        denominator_input_key: 'total_invoice_value_of_issued_payment_requests',
+      },
+      required_operational_inputs: ['total_invoice_value_of_issued_payment_requests'],
+      charge_basis_input_key: 'total_invoice_value_of_issued_payment_requests',
+      source_clause: 'The rate applies to total invoice value of issued payment requests for the month.',
+    })
+    const config = compilePercentageOfBasisFee(fee)
+    expect(config).not.toBeNull()
+    // The compiled config's own key IS canonical...
+    expect(config!.basis_input_key).toBe('total_invoice_value_of_issued_requests')
+    // ...but the fee's own extracted display/provenance fields are
+    // completely untouched by compilePercentageOfBasisFee (it returns a
+    // config, never a rewritten fee).
+    expect(fee.source_clause).toBe('The rate applies to total invoice value of issued payment requests for the month.')
+    expect(fee.derived_metric!.formula).toBe('paid invoice value divided by total invoice value of issued payment requests')
+    expect(fee.required_operational_inputs).toEqual(['total_invoice_value_of_issued_payment_requests'])
+  })
+})
+
 function rollingMechanism(overrides: Partial<UnsupportedCommercialMechanism> = {}): UnsupportedCommercialMechanism {
   return {
     kind: 'rolling_volume_pricing_transition',
