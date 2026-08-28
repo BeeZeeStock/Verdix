@@ -21,6 +21,9 @@ import { isMonetaryBasisRecognitionApplicable, isPaidBasisFinalizationApplicable
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
 import { buildUsageSourceCards } from '@/lib/usage-source-cards'
 import { describeDiscountForBrief } from '@/lib/discount-brief-summary'
+import { describeOperationalInputConsumers, type OperationalInputConsumer } from '@/lib/operational-input-usage-display'
+import { hasContractStarted } from '@/lib/performance-share-timing'
+import { deriveConfirmedRulesLabel } from '@/lib/confirmed-rules-label'
 import { describeBillabilityCondition, isChangeOrderConditional, resolveOneTimeFeeTypeLabel } from '@/lib/billability-condition'
 import { formatEligibleComponentsFact, formatCarryForwardFact, formatCashRedeemableFact, formatEarningBasisFact, computeExcludedFromEarningBasisKeys } from '@/lib/review-card-format'
 import { getCreditRepresentationCapability } from '@/lib/connectors/billing/types'
@@ -1191,37 +1194,94 @@ function humanizeKey(key: string): string {
   return key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())
 }
 
-// Step 17E, item 1 — the persistent, always-visible (once approved)
-// counterpart to MeterMappingPanel's operationalDataInputsSection, which
-// only ever rendered inside the review drawer and vanished the moment
-// every review item was resolved — even though these monetary facts
-// (paid_invoice_value, total_invoice_value_of_issued_requests, ...) are
-// needed EVERY billing period, not just during review. Reuses the exact
-// same <ManualInputEntry> widget (same operational_input_period_values
-// API/versioning) — no second persistence path, just a persistent place
-// to reach it from.
-function OperationalInputCard({ jobId, input }: { jobId: string; input: { key: string; sources: string[] } }) {
+// Step 17E, item 1 (pre-start gating added in 17E.3, item 1; business-
+// readable "Used by" added in 17E.3, item 2) — the persistent, always-
+// visible (once review is complete) counterpart to MeterMappingPanel's
+// operationalDataInputsSection, which only ever rendered inside the
+// review drawer and vanished the moment every review item was resolved —
+// even though these monetary facts (paid_invoice_value,
+// total_invoice_value_of_issued_requests, ...) are needed EVERY billing
+// period, not just during review. Reuses the exact same <ManualInputEntry>
+// widget (same operational_input_period_values API/versioning) — no
+// second persistence path, just a persistent place to reach it from.
+function OperationalInputCard({
+  jobId, input, consumers, contractStartDate,
+}: {
+  jobId: string
+  input: { key: string }
+  consumers: OperationalInputConsumer[]
+  contractStartDate?: string | null
+}) {
+  // Step 17E.3, item 1 — reuses the SAME hasContractStarted function the
+  // Performance Share readiness banner uses (lib/performance-share-
+  // timing.ts) — never a second, independently-computed date check. No
+  // eligible billing period exists yet before the contract starts, so
+  // there is nothing to "enter and finalize" — the entry controls
+  // (Save draft / Mark final / editable value+period) must not render at
+  // all, not merely be disabled.
+  const started = hasContractStarted(contractStartDate)
   return (
     <div className="rounded-xl border p-4" style={{ borderColor: 'rgba(26,61,43,0.1)' }}>
       <p className="text-sm font-medium text-ink">{humanizeKey(input.key)}</p>
       <p className="text-[11px] font-mono text-stone/60 mt-0.5">{input.key}</p>
       <p className="text-[11px] text-stone mt-1">Source method: Manual entry</p>
-      <p className="text-[10px] text-stone/50 mt-0.5">Used by: {input.sources.join(' · ')}</p>
-      <ManualInputEntry jobId={jobId} inputKey={input.key} />
+      {consumers.length > 0 && (
+        <div className="text-[10px] text-stone/50 mt-0.5">
+          <span>Used by: </span>
+          {consumers.map((c, i) => (
+            <span key={c.label}>
+              {i > 0 && ' · '}
+              <span className="text-stone/70">{c.label}</span>
+              {c.detail && <span className="text-stone/40"> — {c.detail}</span>}
+            </span>
+          ))}
+        </div>
+      )}
+      {started ? (
+        <ManualInputEntry jobId={jobId} inputKey={input.key} />
+      ) : (
+        <div className="mt-2 pt-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.06)' }}>
+          <p className="text-[11px] font-medium" style={{ color: '#78716C' }}>Awaiting first billing period</p>
+        </div>
+      )}
     </div>
   )
 }
 
-function OperationalInputsSection({ jobId, inputs }: { jobId: string; inputs: Array<{ key: string; sources: string[] }> }) {
+function OperationalInputsSection({
+  jobId, inputs, fees, contractStartDate,
+}: {
+  jobId: string
+  inputs: Array<{ key: string; sources: string[] }>
+  fees: AdditionalRecurringFee[]
+  contractStartDate?: string | null
+}) {
   if (inputs.length === 0) return null
+  const started = hasContractStarted(contractStartDate)
   return (
     <div className="bg-white rounded-2xl border border-forest/10 p-6 space-y-4">
       <div>
         <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Operational inputs</h2>
-        <p className="text-[11px] text-stone mt-1">Recurring monetary facts this agreement needs every billing period — enter and finalize the current period&apos;s value here.</p>
+        {/* Step 17E.3, item 1 — never invites data entry for a period
+            that cannot exist yet; the description itself changes to
+            explain WHEN this becomes actionable rather than implying it
+            already is. */}
+        <p className="text-[11px] text-stone mt-1">
+          {started
+            ? <>Recurring monetary facts this agreement needs every billing period — enter and finalize the current period&apos;s value here.</>
+            : <>Required once billing begins on {contractStartDate ? new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(contractStartDate + 'T00:00:00')) : 'the contract start date'}.</>}
+        </p>
       </div>
       <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
-        {inputs.map(input => <OperationalInputCard key={input.key} jobId={jobId} input={input} />)}
+        {inputs.map(input => (
+          <OperationalInputCard
+            key={input.key}
+            jobId={jobId}
+            input={input}
+            consumers={describeOperationalInputConsumers({ inputKey: input.key, fees })}
+            contractStartDate={contractStartDate}
+          />
+        ))}
       </div>
     </div>
   )
@@ -1316,6 +1376,21 @@ function PerformanceShareDisplay({ jobId, currency, onLoaded }: { jobId: string;
   )
 }
 
+// Step 17E.3, item 3 — a friendly, GENERIC (never Remembill-specific —
+// this is the SAME 17C.2 mechanism type any future contract with a
+// rolling-band migration would also use) title for the two mechanism
+// `kind` strings this codebase's extraction actually produces (see
+// lib/commercial-mechanism-compiler.ts / the Remembill fixture). Falls
+// back to a plain humanization for any other kind, never asserting a
+// business name this function doesn't actually know.
+const ROLLING_MECHANISM_TITLES: Record<string, string> = {
+  rolling_volume_band_migration: 'Rolling volume-band migration',
+  rolling_volume_pricing_transition: 'Rolling volume-band migration',
+}
+function humanizeMechanismKind(kind: string): string {
+  return ROLLING_MECHANISM_TITLES[kind] ?? humanizeKey(kind)
+}
+
 // Step 17C.2, item 13 — replaces the old "Unsupported" card for a
 // mechanism that now has a real rolling_band_migration config: shows
 // live monitoring/trigger/lifecycle status instead. Details (rolling
@@ -1384,7 +1459,7 @@ function fmtBand(band: { from_unit: number; to_unit: number | null; monthly_fee:
 }
 
 function RollingBandMigrationCard({
-  jobId, mechanismKind, title, description, sourceClause, requiredInputs, config, sections, fieldSourceFallback, onViewSource, currency, contractedVolume,
+  jobId, mechanismKind, title, description, sourceClause, requiredInputs, config, sections, fieldSourceFallback, onViewSource, currency, contractedVolume, contractStartDate,
 }: {
   jobId: string
   mechanismKind: string
@@ -1398,6 +1473,8 @@ function RollingBandMigrationCard({
   onViewSource?: (section: string) => void
   currency?: string
   contractedVolume?: number | null
+  // Step 17E.3, item 3 — see the preStart derivation below.
+  contractStartDate?: string | null
 }) {
   const [expanded, setExpanded] = useState(false)
   const [data, setData] = useState<{ evaluation: RollingBandEvaluation | null; transition: RollingBandTransitionRow | null } | null>(null)
@@ -1495,18 +1572,43 @@ function RollingBandMigrationCard({
       ? `Rolling average: ${evaluation.rollingAverage.toLocaleString(undefined, { maximumFractionDigits: 2 })} (contracted volume: ${evaluation.contractedVolume.toLocaleString()})`
       : evaluation?.reason ?? null
 
+  // Step 17E.3, item 3 — pre-start supplementary fact, derived from the
+  // SAME contractStartDate check the Operational Inputs/Performance
+  // Share sections already use (lib/performance-share-timing.ts's
+  // hasContractStarted — never a second date computation) and the
+  // mechanism's own typed window_count. Only shown before the contract
+  // has started (the one case genuinely known to be "0 of N" — once
+  // started, evaluation.reason's own "only X of the required Y periods
+  // have closed" wording is already the more precise fact and is not
+  // duplicated here).
+  const preStart = !transition && !hasContractStarted(contractStartDate)
+    ? `0 of ${config.aggregate.window_count} completed billing periods available`
+    : null
+
   return (
     <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
       <div className="px-4 pt-4 pb-3">
-        <div className="flex items-center gap-1.5 mb-2">
+        <div className="flex items-center gap-1.5 mb-0.5">
           <i className="ti ti-chart-arrows-vertical text-stone" style={{ fontSize: 12 }} />
-          <span className="text-sm font-medium text-ink flex-1">{title}</span>
+          <span className="text-sm font-medium text-ink">{title}</span>
+        </div>
+        {/* Step 17E.3, item 3 — "Status: <badge>" on its own clearly-
+            separated line, fixing the reported "rolling volume band
+            migrationMonitoring" concatenation (the title and badge
+            previously sat directly adjacent in one flex row with nothing
+            but CSS padding between them — visually fine, but read as one
+            run-on string wherever the page's text content is extracted
+            without the badge's own background/padding, e.g. copy/paste
+            or a screen reader). */}
+        <div className="flex items-center gap-1.5 mb-2 ml-[18px]">
+          <span className="text-[11px] text-stone">Status:</span>
           <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full whitespace-nowrap" style={{ color: badge.color, background: badge.background }}>
             {badge.label}
           </span>
         </div>
         {description && <p className="text-xs text-stone leading-relaxed mb-2">{description}</p>}
         {summaryLine && <p className="text-[11px] text-stone mb-2">{summaryLine}</p>}
+        {preStart && <p className="text-[11px] text-stone/60 mb-2">{preStart}</p>}
         {transition && transition.status !== 'pricing_required' && (
           <p className="text-[11px] mb-2" style={{ color: transition.volume_transition_rule ? '#57534E' : '#DC2626' }}>
             Contracted volume for overage: {describeVolumeTreatment(transition.volume_transition_rule, transition.to_band, transition.trigger_value, contractedVolume ?? null)}
@@ -5526,7 +5628,7 @@ function ReviewPanel({
                       key={`rbm:${i}`}
                       jobId={jobId}
                       mechanismKind={m.kind}
-                      title={m.kind.replace(/_/g, ' ')}
+                      title={humanizeMechanismKind(m.kind)}
                       description={m.description}
                       sourceClause={m.source_clause}
                       requiredInputs={m.required_operational_inputs}
@@ -8711,7 +8813,12 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                  picked a billing platform must already see these). ── */}
             {reviewComplete && (
               <>
-                <OperationalInputsSection jobId={id} inputs={operationalDataInputs} />
+                <OperationalInputsSection
+                  jobId={id}
+                  inputs={operationalDataInputs}
+                  fees={terms?.additional_recurring_fees ?? []}
+                  contractStartDate={terms?.contract_start_date}
+                />
                 <PerformanceShareDisplay jobId={id} currency={cur} onLoaded={setPerformanceShareStatus} />
                 {(() => {
                   const rollingBandMechanisms = (terms?.unsupported_commercial_mechanisms ?? []).filter(
@@ -8731,7 +8838,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             key={`rbm-persistent:${i}`}
                             jobId={id}
                             mechanismKind={m.kind}
-                            title={m.kind.replace(/_/g, ' ')}
+                            title={humanizeMechanismKind(m.kind)}
                             description={m.description}
                             sourceClause={m.source_clause}
                             requiredInputs={m.required_operational_inputs}
@@ -8740,6 +8847,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                             onViewSource={openPDF}
                             currency={cur}
                             contractedVolume={terms?.base_fee_committed_volume}
+                            contractStartDate={terms?.contract_start_date}
                           />
                         ))}
                       </div>
@@ -9473,6 +9581,15 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
               if (cards.length === 0) return null
 
+              // Step 17E.3, item 4 — "N rule(s) confirmed" previously
+              // implied a blanket claim regardless of what actually settled
+              // each card (a mix of reviewer_policy and contract_derived
+              // provenance across different card types). Derived from each
+              // card's own already-typed provenance rows via the shared,
+              // unit-tested lib/confirmed-rules-label.ts — never a second,
+              // separately-invented count.
+              const confirmedCountLabel = deriveConfirmedRulesLabel(cards.length, cards.flatMap(c => c.provenance.map(p => p.value)))
+
               // Step 17E, items 7/8 — replaces the old raw contract_unit_type
               // row list (which also had the "payment request: Meter: "
               // blank-name bug — a `??` chain never falling through an
@@ -9506,7 +9623,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                         <p className="text-[11px] text-stone mt-1">How this agreement is currently configured to bill — updates immediately as each rule is confirmed or edited.</p>
                       </div>
                     </div>
-                    <span className="text-[11px] text-stone flex-shrink-0">{cards.length} rule{cards.length === 1 ? '' : 's'} confirmed</span>
+                    <span className="text-[11px] text-stone flex-shrink-0">{confirmedCountLabel}</span>
                   </button>
                   {confirmedRulesExpanded && (
                     <>
