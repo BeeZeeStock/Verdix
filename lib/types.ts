@@ -863,8 +863,61 @@ export interface AdditionalRecurringFee {
   derived_metric?: {
     metric_name: string
     formula: string
+    /** Every raw quantity the formula needs — display/dependency-collection
+     *  only (lib/operational-data-inputs.ts). NEVER execution authority:
+     *  array POSITION/ordering here is not sufficient grounding for which
+     *  operand is the numerator vs. the denominator (Step 17C.3a) — see
+     *  numerator_input_key/denominator_input_key below, the only fields
+     *  lib/commercial-mechanism-compiler.ts is permitted to read for that. */
     raw_inputs: string[]
+    /** Step 17C.3a, item B — the ONLY implemented value is 'ratio'
+     *  (numerator ÷ denominator); null/absent means extraction did not
+     *  state an explicit operation, which alone is enough to keep this
+     *  mechanism Unsupported — never assumed 'ratio' just because
+     *  numerator_input_key/denominator_input_key happen to both be set. */
+    operation?: 'ratio' | null
+    /** Step 17C.3a, item B — explicit, extraction-stated identification of
+     *  which raw input is the formula's numerator. Deliberately a SEPARATE
+     *  field from raw_inputs[0] — raw_inputs' own array order is never
+     *  read as execution authority by the compiler, only used for display/
+     *  dependency collection. Null/absent means direction was not stated
+     *  explicitly; the compiler must then leave this mechanism Unsupported
+     *  rather than guess from raw_inputs' ordering. */
+    numerator_input_key?: string | null
+    /** Step 17C.3a, item B — same convention as numerator_input_key, for
+     *  the formula's denominator. */
+    denominator_input_key?: string | null
   } | null
+  /** Step 17C.3a, item C — the EXPLICIT, extraction-stated monetary basis
+   *  the selected rate is applied to, to compute the actual fee amount.
+   *  Deliberately a separate, explicit field rather than inferred from
+   *  required_operational_inputs having exactly one entry (Step 17C.3's
+   *  original approach) — required_operational_inputs' array SHAPE is not
+   *  execution authority any more than raw_inputs' array ORDER is (see
+   *  derived_metric.numerator_input_key's own doc for the same principle
+   *  applied to the ratio's operands). Null/absent means the basis was not
+   *  stated explicitly, which alone keeps this mechanism Unsupported. */
+  charge_basis_input_key?: string | null
+  /** Step 17C.3 — the RAW extracted counterpart to percentage_of_basis.
+   *  rate_schedule.bands below: populated at extraction time only when the
+   *  contract states an EXPLICIT numeric percentage-rate table for this
+   *  fee's derived_metric (e.g. "0% below 5% payment rate, 0.20% at 5%,
+   *  ..., 4.50% at 100%"), every row, verbatim — same half-open [from, to)
+   *  convention as RateScheduleBand elsewhere (to: null only on the last
+   *  band), same "never invented/interpolated" discipline as
+   *  base_fee_bands above. This is deliberately a SEPARATE field from
+   *  percentage_of_basis, not that field pre-filled: it is what extraction
+   *  alone can state (a table of numbers), never itself execution
+   *  authority — lib/commercial-mechanism-compiler.ts is the only thing
+   *  that turns this (plus derived_metric/charge_basis_input_key above)
+   *  into a validated, executable percentage_of_basis config, and only
+   *  when every required piece compiles cleanly AND
+   *  lib/rate-schedule.ts's validateRateSchedule accepts the resulting
+   *  table (Step 17C.3a, item C — no gaps/overlaps/bad bounds), fail
+   *  closed otherwise, leaving unresolved_kind/percentage_of_basis exactly
+   *  as today. Absent/null means no explicit table was stated — the
+   *  common case for every fee that isn't shaped this way. */
+  rate_schedule_bands?: RateScheduleBand[] | null
   /** Step 17C.1 — the TYPED, structural, deterministic execution
    *  configuration for a fee whose rate is itself a percentage selected
    *  from a schedule keyed off a derived ratio metric (e.g. Remembill's
@@ -947,6 +1000,31 @@ export interface UnsupportedCommercialMechanism {
    *  section. */
   source_sections?: SourceLocator[] | null
   required_operational_inputs?: string[] | null
+  /** Step 17C.3a, item D — the EXPLICIT, extraction-stated operational
+   *  input this mechanism's rolling average is computed over. Deliberately
+   *  a separate field from required_operational_inputs[0] — that array's
+   *  position is never execution authority, same principle as
+   *  AdditionalRecurringFee.derived_metric.numerator_input_key's own doc.
+   *  Null/absent means the dependency was not stated explicitly enough to
+   *  compile, even if required_operational_inputs happens to have exactly
+   *  one entry. */
+  rolling_input_key?: string | null
+  /** Step 17C.3 — RAW extracted counterpart to
+   *  rolling_band_migration.aggregate.window_count below: the number of
+   *  billing periods a rolling-average mechanism's clause states it
+   *  averages over (e.g. 3 for "three-month average"). Populated only for
+   *  a mechanism that IS a rolling-average band migration; null when not
+   *  stated or not applicable — never guessed from the word "rolling"
+   *  alone. See lib/commercial-mechanism-compiler.ts, the only thing that
+   *  turns this into rolling_band_migration.aggregate.window_count. */
+  rolling_window_count?: number | null
+  /** Step 17C.3 — RAW extracted counterpart to
+   *  rolling_band_migration.notice_required below. true only when the
+   *  contract explicitly requires advance notice before the transition
+   *  takes effect; false only when the contract explicitly states no
+   *  notice is required; null/absent when the contract doesn't address
+   *  notice at all for this mechanism — never defaulted either way. */
+  notice_required?: boolean | null
   /** Step 17C.2 — widened from the single literal 'unsupported'. A
    *  mechanism becomes 'executable' once a typed, deterministic execution
    *  config exists for it (e.g. rolling_band_migration below) — mirrors
