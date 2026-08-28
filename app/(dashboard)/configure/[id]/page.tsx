@@ -1237,7 +1237,11 @@ function OperationalInputsSection({ jobId, inputs }: { jobId: string; inputs: Ar
 // ever resolves a period where every required input is active+finalized).
 type PerformanceShareResult = {
   feeLabel: string
-  status: 'ready' | 'waived' | 'not_ready' | 'invalid'
+  // Step 17E.1, item B — 'not_started' is a distinct, contract-DATE-driven
+  // status, never folded into 'not_ready' (which means "the period is
+  // eligible but its operational inputs are incomplete" — a genuinely
+  // different situation from "no eligible period exists yet").
+  status: 'ready' | 'waived' | 'not_ready' | 'invalid' | 'not_started'
   reason?: string
   periodStart?: string | null
   periodEnd?: string | null
@@ -1249,6 +1253,7 @@ type PerformanceShareResult = {
   // Step 17E, item 5 — required input keys with no active+finalized value
   // on record at all, for a genuinely period-level readiness banner.
   missingKeys?: string[]
+  contractStartDate?: string | null
 }
 
 function PerformanceShareDisplay({ jobId, currency, onLoaded }: { jobId: string; currency: string; onLoaded?: (fees: PerformanceShareResult[]) => void }) {
@@ -1292,6 +1297,11 @@ function PerformanceShareDisplay({ jobId, currency, onLoaded }: { jobId: string;
                   </span>
                 </p>
                 {f.periodStart && <p className="text-[10px] text-stone/50 mt-1">For period {f.periodStart} – {f.periodEnd}</p>}
+              </div>
+            ) : f.status === 'not_started' ? (
+              <div>
+                <p className="text-[12px] font-medium text-stone/60">Awaiting first billing period</p>
+                {f.contractStartDate && <p className="text-[11px] text-stone/50 mt-0.5">Contract begins {fmtDate(f.contractStartDate)}</p>}
               </div>
             ) : (
               <div>
@@ -7246,6 +7256,20 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     job?.operational_event_evidence,
   )
 
+  // Step 17E.1, item A — the persistent operating sections (Operational
+  // inputs, Performance share, Commercial monitoring) must become
+  // available once the contract's commercial REVIEW is complete, never
+  // once it's been PUSHED to a billing platform (isConfigured — job.
+  // execute_status === 'COMPLETED' || !!approved, both meaning "a real
+  // Stripe/Remembill push already happened"). Those are genuinely
+  // different facts: a reviewer can finish resolving every commercial
+  // rule/source mapping/interaction and still not have picked a billing
+  // platform yet — this is the SAME condition the "Rule interpretations
+  // confirmed" banner below already gates on, reused here rather than
+  // overloading isConfigured with a second meaning it was never designed
+  // to carry.
+  const reviewComplete = commercialRuleWorkload.status === 'all_commercial_rules_confirmed'
+
   // ── Unified readiness model ── The single source every readiness
   // indicator on this page reads from — the top "items to review" callout,
   // the meter-mapping summary chip, and the Approve footer's blocked state
@@ -8671,20 +8695,21 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               )}
             </div>
 
-            {/* ── Step 17E, items 1/2/9/13/14 — persistent, approved-contract
-                 operating sections. Deliberately OUTSIDE ReviewPanel (which
-                 only renders while reviewPanelOpen, closed by default and
-                 with no auto-open — see MeterMappingPanel/PerformanceShareCard/
-                 RollingBandMigrationCard's original mounts, all inside that
-                 drawer): these are recurring OPERATIONAL facts a reviewer
-                 must reach every billing period, not one-time review-and-
-                 forget configuration. "Operate the agreement every billing
-                 period... do not force users back into the review panel for
-                 recurring operational work." Gated on isConfigured alone
-                 (not the stricter billingPlatform/subId condition Section 8
-                 below uses) — these matter as soon as the contract is
-                 approved, even before a real subscription exists yet. ── */}
-            {isConfigured && (
+            {/* ── Step 17E, items 1/2/9/13/14 (regated in 17E.1, item A) —
+                 persistent, post-review operating sections. Deliberately
+                 OUTSIDE ReviewPanel (which only renders while
+                 reviewPanelOpen, closed by default and with no auto-open
+                 — see MeterMappingPanel/PerformanceShareCard/
+                 RollingBandMigrationCard's original mounts, all inside
+                 that drawer): these are recurring OPERATIONAL facts a
+                 reviewer must reach every billing period, not one-time
+                 review-and-forget configuration. Gated on reviewComplete
+                 (commercial review/configuration finished), NEVER
+                 isConfigured (which means "already pushed to a billing
+                 platform" — a genuinely later, separate fact; a reviewer
+                 who has resolved every commercial rule but hasn't yet
+                 picked a billing platform must already see these). ── */}
+            {reviewComplete && (
               <>
                 <OperationalInputsSection jobId={id} inputs={operationalDataInputs} />
                 <PerformanceShareDisplay jobId={id} currency={cur} onLoaded={setPerformanceShareStatus} />
@@ -8978,6 +9003,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 .filter(f => f.status === 'not_ready' || f.status === 'invalid')
                 .flatMap(f => (f.missingKeys && f.missingKeys.length > 0 ? f.missingKeys : [f.feeLabel]))
               const periodReady = performanceShareStatus !== null && periodBlockers.length === 0
+              // Step 17E.1, item B — distinct from "ready" and from
+              // "waiting for inputs": no eligible billing period exists
+              // yet at all, so there is nothing to ask the reviewer for.
+              const periodNotStartedEntry = (performanceShareStatus ?? []).find(f => f.status === 'not_started')
               return (
                 <div className="bg-white rounded-2xl border px-7 py-5" style={{ borderColor: 'rgba(11,92,54,0.2)', background: '#F8FDF9' }}>
                   <p className="text-sm font-semibold flex items-center gap-1.5 mb-1" style={{ color: '#0B5C36' }}>
@@ -9015,24 +9044,30 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
                   {/* Current-period billing readiness — item 5: an entirely
                       separate, runtime question from the two above. Never
-                      hidden behind a "configured" state once approved —
-                      but PerformanceShareDisplay (the sole source of
-                      performanceShareStatus) only ever mounts in the
-                      isConfigured-gated persistent section, so before
-                      approval performanceShareStatus can never resolve
-                      away from null. Without this guard that read as a
-                      perpetual "checking…" spinner for every not-yet-
-                      approved contract, not a genuine in-flight fetch. */}
+                      hidden behind a "configured" state once review is
+                      complete — but PerformanceShareDisplay (the sole
+                      source of performanceShareStatus) only ever mounts
+                      once reviewComplete is true, so before that
+                      performanceShareStatus can never resolve away from
+                      null. Without this guard that read as a perpetual
+                      "checking…" spinner for every not-yet-reviewed
+                      contract, not a genuine in-flight fetch. Step 17E.1,
+                      item B — a contract whose start date hasn't arrived
+                      yet gets its own "Not started" state, never
+                      "waiting for <inputs>" (there is no eligible period
+                      to enter them for). */}
                   <div className="mt-2 flex items-center gap-1.5">
-                    <i className={`ti ${!isConfigured ? 'ti-clock' : performanceShareStatus === null ? 'ti-loader-2' : periodReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: !isConfigured ? '#A8A29E' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }} />
-                    <p className="text-[11px] font-medium" style={{ color: !isConfigured ? '#78716C' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }}>
-                      {!isConfigured
+                    <i className={`ti ${!reviewComplete ? 'ti-clock' : performanceShareStatus === null ? 'ti-loader-2' : periodNotStartedEntry ? 'ti-clock' : periodReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: !reviewComplete || periodNotStartedEntry ? '#A8A29E' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }} />
+                    <p className="text-[11px] font-medium" style={{ color: !reviewComplete || periodNotStartedEntry ? '#78716C' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }}>
+                      {!reviewComplete
                         ? 'Current-period billing: Available after contract configuration'
                         : performanceShareStatus === null
                           ? 'Current-period billing: checking…'
-                          : periodReady
-                            ? 'Current-period billing: Ready'
-                            : `Current-period billing: waiting for ${periodBlockers.join(', ')}`}
+                          : periodNotStartedEntry
+                            ? `Current-period billing: Not started — begins ${periodNotStartedEntry.contractStartDate ? fmtDate(periodNotStartedEntry.contractStartDate) : 'later'}`
+                            : periodReady
+                              ? 'Current-period billing: Ready'
+                              : `Current-period billing: waiting for ${periodBlockers.join(', ')}`}
                     </p>
                   </div>
 

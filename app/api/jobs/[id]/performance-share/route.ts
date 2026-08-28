@@ -18,6 +18,7 @@ import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { computePerformanceShareFee } from '@/lib/performance-share-fee'
 import { buildOperationalInputMap, type OperationalInputPeriodValueRow } from '@/lib/operational-input-binding'
+import { hasContractStarted } from '@/lib/performance-share-timing'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { ContractTerms, AdditionalRecurringFee } from '@/lib/types'
 
@@ -43,6 +44,21 @@ export async function GET(
 
   const feesWithConfig = ((terms?.additional_recurring_fees ?? []) as AdditionalRecurringFee[]).filter(f => f.percentage_of_basis)
   if (feesWithConfig.length === 0) return NextResponse.json({ fees: [] })
+
+  // Step 17E.1, item B — no eligible billing period exists yet before the
+  // contract has even started; asking "which operational inputs are
+  // missing" is the wrong question at that point (there is no period to
+  // enter them FOR). A contract-level fact, checked once, short-circuiting
+  // every fee the same way — never a per-fee "not ready" reason that
+  // reads as if data entry were merely incomplete.
+  if (!hasContractStarted(terms?.contract_start_date)) {
+    return NextResponse.json({
+      fees: feesWithConfig.map(fee => ({
+        feeLabel: fee.fee_label, status: 'not_started' as const,
+        contractStartDate: terms?.contract_start_date,
+      })),
+    })
+  }
 
   const { data: rows } = await supabaseServer
     .from('operational_input_period_values')

@@ -10,6 +10,7 @@ import { removeStorageObject } from '@/lib/storage'
 import { logDeletion } from '@/lib/deletion-log'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import { resolveStuckAttemptsForJob } from '@/lib/billing-execution-store'
+import { planLineItemReconciliation } from '@/lib/line-items-reconciliation'
 
 const GENERIC_INFRA_ERROR = 'This contract couldn’t be processed right now due to a temporary system issue. Please contact bilal@lynoraai.com for help.'
 
@@ -336,8 +337,39 @@ export async function GET(
   // touching every frontend read site.
   const normalizedTerms = unwrapEmbedded(job.contract_terms as unknown as Record<string, unknown> | Record<string, unknown>[])
 
+  // Step 17E.2, item 1 — GET must stay read-only: a genuine page-load
+  // side effect that silently rewrites persisted billing data on an
+  // ordinary read is exactly the kind of implicit write this route must
+  // never perform, regardless of how "self-healing" the intent. Detection
+  // and correction of stale generated rows still happens on every read —
+  // via planLineItemReconciliation, the SAME PURE function the explicit
+  // write path below uses — but only to shape THIS response's in-memory
+  // view; nothing is ever deleted/inserted here. A row this view
+  // regenerates carries a locally-minted id (never persisted), so it
+  // renders correctly but is not yet editable via saveLineItemField until
+  // the explicit reconciliation write (POST /api/jobs/[id]/reconcile-
+  // line-items, or a reviewer's own confirm-rule call) actually persists
+  // it — an accepted, deliberate consequence of GET never writing.
+  let responseLineItems = job.line_items as Array<{ id: string; product_name: string }>
+  if (normalizedTerms && responseLineItems?.length > 0) {
+    const currency = (job.currency as string | undefined) ?? (normalizedTerms as { currency?: string }).currency ?? 'USD'
+    const plan = planLineItemReconciliation({
+      terms: normalizedTerms as unknown as Parameters<typeof planLineItemReconciliation>[0]['terms'],
+      currency,
+      existingItems: responseLineItems.map(i => ({ id: i.id, product_name: i.product_name })),
+    })
+    if (plan.staleIds.length > 0) {
+      const staleIdSet = new Set(plan.staleIds)
+      responseLineItems = [
+        ...responseLineItems.filter(i => !staleIdSet.has(i.id)),
+        ...plan.freshItems.map(item => ({ ...item, id: crypto.randomUUID(), job_id: id })),
+      ] as Array<{ id: string; product_name: string }>
+    }
+  }
+
   return NextResponse.json({
     ...job,
+    line_items: responseLineItems,
     contract_terms: normalizedTerms ? [normalizedTerms] : [],
     billedToDate: summary?.billedToDate ?? 0,
     committedContractValue: summary?.committedContractValue ?? 0,

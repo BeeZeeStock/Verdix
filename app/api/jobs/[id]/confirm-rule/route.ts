@@ -32,7 +32,8 @@ import { listMatchableOrganizationRules } from '@/lib/rulebook/organization-rule
 import { resolveProductionOrganizationField, isOrganizationPolicyStale, organizationPolicyAvailableForUnresolvedReason, resolveAuthoritativeUnresolvedReason, type ProductionOrganizationResolution, type SeenOrganizationPolicy } from '@/lib/rulebook/organization-rulebook-production'
 import { resolveOrganizationPolicyRevert } from '@/lib/organization-policy-revert'
 import { resolveConfirmedDiscountComponents } from '@/lib/discount-component-targeting'
-import { buildLineItems, isRecurringBaseFeeLineItem } from '@/lib/line-items'
+import { buildLineItems } from '@/lib/line-items'
+import { reconcileStaleLineItemsForJob } from '@/lib/line-items-reconciliation'
 
 // Several sequential writes (audit row, contract_terms, sometimes
 // contract_meter_mappings) — same defensive reasoning as propose-rule/
@@ -453,46 +454,28 @@ export async function POST(
       .update({ base_fee_proration: buildPeriodProrationRule(approvedInterpretation, existing) })
       .eq('id', termsRow.id)
     propagation['contract_terms'] = error ? 'failed' : 'applied'
-    // Step 17E, item 4 — lib/line-items.ts's recurring-base-fee block emits
-    // a STORED placeholder row ("...partial-period treatment unresolved",
-    // Qty/Total pinned at 0) while base_fee_proration.requires_confirmation
-    // is true. Once the reviewer confirms it above, that placeholder is
-    // stale: nothing else ever re-runs buildLineItems, so the persistent
-    // Billing Configuration table (which reads the STORED line_items, not
-    // a live recomputation) would otherwise show "Pending interpretation"
-    // forever — a real data-staleness bug, not a display-classification
-    // one, per the real-Postgres-shaped fix here: fetch the full terms
-    // fields the base-fee schedule actually depends on, recompute ONLY the
-    // recurring-base-fee-family rows via the SAME canonical buildLineItems
-    // function real extraction uses, and replace ONLY those stored rows —
-    // every other line item (overage tiers, one-time fees, a reviewer's
-    // own manual per-row corrections elsewhere) is left completely
-    // untouched. Best-effort: a failure here never blocks the
-    // interpretation itself from having been saved above.
+    // Step 17E, item 4 (generalized in 17E.1, items C/D) — lib/line-items.ts's
+    // recurring-base-fee block emits a STORED placeholder row while
+    // base_fee_proration.requires_confirmation is true; once the reviewer
+    // confirms it above, that placeholder is stale — nothing else ever
+    // re-runs buildLineItems, so the persistent Billing Configuration
+    // table (which reads STORED line_items, not a live recomputation)
+    // would otherwise show "Pending interpretation" forever. Reconciled
+    // via the SAME shared function the job GET route uses for the
+    // already-confirmed-contract self-heal case (lib/line-items-
+    // reconciliation.ts) — one reconciliation policy, not two. Best-
+    // effort: a failure here never blocks the interpretation itself from
+    // having been saved above.
     if (!error) {
-      try {
-        const { data: fullTerms } = await supabaseServer
-          .from('contract_terms')
-          .select('base_monthly_fee, base_annual_fee, ramp_schedule, year_pricing, contract_start_date, contract_end_date, contract_term_months, billing_frequency, currency, field_sources, extraction_confidence, base_fee_proration')
-          .eq('id', termsRow.id)
-          .single()
-        const { data: jobRow } = await supabaseServer.from('jobs').select('currency').eq('id', jobId).maybeSingle()
-        if (fullTerms) {
-          const currency = (jobRow?.currency as string | undefined) ?? (fullTerms.currency as string | undefined) ?? 'USD'
-          const freshItems = buildLineItems(fullTerms as Parameters<typeof buildLineItems>[0], currency)
-            .filter(i => isRecurringBaseFeeLineItem(i.product_name))
-          await supabaseServer.from('line_items').delete().eq('job_id', jobId)
-            .in('product_name', ['Base subscription', 'Recurring base fee', 'Recurring base fee — partial-period treatment unresolved'])
-          // The "(periods N–M)" family uses dynamic names not expressible
-          // in a plain .in() list — deleted via a pattern match instead,
-          // scoped to this job only.
-          await supabaseServer.from('line_items').delete().eq('job_id', jobId).like('product_name', 'Recurring base fee (periods%')
-          if (freshItems.length > 0) {
-            await supabaseServer.from('line_items').insert(freshItems.map(item => ({ ...item, job_id: jobId })))
-          }
-        }
-      } catch (regenErr) {
-        console.error(`[confirm-rule] failed to regenerate recurring-base-fee line items for job ${jobId}:`, regenErr)
+      const { data: fullTerms } = await supabaseServer
+        .from('contract_terms')
+        .select('base_monthly_fee, base_annual_fee, ramp_schedule, year_pricing, contract_start_date, contract_end_date, contract_term_months, billing_frequency, currency, field_sources, extraction_confidence, base_fee_proration, additional_recurring_fees')
+        .eq('id', termsRow.id)
+        .single()
+      const { data: jobRow } = await supabaseServer.from('jobs').select('currency').eq('id', jobId).maybeSingle()
+      if (fullTerms) {
+        const currency = (jobRow?.currency as string | undefined) ?? (fullTerms.currency as string | undefined) ?? 'USD'
+        await reconcileStaleLineItemsForJob({ jobId, terms: fullTerms as unknown as Parameters<typeof buildLineItems>[0], currency })
       }
     }
   } else if (ruleType === 'recurring_fee_proration') {
