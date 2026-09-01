@@ -64,8 +64,8 @@ describe('buildBillingPlanSnapshot + fingerprintBillingPlan (Step 14, items 3/4)
   })
 
   it('property insertion order never affects the fingerprint (canonical serialization)', () => {
-    const a: BillingPlanSnapshot = { provider: 'stripe', currency: 'EUR', customerIdentityKey: 'x', lines: [{ kind: 'period', componentKey: 'period:1:0', amount: 100, currency: 'EUR', quantity: 1, unitPrice: null, dueDate: '2026-01-01', vatMode: 'zero_rated', vatRatePct: 0 }] }
-    const b: BillingPlanSnapshot = { currency: 'EUR', provider: 'stripe', lines: [{ vatRatePct: 0, vatMode: 'zero_rated', dueDate: '2026-01-01', unitPrice: null, quantity: 1, currency: 'EUR', amount: 100, componentKey: 'period:1:0', kind: 'period' }], customerIdentityKey: 'x' }
+    const a: BillingPlanSnapshot = { provider: 'stripe', currency: 'EUR', customerIdentityKey: 'x', lines: [{ kind: 'period', componentKey: 'period:1:0', amount: 100, currency: 'EUR', quantity: 1, unitPrice: null, dueDate: '2026-01-01', vatMode: 'zero_rated', vatRatePct: 0 }], blockedOneTimeFees: [] }
+    const b: BillingPlanSnapshot = { currency: 'EUR', provider: 'stripe', lines: [{ vatRatePct: 0, vatMode: 'zero_rated', dueDate: '2026-01-01', unitPrice: null, quantity: 1, currency: 'EUR', amount: 100, componentKey: 'period:1:0', kind: 'period' }], customerIdentityKey: 'x', blockedOneTimeFees: [] }
     expect(fingerprintBillingPlan(a)).toBe(fingerprintBillingPlan(b))
   })
 
@@ -105,6 +105,107 @@ describe('buildBillingPlanSnapshot + fingerprintBillingPlan (Step 14, items 3/4)
     expect(before.lines).toHaveLength(0)
     expect(after.lines).toHaveLength(1)
     expect(fingerprintBillingPlan(before)).not.toBe(fingerprintBillingPlan(after))
+  })
+})
+
+// Step 17H.4B0B — buildBillingPlanSnapshot is the due-now execution path: a
+// one-time fee's `amount`/`quantity`/`unitPrice` here becomes the literal
+// Stripe/Remembill invoice figure (see lib/billing-writer.ts's due-now
+// loop). Previously resolved via a bare `.find()`, which on a duplicated
+// line_items row (e.g. from a re-extraction — 17H.4B0A) silently picked
+// whichever candidate Postgres returned first. These tests prove the
+// cardinality-aware replacement: unique match unchanged, no match falls
+// back safely to the contract-terms amount (never blocks a valid invoice
+// for a missing association), and an ambiguous match is excluded from
+// `lines` entirely and reported via `blockedOneTimeFees` instead of ever
+// being guessed.
+describe('buildBillingPlanSnapshot — one-time fee line-item resolution (Step 17H.4B0B)', () => {
+  const oneTimeTerms = (label = 'Setup Fee', amount = 5000) => baseTerms({
+    one_time_fees: [{ fee_label: label, amount, due_date: null, description: null }],
+  })
+
+  it('a unique matching line item is used exactly as before', () => {
+    const lineItems = [{ id: 'li-1', product_name: 'Setup Fee', billing_period: 'one_time', unit_price: 4800, total_amount: 4800, quantity: 1, currency: 'EUR' }]
+    const snapshot = buildBillingPlanSnapshot({ terms: oneTimeTerms(), lineItems, evidence: [], alreadySentKeys: new Set(), provider: 'stripe', vat, now, computeBillingSchedule: noSchedule })
+    expect(snapshot.lines).toHaveLength(1)
+    expect(snapshot.lines[0].amount).toBe(4800)
+    expect(snapshot.lines[0].quantity).toBe(1)
+    expect(snapshot.lines[0].unitPrice).toBe(4800)
+    expect(snapshot.blockedOneTimeFees).toEqual([])
+  })
+
+  it('zero candidates falls back to the contract-terms amount — never blocks a valid invoice for a missing association', () => {
+    const snapshot = buildBillingPlanSnapshot({ terms: oneTimeTerms('Setup Fee', 5000), lineItems: [], evidence: [], alreadySentKeys: new Set(), provider: 'stripe', vat, now, computeBillingSchedule: noSchedule })
+    expect(snapshot.lines).toHaveLength(1)
+    expect(snapshot.lines[0].amount).toBe(5000)
+    expect(snapshot.blockedOneTimeFees).toEqual([])
+  })
+
+  it('two identical candidates must not choose the first — blocked, not invoiced', () => {
+    const lineItems = [
+      { id: 'li-1', product_name: 'Setup Fee', billing_period: 'one_time', unit_price: 4800, total_amount: 4800, quantity: 1, currency: 'EUR' },
+      { id: 'li-2', product_name: 'Setup Fee', billing_period: 'one_time', unit_price: 4800, total_amount: 4800, quantity: 1, currency: 'EUR' },
+    ]
+    const snapshot = buildBillingPlanSnapshot({ terms: oneTimeTerms(), lineItems, evidence: [], alreadySentKeys: new Set(), provider: 'stripe', vat, now, computeBillingSchedule: noSchedule })
+    expect(snapshot.lines).toHaveLength(0)
+    expect(snapshot.blockedOneTimeFees).toEqual([{ feeLabel: 'Setup Fee', reason: 'Multiple billing line items match this one-time fee. Billing cannot proceed safely.' }])
+  })
+
+  it('two candidates with different monetary values must block, not average or pick either', () => {
+    const lineItems = [
+      { id: 'li-1', product_name: 'Setup Fee', billing_period: 'one_time', unit_price: 4800, total_amount: 4800, quantity: 1, currency: 'EUR' },
+      { id: 'li-2', product_name: 'Setup Fee', billing_period: 'one_time', unit_price: 6000, total_amount: 6000, quantity: 1, currency: 'EUR' },
+    ]
+    const snapshot = buildBillingPlanSnapshot({ terms: oneTimeTerms(), lineItems, evidence: [], alreadySentKeys: new Set(), provider: 'stripe', vat, now, computeBillingSchedule: noSchedule })
+    expect(snapshot.lines).toHaveLength(0)
+    expect(snapshot.blockedOneTimeFees).toHaveLength(1)
+  })
+
+  it('several unrelated one-time line items do not count as candidates for a different fee', () => {
+    const lineItems = [
+      { id: 'li-1', product_name: 'Onboarding Fee', billing_period: 'one_time', unit_price: 1000, total_amount: 1000, quantity: 1, currency: 'EUR' },
+      { id: 'li-2', product_name: 'Migration Fee', billing_period: 'one_time', unit_price: 2000, total_amount: 2000, quantity: 1, currency: 'EUR' },
+      { id: 'li-3', product_name: 'Setup Fee', billing_period: 'one_time', unit_price: 4800, total_amount: 4800, quantity: 1, currency: 'EUR' },
+    ]
+    const snapshot = buildBillingPlanSnapshot({ terms: oneTimeTerms(), lineItems, evidence: [], alreadySentKeys: new Set(), provider: 'stripe', vat, now, computeBillingSchedule: noSchedule })
+    expect(snapshot.lines).toHaveLength(1)
+    expect(snapshot.lines[0].amount).toBe(4800)
+    expect(snapshot.blockedOneTimeFees).toEqual([])
+  })
+
+  it('candidate array order never changes the outcome', () => {
+    const forward = [
+      { id: 'li-1', product_name: 'Setup Fee', billing_period: 'one_time', unit_price: 4800, total_amount: 4800, quantity: 1, currency: 'EUR' },
+      { id: 'li-2', product_name: 'Setup Fee', billing_period: 'one_time', unit_price: 6000, total_amount: 6000, quantity: 1, currency: 'EUR' },
+    ]
+    const reversed = [...forward].reverse()
+    const s1 = buildBillingPlanSnapshot({ terms: oneTimeTerms(), lineItems: forward, evidence: [], alreadySentKeys: new Set(), provider: 'stripe', vat, now, computeBillingSchedule: noSchedule })
+    const s2 = buildBillingPlanSnapshot({ terms: oneTimeTerms(), lineItems: reversed, evidence: [], alreadySentKeys: new Set(), provider: 'stripe', vat, now, computeBillingSchedule: noSchedule })
+    expect(s1.lines).toHaveLength(0)
+    expect(s2.lines).toHaveLength(0)
+    expect(s1.blockedOneTimeFees).toEqual(s2.blockedOneTimeFees)
+  })
+
+  it('an ambiguous one-time fee does not block an unrelated due-now period line in the same snapshot', () => {
+    const lineItems = [
+      { id: 'li-1', product_name: 'Setup Fee', billing_period: 'one_time', unit_price: 4800, total_amount: 4800, quantity: 1, currency: 'EUR' },
+      { id: 'li-2', product_name: 'Setup Fee', billing_period: 'one_time', unit_price: 6000, total_amount: 6000, quantity: 1, currency: 'EUR' },
+    ]
+    const snapshot = buildBillingPlanSnapshot({ terms: oneTimeTerms(), lineItems, evidence: [], alreadySentKeys: new Set(), provider: 'stripe', vat, now, computeBillingSchedule: withSchedule })
+    expect(snapshot.lines).toHaveLength(1)
+    expect(snapshot.lines[0].kind).toBe('period')
+    expect(snapshot.blockedOneTimeFees).toHaveLength(1)
+  })
+
+  it('a resolved ambiguity (back to a unique candidate) changes the fingerprint', () => {
+    const ambiguous = [
+      { id: 'li-1', product_name: 'Setup Fee', billing_period: 'one_time', unit_price: 4800, total_amount: 4800, quantity: 1, currency: 'EUR' },
+      { id: 'li-2', product_name: 'Setup Fee', billing_period: 'one_time', unit_price: 6000, total_amount: 6000, quantity: 1, currency: 'EUR' },
+    ]
+    const unique = [ambiguous[0]]
+    const s1 = buildBillingPlanSnapshot({ terms: oneTimeTerms(), lineItems: ambiguous, evidence: [], alreadySentKeys: new Set(), provider: 'stripe', vat, now, computeBillingSchedule: noSchedule })
+    const s2 = buildBillingPlanSnapshot({ terms: oneTimeTerms(), lineItems: unique, evidence: [], alreadySentKeys: new Set(), provider: 'stripe', vat, now, computeBillingSchedule: noSchedule })
+    expect(fingerprintBillingPlan(s1)).not.toBe(fingerprintBillingPlan(s2))
   })
 })
 

@@ -64,6 +64,7 @@ import { evaluateReviewerDecisionForPromotion, type PromotableFieldState } from 
 import { classifyOrganizationPolicySlotOutcome } from '@/lib/rulebook/organization-policy-slot'
 import { matchOrganizationRules, type OrganizationRuleRecord, type MatchCondition } from '@/lib/rulebook/organization-rules'
 import type { ServiceCreditInterpretation } from '@/lib/types'
+import { AUTO_CONFIGURE_ONLY_MESSAGE } from '@/lib/auto-configure-guard'
 
 type Credit = { credit_rule_id?: string; credit_type?: string | null; description?: string | null; interpretation?: ServiceCreditInterpretation | null }
 
@@ -80,11 +81,26 @@ export async function POST(req: NextRequest) {
   // a job id alone is never sufficient, it must also belong to this org.
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('id, contract_terms_id')
+    .select('id, module, contract_terms_id')
     .eq('id', body.jobId)
     .eq('org_id', org.orgId)
     .maybeSingle()
-  if (!job || !job.contract_terms_id) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+  if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+
+  // Step 17H.4B0D4H1B4D1 §15/§16 — the promoted field (service_credits[].
+  // interpretation.application_rule.survival_provenance/carry_forward) is
+  // only ever populated by confirm-rule, an AUTO_CONFIGURE-only surface
+  // (H1B4C). A non-AUTO_CONFIGURE job's credits would never carry an
+  // interpretation and would already fail evaluateReviewerDecisionForPromotion's
+  // eligibility check below — this guard makes that boundary explicit and
+  // authoritative rather than relying on that data-shape coincidence.
+  // Checked BEFORE the contract_terms_id check below (a PARTNER_RECON job
+  // legitimately never has one — H1B4B — which would otherwise fall
+  // through to a generic 404 instead of this specific rejection).
+  if (job.module !== 'AUTO_CONFIGURE') {
+    return NextResponse.json({ error: AUTO_CONFIGURE_ONLY_MESSAGE }, { status: 400 })
+  }
+  if (!job.contract_terms_id) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
 
   const { data: termsRow } = await supabaseServer
     .from('contract_terms')

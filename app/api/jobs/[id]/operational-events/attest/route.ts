@@ -23,6 +23,7 @@ import { isProvenanceResolved } from '@/lib/commercial-rule-status'
 import { getBillabilityExecutionCapability } from '@/lib/billability-condition'
 import type { OneTimeFee } from '@/lib/types'
 import type { OperationalEventEvidenceSource } from '@/lib/operational-event-evidence'
+import { AUTO_CONFIGURE_ONLY_MESSAGE } from '@/lib/auto-configure-guard'
 
 type Body = {
   subjectId: string
@@ -60,11 +61,22 @@ export async function POST(
 
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('id, contract_terms_id')
+    .select('id, module, contract_terms_id')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .maybeSingle()
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+
+  // Step 17H.4B0D4H1B4D1 §9/§10 — one_time_fees/billability_condition are
+  // AUTO_CONFIGURE-only Model B+ concepts (only ever populated/interpreted
+  // via execute + confirm-rule, both AUTO_CONFIGURE-only). Rejected before
+  // the contract_terms read below and before the evidence insert — this
+  // route writes only to operational_event_evidence, never contract_terms,
+  // but that evidence must never be able to affect AUTO_CONFIGURE billing
+  // via a cross-module subjectId/job pairing.
+  if (job.module !== 'AUTO_CONFIGURE') {
+    return NextResponse.json({ error: AUTO_CONFIGURE_ONLY_MESSAGE }, { status: 400 })
+  }
   if (!job.contract_terms_id) return NextResponse.json({ error: 'No contract terms found for this job' }, { status: 400 })
 
   const { data: termsRow } = await supabaseServer

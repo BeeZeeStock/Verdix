@@ -7,12 +7,13 @@ import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { setCustomerVatConfig, getCustomerVatConfig } from '@/lib/vat-service'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { ContractTerms } from '@/lib/types'
-import type { OperationalEventEvidence, OperationalEventEvidenceSource } from '@/lib/operational-event-evidence'
+import { loadActiveOperationalEventEvidence } from '@/lib/operational-event-evidence-loader'
 import { BillingPreconditionError } from '@/lib/billing-execution-attempt'
 import {
   UnresolvedPriorBillingAttemptError, PriorBillingAttemptExecutedError, PriorBillingAttemptExecutedPlanChangedError,
   PriorBillingAttemptPartiallyExecutedError, getAttemptById, getAttemptOperations,
 } from '@/lib/billing-execution-store'
+import { evaluateBillingGate, shouldClearBillingHoldAfterSuccess } from '@/lib/billing-hold'
 
 export async function POST(
   req: NextRequest,
@@ -25,14 +26,29 @@ export async function POST(
   const body = await req.json()
   const { modifiedLineItems, billing_platform: billingPlatformOverride } = body
 
+  // Step 17H.4B0D3B — current_line_items, not line_items: approval must
+  // configure billing off current commercial configuration only, never a
+  // superseded row.
   const { data: job, error } = await supabaseServer
     .from('jobs')
-    .select('id, name, currency, billing_customer_id, billing_platform, execute_status, contract_terms ( * ), line_items ( * )')
+    .select('id, name, currency, billing_customer_id, billing_platform, execute_status, billing_hold, contract_terms ( * ), current_line_items ( * )')
     .eq('id', id)
     .eq('org_id', org.orgId)
     .single()
 
   if (error || !job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+
+  // Step 17H.4B0D4H1A — billing_hold gate, independent of execute_status
+  // (which cannot serve this role — see lib/billing-hold.ts's own header
+  // comment). Captured once, at request start: this exact snapshot is what
+  // shouldClearBillingHoldAfterSuccess below re-checks after configureBilling
+  // succeeds, so a hold that changed reason mid-request is never
+  // misinterpreted.
+  const billingHoldAtRequestStart = job.billing_hold
+  const approveGate = evaluateBillingGate(billingHoldAtRequestStart, 'approve')
+  if (!approveGate.allowed) {
+    return NextResponse.json({ error: approveGate.reason }, { status: 409 })
+  }
 
   // Never silently fall back to {} — an empty ContractTerms would push a
   // contract with no base fee, no dates, nothing, to the real billing
@@ -40,7 +56,11 @@ export async function POST(
   // if it doesn't, that's a real error to surface, not paper over.
   const terms = unwrapEmbedded(job.contract_terms as unknown as ContractTerms | ContractTerms[])
   if (!terms) return NextResponse.json({ error: 'No contract terms found for this job — re-run extraction first.' }, { status: 400 })
-  const lineItems = (modifiedLineItems ?? job.line_items ?? []) as Array<{
+  // modifiedLineItems (the reviewer's in-memory product_name overlay from
+  // the Needs Review drawer — see 17H.4B0D2's own audit of that flow) still
+  // takes precedence when supplied; current_line_items is only the fallback
+  // for a plain approval with no client-side overlay.
+  const lineItems = (modifiedLineItems ?? job.current_line_items ?? []) as Array<{
     product_name: string; quantity: number; unit_price: number
     billing_period: string; total_amount: number; currency: string
   }>
@@ -105,22 +125,22 @@ export async function POST(
   // Step 13 — real operational_event_evidence rows for this job, so the
   // executionBlockers check below (and configureBilling, further down)
   // both see whichever event-conditioned fees already have satisfied,
-  // trusted evidence — never re-derived, always the same rows.
-  const { data: evidenceRows } = await supabaseServer
-    .from('operational_event_evidence')
-    .select('*')
-    .eq('job_id', id)
-    .eq('status', 'active')
-  const operationalEventEvidence: OperationalEventEvidence[] = (evidenceRows ?? []).map(r => ({
-    id: r.id, subjectId: r.subject_id, eventType: r.event_type,
-    occurredAt: r.occurred_at, source: r.source as OperationalEventEvidenceSource,
-    recordedAt: r.recorded_at, recordedBy: r.recorded_by, status: r.status,
-  }))
+  // trusted evidence — never re-derived, always the same rows. Shared with
+  // rebuild-schedule/route.ts (Step 17H.2A item 2) via the one loader in
+  // lib/operational-event-evidence.ts, never a second hand-written copy.
+  const operationalEventEvidence = await loadActiveOperationalEventEvidence(id)
   const asOf = new Date()
 
   const workload = computeCommercialRuleWorkload(
     terms, meterMappingWorkload, unresolvedInteractions.length, undefined, { configured: vatConfigured },
     undefined, operationalEventEvidence, asOf,
+    // Step 17H.4B0D4H1B4E2.5 §14-16 — same fixed-fee-existence signal the
+    // Configure page's own client-side workload call passes, so an
+    // absent fixed_fee_billing_timing correctly blocks approval whenever
+    // a real fixed fee exists — this only ever ADDS a blocker the
+    // Commercial Logic UI already showed, never removes one, so it can
+    // only strengthen this gate.
+    !!(terms?.base_monthly_fee || terms?.base_annual_fee),
   )
   // Step 11 final correction, item 5 — execution_blocked (Rulebook
   // invariant violations, and now real OneTimeFee capability blockers —
@@ -264,19 +284,13 @@ export async function POST(
     // stale). "No currently active matching evidence -> no event-based fee
     // reaches external billing" — enforced here, not just earlier in the
     // request.
-    const { data: freshEvidenceRows } = await supabaseServer
-      .from('operational_event_evidence')
-      .select('*')
-      .eq('job_id', id)
-      .eq('status', 'active')
-    const freshEvidence: OperationalEventEvidence[] = (freshEvidenceRows ?? []).map(r => ({
-      id: r.id, subjectId: r.subject_id, eventType: r.event_type,
-      occurredAt: r.occurred_at, source: r.source as OperationalEventEvidenceSource,
-      recordedAt: r.recorded_at, recordedBy: r.recorded_by, status: r.status,
-    }))
+    const freshEvidence = await loadActiveOperationalEventEvidence(id)
     const freshWorkload = computeCommercialRuleWorkload(
       terms, meterMappingWorkload, unresolvedInteractions.length, undefined, { configured: vatConfigured },
       undefined, freshEvidence, new Date(),
+      // Step 17H.4B0D4H1B4E2.5 §14-16 — see the preflight gate's own
+      // identical call above for the full rationale.
+      !!(terms?.base_monthly_fee || terms?.base_annual_fee),
     )
     // Contract B live acceptance failure (2026-08-29) — same
     // approvalBlockers-only check as the preflight gate above, for the
@@ -333,12 +347,43 @@ export async function POST(
       }
     }
 
+    // Step 17H.4B0D4H1A.1 — the execute_status/customer/platform write
+    // below stays UNCONDITIONAL: by this point the real provider action
+    // (customer/subscription creation) has already, irreversibly happened
+    // — refusing to record it because a hold was superseded mid-request
+    // would orphan a real, already-created provider customer with no
+    // local trace, which is strictly worse than a stale hold lingering.
+    // billing_hold is the field that actually gates every future monetary
+    // action (evaluateBillingGate never consults execute_status) — so
+    // guarding execute_status itself is not what closes the race; guarding
+    // the HOLD CLEAR is. That clear now goes through
+    // clear_billing_hold_if_unchanged (compare-and-clear against the exact
+    // snapshot this request's own gate evaluated at request start), never
+    // a blind write — see rebuild-schedule/route.ts's identical pattern
+    // and the migration's own header comment for the full race analysis.
     await supabaseServer.from('jobs').update({
       execute_status: 'COMPLETED',
       billing_platform: result.platform,
       billing_subscription_id: result.subscriptionId,
       billing_customer_id: result.customerId,
     }).eq('id', id)
+
+    let holdConflict = false
+    if (shouldClearBillingHoldAfterSuccess(billingHoldAtRequestStart) && !result.hadBlockedOneTimeFee) {
+      const { data: cleared, error: clearError } = await supabaseServer.rpc('clear_billing_hold_if_unchanged', {
+        p_job_id: id, p_expected_hold: billingHoldAtRequestStart,
+      })
+      if (clearError) {
+        console.error(`[approve] clear_billing_hold_if_unchanged RPC failed for job ${id}:`, clearError)
+      } else if (!cleared) {
+        // Approval itself completed and is not undone — but the hold this
+        // request was authorized under has since been superseded. Never
+        // claim billing is now safe; the current (newer) hold remains in
+        // force and the caller must refresh rather than treat this as a
+        // clean success.
+        holdConflict = true
+      }
+    }
 
     // A job can no longer reach this point already COMPLETED (item 1 — the
     // claim only ever succeeds from PENDING_HUMAN_REVIEW/READY_TO_APPROVE),
@@ -347,6 +392,17 @@ export async function POST(
     // attempt, a deliberate, verified new one) — always worth a sync event.
     const { recordSync } = await import('@/lib/billing')
     await recordSync(org.orgId, id, 'contract_configure').catch(err => console.error('[approve] recordSync failed', err))
+
+    if (holdConflict) {
+      return NextResponse.json(
+        {
+          error: 'The contract was approved, but its configuration changed again while approval was in progress. Refresh and check its current status before proceeding.',
+          success: true, platform: result.platform, stripeSubscriptionId: result.subscriptionId,
+          customerId: result.customerId, dashboardUrl: result.dashboardUrl,
+        },
+        { status: 409 },
+      )
+    }
 
     return NextResponse.json({
       success: true,

@@ -24,6 +24,8 @@ import {
   buildServiceCreditPrompt,
   buildCreditSurvivalPrompt,
   buildRuleInteractionPrompt,
+  buildFixedFeeBillingTimingPrompt,
+  buildVariableInvoiceTimingPrompt,
   parseRuleInterpretationResponse,
   describeMissingFieldQuestions,
   describeWhatWillChange,
@@ -38,6 +40,8 @@ import {
   type TierCalculationContext,
   type ServiceCreditContext,
   type RuleInteractionContext,
+  type FixedFeeBillingTimingContext,
+  type VariableInvoiceTimingContext,
 } from '@/lib/rule-interpretation'
 
 // See propose-rule/route.ts's identical export for why this matters — this
@@ -146,13 +150,14 @@ export async function POST(
     base_annual_fee: number | null
     billing_frequency: string | null
     base_fee_proration: { source_clause?: string | null; confirmation_reason?: string | null } | null
-    additional_recurring_fees: Array<{ fee_label: string; amount: number; description: string | null; source_clause?: string | null; proration?: { source_clause?: string | null } | null }> | null
+    fixed_fee_billing_timing: { source_clause?: string | null } | null
+    additional_recurring_fees: Array<{ fee_label: string; amount: number; description: string | null; source_clause?: string | null; proration?: { source_clause?: string | null } | null; variable_invoice_timing?: { source_clause?: string | null } | null }> | null
     one_time_fees: Array<{ fee_label?: string | null; description?: string | null; source_clause?: string | null }> | null
     unsupported_commercial_mechanisms: Array<{ description?: string | null; source_clause?: string | null }> | null
   }
   const { data: termsRaw } = await supabaseServer
     .from('contract_terms')
-    .select('currency, overage_tiers, escalators, discounts, service_credits, contract_start_date, contract_end_date, base_monthly_fee, base_annual_fee, billing_frequency, base_fee_proration, additional_recurring_fees, one_time_fees, unsupported_commercial_mechanisms')
+    .select('currency, overage_tiers, escalators, discounts, service_credits, contract_start_date, contract_end_date, base_monthly_fee, base_annual_fee, billing_frequency, base_fee_proration, fixed_fee_billing_timing, additional_recurring_fees, one_time_fees, unsupported_commercial_mechanisms')
     .eq('id', job.contract_terms_id)
     .single()
   const terms = termsRaw as unknown as TermsRow | null
@@ -394,6 +399,38 @@ export async function POST(
       overlapReason: sourceClause ?? 'Both rules reference the same fee component.',
     }
     prompt = buildRuleInteractionPrompt(context, reviewerInput, selectedOption)
+  } else if (ruleType === 'fixed_fee_billing_timing') {
+    // Step 17H.4B0D4H1B4E5 — free-text path only (live-reproduced defect:
+    // this ruleType previously had NO case here at all, so ANY interpret-
+    // rule call for it — including the review drawer's "Generate billing
+    // rule" button fired for a known structured option — hit "Unknown
+    // ruleType". A known structured option ("At the beginning/end of each
+    // billing period") is fully self-explanatory and is now mapped
+    // deterministically client-side, never reaching this route at all (see
+    // the review drawer's applyDeterministicFixedFeeTiming) — this branch
+    // exists only for "Other / unclear" + a genuine custom instruction.
+    const context: FixedFeeBillingTimingContext = {
+      sourceClause: sourceClauseFor(terms.fixed_fee_billing_timing?.source_clause, sourceClause, otherClauses),
+    }
+    prompt = buildFixedFeeBillingTimingPrompt(context, reviewerInput)
+  } else if (ruleType === 'variable_invoice_timing') {
+    // Step 17H.4B0D4H1B4E5.1 — free-text path only, mirroring
+    // fixed_fee_billing_timing's E5 fix exactly (same live-reproduced
+    // defect: this ruleType had NO case here at all). Per-fee, not
+    // job-level — contractUnitType carries the fee_label, exactly as
+    // recurring_fee_proration already addresses this same fee shape above.
+    // A known structured option is mapped deterministically client-side
+    // (see the review drawer's applyDeterministicVariableInvoiceTiming),
+    // never reaching this route — this branch exists only for
+    // "Other / unclear" + a genuine custom instruction.
+    if (!contractUnitType) return NextResponse.json({ error: 'contractUnitType (fee label) is required for variable_invoice_timing' }, { status: 400 })
+    const fee = (terms.additional_recurring_fees ?? []).find(f => f.fee_label === contractUnitType)
+    if (!fee) return NextResponse.json({ error: `Recurring fee '${contractUnitType}' not found on this job` }, { status: 404 })
+    const context: VariableInvoiceTimingContext = {
+      contractUnitType: fee.fee_label,
+      sourceClause: sourceClauseFor(fee.variable_invoice_timing?.source_clause ?? fee.description, sourceClause, otherClauses),
+    }
+    prompt = buildVariableInvoiceTimingPrompt(context, reviewerInput)
   } else {
     return NextResponse.json({ error: `Unknown ruleType: ${ruleType}` }, { status: 400 })
   }

@@ -354,27 +354,25 @@ export async function GET(req: NextRequest) {
     // concurrency guard as the 'scheduled' path below; re-locking it here
     // would be redundant and would incorrectly require status='scheduled'.
     if (!(row as Record<string, unknown>).__alreadyLocked) {
-      // Mark as processing so concurrent runs skip it, and stamp the
-      // execution lease's start time in the SAME write (Stage-B recovery
-      // — see the stale-processing reclaim block above). Checking `!locked`
-      // rather than only `error` is a real fix found while auditing this:
-      // a plain UPDATE whose WHERE clause matches zero rows (because
-      // another worker already won the race) is NOT a PostgREST error —
-      // `error` stays null regardless — so the old `if (lockError)` check
-      // could never actually detect "another run already grabbed this
-      // row"; only `.select().maybeSingle()` returning null reliably does.
-      const { data: locked, error: lockError } = await supabaseServer
-        .from('planned_invoices')
-        .update({ status: 'processing', processing_started_at: new Date().toISOString() })
-        .eq('id', row.id)
-        .eq('status', 'scheduled')
-        .select('*')
-        .maybeSingle()
-
-      if (lockError || !locked) {
-        // Another run already grabbed this row
+      // Step 17H.4B0D4H1A — replaces the former plain conditional UPDATE
+      // (`.eq('status','scheduled')`) with the atomic claim_scheduled_invoice
+      // RPC, mirroring claim_parked_event_fee's own architecture: the row
+      // claim AND the jobs.billing_hold check now happen inside one DB
+      // transaction (planned_invoice row FOR UPDATE -> jobs row FOR SHARE
+      // -> the state-transition UPDATE), so a concurrent hold-set can never
+      // slip in between "checked no hold" and "committed to processing" —
+      // see the migration's own header comment for the full race analysis.
+      // A held job's due row is simply left 'scheduled' — not an error, not
+      // a retry-exhaustion event, exactly like any other not-yet-eligible
+      // row.
+      const { data: claimed, error: claimError } = await supabaseServer.rpc('claim_scheduled_invoice', {
+        p_planned_invoice_id: row.id,
+      })
+      if (claimError) {
+        console.error('[invoice-scheduler] claim_scheduled_invoice RPC failed', claimError)
         continue
       }
+      if (!claimed) continue // held, already claimed by another worker, or no longer scheduled
     }
 
     try {

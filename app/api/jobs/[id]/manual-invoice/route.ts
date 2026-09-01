@@ -19,11 +19,13 @@ import { createAdHocInvoice } from '@/lib/billing-writer'
 import { computeMetricOverage, describeTieredUsage } from '@/lib/tariff'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { OverageTier } from '@/lib/types'
+import { MANUAL_INVOICE_FEE_LABEL } from '@/lib/invoice-history-classification'
+import { evaluateBillingGate } from '@/lib/billing-hold'
 
 async function loadJob(jobId: string, orgId: string) {
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('id, org_id, billing_customer_id, billing_platform, contract_terms(currency, payment_terms_days)')
+    .select('id, org_id, billing_customer_id, billing_platform, billing_hold, contract_terms(currency, payment_terms_days)')
     .eq('id', jobId)
     .eq('org_id', orgId)
     .maybeSingle()
@@ -50,8 +52,10 @@ export async function GET(
       .select('meter_key, included_units, overage_tiers, billing_cycle')
       .eq('job_id', jobId)
       .eq('confirmed', true),
+    // Step 17H.4B0D3B — current_line_items, not line_items: a superseded
+    // commercial item must never be offered as a manual-invoice preset.
     supabaseServer
-      .from('line_items')
+      .from('current_line_items')
       .select('product_name, quantity, unit_price, total_amount, billing_period, currency')
       .eq('job_id', jobId),
   ])
@@ -179,6 +183,17 @@ export async function POST(
     return NextResponse.json({ preview: { lineItems, total, currency } })
   }
 
+  // Step 17H.4B0D4H1A — billing_hold gate. Only the actual push (a real
+  // monetary action against the provider) is gated — the preview branch
+  // above returns before this and remains available regardless of hold
+  // state. Manual invoice creation is never a hold-resolving operation, so
+  // any non-null hold rejects unconditionally, including
+  // schedule_rebuild_required.
+  const holdGate = evaluateBillingGate(job.billing_hold, 'monetary_action')
+  if (!holdGate.allowed) {
+    return NextResponse.json({ error: holdGate.reason }, { status: 409 })
+  }
+
   if (!job.billing_customer_id) {
     return NextResponse.json({ error: 'No billing customer on this job' }, { status: 400 })
   }
@@ -205,7 +220,7 @@ export async function POST(
       period_end:         todayStr,
       base_amount:        total,
       currency,
-      fee_label:          'Manual verification invoice',
+      fee_label:          MANUAL_INVOICE_FEE_LABEL,
       invoice_type:       'one_time',
       status:             'sent',
       stripe_invoice_id:  invoiceId,

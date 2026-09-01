@@ -14,6 +14,86 @@ import { computeMonthlyBaseRate, computeEscalatorMultiplier, computeDiscountMult
 import { billingInterval } from './stripe-meter'
 import type { ContractTerms } from './types'
 
+// Step 17H.4B0D2 — the fields commercial line-item fields a reviewer can
+// genuinely author with intent, distinct from technical/system columns
+// (confidence_score, ids, currency, source_section) reconciliation must
+// never treat as reviewer-owned. Centralized so every correction caller
+// validates against the SAME set (app/api/jobs/[id]/line-items/route.ts's
+// server-side markReviewerCorrectedFields handling).
+export const REVIEWER_CORRECTABLE_LINE_ITEM_FIELDS = ['product_name', 'unit_price', 'quantity', 'billing_period', 'total_amount'] as const
+export type ReviewerCorrectableLineItemField = typeof REVIEWER_CORRECTABLE_LINE_ITEM_FIELDS[number]
+
+// Step 17H.4B0D2 — pure validation+merge behind app/api/jobs/[id]/line-items
+// /route.ts's markReviewerCorrectedFields handling, extracted for direct
+// unit-test coverage (that route has no DB-mocked test harness). A caller
+// can only ADD field names, and only ones this SAME request is genuinely
+// writing a new value for (requestedMarks entries not present as a key in
+// `fields` are silently dropped, never trusted as a bare claim) — never
+// removes a prior marker, always deduplicates. Returns null when there is
+// nothing valid to mark, so the caller (the route) leaves
+// reviewer_corrected_fields/reviewer_corrected_at untouched rather than
+// writing an empty-but-present update.
+export function computeReviewerCorrectedFieldsUpdate(params: {
+  requestedMarks: unknown
+  fields: Record<string, unknown>
+  priorReviewerCorrectedFields: string[] | null
+  now: string
+}): { reviewer_corrected_fields: string[]; reviewer_corrected_at: string } | null {
+  const { requestedMarks, fields, priorReviewerCorrectedFields, now } = params
+  if (!Array.isArray(requestedMarks)) return null
+  const validated = requestedMarks.filter(
+    (f): f is string => typeof f === 'string'
+      && (REVIEWER_CORRECTABLE_LINE_ITEM_FIELDS as readonly string[]).includes(f)
+      && Object.prototype.hasOwnProperty.call(fields, f),
+  )
+  if (validated.length === 0) return null
+  const merged = Array.from(new Set([...(priorReviewerCorrectedFields ?? []), ...validated])).sort()
+  return { reviewer_corrected_fields: merged, reviewer_corrected_at: now }
+}
+
+// Step 17H.4B0D3B — the stale-row write guard behind the correction PATCH
+// route's own logic, extracted for direct unit-test coverage. A row that
+// genuinely does not exist is deliberately NOT treated as stale — that
+// preserves the route's pre-existing (silent no-op) behavior for a missing
+// itemId, unchanged by this pass. Only a row that EXISTS and carries a
+// non-null superseded_at is rejected — it is no longer part of current
+// commercial configuration, and a correction against it (value change or a
+// mere confidence-only confirmation) must never silently succeed.
+export type LineItemCorrectionGateResult =
+  | { status: 'ok' }
+  | { status: 'not_found' }
+  | { status: 'superseded' }
+
+export function checkLineItemCorrectionGate(
+  existing: { superseded_at: string | null } | null,
+): LineItemCorrectionGateResult {
+  if (!existing) return { status: 'not_found' }
+  if (existing.superseded_at !== null) return { status: 'superseded' }
+  return { status: 'ok' }
+}
+
+export const STALE_LINE_ITEM_CORRECTION_MESSAGE = 'This billing item is no longer part of the current configuration. Refresh and try again.'
+
+// Every row buildLineItems emits starts under FULL tracking — this is what
+// distinguishes a newly-generated row from a legacy row that predates
+// correction-metadata tracking entirely (reviewer_corrected_fields: null on
+// a legacy row, populated only via app/api/jobs/[id]/line-items/route.ts's
+// own PATCH handler, never assigned here or anywhere else). Spread onto
+// every pushed row below so there's exactly one place this default lives —
+// missing it on any one of the several row-kind blocks below would
+// silently create a row reconciliation could wrongly treat as legacy.
+const NEW_ROW_CORRECTION_TRACKING = {
+  reviewer_corrected_fields: [] as string[],
+  // true = "the absence of a field from reviewer_corrected_fields is
+  // authoritative — it really has never been reviewer-corrected," valid
+  // only because this row was inserted under tracking from the start. A
+  // legacy row that later receives its first correction gets
+  // reviewer_corrected_fields populated but this stays false — its other
+  // fields' PRE-tracking history remains genuinely unknown, never asserted.
+  reviewer_corrected_fields_complete: true,
+  reviewer_corrected_at: null as string | null,
+}
+
 export function buildLineItems(terms: ContractTerms, currency: string) {
   const items = []
   const cur = terms.currency || currency
@@ -74,6 +154,7 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
       currency: cur,
       confidence_score: 0,
       source_section: src.base_monthly_fee ?? src.year_pricing ?? src.ramp_schedule ?? null,
+      ...NEW_ROW_CORRECTION_TRACKING,
     })
   } else if (hasRecurringBase && contractStart && termMonths > 0) {
     const { interval, intervalCount } = billingInterval(terms.billing_frequency)
@@ -111,6 +192,7 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
           currency: cur,
           confidence_score: conf,
           source_section: src.base_monthly_fee ?? src.year_pricing ?? src.ramp_schedule ?? null,
+          ...NEW_ROW_CORRECTION_TRACKING,
         })
       }
       i = j
@@ -125,6 +207,7 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
       currency: cur,
       confidence_score: conf,
       source_section: src.base_monthly_fee ?? null,
+      ...NEW_ROW_CORRECTION_TRACKING,
     })
   }
 
@@ -186,6 +269,14 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
       currency: cur,
       confidence_score: conf,
       source_section: src.additional_recurring_fees ?? src.base_monthly_fee ?? null,
+      // Step 17H.4B0D4H1B4E3.4 — projects contract_terms.additional_
+      // recurring_fees[].recurring_fee_id (this mechanism's stable identity,
+      // see lib/rule-id-stability.ts's preserveRecurringFeeIdentity) onto
+      // the operational line-item row — the SAME passthrough role fee_id/
+      // tier_id already play for one_time_fees/overage_tiers above. Never
+      // generated here.
+      recurring_fee_id: fee.recurring_fee_id ?? null,
+      ...NEW_ROW_CORRECTION_TRACKING,
     })
   }
 
@@ -213,6 +304,17 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
       // extraction-confidence signal as every other line item kind above.
       confidence_score: conf,
       source_section: src.overage_tiers ?? null,
+      // Step 17H.4B0D4B1B0E — projects the upstream contract_terms.overage_
+      // tiers[].tier_id (this band's semantic identity, see lib/rule-id-
+      // stability.ts's preserveTierIdentity) onto the operational line-item
+      // row. Never generated here — identity assignment/preservation stays
+      // entirely upstream (lib/contract-extractor.ts's assignTierIds, lib/
+      // rule-id-stability.ts's preserveTierIdentity); this is a pure
+      // passthrough, null for any tier that doesn't have one yet (legacy,
+      // pre-tier_id extractions). Mirrors fee_id's own identical role for
+      // one-time rows below — never both on the same row.
+      tier_id: tier.tier_id ?? null,
+      ...NEW_ROW_CORRECTION_TRACKING,
     })
   }
 
@@ -227,6 +329,15 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
       currency: cur,
       confidence_score: conf,
       source_section: src.one_time_fees ?? null,
+      // Step 17H.4B0D4B0B — projects the upstream contract_terms.one_time_
+      // fees[].fee_id (the semantic identity of this commercial rule) onto
+      // the operational line-item row. Never generated here — identity
+      // assignment/preservation remains entirely upstream (lib/contract-
+      // extractor.ts, lib/rule-id-stability.ts); this is a pure passthrough,
+      // null for any fee that doesn't have one yet (legacy, pre-fee_id
+      // extractions).
+      fee_id: fee.fee_id ?? null,
+      ...NEW_ROW_CORRECTION_TRACKING,
     })
   }
 
@@ -240,29 +351,20 @@ export function buildLineItems(terms: ContractTerms, currency: string) {
       currency: cur,
       confidence_score: conf > 0.9 ? 0.94 : 0.72,
       source_section: src.escalators ?? null,
+      ...NEW_ROW_CORRECTION_TRACKING,
     })
   }
 
   return items
 }
 
-// Step 17E, item 4 — the recurring-base-fee block above (the ONLY
-// buildLineItems block with a genuinely stale-row risk: an unresolved
-// base_fee_proration emits a placeholder row keyed by a fixed product_name
-// string, so once the reviewer confirms the proration, the STORED copy of
-// that placeholder row must be replaced with the real, now-computable
-// schedule — never left to render "Pending interpretation" forever purely
-// because nothing re-ran buildLineItems). Every product_name this specific
-// block (and only this block — never additional_recurring_fees/overage_
-// tiers/one_time_fees/escalators) can ever produce, so a caller can
-// identify exactly which stored rows are safe to delete-and-replace
-// without touching any other row (including a reviewer's own manual
-// per-row corrections on unrelated line items). See
-// app/api/jobs/[id]/confirm-rule/route.ts's base_fee_proration branch, the
-// only caller.
-export function isRecurringBaseFeeLineItem(productName: string): boolean {
-  return productName === 'Base subscription'
-    || productName === 'Recurring base fee'
-    || productName === 'Recurring base fee — partial-period treatment unresolved'
-    || /^Recurring base fee \(periods \d+–\d+\)$/.test(productName)
-}
+// Step 17H.4B0D1.1 fix — moved to lib/line-item-markers.ts, a
+// zero-dependency module, because this file transitively imports
+// lib/billing-writer.ts (server-only: eagerly constructs a service-role
+// Supabase client). Re-exported here so every existing importer of
+// isRecurringBaseFeeLineItem from './line-items' is unaffected. See that
+// file's own header comment for the full rationale — this was a real,
+// live client-bundle crash (lib/tier-escalator-correction.ts, imported by
+// the Configure page's Client Component, had picked up this dependency
+// transitively and pulled the service-role client into the browser).
+export { isRecurringBaseFeeLineItem } from './line-item-markers'

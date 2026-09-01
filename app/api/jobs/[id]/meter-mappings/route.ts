@@ -16,8 +16,12 @@ import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import { collectOperationalDataInputs, collectDerivedMetrics } from '@/lib/operational-data-inputs'
 import { isNotificationChannelMismatch, NOTIFICATION_CHANNEL_MISMATCH_CONFIDENCE_CAP } from '@/lib/meter-suggestion-guard'
 import { resolveRecognizedOperationalInputKey } from '@/lib/operational-input-canonicalization'
-import { buildUsageMappingGroups } from '@/lib/meter-mapping-groups'
+import { buildUsageMappingGroups, resolveExistingMappingRow } from '@/lib/meter-mapping-groups'
 import { normaliseCadence } from '@/lib/billing-cadence'
+import { AUTO_CONFIGURE_ONLY_MESSAGE } from '@/lib/auto-configure-guard'
+import { beginConfigurationMutationClaim, describeConfigurationMutationClaimRejection } from '@/lib/configuration-mutation-claim'
+import { computeReviewerPatchHoldTransition, applyReconciliationHoldTransition, type ReviewerPatchHoldStartingKind } from '@/lib/reconciliation-hold-transition'
+import type { BillingHold } from '@/lib/billing-hold'
 
 // ── Auto-mapping heuristic ────────────────────────────────────────────────────
 const METER_RULES: Array<{ patterns: string[]; key: string; confidence: number }> = [
@@ -246,8 +250,6 @@ export async function GET(
     .select('*')
     .eq('job_id', jobId)
 
-  const existingMap = new Map((existing ?? []).map((r: Record<string, unknown>) => [r.contract_unit_type as string, r]))
-
   // Step 17D.1, item A/F — search ONLY the current organization's own
   // configured meters. billing_meters.org_id (the sole ownership column —
   // no separate owner_org_id) is the sole visibility boundary — no more
@@ -279,7 +281,28 @@ export async function GET(
   const freshCacheWrites: Record<string, { promptFingerprint: string; result: { meter_key: string; confidence: number } }> = {}
   const suggestions = await Promise.all(
     Array.from(unitGroups.entries()).map(async ([unitType, tiers]) => {
-      const db = existingMap.get(unitType)
+      // Step 17D.1, item D — the canonical fact this contract requirement
+      // actually needs. The EXTRACTED semantic_input_key (an explicit,
+      // extraction-stated field — never inferred from unit_type text at
+      // billing time) wins when present; runtime resolution via
+      // lib/operational-input-canonicalization.ts is only a display-time
+      // fallback for a contract extracted before this field existed. Null
+      // when neither resolves — the suggestion pipeline below falls back
+      // to today's exact rule/AI text-matching behavior in that case,
+      // never blocked by it. Computed here (moved up from below) because
+      // the existing-mapping lookup right below now also needs it.
+      const unitSemanticKey = extractedSemanticKeys.has(unitType)
+        ? resolveRecognizedOperationalInputKey(extractedSemanticKeys.get(unitType)!)
+        : resolveRecognizedOperationalInputKey(unitType)
+      // Step 17G.6C — matches by contract_unit_type first (unchanged,
+      // still the primary key), falling back to semantic_input_key when
+      // buildUsageMappingGroups synthesized a fresh group key (a fee-only
+      // group with no overage tier of its own is keyed by that fee's own
+      // fee_label) that no longer matches whatever raw string an earlier
+      // confirmation was persisted under for the exact same canonical
+      // fact — see lib/meter-mapping-groups.ts's resolveExistingMappingRow
+      // for the full regression this fixes.
+      const db = resolveExistingMappingRow(unitType, unitSemanticKey, existing ?? [])
 
       const sortedTiersRaw = [...tiers].sort((a, b) => (a.from_unit ?? 0) - (b.from_unit ?? 0))
       // Two ways extraction represents the free allowance: either the tier
@@ -302,18 +325,6 @@ export async function GET(
 
       let meter_key: string
       let confidence: number
-      // Step 17D.1, item D — the canonical fact this contract requirement
-      // actually needs. The EXTRACTED semantic_input_key (an explicit,
-      // extraction-stated field — never inferred from unit_type text at
-      // billing time) wins when present; runtime resolution via
-      // lib/operational-input-canonicalization.ts is only a display-time
-      // fallback for a contract extracted before this field existed. Null
-      // when neither resolves — the suggestion pipeline below falls back
-      // to today's exact rule/AI text-matching behavior in that case,
-      // never blocked by it.
-      const unitSemanticKey = extractedSemanticKeys.has(unitType)
-        ? resolveRecognizedOperationalInputKey(extractedSemanticKeys.get(unitType)!)
-        : resolveRecognizedOperationalInputKey(unitType)
       const semanticMatch = unitSemanticKey
         ? availableMeters.find(m => m.semantic_input_key === unitSemanticKey)
         : undefined
@@ -461,11 +472,18 @@ export async function POST(
   // configuration just by knowing/guessing a job id.
   const { data: ownedJob } = await supabaseServer
     .from('jobs')
-    .select('id')
+    .select('id, module')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .maybeSingle()
   if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+
+  // Step 17H.4B0D4H1B4D1 §5 — contract_meter_mappings/org_billing_config are
+  // Model B+ commercial-execution surfaces (AUTO_CONFIGURE-only by design,
+  // per H1B4B/H1B4C's audit); reject before any write.
+  if (ownedJob.module !== 'AUTO_CONFIGURE') {
+    return NextResponse.json({ error: AUTO_CONFIGURE_ONLY_MESSAGE }, { status: 400 })
+  }
 
   const body = await req.json() as {
     mappings: Array<{
@@ -527,6 +545,34 @@ export async function POST(
     return null
   }
 
+  // Step 17H.4B0D4H1B4D1 §6 — contract_meter_mappings resolves WHICH meter
+  // feeds a tier/fee's real overage computation (lib/usage-pull.ts reads it
+  // at snapshot-finalize time) — a real commercial-execution input the
+  // scheduler can race against, exactly like reconcile-semantic-keys'
+  // identical write to the same table. Claimed BEFORE the first write.
+  // Deliberately does NOT run reconcileCurrentLineItemsForJob afterward:
+  // buildLineItems never reads contract_meter_mappings (confirmed by
+  // direct grep — semantic_input_key/meter_key/overage_tiers here never
+  // feed current_line_items identity), so there is nothing for Model B+
+  // reconciliation to find.
+  //
+  // Step 17H.4B0D4H1B4D1.2 §1/§2 — this means the hold transition below
+  // must NOT use computePostMutationHoldTransition (which always treats the
+  // temporary claimed hold, never the ORIGINAL previous one, as its
+  // starting point — correct only for a caller that actually ran Model B+
+  // and can back a clean result with real evidence). A mapping-only mutation
+  // can never prove a pre-existing reconciliation_blocked hold is resolved,
+  // so it uses the SAME dedicated transition the reviewer line-items PATCH
+  // already uses for exactly this reason (see computeReviewerPatchHoldTransition's
+  // own header) — a non-reconciling mutation with no planner/blocker
+  // outcome to reason about, explicitly threading claim.previousBillingHold's
+  // real reason through instead of assuming 'reexecution' as if that were
+  // the original state.
+  const claim = await beginConfigurationMutationClaim(supabaseServer, jobId)
+  if (!claim.claimed) {
+    return NextResponse.json({ error: describeConfigurationMutationClaimRejection(claim) }, { status: 409 })
+  }
+
   // Upsert all mappings
   const rows = mappings.map(m => {
     const mc = resolveMinimumCommitment(m.overage_tiers)
@@ -579,8 +625,28 @@ export async function POST(
       .upsert(fallbackRows, { onConflict: 'job_id,contract_unit_type' }))
   }
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    // §8 — write never took effect: restore the claim exactly like every
+    // other pre-mutation-failure path (confirm-rule/terms/reconcile-*).
+    await applyReconciliationHoldTransition(supabaseServer, jobId, claim.newBillingHold, claim.previousBillingHold).catch(() => {})
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
 
+  // Step 17H.4B0D4H1B4D1 §7 — org_billing_config is NOT job-scoped: it is
+  // keyed (org_id, meter_key), and the write below can silently overwrite
+  // ANY other job in this org that happens to resolve to the same
+  // meter_key (a very plausible collision — meter_key values are a small,
+  // largely-fixed set like 'api_call'/'sync'/'user', and org_billing_config
+  // is also Verdix's OWN SaaS-billing configuration table per CLAUDE.md,
+  // read by the org-wide billing cron/lib/billing-engine.ts — not a
+  // per-customer-contract table at all). This job's own configuration-
+  // mutation claim (above) protects only THIS job's row/schedule — it
+  // cannot protect a DIFFERENT job's org_billing_config row from being
+  // overwritten by this one. STOP: left exactly as before (module-guarded
+  // now, nothing else) — see the H1B4D1 report's §6/§7 for the required
+  // multi-job/org-level design this still needs. Do not treat this section
+  // as protected by the claim above.
+  //
   // If all confirmed, write to org_billing_config and initialise billing period.
   // confirmed alone is not enough — a row can carry confirmed:true with an
   // empty meter_key (legacy data from before this invariant existed); such a
@@ -590,6 +656,10 @@ export async function POST(
   const allConfirmed = allMeterMappingsResolved(
     mappings.map(m => ({ classification: m.input_classification ?? 'meter', confirmed: m.confirmed, meter_key: m.meter_key, manual_value_configured: m.manual_value_configured ?? false }))
   )
+  // §8 — tracked across both org-wide writes below; read by the final hold
+  // transition so a failed org_billing_config/org_subscriptions write can
+  // never be silently treated as a clean, fully-confirmed outcome.
+  let orgWideConfigWriteFailed = false
   if (allConfirmed) {
     const { data: job } = await supabaseServer
       .from('jobs')
@@ -621,9 +691,21 @@ export async function POST(
         }))
 
       if (configRows.length > 0) {
-        await supabaseServer
+        const { error: configError } = await supabaseServer
           .from('org_billing_config')
           .upsert(configRows, { onConflict: 'org_id,meter_key' })
+        if (configError) {
+          // Step 17H.4B0D4H1B4D1.1 §8 — this failure was previously
+          // silently ignored: the response still claimed all_confirmed
+          // success and the final hold transition below still promoted
+          // the job as if live billing config now matches its confirmed
+          // mappings, when it may not. contract_meter_mappings already
+          // committed (never rolled back — same "once a real write
+          // commits, never restore" doctrine as every other claim-based
+          // route), but the job must not be told it's billing-safe.
+          console.error(`[meter-mappings] org_billing_config upsert failed for job ${jobId}:`, configError.message)
+          orgWideConfigWriteFailed = true
+        }
       }
 
       // Initialise org_subscriptions billing period from the contract start date.
@@ -643,7 +725,7 @@ export async function POST(
         else if (freq === 'quarterly')   periodEnd.setMonth(periodEnd.getMonth() + 3)
         else                             periodEnd.setMonth(periodEnd.getMonth() + 1)
 
-        await supabaseServer.from('org_subscriptions').upsert({
+        const { error: subscriptionError } = await supabaseServer.from('org_subscriptions').upsert({
           org_id:               job.org_id,
           plan_id:              'enterprise',
           status:               'active',
@@ -654,9 +736,52 @@ export async function POST(
           usage_counters:       {},
           updated_at:           new Date().toISOString(),
         }, { onConflict: 'org_id' })
+        if (subscriptionError) {
+          console.error(`[meter-mappings] org_subscriptions upsert failed for job ${jobId}:`, subscriptionError.message)
+          orgWideConfigWriteFailed = true
+        }
       }
     }
   }
 
-  return NextResponse.json({ ok: true, all_confirmed: allConfirmed })
+  // Step 17H.4B0D4H1B4D1.2 §2/§3/§4/§5 — a real contract_meter_mappings
+  // write happened (the outer body validation above already requires a
+  // non-empty mappings array — this is never a genuine no-op call), so
+  // SOME transition always runs. But WHICH one depends on what the job's
+  // hold actually was before this claim, not merely on this write's own
+  // success:
+  //   - previous reconciliation_blocked: this operation never ran Model B+
+  //     reconciliation and cannot prove that structural problem is
+  //     resolved — released back to its EXACT prior content (blockers,
+  //     started_at, everything), regardless of whether the org-wide config
+  //     write above succeeded or failed. Never downgraded to
+  //     schedule_rebuild_required merely because the mapping write itself
+  //     succeeded.
+  //   - otherwise (previous NULL or schedule_rebuild_required): an
+  //     org-wide config write failure is genuine NEW uncertainty this
+  //     request itself introduced — never silently promoted as if the
+  //     job's live billing config now matches what was just confirmed.
+  //     Otherwise, the ordinary non-reconciling-mutation resolution
+  //     applies (schedule_rebuild_required if a schedule exists to
+  //     protect, NULL if not) — identical in spirit to
+  //     computeReviewerPatchHoldTransition's own 'clear' branch.
+  let nextHold: BillingHold | null
+  if (claim.previousBillingHold?.reason === 'reconciliation_blocked') {
+    nextHold = claim.previousBillingHold
+  } else if (orgWideConfigWriteFailed) {
+    nextHold = { reason: 'reconciliation_blocked', started_at: new Date().toISOString(), blockers: [] }
+  } else {
+    const startingKind: ReviewerPatchHoldStartingKind = claim.previousBillingHold === null ? 'clear' : 'schedule_rebuild_required'
+    nextHold = computeReviewerPatchHoldTransition({
+      startingKind, originalHold: claim.previousBillingHold, hasExistingBillingSchedule: claim.hasExistingBillingSchedule, now: new Date().toISOString(),
+    })
+  }
+  const { applied } = await applyReconciliationHoldTransition(supabaseServer, jobId, claim.newBillingHold, nextHold)
+  const holdConflict = !applied
+
+  return NextResponse.json({
+    ok: true, all_confirmed: allConfirmed,
+    ...(holdConflict ? { holdConflict: true } : {}),
+    ...(orgWideConfigWriteFailed ? { orgWideConfigWriteFailed: true } : {}),
+  })
 }

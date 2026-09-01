@@ -300,9 +300,9 @@ export async function GET(
   const { data: job, error } = await supabaseServer
     .from('jobs')
     .select(`
-      id, name, module, status, execute_status, currency, error_message, contract_pdf_url, created_at, updated_at, billing_subscription_id, billing_platform, billing_customer_id,
+      id, name, module, status, execute_status, currency, error_message, contract_pdf_url, created_at, updated_at, billing_subscription_id, billing_platform, billing_customer_id, billing_hold,
       contract_terms ( * ),
-      line_items ( * ),
+      current_line_items ( * ),
       leakage_findings ( * ),
       partner_invoices ( * ),
       partner_findings ( * )
@@ -350,7 +350,13 @@ export async function GET(
   // the explicit reconciliation write (POST /api/jobs/[id]/reconcile-
   // line-items, or a reviewer's own confirm-rule call) actually persists
   // it — an accepted, deliberate consequence of GET never writing.
-  let responseLineItems = job.line_items as Array<{ id: string; product_name: string }>
+  // Step 17H.4B0D3B — reads current_line_items (superseded_at IS NULL), not
+  // line_items directly: this is a CURRENT-CONFIGURATION read (Commercial
+  // BoM / CSV state), one of the consumers the 17H.4B0D3A schema pass
+  // designed the view for. The API/UI-facing shape stays `line_items` —
+  // never leaking the DB view name — see the final response construction
+  // below, which explicitly discards the raw `current_line_items` key.
+  let responseLineItems = job.current_line_items as Array<{ id: string; product_name: string }>
   if (normalizedTerms && responseLineItems?.length > 0) {
     const currency = (job.currency as string | undefined) ?? (normalizedTerms as { currency?: string }).currency ?? 'USD'
     const plan = planLineItemReconciliation({
@@ -380,6 +386,12 @@ export async function GET(
     .from('planned_invoices')
     .select('id', { count: 'exact', head: true })
     .eq('job_id', id)
+
+  // Never leak the DB view name into the API response shape — the raw
+  // current_line_items key from the query result is removed here and
+  // replaced by the explicit `line_items: responseLineItems` key below,
+  // exactly as the response always exposed it.
+  delete (job as { current_line_items?: unknown }).current_line_items
 
   return NextResponse.json({
     ...job,

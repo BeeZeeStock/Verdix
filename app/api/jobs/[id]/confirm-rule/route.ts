@@ -13,7 +13,7 @@
  *   1. Insert a new commercial_rule_interpretations row (append-only —
  *      supersedes the prior current row via is_current, never overwrites it).
  *   2. Write the approved structured data into contract_terms (what the
- *      Review panel and Commercial Terms section read).
+ *      Review panel and Commercial Logic & Billing Setup read).
  *   3. Mirror the same write into contract_meter_mappings when a confirmed
  *      mapping already exists for the metric (closes the exact dual-write
  *      gap the Fenix bug exposed — usage-pull.ts's real billing computation
@@ -32,8 +32,12 @@ import { listMatchableOrganizationRules } from '@/lib/rulebook/organization-rule
 import { resolveProductionOrganizationField, isOrganizationPolicyStale, organizationPolicyAvailableForUnresolvedReason, resolveAuthoritativeUnresolvedReason, type ProductionOrganizationResolution, type SeenOrganizationPolicy } from '@/lib/rulebook/organization-rulebook-production'
 import { resolveOrganizationPolicyRevert } from '@/lib/organization-policy-revert'
 import { resolveConfirmedDiscountComponents } from '@/lib/discount-component-targeting'
-import { buildLineItems } from '@/lib/line-items'
-import { reconcileStaleLineItemsForJob } from '@/lib/line-items-reconciliation'
+import { buildFreshLineItemsFromPersistedTerms } from '@/lib/reconciliation-terms-loader'
+import { reconcileCurrentLineItemsForJob, type ReconciliationOrchestrationResult } from '@/lib/current-line-item-reconciliation-orchestration'
+import { computePostMutationHoldTransition, computeReviewerPatchHoldTransition, applyReconciliationHoldTransition, type ReviewerPatchHoldStartingKind } from '@/lib/reconciliation-hold-transition'
+import { beginConfigurationMutationClaim, describeConfigurationMutationClaimRejection } from '@/lib/configuration-mutation-claim'
+import { AUTO_CONFIGURE_ONLY_MESSAGE } from '@/lib/auto-configure-guard'
+import { recurringFeeDecisionKey } from '@/lib/contract-terms-merge'
 
 // Several sequential writes (audit row, contract_terms, sometimes
 // contract_meter_mappings) — same defensive reasoning as propose-rule/
@@ -154,6 +158,74 @@ function buildFixedFeeBillingTimingRule(approved: Record<string, unknown>, exist
 
 type PropagationStatus = Record<string, 'applied' | 'failed' | 'skipped'>
 
+// Step 17H.4B0D4H1B4D1.3 §1-§20 — per-ruleType classification, evidence-based
+// (buildLineItems and every real downstream billing consumer traced
+// directly, never inferred from a rule's name):
+//
+//   'line_item_relevant' — buildLineItems (lib/line-items.ts) reads the
+//     mutated field(s) directly, so fresh line items can genuinely differ.
+//     Only a REAL reconcileCurrentLineItemsForJob pass with a clean result
+//     is evidence a pre-existing reconciliation_blocked hold is resolved.
+//       base_fee_proration — buildLineItems reads base_fee_proration.
+//         requires_confirmation directly (the recurring-base-fee placeholder
+//         gate).
+//       one_time_fee — buildLineItems reads one_time_fees[].amount/
+//         manual_trigger directly (unit_price/total_amount/quantity/isParked).
+//       escalator — buildLineItems generates one line item per
+//         terms.escalators[] entry; confirming an escalator with a
+//         previously-empty array creates a new entry (a new row appears).
+//         The common case (an entry already exists from extraction) is a
+//         structural no-op for buildLineItems, but real reconciliation is
+//         cheap and correct either way — never assumed clean.
+//
+//   'schedule_relevant' — NOT read by buildLineItems (confirmed: none of
+//     these fields appear anywhere in lib/line-items.ts), so fresh
+//     current_line_items structure cannot differ — but each has a REAL,
+//     traced downstream billing-execution consumer, so a confirmation is a
+//     genuine material commercial change that can make an EXISTING future
+//     schedule stale, independent of Model B+:
+//       minimum_commitment, partial_period — lib/usage-pull.ts, lib/tariff.ts
+//         (floor/minimum-spend calculation; partial_period resolves the
+//         SAME minimum_commitment object's own prorate_partial_periods/
+//         applies_at_zero_usage sub-fields, not a separate concept).
+//       recurring_fee_proration — lib/billing-writer.ts's
+//         applyProrationRule(...) (Stage A's real planned_invoices.
+//         base_amount computation).
+//       variable_invoice_timing — lib/performance-share-pull.ts.
+//       fixed_fee_billing_timing — lib/fixed-fee-invoice-scheduling.ts
+//         (the same real consumer reconcile-fixed-fee-timing's own
+//         dedicated route defends).
+//       discount — lib/tariff.ts's computeDiscountMultiplier, applied in
+//         computeFixedFeePeriodAmount (real Stage A calculation).
+//       tier_calculation — lib/usage-pull.ts, lib/tariff.ts,
+//         lib/billing-engine.ts (real overage calculation method).
+//       service_credit — lib/credit-ledger-service.ts, wired into the real,
+//         live app/api/admin/invoice-scheduler/route.ts — genuinely
+//         execution-consequential, not merely stored for a not-yet-built
+//         system.
+//
+//   'advisory' — no proven current billing consumer at all:
+//       rule_interaction — writes only service_credits[].interpretation.
+//         interaction_note, a free-text string. Confirmed by direct read of
+//         lib/credit-ledger-service.ts: it reads interp.earn_rule/
+//         application_rule, never interaction_note. Purely a human-readable
+//         annotation today — never promotes a hold on its own.
+type ConfirmRuleReconciliationRelevance = 'line_item_relevant' | 'schedule_relevant' | 'advisory'
+const RULE_TYPE_RECONCILIATION_RELEVANCE: Record<RuleType, ConfirmRuleReconciliationRelevance> = {
+  base_fee_proration: 'line_item_relevant',
+  one_time_fee: 'line_item_relevant',
+  escalator: 'line_item_relevant',
+  minimum_commitment: 'schedule_relevant',
+  partial_period: 'schedule_relevant',
+  recurring_fee_proration: 'schedule_relevant',
+  variable_invoice_timing: 'schedule_relevant',
+  fixed_fee_billing_timing: 'schedule_relevant',
+  discount: 'schedule_relevant',
+  tier_calculation: 'schedule_relevant',
+  service_credit: 'schedule_relevant',
+  rule_interaction: 'advisory',
+}
+
 function buildMinimumCommitment(approved: Record<string, unknown>, existing: MinimumCommitment | null | undefined): MinimumCommitment {
   return {
     mode: (approved.mode as MinimumCommitment['mode']) ?? existing?.mode ?? 'floor',
@@ -189,11 +261,31 @@ export async function POST(
   // and billing configuration just by knowing/guessing a job id.
   const { data: ownedJob } = await supabaseServer
     .from('jobs')
-    .select('id, contract_terms_id')
+    .select('id, module, contract_terms_id')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .maybeSingle()
   if (!ownedJob) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+
+  // Step 17H.4B0D4H1B4C — confirm-rule is a Model B+ commercial-write
+  // surface (AUTO_CONFIGURE-only by design, per H1B4B's audit); reject
+  // before the mutation claim and before the audit-row insert.
+  if (ownedJob.module !== 'AUTO_CONFIGURE') {
+    return NextResponse.json({ error: AUTO_CONFIGURE_ONLY_MESSAGE }, { status: 400 })
+  }
+
+  // Step 17H.4B0D4H1B3.1 §6 — ownership claimed BEFORE the first write
+  // that changes commercial truth (the commercial_rule_interpretations
+  // audit insert, Step 1 below — confirmed by direct audit that nothing
+  // between here and that insert performs any write). Everything below
+  // this point that returns before contract_terms is confirmed 'applied'
+  // must restore this claim (see the three explicit restore sites and the
+  // final transition at the end of this function); nothing after it may.
+  const claim = await beginConfigurationMutationClaim(supabaseServer, jobId)
+  if (!claim.claimed) {
+    return NextResponse.json({ error: describeConfigurationMutationClaimRejection(claim) }, { status: 409 })
+  }
+  const restoreClaim = () => applyReconciliationHoldTransition(supabaseServer, jobId, claim.newBillingHold, claim.previousBillingHold)
 
   const body = await req.json() as Body
   const { ruleType, contractUnitType, sourceClause, reviewerInput, aiProposedInterpretation, approvedInterpretation, discountId, creditId, interactionKey, applicationRuleProvenance: rawApplicationRuleProvenance, cashRedeemableProvenance, earnRuleProvenance, survivalOrganizationPolicySeen, revertSurvivalToOrganizationPolicy } = body
@@ -226,15 +318,61 @@ export async function POST(
     return NextResponse.json({ error: 'contractUnitType (the fee_label) is required for one_time_fee confirmation' }, { status: 400 })
   }
 
+  // Moved up from its original position (just before the "Step 1: audit
+  // row" section) so auditUnitKey, immediately below, can consult it for
+  // variable_invoice_timing's id-first addressing — a pure read with no
+  // ordering dependency on anything between here and its old position
+  // (session/propagation/affectedComponents/priorCurrent are all
+  // independent of it). Addressed via jobs.contract_terms_id (a single-row
+  // primary-key lookup) rather than querying contract_terms by job_id —
+  // the latter used .maybeSingle(), which silently returns no row (and no
+  // error surfaced to the caller) the moment more than one contract_terms
+  // row exists for a job, which re-extraction used to cause.
+  const { data: termsRow } = ownedJob.contract_terms_id
+    ? await supabaseServer
+        .from('contract_terms')
+        .select('id, overage_tiers, escalators, discounts, service_credits, ai_proposal_cache, base_fee_proration, additional_recurring_fees, one_time_fees')
+        .eq('id', ownedJob.contract_terms_id)
+        .maybeSingle()
+    : { data: null }
+
+  // Step 17H.4B0D4H1B4E3.4.1, generalized 17H.4B0D4H1B4E3.4.2 — both
+  // per-recurring-fee decision types (variable_invoice_timing,
+  // recurring_fee_proration) get recurring_fee_id-first audit addressing
+  // once the target fee has one, exactly mirroring the existing
+  // discount:{id}/credit:{id}/interaction:{key} synthetic-key convention
+  // below. The client still only ever sends the fee_label (contractUnitType)
+  // — no GUI change — this is a purely server-side addressing refinement:
+  // look up the SAME fee each branch's own mutation logic will target by
+  // fee_label, and if it carries a recurring_fee_id, address the audit row
+  // by that instead. A legacy fee with no recurring_fee_id yet keeps the
+  // exact prior behavior (fee_label-keyed) — the "legacy bridge"
+  // 17H.4B0D4H1B4E3.4.1/§5 requires. This is what lets lib/contract-terms-
+  // merge.ts's mergeVariableInvoiceTimingForFees/mergeRecurringFeeProration
+  // ForFees find a confirmed decision by stable identity instead of by
+  // wording that can drift on re-extraction. One shared lookup — both rule
+  // types address the SAME fee shape the SAME way, so a single computation
+  // covers both rather than duplicating it per ruleType.
+  const perRecurringFeeDecisionRuleTypes: RuleType[] = ['variable_invoice_timing', 'recurring_fee_proration']
+  const recurringFeeTargetId = perRecurringFeeDecisionRuleTypes.includes(ruleType) && contractUnitType
+    ? ((termsRow?.additional_recurring_fees ?? []) as Array<{ fee_label: string; recurring_fee_id?: string }>)
+        .find(f => f.fee_label === contractUnitType)?.recurring_fee_id ?? null
+    : null
+
   // The audit table's contract_unit_type column doubles as the addressing
   // key for job-level rules (null for a singular escalator). Discounts,
   // service credits, and rule interactions aren't singular, so their audit
   // history is addressed via a synthetic 'discount:{id}'/'credit:{id}'/
   // 'interaction:{key}' key in that same column — reuses the existing schema
-  // rather than requiring another migration.
+  // rather than requiring another migration. variable_invoice_timing/
+  // recurring_fee_proration join this pattern (17H.4B0D4H1B4E3.4.1/.4.2)
+  // with recurringFeeDecisionKey(...) ONLY when the target fee's identity is
+  // known; otherwise it stays fee_label-keyed, unchanged from before those
+  // passes.
   const auditUnitKey = ruleType === 'discount' ? `discount:${discountId}`
     : ruleType === 'service_credit' ? `credit:${creditId}`
     : ruleType === 'rule_interaction' ? `interaction:${interactionKey}`
+    : perRecurringFeeDecisionRuleTypes.includes(ruleType) && recurringFeeTargetId ? recurringFeeDecisionKey(recurringFeeTargetId)
     : (contractUnitType ?? null)
 
   const session = await auth()
@@ -252,12 +390,24 @@ export async function POST(
   // see isOrganizationPolicyStale's own comment), only whether the
   // reviewer is told their view was stale.
   let staleOrganizationPolicy = false
-  // A rule interaction never touches Billing Configuration/Schedule directly
+  // A rule interaction never touches Commercial BoM/Schedule directly
   // — it only resolves which basis the referencing service credit's own
   // (separately-confirmed) interpretation should use.
+  //
+  // Step 17H.3D3 — these are audit-metadata SURFACE NAMES (persisted into
+  // commercial_rule_interpretations.affected_components below), not the
+  // unrelated Discount.affected_components typed-targeting field this
+  // same identifier also names elsewhere in this codebase (a pre-existing
+  // naming collision, not introduced here — see lib/types.ts's Discount
+  // for that different, structurally-typed field). 'Commercial Terms' and
+  // 'Billing Configuration' were the names of two now-retired legacy UI
+  // surfaces (the latter absorbed into Commercial BoM in Step 17G.4B, the
+  // former retired in 17H.3D3 itself) — updated to name the current
+  // authoritative surfaces so future audit rows don't record a
+  // destination that no longer exists.
   const affectedComponents = ruleType === 'rule_interaction'
-    ? ['Commercial Terms', 'Billing Engine']
-    : ['Commercial Terms', 'Billing Configuration', 'Billing Engine', 'Billing Schedule']
+    ? ['Commercial Logic', 'Billing Engine']
+    : ['Commercial Logic', 'Commercial BoM', 'Billing Engine', 'Billing Schedule']
 
   // ── Step 1: audit row (append-only) ─────────────────────────────────────
   // contract_unit_type is null for job-level rules (escalators) — PostgREST's
@@ -276,21 +426,10 @@ export async function POST(
 
   const nextRevision = (priorCurrent?.revision_number ?? 0) + 1
 
-  // Fetched before any write this request makes, so original_extraction is a
-  // true "before" snapshot — the specific sub-object this confirmation is
-  // about to overwrite, not a post-hoc reconstruction. Reused by Step 2
-  // below rather than queried twice. Addressed via jobs.contract_terms_id
-  // (a single-row primary-key lookup) rather than querying contract_terms by
-  // job_id — the latter used .maybeSingle(), which silently returns no row
-  // (and no error surfaced to the caller) the moment more than one
-  // contract_terms row exists for a job, which re-extraction used to cause.
-  const { data: termsRow } = ownedJob.contract_terms_id
-    ? await supabaseServer
-        .from('contract_terms')
-        .select('id, overage_tiers, escalators, discounts, service_credits, ai_proposal_cache, base_fee_proration, additional_recurring_fees, one_time_fees')
-        .eq('id', ownedJob.contract_terms_id)
-        .maybeSingle()
-    : { data: null }
+  // termsRow itself was fetched earlier (before auditUnitKey, so its
+  // variable_invoice_timing addressing could consult it) — this remains a
+  // true "before" snapshot for original_extraction/Step 2 below, since
+  // nothing between its load and here writes to contract_terms.
 
   // ── Revert-to-organization-policy: eligibility + TOCTOU checks ──────────
   // Runs BEFORE the audit-row insert below, so a rejected revert attempt
@@ -442,6 +581,7 @@ export async function POST(
     // unlike the meter-mappings confirmation columns, this isn't optional
     // metadata; losing the audit trail defeats the whole point of this flow.
     console.error(`[confirm-rule] audit insert failed for job ${jobId}:`, auditError.message)
+    await restoreClaim() // contract_terms never reached — restore the claim (17H.4B0D4H1B3.1 §8)
     return NextResponse.json({
       error: auditError.message.includes('commercial_rule_interpretations')
         ? 'The audit-trail table has not been provisioned yet — run the pending migration (20260816000001_commercial_rule_interpretations.sql) before approving rules.'
@@ -457,6 +597,18 @@ export async function POST(
   }
   propagation['audit_trail'] = 'applied'
 
+  // Step 17H.4B0D4H1B3.1 — an UNEXPECTED thrown error anywhere in Step 2/3
+  // below (not one of the two named, already-handled one_time_fee errors)
+  // must never leave the claimed hold dangling. Restores it if
+  // contract_terms never actually became 'applied' by the time of the
+  // throw (matching the explicit restore sites above); otherwise leaves
+  // it exactly as-is (already the temporary reexecution hold — the SAME
+  // "post-commit: never restore, leave held" doctrine execute's own
+  // pipeline uses) and re-throws so this route's existing behavior for a
+  // genuinely unexpected failure (a 500 via Next.js's own error handling)
+  // is unchanged.
+  let reconciliationOutcome: ReconciliationOrchestrationResult | null = null
+  try {
   // ── Step 2: contract_terms ───────────────────────────────────────────────
 
   if (!termsRow) {
@@ -485,27 +637,11 @@ export async function POST(
     // Step 17E, item 4 (generalized in 17E.1, items C/D) — lib/line-items.ts's
     // recurring-base-fee block emits a STORED placeholder row while
     // base_fee_proration.requires_confirmation is true; once the reviewer
-    // confirms it above, that placeholder is stale — nothing else ever
-    // re-runs buildLineItems, so the persistent Billing Configuration
-    // table (which reads STORED line_items, not a live recomputation)
-    // would otherwise show "Pending interpretation" forever. Reconciled
-    // via the SAME shared function the job GET route uses for the
-    // already-confirmed-contract self-heal case (lib/line-items-
-    // reconciliation.ts) — one reconciliation policy, not two. Best-
-    // effort: a failure here never blocks the interpretation itself from
-    // having been saved above.
-    if (!error) {
-      const { data: fullTerms } = await supabaseServer
-        .from('contract_terms')
-        .select('base_monthly_fee, base_annual_fee, ramp_schedule, year_pricing, contract_start_date, contract_end_date, contract_term_months, billing_frequency, currency, field_sources, extraction_confidence, base_fee_proration, additional_recurring_fees')
-        .eq('id', termsRow.id)
-        .single()
-      const { data: jobRow } = await supabaseServer.from('jobs').select('currency').eq('id', jobId).maybeSingle()
-      if (fullTerms) {
-        const currency = (jobRow?.currency as string | undefined) ?? (fullTerms.currency as string | undefined) ?? 'USD'
-        await reconcileStaleLineItemsForJob({ jobId, terms: fullTerms as unknown as Parameters<typeof buildLineItems>[0], currency })
-      }
-    }
+    // confirms it above, that placeholder is stale. Reconciliation for this
+    // (and every other LINE_ITEM_RELEVANT ruleType) now runs in ONE shared
+    // step after this if/else-if chain (Step 17H.4B0D4H1B4D1.3 §7/§21),
+    // gated on RULE_TYPE_RECONCILIATION_RELEVANCE — see that block's own
+    // comment for why this moved out of being embedded in one branch.
   } else if (ruleType === 'recurring_fee_proration') {
     // contractUnitType is repurposed to carry the fee_label here — same
     // "reuse the existing addressing column rather than a new migration"
@@ -597,6 +733,7 @@ export async function POST(
         // here and returned as a structured, fail-closed 409, never an
         // uncaught 500. No raw source text is included.
         if (err instanceof OneTimeFeeCapabilityBlockedError) {
+          await restoreClaim() // contract_terms never reached (17H.4B0D4H1B3.1 §8)
           return NextResponse.json({
             error: 'This fee cannot be confirmed with the current billing model.',
             code: 'unsupported_commercial_semantics',
@@ -609,6 +746,7 @@ export async function POST(
         // never an uncaught 500 — rather than silently letting the new
         // number inherit the old, trusted contract_derived authority.
         if (err instanceof OneTimeFeeValueMutationRejectedError) {
+          await restoreClaim() // contract_terms never reached (17H.4B0D4H1B3.1 §8)
           return NextResponse.json({
             error: 'This amount was derived from the contract and cannot be changed via reviewer confirmation.',
             code: 'contract_derived_value_immutable',
@@ -880,6 +1018,34 @@ export async function POST(
     }
   }
 
+  // Step 17H.4B0D4H1B4E3.3 §23 — audit/authoritative-mutation atomicity.
+  // The commercial_rule_interpretations row above was inserted (and any
+  // priorCurrent row demoted) BEFORE this contract_terms mutation was
+  // attempted — necessary ordering (the audit row must exist first), but
+  // it means a contract_terms failure above would otherwise leave an
+  // is_current=true audit row whose decision was never actually applied.
+  // This directly contradicts lib/contract-terms-merge.ts's own new
+  // authority doctrine, which trusts is_current=true as proof a decision
+  // was durably confirmed — a stale "applied" audit row could cause a
+  // LATER re-extraction to "restore" a decision that never actually took
+  // effect. Demote the failed attempt back to not-current and restore
+  // whichever row WAS current before this attempt (if any); the last row
+  // that genuinely applied stays authoritative, never a failed one. Safe
+  // without extra locking — beginConfigurationMutationClaim already
+  // serializes concurrent confirm-rule calls for this job.
+  if (propagation['contract_terms'] === 'failed') {
+    const demoteQuery = supabaseServer
+      .from('commercial_rule_interpretations')
+      .update({ is_current: false })
+      .eq('job_id', jobId)
+      .eq('rule_type', ruleType)
+      .eq('is_current', true)
+    await (auditUnitKey ? demoteQuery.eq('contract_unit_type', auditUnitKey) : demoteQuery.is('contract_unit_type', null))
+    if (priorCurrent) {
+      await supabaseServer.from('commercial_rule_interpretations').update({ is_current: true }).eq('id', priorCurrent.id)
+    }
+  }
+
   // ── Step 3: contract_meter_mappings (mirror, when a confirmed mapping exists) ──
   const mirrorsToMeterMapping = ruleType === 'minimum_commitment' || ruleType === 'partial_period' || ruleType === 'tier_calculation'
   if (mirrorsToMeterMapping && contractUnitType) {
@@ -905,6 +1071,123 @@ export async function POST(
     propagation['contract_meter_mappings'] = 'skipped'
   }
 
+  // ── Step 4: Model B+ reconciliation, for LINE_ITEM_RELEVANT ruleTypes only ──
+  // Step 17H.4B0D4H1B4D1.3 §7/§21 — the ONE shared reconciliation trigger,
+  // replacing the base_fee_proration-only version this used to be embedded
+  // inside. Runs for every ruleType RULE_TYPE_RECONCILIATION_RELEVANCE
+  // marks 'line_item_relevant' (base_fee_proration, one_time_fee,
+  // escalator) whenever the terms write actually committed — never for
+  // 'schedule_relevant'/'advisory' ruleTypes, which would just manufacture
+  // a reconciliation pass over fields buildLineItems never reads (§6/§8:
+  // "do not run Model B+ merely to make the hold transition convenient").
+  // Best-effort in the sense that matters: a reconciliation failure here
+  // never rolls back or invalidates the interpretation already durably
+  // saved above — the human decision stands regardless; what it DOES
+  // affect is what the final hold transition below decides.
+  if (RULE_TYPE_RECONCILIATION_RELEVANCE[ruleType] === 'line_item_relevant' && propagation['contract_terms'] === 'applied') {
+    try {
+      // Step 17H.4B0D4H1B3.2 — the canonical shared loader (lib/
+      // reconciliation-terms-loader.ts), never a hand-picked select — see
+      // that loader's own header for the two independent column omissions
+      // this fixed historically.
+      const built = await buildFreshLineItemsFromPersistedTerms(supabaseServer, jobId)
+      if (built) {
+        reconciliationOutcome = await reconcileCurrentLineItemsForJob({
+          supabase: supabaseServer, jobId,
+          freshItems: built.freshItems,
+          terms: {
+            overage_tiers: built.loaded.terms.overage_tiers ?? [],
+            additional_recurring_fees: built.loaded.terms.additional_recurring_fees ?? [],
+            base_fee_proration: built.loaded.terms.base_fee_proration ?? null,
+          },
+        })
+      }
+    } catch (reconcileErr) {
+      // Never lets a reconciliation problem fail this response — the
+      // interpretation itself is already durably saved above. Recorded as
+      // an 'error' outcome so the final transition still fails safe (->
+      // reconciliation_blocked for a previously-approved job) instead of
+      // silently leaving reconciliationOutcome null (which would be
+      // misread as "no reconciliation was needed").
+      console.error(`[confirm-rule] ${ruleType} reconciliation failed for job ${jobId}:`, reconcileErr)
+      reconciliationOutcome = { status: 'error', errorMessage: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr), blockers: [], retried: false }
+    }
+  }
+  } catch (err) {
+    // 17H.4B0D4H1B3.1, revised 17H.4B0D4H1B3.4 — an unexpected thrown
+    // error anywhere in Step 2/3. contract_terms never became 'applied' ->
+    // restore; otherwise leave the claim exactly as-is (post-commit, never
+    // restore — matches execute's own doctrine) and re-throw, unchanged
+    // from this route's existing behavior for a genuinely unexpected
+    // failure. Unconditional now (no longer gated on claim.
+    // hasExistingBillingSchedule): every AUTO_CONFIGURE claim establishes
+    // a real hold regardless of approval status, so a never-approved
+    // job's claim is just as real and just as much in need of restoring.
+    if (propagation['contract_terms'] !== 'applied') {
+      await restoreClaim().catch(() => {})
+    }
+    throw err
+  }
+
+  // Step 17H.4B0D4H1B3.1 §9, revised 17H.4B0D4H1B4D1.3 §6/§21-§23 — the ONE
+  // shared post-mutation transition, covering every ruleType AND every
+  // approval state uniformly. contract_terms never actually 'applied' ->
+  // nothing commercial changed, restore the claim. Otherwise, branches on
+  // whether real Model B+ reconciliation actually ran for this ruleType:
+  //
+  //   A. reconciliationOutcome !== null (a 'line_item_relevant' ruleType
+  //      that ran real reconciliation) — the SAME computePostMutationHoldTransition
+  //      reconcile-line-items uses, on the REAL outcome. allowRestoreToNullWhenUnmutated
+  //      is false: contract_terms has already materially changed, so a
+  //      clean outcome always promotes (schedule_rebuild_required/NULL per
+  //      hasExistingBillingSchedule) — this IS legitimate evidence, since
+  //      reconciliation genuinely ran.
+  //
+  //   B. No reconciliation ran AND the job was under reconciliation_blocked
+  //      before this claim — the central acceptance invariant (§23): NO
+  //      path here may treat a synthetic/absent outcome as proof a
+  //      pre-existing structural blocker is resolved, for ANY ruleType,
+  //      'schedule_relevant' or 'advisory' alike. Released back to the
+  //      EXACT previous hold, unchanged — same doctrine as the reviewer
+  //      line-items PATCH (computeReviewerPatchHoldTransition) and
+  //      meter-mappings (H1B4D1.2).
+  //
+  //   C. No reconciliation ran, not previously blocked, 'schedule_relevant'
+  //      — a real, traced downstream billing consumer exists (see
+  //      RULE_TYPE_RECONCILIATION_RELEVANCE's own header) even though
+  //      buildLineItems doesn't read the field, so this is a genuine
+  //      material change: promotes to schedule_rebuild_required (existing
+  //      schedule) or stays NULL (never approved), via the SAME
+  //      computeReviewerPatchHoldTransition non-reconciling-mutation logic.
+  //
+  //   D. No reconciliation ran, not previously blocked, 'advisory' —
+  //      rule_interaction only, no proven billing consequence at all
+  //      (§20/RULE_TYPE_RECONCILIATION_RELEVANCE) — never promotes on its
+  //      own; released back to the exact previous hold (NULL stays NULL,
+  //      schedule_rebuild_required stays schedule_rebuild_required).
+  let holdConflict = false
+  if (propagation['contract_terms'] !== 'applied') {
+    const { applied } = await restoreClaim()
+    holdConflict = !applied
+  } else if (reconciliationOutcome !== null) {
+    const transition = computePostMutationHoldTransition({ claim, outcome: reconciliationOutcome, allowRestoreToNullWhenUnmutated: false, now: new Date().toISOString() })
+    if (transition.changeNeeded) {
+      const { applied } = await applyReconciliationHoldTransition(supabaseServer, jobId, claim.newBillingHold, transition.nextHold)
+      holdConflict = !applied
+    }
+  } else if (claim.previousBillingHold?.reason === 'reconciliation_blocked') {
+    const { applied } = await applyReconciliationHoldTransition(supabaseServer, jobId, claim.newBillingHold, claim.previousBillingHold)
+    holdConflict = !applied
+  } else {
+    const relevance = RULE_TYPE_RECONCILIATION_RELEVANCE[ruleType]
+    const startingKind: ReviewerPatchHoldStartingKind = claim.previousBillingHold === null ? 'clear' : 'schedule_rebuild_required'
+    const nextHold = relevance === 'schedule_relevant'
+      ? computeReviewerPatchHoldTransition({ startingKind, originalHold: claim.previousBillingHold, hasExistingBillingSchedule: claim.hasExistingBillingSchedule, now: new Date().toISOString() })
+      : claim.previousBillingHold // 'advisory' — no proven billing consequence, never promotes; released back exactly as-is.
+    const { applied } = await applyReconciliationHoldTransition(supabaseServer, jobId, claim.newBillingHold, nextHold)
+    holdConflict = !applied
+  }
+
   // Record the final propagation outcome on the audit row itself so later
   // inspection doesn't need to cross-reference contract_terms state.
   const statusUpdateQuery = supabaseServer
@@ -918,5 +1201,5 @@ export async function POST(
     : statusUpdateQuery.is('contract_unit_type', null))
 
   const anyFailed = Object.values(propagation).includes('failed')
-  return NextResponse.json({ ok: !anyFailed, propagation, staleOrganizationPolicy }, { status: anyFailed ? 207 : 200 })
+  return NextResponse.json({ ok: !anyFailed, propagation, staleOrganizationPolicy, ...(holdConflict ? { holdConflict: true } : {}) }, { status: anyFailed ? 207 : 200 })
 }

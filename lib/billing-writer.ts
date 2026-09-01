@@ -19,6 +19,7 @@ import {
   getOrCreateOperation, markOperationStarted, markOperationSucceeded, markOperationFailedSafe, markOperationOutcomeUncertain,
 } from './billing-execution-store'
 import { deriveTerminalSettlementTarget } from './terminal-settlement'
+import { resolveParkedOneTimeFeeRowFields, resolveScheduledOneTimeFeeRowFields } from './one-time-line-item-resolution'
 
 // Re-exported so existing importers of monthCursor from this file (e.g.
 // execute/route.ts) don't need to change their import path — the function
@@ -244,15 +245,18 @@ export interface LineItemInput {
   total_amount: number
   currency: string
   source_section?: string
+  // Step 17H.4B0D4B0B — projects contract_terms.one_time_fees[].fee_id
+  // onto a one-time row (buildLineItems); null/absent for every other
+  // family and for a one-time fee that predates fee_id.
+  fee_id?: string | null
 }
 
-// One-time fees are matched to their approved line_items row by product_name
-// (buildLineItems sets product_name = fee_label for one-time fees). Falls
-// back to null (caller uses the raw contract-terms amount) when not found —
-// e.g. a fee added to the contract after line_items was last generated.
-function findOneTimeLineItem(lineItems: LineItemInput[], feeLabel: string): LineItemInput | null {
-  return lineItems.find(li => li.billing_period === 'one_time' && li.product_name === feeLabel) ?? null
-}
+// Step 17H.4B0B — replaced the old bare `.find()` (silently picked the
+// FIRST candidate row on a duplicate product_name, e.g. from a
+// re-extraction — see the 17H.4B0A lifecycle audit) with the
+// cardinality-aware resolver every one-time-fee row builder below now
+// calls. Matching predicate unchanged: product_name === fee_label,
+// billing_period === 'one_time'.
 
 export interface ConfigureResult {
   platform: BillingPlatform
@@ -260,6 +264,18 @@ export interface ConfigureResult {
   customerId: string
   lineItemCount: number
   dashboardUrl: string
+  // Step 17H.4B0D4H1A — true when resolveParkedOneTimeFeeRowFields/
+  // resolveScheduledOneTimeFeeRowFields returned 'blocked' for at least one
+  // one-time fee during this call (an ambiguous or integrity-conflicted
+  // fee<->line_item association — see lib/one-time-line-item-resolution.ts)
+  // — the fee was silently skipped rather than scheduled/parked. Callers
+  // that gate billing_hold clearing on a clean schedule regeneration
+  // (approve/rebuild-schedule) MUST treat true here as "do not clear a
+  // schedule_rebuild_required hold" — a blocked one-time fee means the
+  // regenerated schedule is NOT yet a complete, trustworthy representation
+  // of current commercial truth, even though this call itself succeeded.
+  // Always false for Chargebee, which has no one-time-fee resolution path.
+  hadBlockedOneTimeFee: boolean
 }
 
 export async function configureBilling(
@@ -368,6 +384,80 @@ function fetchErrorClassOf(err: unknown, httpStatus?: number): string {
   return err instanceof Error ? err.constructor.name : 'unknown_error'
 }
 
+// Step 17H.2A items 3/4 — the ONE rebuild-cleanup step both configureStripe
+// and configureRememhill share (previously two independently-written,
+// byte-identical copies, which is exactly how they could have silently
+// drifted). Clears only rows that are genuinely safe to discard and
+// regenerate — 'scheduled'/'parked'/'draft' — and returns the component
+// keys that must NOT be regenerated as a new row:
+//   - 'sent'/'paid'  — already fully executed (the original purpose).
+//   - 'processing'   — may be mid-provider-operation right now; deleting it
+//     here could orphan an already-created provider invoice with no local
+//     row tracking it, and omitting its key from the returned set would let
+//     a fresh row be generated alongside it for the same obligation.
+//   - 'failed'       — a terminal outcome with no automated retry/reissue
+//     path in this codebase (see the Step 17H.2A report's capability-gap
+//     note). Left in place as a permanent audit record; its key still
+//     blocks a second row from being silently generated for the same
+//     period/fee.
+// Step 17H.4B0D4H1B4E3.7 — split from the combined cleanup+load below.
+// Read-only: which planned_invoices keys already reflect a real (or
+// currently in-flight) provider side effect and must never be regenerated.
+// Safe to call at ANY point, including before rebuild/execution eligibility
+// is known — unlike deleteStalePlannedInvoices below, this never mutates
+// anything. configureStripe/configureRemembill call this FIRST (to build
+// the billing-plan snapshot/fingerprint getOrCreateAttempt needs) and only
+// call the destructive half once getOrCreateAttempt has actually proven
+// this execution is allowed to proceed — see those call sites' own
+// comments for the live-reproduced defect this ordering fixes.
+export async function loadOccupiedPlannedInvoiceKeys(jobId: string): Promise<Set<string>> {
+  const { data: sent } = await supabaseServer
+    .from('planned_invoices')
+    .select('year_num, period_start, period_end, invoice_type, fee_label, stripe_invoice_id, stripe_invoice_url, base_amount, currency, sent_at, status')
+    .eq('job_id', jobId)
+    .in('status', ['sent', 'paid', 'processing', 'failed'])
+  const sentRows = sent ?? []
+  return new Set(sentRows.map(r => planComponentKey({
+    invoice_type: r.invoice_type, year_num: r.year_num, period_start: r.period_start, fee_label: r.fee_label,
+  })))
+}
+
+// Step 17H.4B0D4H1B4E3.7 — the destructive half, split out so a caller can
+// defer it until AFTER eligibility (getOrCreateAttempt) is proven. Deletes
+// every row that was always meant to be cleared and rebuilt (scheduled/
+// parked/draft) — never a row that reflects a real or in-flight provider
+// side effect (sent/paid/processing/failed, preserved by
+// loadOccupiedPlannedInvoiceKeys above, never touched here either).
+// Best-effort: a failure here is logged, not thrown — a cleanup failure
+// must never block billing from proceeding (stale orphaned rows are a
+// lesser problem than blocking real invoicing), matching this function's
+// pre-split behavior exactly.
+export async function deleteStalePlannedInvoices(jobId: string, logLabel: string): Promise<void> {
+  const { error: cleanErr } = await supabaseServer
+    .from('planned_invoices')
+    .delete()
+    .eq('job_id', jobId)
+    .in('status', ['scheduled', 'parked', 'draft'])
+  if (cleanErr) console.error(`[billing-writer/${logLabel}] stale planned_invoices cleanup failed`, cleanErr)
+}
+
+// Combined convenience, kept for existing callers/tests (e.g.
+// lib/planned-invoices-rebuild-cleanup-integration.test.ts) that want both
+// steps together as one call — behavior is byte-for-byte unchanged from
+// before the E3.7 split. configureStripe/configureRemembill no longer use
+// this directly (see their own call sites): they need the destructive half
+// deferred until after getOrCreateAttempt succeeds, which this combined
+// form cannot express.
+//
+// Exported for direct integration testing (no route handler can be
+// imported into vitest in this codebase — see
+// lib/operational-event-evidence-rls.test.ts's note on that constraint).
+export async function cleanupStalePlannedInvoicesAndLoadOccupiedKeys(jobId: string, logLabel: string): Promise<Set<string>> {
+  const alreadySentKeys = await loadOccupiedPlannedInvoiceKeys(jobId)
+  await deleteStalePlannedInvoices(jobId, logLabel)
+  return alreadySentKeys
+}
+
 async function configureStripe(
   terms: ContractTerms,
   lineItems: LineItemInput[],
@@ -423,22 +513,24 @@ async function configureStripe(
   // creates a second real Stripe invoice for any period that's already due
   // and leaves the first set of planned_invoices rows in place, duplicating
   // the billing schedule. Mirrors configureRememhill's existing pattern.
-  const { data: sent } = await supabaseServer
-    .from('planned_invoices')
-    .select('year_num, period_start, period_end, invoice_type, fee_label, stripe_invoice_id, stripe_invoice_url, base_amount, currency, sent_at, status')
-    .eq('job_id', jobId)
-    .in('status', ['sent', 'paid'])
-  const sentRows = sent ?? []
-  const alreadySentKeys = new Set(sentRows.map(r => planComponentKey({
-    invoice_type: r.invoice_type, year_num: r.year_num, period_start: r.period_start, fee_label: r.fee_label,
-  })))
-
-  const { error: cleanErr } = await supabaseServer
-    .from('planned_invoices')
-    .delete()
-    .eq('job_id', jobId)
-    .in('status', ['scheduled', 'parked', 'processing', 'draft'])
-  if (cleanErr) console.error('[billing-writer/stripe] stale planned_invoices cleanup failed', cleanErr)
+  // See loadOccupiedPlannedInvoiceKeys's own doc comment (Step 17H.2A items
+  // 3/4) for why 'processing'/'failed' rows are treated as
+  // occupied-but-untouched rather than either deleted or ignored.
+  //
+  // Step 17H.4B0D4H1B4E3.7 — READ-ONLY here, deliberately. The destructive
+  // half (deleteStalePlannedInvoices, below) used to run fused with this
+  // read as cleanupStalePlannedInvoicesAndLoadOccupiedKeys, BEFORE
+  // getOrCreateAttempt had any chance to prove this execution is even
+  // allowed to proceed. Live-reproduced defect (E3.6 §23/E3.7): calling
+  // rebuild-schedule on a job whose prior attempt already succeeded hit
+  // getOrCreateAttempt's PriorBillingAttemptExecutedError AFTER the old
+  // fused call had already deleted every scheduled/parked/draft row —
+  // leaving the job with a wiped schedule and a permanently-stuck
+  // schedule_rebuild_required hold (every retry hits the identical
+  // failure). The delete is now deferred until eligibility is proven —
+  // see the deleteStalePlannedInvoices call just inside the try block
+  // below.
+  const alreadySentKeys = await loadOccupiedPlannedInvoiceKeys(jobId)
 
   // Step 14, item 3 — the deterministic snapshot of everything that needs
   // to be sent RIGHT NOW, built before any external call. The Stripe path
@@ -449,6 +541,15 @@ async function configureStripe(
     terms, lineItems, evidence: operationalEventEvidence, alreadySentKeys, provider: 'stripe',
     vat: { mode: 'not_configured', ratePct: null }, now, computeBillingSchedule,
   })
+  // Step 17H.4B0B — a one-time fee excluded from snapshot.lines because its
+  // line_items association was ambiguous. Never invoiced this run (see
+  // buildBillingPlanSnapshot), never silent either: logged so it's visible
+  // in server logs, and safely retried on the next configure call (no
+  // planned_invoices row was written for it, so it's never excluded via
+  // alreadySentKeys next time).
+  for (const blocked of snapshot.blockedOneTimeFees) {
+    console.error(`[billing-writer/stripe] one-time fee "${blocked.feeLabel}" not invoiced this run: ${blocked.reason}`)
+  }
   const fingerprint = fingerprintBillingPlan(snapshot)
   // Step 14 final state-integrity correction — see getOrCreateAttempt's own
   // param doc. Only invoked for a prior attempt whose every operation
@@ -474,6 +575,12 @@ async function configureStripe(
   await markAttemptExecuting(attempt.id)
 
   try {
+    // Step 17H.4B0D4H1B4E3.7 — the destructive half of the old fused
+    // cleanup, now run only here: getOrCreateAttempt above has already
+    // thrown (before any mutation) if this execution isn't allowed to
+    // proceed, so reaching this line means it genuinely is.
+    await deleteStalePlannedInvoices(jobId, 'stripe')
+
     // ── Op: resolve customer (search is read-only/best-effort; the actual
     // create-or-update call is the tracked, idempotency-keyed side effect) ──
     const emailInContact = terms.billing_contact?.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0]
@@ -592,6 +699,7 @@ async function configureStripe(
     // ── Scheduled/parked rows for everything NOT due now — no external
     // call, so these are safe to batch-insert with no operation tracking. ──
     const scheduledRows: PlannedRow[] = []
+    let hadBlockedOneTimeFee = false
     const fullSchedule = computeBillingSchedule(terms)
     for (const period of fullSchedule) {
       const periodStartStr = formatDate(period.periodStart)
@@ -625,7 +733,14 @@ async function configureStripe(
     const isHeld = (fee: typeof oneTimeFees[number]) => isOneTimeFeeHeldForExecution(fee, operationalEventEvidence, now)
     for (const fee of oneTimeFees.filter(isHeld)) {
       if (alreadySentKeys.has(`one_time_fee:${fee.fee_label}`)) continue
-      const li = findOneTimeLineItem(lineItems, fee.fee_label)
+      const resolution = resolveParkedOneTimeFeeRowFields({
+        feeId: fee.fee_id ?? null, feeLabel: fee.fee_label, fallbackRatePerUnit: fee.rate_per_unit ?? null, lineItems,
+      })
+      if (resolution.status === 'blocked') {
+        console.error(`[billing-writer/stripe] one-time fee "${fee.fee_label}" not parked: ${resolution.reason}`)
+        hadBlockedOneTimeFee = true
+        continue
+      }
       // isHeld is also true for a genuine legacy manual_trigger fee (no
       // billability_condition at all) — that case must NEVER get a fee_id,
       // since it stays exclusively human-driven via POST /parked-invoices;
@@ -636,7 +751,7 @@ async function configureStripe(
         year_num: null, period_start: fee.due_date ?? formatDate(now), period_end: fee.due_date ?? formatDate(now),
         base_amount: fee.amount ?? 0, currency: terms.currency ?? 'EUR', fee_label: fee.fee_label,
         invoice_type: 'one_time', status: 'parked', stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
-        line_item_id: li?.id ?? null, quantity: null, unit_price: li?.unit_price ?? fee.rate_per_unit ?? null,
+        line_item_id: resolution.lineItemId, quantity: null, unit_price: resolution.unitPrice,
         fee_id: isEventGated ? (fee.fee_id ?? null) : null,
       })
     }
@@ -645,15 +760,20 @@ async function configureStripe(
       const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
       const isDue = !feeDueDate || feeDueDate <= now
       if (isDue) continue // already handled above
-      const li = findOneTimeLineItem(lineItems, fee.fee_label)
-      const amount = li?.total_amount ?? fee.amount
-      const hasBreakdown = !!li && li.quantity > 0 && li.unit_price > 0
+      const resolution = resolveScheduledOneTimeFeeRowFields({
+        feeId: fee.fee_id ?? null, feeLabel: fee.fee_label, fallbackAmount: fee.amount, lineItems,
+      })
+      if (resolution.status === 'blocked') {
+        console.error(`[billing-writer/stripe] one-time fee "${fee.fee_label}" not scheduled: ${resolution.reason}`)
+        hadBlockedOneTimeFee = true
+        continue
+      }
       const dueDateStr = formatDate(feeDueDate!)
       scheduledRows.push({
-        year_num: null, period_start: dueDateStr, period_end: dueDateStr, base_amount: amount,
+        year_num: null, period_start: dueDateStr, period_end: dueDateStr, base_amount: resolution.baseAmount,
         currency: terms.currency ?? 'EUR', fee_label: fee.fee_label, invoice_type: 'one_time', status: 'scheduled',
-        stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null, line_item_id: li?.id ?? null,
-        quantity: hasBreakdown ? li.quantity : null, unit_price: hasBreakdown ? li.unit_price : null,
+        stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null, line_item_id: resolution.lineItemId,
+        quantity: resolution.quantity, unit_price: resolution.unitPrice,
       })
     }
     if (scheduledRows.length > 0) {
@@ -670,6 +790,7 @@ async function configureStripe(
       customerId,
       lineItemCount:  computeBillingSchedule(terms).length + oneTimeFees.filter(f => f.amount > 0).length,
       dashboardUrl,
+      hadBlockedOneTimeFee,
     }
   } catch (err) {
     // The individual operation that threw already recorded its own
@@ -802,27 +923,25 @@ async function configureRememhill(
   }
 
   // ── Preserve already-sent invoices; delete only unsent rows ────────────────
-  const { data: sent } = await supabaseServer
-    .from('planned_invoices')
-    .select('year_num, period_start, period_end, invoice_type, fee_label, stripe_invoice_id, stripe_invoice_url, base_amount, currency, sent_at, status')
-    .eq('job_id', jobId)
-    .in('status', ['sent', 'paid'])
-  const sentRows = sent ?? []
-  const alreadySentKeys = new Set(sentRows.map(r => planComponentKey({
-    invoice_type: r.invoice_type, year_num: r.year_num, period_start: r.period_start, fee_label: r.fee_label,
-  })))
-
-  const { error: cleanErr } = await supabaseServer
-    .from('planned_invoices')
-    .delete()
-    .eq('job_id', jobId)
-    .in('status', ['scheduled', 'parked', 'processing', 'draft'])
-  if (cleanErr) console.error('[billing-writer/remembill] stale planned_invoices cleanup failed', cleanErr)
+  // See loadOccupiedPlannedInvoiceKeys's own doc comment (Step 17H.2A items
+  // 3/4) for why 'processing'/'failed' rows are treated as
+  // occupied-but-untouched rather than either deleted or ignored.
+  //
+  // Step 17H.4B0D4H1B4E3.7 — READ-ONLY here; see configureStripe's
+  // identical call site for the full live-reproduced-defect explanation.
+  // The destructive half is deferred to deleteStalePlannedInvoices, called
+  // only after getOrCreateAttempt below has proven this execution may
+  // proceed.
+  const alreadySentKeys = await loadOccupiedPlannedInvoiceKeys(jobId)
 
   const snapshot = buildBillingPlanSnapshot({
     terms, lineItems, evidence: operationalEventEvidence, alreadySentKeys, provider: 'remembill',
     vat: { mode: vatTreatmentForPush.mode, ratePct: vatTreatmentForPush.ratePct }, now, computeBillingSchedule,
   })
+  // See the identical logging on configureStripe's own snapshot above.
+  for (const blocked of snapshot.blockedOneTimeFees) {
+    console.error(`[billing-writer/remembill] one-time fee "${blocked.feeLabel}" not invoiced this run: ${blocked.reason}`)
+  }
   const fingerprint = fingerprintBillingPlan(snapshot)
   // Step 14 final state-integrity correction — see getOrCreateAttempt's own
   // param doc / the Stripe call site's identical comment above.
@@ -855,6 +974,10 @@ async function configureRememhill(
   }
 
   try {
+    // Step 17H.4B0D4H1B4E3.7 — the destructive half of the old fused
+    // cleanup; see configureStripe's identical call site above for why.
+    await deleteStalePlannedInvoices(jobId, 'remembill')
+
     // ── Op: resolve customer. Reusing existingCustomerId is itself the
     // local reconciliation mechanism (Verdix's own persisted
     // jobs.billing_customer_id, written immediately on first success below)
@@ -982,6 +1105,7 @@ async function configureRememhill(
 
     // ── Scheduled/parked rows for everything NOT due now — no external call. ──
     const scheduledRows: PlannedRow[] = []
+    let hadBlockedOneTimeFee = false
     const fullSchedule = computeBillingSchedule(terms)
     for (const period of fullSchedule) {
       const periodStartStr = fmtDate(period.periodStart)
@@ -1010,7 +1134,14 @@ async function configureRememhill(
     const isHeld = (fee: typeof oneTimeFees[number]) => isOneTimeFeeHeldForExecution(fee, operationalEventEvidence, now)
     for (const fee of oneTimeFees.filter(isHeld)) {
       if (alreadySentKeys.has(`one_time_fee:${fee.fee_label}`)) continue
-      const li = findOneTimeLineItem(lineItems, fee.fee_label)
+      const resolution = resolveParkedOneTimeFeeRowFields({
+        feeId: fee.fee_id ?? null, feeLabel: fee.fee_label, fallbackRatePerUnit: fee.rate_per_unit ?? null, lineItems,
+      })
+      if (resolution.status === 'blocked') {
+        console.error(`[billing-writer/remembill] one-time fee "${fee.fee_label}" not parked: ${resolution.reason}`)
+        hadBlockedOneTimeFee = true
+        continue
+      }
       // See the identical comment on configureStripe's own isHeld loop —
       // only a real event-gated fee gets a fee_id.
       const isEventGated = fee.billability_condition?.kind === 'event'
@@ -1018,7 +1149,7 @@ async function configureRememhill(
         year_num: null, period_start: fee.due_date ?? fmtDate(now), period_end: fee.due_date ?? fmtDate(now),
         base_amount: fee.amount ?? 0, currency: terms.currency ?? 'SEK', fee_label: fee.fee_label,
         invoice_type: 'one_time', status: 'parked', stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null,
-        line_item_id: li?.id ?? null, quantity: null, unit_price: li?.unit_price ?? fee.rate_per_unit ?? null,
+        line_item_id: resolution.lineItemId, quantity: null, unit_price: resolution.unitPrice,
         fee_id: isEventGated ? (fee.fee_id ?? null) : null,
       })
     }
@@ -1027,15 +1158,20 @@ async function configureRememhill(
       const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
       const isDue = !feeDueDate || feeDueDate <= now
       if (isDue) continue
-      const li = findOneTimeLineItem(lineItems, fee.fee_label)
-      const amount = li?.total_amount ?? fee.amount
-      const hasBreakdown = !!li && li.quantity > 0 && li.unit_price > 0
+      const resolution = resolveScheduledOneTimeFeeRowFields({
+        feeId: fee.fee_id ?? null, feeLabel: fee.fee_label, fallbackAmount: fee.amount, lineItems,
+      })
+      if (resolution.status === 'blocked') {
+        console.error(`[billing-writer/remembill] one-time fee "${fee.fee_label}" not scheduled: ${resolution.reason}`)
+        hadBlockedOneTimeFee = true
+        continue
+      }
       const dueDateStr = fmtDate(feeDueDate!)
       scheduledRows.push({
-        year_num: null, period_start: dueDateStr, period_end: dueDateStr, base_amount: amount,
+        year_num: null, period_start: dueDateStr, period_end: dueDateStr, base_amount: resolution.baseAmount,
         currency: terms.currency ?? 'SEK', fee_label: fee.fee_label, invoice_type: 'one_time', status: 'scheduled',
-        stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null, line_item_id: li?.id ?? null,
-        quantity: hasBreakdown ? li.quantity : null, unit_price: hasBreakdown ? li.unit_price : null,
+        stripe_invoice_id: null, stripe_invoice_url: null, sent_at: null, line_item_id: resolution.lineItemId,
+        quantity: resolution.quantity, unit_price: resolution.unitPrice,
       })
     }
     if (scheduledRows.length > 0) {
@@ -1051,6 +1187,7 @@ async function configureRememhill(
       customerId,
       lineItemCount:  computeBillingSchedule(terms).length + oneTimeFees.filter(f => f.amount > 0).length,
       dashboardUrl:   remembillAppUrl(''),
+      hadBlockedOneTimeFee,
     }
   } catch (err) {
     const attemptOutcome = remembillClassifyFailure(err)
@@ -1114,6 +1251,9 @@ async function configureChargebee(
     customerId,
     lineItemCount:  lineItems.length,
     dashboardUrl:   `https://${site}.chargebee.com/subscriptions/${subscriptionId}`,
+    // Chargebee has no one-time-fee resolution path (no resolveParkedOneTimeFeeRowFields/
+    // resolveScheduledOneTimeFeeRowFields calls in this function) — never blocked.
+    hadBlockedOneTimeFee: false,
   }
 }
 
@@ -1266,6 +1406,14 @@ export async function recoverConfigureResultFromSucceededAttempt(
   }
   const lineItemCount = operations.filter(o => o.operationType === 'create_invoice').length
 
+  // Step 17H.4B0D4H1A — recovered from prior operation records, which carry
+  // no signal about whether resolveParkedOneTimeFeeRowFields/
+  // resolveScheduledOneTimeFeeRowFields blocked a fee during the original
+  // (crashed-before-completing) attempt. Conservative default: treat as
+  // blocked, so a caller gating billing_hold clearing on a clean
+  // regeneration never clears based on information this recovery path
+  // cannot actually verify — an explicit fresh rebuild-schedule is what
+  // confirms cleanliness, never a recovered result.
   if (attempt.provider === 'stripe') {
     const orgConfig = await getOrgConfig(orgId, 'stripe')
     const stripeKey = orgConfig?.secret_key ?? process.env.STRIPE_SECRET_KEY!
@@ -1273,10 +1421,11 @@ export async function recoverConfigureResultFromSucceededAttempt(
     return {
       platform: 'stripe', subscriptionId: null, customerId, lineItemCount,
       dashboardUrl: `https://dashboard.stripe.com/${isTest ? 'test/' : ''}customers/${customerId}`,
+      hadBlockedOneTimeFee: true,
     }
   }
   if (attempt.provider === 'remembill') {
-    return { platform: 'remembill', subscriptionId: null, customerId, lineItemCount, dashboardUrl: remembillAppUrl('') }
+    return { platform: 'remembill', subscriptionId: null, customerId, lineItemCount, dashboardUrl: remembillAppUrl(''), hadBlockedOneTimeFee: true }
   }
   throw new Error(`Cannot recover billing result for provider "${attempt.provider}" — not supported by this recovery path.`)
 }

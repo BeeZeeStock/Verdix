@@ -7,7 +7,7 @@ import type { BillingExecutionAttempt, BillingExecutionOperation, BillingExecuti
 import type { BillingPlanSnapshot } from './billing-execution-plan'
 
 function makeSnapshot(lines: BillingPlanSnapshot['lines'], overrides: Partial<Omit<BillingPlanSnapshot, 'lines'>> = {}): BillingPlanSnapshot {
-  return { provider: 'stripe', currency: 'SEK', customerIdentityKey: 'cust-key', ...overrides, lines }
+  return { provider: 'stripe', currency: 'SEK', customerIdentityKey: 'cust-key', blockedOneTimeFees: [], ...overrides, lines }
 }
 
 function makeLine(componentKey: string, amount: number, overrides: Partial<BillingPlanSnapshot['lines'][number]> = {}): BillingPlanSnapshot['lines'][number] {

@@ -26,13 +26,32 @@ export async function POST(
 
   const { data: job, error: jobError } = await supabaseServer
     .from('jobs')
-    .select('id, name, currency, contract_pdf_url, billing_csv_url, contract_terms_id')
+    .select('id, name, module, currency, contract_pdf_url, billing_csv_url, contract_terms_id')
     .eq('id', id)
     .eq('org_id', org.orgId)
     .single()
 
   if (jobError || !job) {
     return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+  }
+
+  // Step 17H.4B0D4H1B3.2 §16-18 — this route's own contract_terms.upsert()
+  // below (line ~104) writes to the SAME table, keyed only by job_id, that
+  // AUTO_CONFIGURE's execute/confirm-rule/terms-PATCH pipeline treats as
+  // authoritative commercial truth — and, before this check, nothing
+  // anywhere (not this route, not a DB constraint) stopped it from being
+  // invoked against an AUTO_CONFIGURE job's id. Audited: this route uses
+  // `jobs.status` (PROCESSING/FAILED/COMPLETED) and billing_csv_url — both
+  // exclusively BILLING_VERIFICATION concepts, per lib/reconciler.ts's own
+  // module description — never execute_status/current_line_items/
+  // billing_hold/billing_customer_id, none of which this route reads or
+  // writes anywhere. The prior separation from AUTO_CONFIGURE jobs relied
+  // entirely on the dashboard only surfacing this action on /verify pages
+  // — a UI convention, not a server-enforced boundary. This is the hard
+  // boundary: any job whose module isn't BILLING_VERIFICATION is refused
+  // outright, before any read/write below.
+  if (job.module !== 'BILLING_VERIFICATION') {
+    return NextResponse.json({ error: 'This job is not a Billing Verification job — audit is not available for it.' }, { status: 400 })
   }
 
   await supabaseServer.from('jobs').update({ status: 'PROCESSING' }).eq('id', id)

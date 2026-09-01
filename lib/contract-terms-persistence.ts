@@ -52,6 +52,16 @@ export function buildContractTermsUpsertPayload(jobId: string, terms: ContractTe
     included_unit_type: terms.included_unit_type,
     year_pricing: terms.year_pricing,
     base_fee_proration: terms.base_fee_proration ?? null,
+    // Step 17H.4B0D4H1B4E3.3 §7 — previously omitted entirely from this
+    // payload despite being a real contract_terms column (migration
+    // 20260907000001), confirm-rule's own read/write path, and lib/
+    // commercial-rule-status.ts's readiness check — meaning no extraction
+    // pass (first or re-) ever persisted it. It participates in the SAME
+    // ownership-aware merge doctrine as base_fee_proration (see
+    // lib/contract-terms-merge.ts's mergeFixedFeeBillingTimingDecision,
+    // applied by execute/route.ts before this function is called) — this
+    // payload just needs to stop dropping the field on the floor.
+    fixed_fee_billing_timing: terms.fixed_fee_billing_timing ?? null,
     ramp_schedule: terms.ramp_schedule ?? null,
     // Structured arrays
     escalators: terms.escalators ?? [],

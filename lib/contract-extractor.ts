@@ -466,7 +466,9 @@ export function applyExtractionSafetyNets(terms: ContractTerms, contractText?: s
 
   terms.overage_tiers = flagAmbiguousMinimumCommitments(terms.overage_tiers)
   terms.overage_tiers = flagAmbiguousTierCalculation(terms.overage_tiers)
+  terms.overage_tiers = assignTierIds(terms.overage_tiers)
   terms.additional_recurring_fees = enforceVariableRateFeeShape(terms.additional_recurring_fees)
+  terms.additional_recurring_fees = assignRecurringFeeIds(terms.additional_recurring_fees ?? [])
   terms.discounts = assignDiscountRuleIds(terms.discounts)
   terms.service_credits = assignServiceCreditRuleIds(terms.service_credits ?? [])
   terms.one_time_fees = flagAmbiguousOneTimeFees(terms.one_time_fees ?? [], terms.currency)
@@ -1062,6 +1064,31 @@ function assignDiscountRuleIds<T extends { discount_rule_id?: string }>(discount
 // the first place.
 export function assignServiceCreditRuleIds<T extends { credit_rule_id?: string }>(credits: T[]): T[] {
   return credits.map(c => c.credit_rule_id ? c : { ...c, credit_rule_id: crypto.randomUUID().slice(0, 8) })
+}
+
+// Step 17H.4B0D4B1A — same addressability pattern as assignDiscountRuleIds/
+// assignServiceCreditRuleIds, but a FULL crypto.randomUUID(), never
+// truncated to 8 characters. tier_id is intended to become the join key
+// between contract_terms.overage_tiers[] and a real line_items row (the
+// same relational role fee_id already plays, per
+// 20260827000001_planned_invoices_fee_id.sql / line_items.fee_id) — the
+// truncated form was only ever adequate for the lower-stakes, purely
+// display-addressing role discount_rule_id/credit_rule_id play.
+export function assignTierIds<T extends { tier_id?: string }>(tiers: T[]): T[] {
+  return tiers.map(t => t.tier_id ? t : { ...t, tier_id: crypto.randomUUID() })
+}
+
+// Step 17H.4B0D4H1B4E3.4 — same addressability pattern as assignTierIds
+// (full UUID, not the truncated 8-char discount_rule_id/credit_rule_id
+// form — this is intended to become a real join key onto line_items,
+// exactly like fee_id/tier_id). Assigned unconditionally at extraction
+// time so every fresh additional_recurring_fees[] entry always carries an
+// id; lib/rule-id-stability.ts's preserveRecurringFeeIdentity is what
+// later restores a PRIOR id onto a re-extraction's freshly-assigned one
+// where typed structural continuity is provable — this function alone
+// only guarantees "never null," never "stable across extractions."
+export function assignRecurringFeeIds<T extends { recurring_fee_id?: string }>(fees: T[]): T[] {
+  return fees.map(f => f.recurring_fee_id ? f : { ...f, recurring_fee_id: crypto.randomUUID() })
 }
 
 // Safety net: force requires_confirmation=true whenever a metric has 2+ paid

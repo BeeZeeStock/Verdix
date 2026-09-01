@@ -13,6 +13,8 @@ import { REMEMBILL_BASE, remembillHeaders, remembillAppUrl, safeHeaderValue } fr
 import { resolveVatTreatment, computeVat, reconcileGrossAmount } from '@/lib/vat'
 import { getCustomerVatConfig } from '@/lib/vat-service'
 import { unwrapEmbedded } from '@/lib/postgrest-helpers'
+import { resolveOneTimeLineItemAssociation } from '@/lib/one-time-line-item-resolution'
+import { evaluateBillingGate } from '@/lib/billing-hold'
 
 export async function POST(
   req: NextRequest,
@@ -42,26 +44,54 @@ export async function POST(
   // Fetch job + billing config
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('org_id, billing_customer_id, billing_platform, contract_terms(currency, payment_terms_days)')
+    .select('org_id, billing_customer_id, billing_platform, billing_hold, contract_terms(currency, payment_terms_days, one_time_fees)')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .single()
 
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+
+  // Step 17H.4B0D4H1A — billing_hold gate. Triggering a parked fee is a
+  // real monetary action (creates a live provider invoice) — never a
+  // hold-resolving operation, so any non-null hold rejects unconditionally.
+  const holdGate = evaluateBillingGate(job.billing_hold, 'monetary_action')
+  if (!holdGate.allowed) {
+    return NextResponse.json({ error: holdGate.reason }, { status: 409 })
+  }
+
   if (!job.billing_customer_id) return NextResponse.json({ error: 'No billing customer on this job' }, { status: 400 })
 
-  const terms = unwrapEmbedded(job.contract_terms as unknown as { currency?: string; payment_terms_days?: number | null } | Array<{ currency?: string; payment_terms_days?: number | null }>) ?? {}
+  const terms = unwrapEmbedded(job.contract_terms as unknown as
+    { currency?: string; payment_terms_days?: number | null; one_time_fees?: Array<{ fee_label: string; fee_id?: string | null }> }
+    | Array<{ currency?: string; payment_terms_days?: number | null; one_time_fees?: Array<{ fee_label: string; fee_id?: string | null }> }>) ?? {}
   const cur   = (body.currency ?? terms.currency ?? 'EUR').toUpperCase()
 
-  // Link back to the approved line_items row (for traceability — quantity
-  // itself is per-delivery human input, not read from here).
-  const { data: matchingLineItem } = await supabaseServer
-    .from('line_items')
-    .select('id')
+  // Link back to the approved line_items row (for traceability only —
+  // quantity/amount are per-delivery human input from the request body
+  // above, never read from this lookup; a wrong/ambiguous/conflicting
+  // result here cannot cause a wrong charge — it only affects the
+  // traceability link). Step 17H.4B0D4B0B — reuses the SAME canonical,
+  // ID-first resolver every other one-time association path uses
+  // (lib/one-time-line-item-resolution.ts), never a second bespoke
+  // algorithm: the target fee's fee_id is looked up from this job's own
+  // contract_terms.one_time_fees[] (matched by the request's fee_label —
+  // the only identifier the client sends), and every current one-time
+  // line item for the job is handed to the resolver, which owns
+  // id-vs-label precedence centrally. Step 17H.4B0D3B — current_line_items,
+  // not line_items: a historical, superseded row may remain physically
+  // present (an old invoice may still reference it) but must never become
+  // the source association for a NEW parked invoice.
+  const targetFeeId = (terms.one_time_fees ?? []).find(f => f.fee_label === fee_label)?.fee_id ?? null
+  const { data: candidateLineItems } = await supabaseServer
+    .from('current_line_items')
+    .select('id, product_name, billing_period, unit_price, total_amount, quantity, fee_id')
     .eq('job_id', jobId)
-    .eq('product_name', fee_label)
     .eq('billing_period', 'one_time')
-    .maybeSingle()
+  const association = resolveOneTimeLineItemAssociation({ feeId: targetFeeId, feeLabel: fee_label }, candidateLineItems ?? [])
+  if (association.status === 'ambiguous' || association.status === 'integrity_conflict') {
+    console.warn(`[parked-invoices] "${fee_label}" association ${association.status} for job ${jobId} — traceability link left null.`)
+  }
+  const matchingLineItem = association.status === 'matched' ? association.item : null
   const netDays         = terms.payment_terms_days ?? 30
   const billingPlatform = (job.billing_platform as string | null) ?? 'stripe'
 
@@ -265,6 +295,20 @@ export async function PATCH(
 
   if (!planned_invoice_id) {
     return NextResponse.json({ error: 'planned_invoice_id required' }, { status: 400 })
+  }
+
+  // Step 17H.4B0D4H1A — billing_hold gate. Reverting a row voids/deletes a
+  // live provider invoice — a real monetary-adjacent action, never a
+  // hold-resolving operation.
+  const { data: holdJob } = await supabaseServer
+    .from('jobs')
+    .select('billing_hold')
+    .eq('id', jobId)
+    .eq('org_id', org.orgId)
+    .maybeSingle()
+  const holdGate = evaluateBillingGate(holdJob?.billing_hold, 'monetary_action')
+  if (!holdGate.allowed) {
+    return NextResponse.json({ error: holdGate.reason }, { status: 409 })
   }
 
   // Fetch the row and confirm it belongs to this job/org

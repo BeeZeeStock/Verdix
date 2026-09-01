@@ -323,9 +323,12 @@ export async function getBillingReconciliationState(jobId: string, orgId: string
     operationsByAttemptId.set(attempt.id, await getAttemptOperations(attempt.id))
   }
 
+  // Step 17H.4B0D3B — current_line_items, not line_items: the "current
+  // intended billing plan" this module recomputes must be built from
+  // current commercial configuration only, never a superseded row.
   const { data: jobRow } = await supabaseServer
     .from('jobs')
-    .select('billing_customer_id, contract_terms ( * ), line_items ( * ), pending_vat_mode, pending_vat_rate_pct')
+    .select('billing_customer_id, contract_terms ( * ), current_line_items ( * ), pending_vat_mode, pending_vat_rate_pct')
     .eq('id', jobId).eq('org_id', orgId).maybeSingle()
   if (!jobRow) {
     const state: BillingReconciliationState = { kind: 'none' }
@@ -333,7 +336,7 @@ export async function getBillingReconciliationState(jobId: string, orgId: string
   }
   const termsRaw = jobRow.contract_terms as unknown
   const terms = (Array.isArray(termsRaw) ? termsRaw[0] : termsRaw) as ContractTerms | null
-  const lineItems = ((jobRow.line_items as LineItemInput[] | null) ?? [])
+  const lineItems = ((jobRow.current_line_items as LineItemInput[] | null) ?? [])
   const existingCustomerId = jobRow.billing_customer_id as string | null
 
   const { data: evidenceRows } = await supabaseServer

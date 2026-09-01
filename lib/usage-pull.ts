@@ -130,6 +130,328 @@ export type OverageLineItem = {
   minimumFloorAmount?: number
 }
 
+// Step 17H.2B.2 items 3/4/12 — the ONE quantity-resolution loop
+// computeOverageForPeriod's pricing pass and the new pricing-free
+// measurement-summary path (lib/usage-measurement-summary.ts) both build
+// on. Extracted verbatim from computeOverageForPeriod's own body (zero
+// behavior change to that function — proven by its full existing test
+// suite passing unmodified) so "how a meter's quantity gets resolved"
+// (window enumeration, qualified-unit-aggregate, closed-snapshot
+// preference, meter-then-manual fallback, real-billing finalize) exists in
+// exactly one place. Deliberately stops BEFORE any tier/rate/rolling-band
+// pricing math — that stays in computeOverageForPeriod alone, so a
+// measurement-only caller can never reach it.
+export type ResolvedUsageWindow = {
+  cfg: MeterCfg
+  window: { start: Date; end: Date; measureStart: Date; measureEnd: Date; displayEnd: Date; isOpen?: boolean; isPartial?: boolean }
+  totalUnits: number
+  // Step 17H.2B.2 item 3 — the actual source this specific reading came
+  // from, for a measurement-only caller to display truthfully without
+  // needing to re-derive it from static configuration.
+  metricSource: 'meter_pull' | 'manual_entry'
+}
+
+export async function resolveUsageMeasurementWindows(params: {
+  orgId: string
+  jobId: string
+  terms: ContractTerms
+  customerId: string
+  periodStartUnix: number
+  periodEndUnix: number
+  billingAsOf: Date
+  isRealBilling: boolean
+  ignoreTestModeGate?: boolean
+  includeZeroUsage?: boolean
+  livePreviewAsOfUnix?: number
+  preferClosedPeriodSnapshot?: boolean
+}): Promise<{ hasConfirmedMappings: boolean; resolved: ResolvedUsageWindow[] }> {
+  const {
+    orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, billingAsOf, isRealBilling,
+    ignoreTestModeGate, includeZeroUsage, livePreviewAsOfUnix, preferClosedPeriodSnapshot,
+  } = params
+
+  // Primary source: this job's own confirmed agreement-specific tiers.
+  // org_billing_config is deliberately NOT used here — it's a single shared
+  // row per (org, meter_key), so whichever agreement was confirmed most
+  // recently silently overwrites it for every other job at the same org.
+  // contract_meter_mappings is the one place tiers/included_units are kept
+  // genuinely per-agreement.
+  const { data: meterConfigs } = await supabaseServer
+    .from('contract_meter_mappings')
+    .select('meter_key, included_units, overage_tiers, billing_cycle, contract_unit_type, semantic_input_key')
+    .eq('job_id', jobId)
+    .eq('confirmed', true)
+
+  if (!meterConfigs || meterConfigs.length === 0) return { hasConfirmedMappings: false, resolved: [] }
+
+  const resolved: ResolvedUsageWindow[] = []
+  const scanStart  = new Date(periodStartUnix * 1000)
+  const scanEnd    = new Date(periodEndUnix   * 1000)
+  // Windows are anchored to the contract's start date so a quarterly meter
+  // always resets on the same day-of-cycle the contract began, not on
+  // whatever date this particular scan range happens to start — unless the
+  // contract explicitly states calendar-boundary cadence (reset_anchor
+  // below), in which case windows instead reset on fixed calendar dates
+  // regardless of when the contract itself began.
+  const anchorDate = terms.contract_start_date
+    ? new Date(terms.contract_start_date + 'T00:00:00')
+    : scanStart
+  const contractEndDate = terms.contract_end_date ? new Date(terms.contract_end_date + 'T00:00:00') : null
+
+  for (const cfg of meterConfigs as MeterCfg[]) {
+    // reset_anchor is stored per-tier (duplicated across a metric's tiers
+    // by extraction) — only switch to calendar cadence when the contract
+    // text was explicit about it; never inferred.
+    const cadenceAnchor: CadenceAnchorMode =
+      cfg.overage_tiers?.some(t => t.reset_anchor === 'calendar') ? 'calendar' : 'contract_start'
+
+    // Step 17D.1, item A — billing_meters.org_id is the sole ownership
+    // column (no more org_id IS NULL platform-catalog fallback — every
+    // real business meter now has a real owning org). Step 17D.2, item A
+    // — is_platform_meter=false stated explicitly too: a customer
+    // contract's overage/per-unit execution must never resolve against a
+    // genuine Verdix system meter.
+    const { data: meterDef } = await supabaseServer
+      .from('billing_meters')
+      .select('pull_endpoint_url, pull_auth_token, pull_param_name, mode, test_usage_value, connector, response_metric_key')
+      .eq('org_id', orgId)
+      .eq('meter_key', cfg.meter_key)
+      .eq('is_platform_meter', false)
+      .maybeSingle()
+
+    const def = meterDef as MeterDef | null
+
+    // A meter measures on its own cadence (billing_cycle — derived from
+    // the contract's stated measurement_period for this metric, which can
+    // legitimately differ from the deal's overall billing_frequency) —
+    // e.g. a metric measured half-yearly inside a contract invoiced
+    // monthly. Enumerate every fully-closed window of THIS meter's
+    // cadence within the scan range. The common case (meter cadence ==
+    // invoice cadence) yields exactly one window spanning the whole scan
+    // range, so this is a superset of the old single-period behavior, not
+    // a divergent path for it.
+    // start/end stay the TRUE, unclamped cadence boundaries — resolveWindowMinimum
+    // (below) needs them unclamped to correctly compute its own day-proration
+    // overlap math, and isPartialWindow's detection depends on comparing
+    // them against the contract's real start/end. measureStart/measureEnd
+    // are the SEPARATE bounds usage may actually be pulled/counted over:
+    // [max(window.start, contract_start), min(window.end, contract_end)].
+    // Without this second pair, a calendar-anchored metric's final closed
+    // window (e.g. Aug 2028 for a contract ending 2028-08-16) queried the
+    // connector for the FULL calendar month (1–31 Aug), both counting
+    // post-termination usage toward the calculated fee and displaying a
+    // wrong "31 Aug" boundary on the timeline. Only applies to closed
+    // windows — the isOpen live-preview window below clips to "today" for
+    // its own, separate reason and keeps its own true, uncapped displayEnd.
+    const windows: Array<{ start: Date; end: Date; measureStart: Date; measureEnd: Date; displayEnd: Date; isOpen?: boolean; isPartial?: boolean }> =
+      enumerateCadenceWindows(anchorDate, cfg.billing_cycle, scanStart, scanEnd, cadenceAnchor)
+        .map(w => {
+          const { start: measureStart, end: measureEnd } = clampWindowToContract(w, anchorDate, contractEndDate)
+          return { ...w, measureStart, measureEnd, displayEnd: measureEnd, isPartial: isPartialWindow(w, anchorDate, contractEndDate) }
+        })
+
+    // Live preview: also surface the currently-open window (not yet
+    // closed) so usage-so-far is visible before it actually closes. Marked
+    // isOpen so its minimum_period_amount floor doesn't apply below — that
+    // guarantee is for the full period, not whatever's accrued on day one.
+    // The window queried/pulled is clipped to today (end) — querying the
+    // full future-reaching cadence window would ask connectors like
+    // Remembill's sandbox for a range it doesn't cap at "today", returning
+    // fabricated future usage. displayEnd keeps the *true, uncapped*
+    // window end so the UI can still show "this meter measures quarterly,
+    // Aug 11 – Nov 10" instead of a misleading same-day range.
+    if (livePreviewAsOfUnix != null) {
+      const asOf = new Date(livePreviewAsOfUnix * 1000)
+      const openWindow = findCadenceWindowContaining(anchorDate, cfg.billing_cycle, asOf, cadenceAnchor)
+      const alreadyCovered = windows.some(w => w.start.getTime() === openWindow.start.getTime())
+      if (!alreadyCovered && openWindow.start <= asOf) {
+        const openEnd = asOf < openWindow.end ? asOf : openWindow.end
+        const openMeasureStart = clampWindowToContract(openWindow, anchorDate, contractEndDate).start
+        windows.push({
+          start: openWindow.start,
+          end: openEnd,
+          measureStart: openMeasureStart,
+          measureEnd: openEnd,
+          displayEnd: openWindow.end,
+          isOpen: true,
+          isPartial: isPartialWindow(openWindow, anchorDate, contractEndDate),
+        })
+      }
+    }
+
+    for (const window of windows) {
+      // Fail-closed real-billing invariant — independent of, and in
+      // addition to, invoice-scheduler's own prior-period selection
+      // (which today already only ever passes a closed window). Checked
+      // FIRST, before pulling any usage or computing any charge, so a
+      // future bug anywhere upstream that hands this function an
+      // actually-open window can never produce a usage/minimum charge —
+      // it throws instead of silently returning zero and letting the
+      // caller treat this period as settled. Never applied in preview
+      // mode (isRealBilling false) — preview is explicitly allowed to
+      // inspect an open window via the isOpen branch above.
+      if (isRealBilling && !isBillingWindowClosed(window, billingAsOf)) {
+        throw new OpenBillingWindowError(cfg.meter_key, window.start, window.end)
+      }
+      // Actual usage query uses measureStart/measureEnd (clamped to the
+      // contract's real start/end), never the true unclamped cadence
+      // start/end — see the comment on the windows construction above.
+      const windowEndUnix = Math.floor(window.measureEnd.getTime() / 1000) + 86_399 // 23:59:59 on the end date
+
+      // Test mode swaps the input source to the admin's last-simulated
+      // reading instead of the real endpoint — that's the whole point of
+      // testing it. Real billing (invoice-scheduler) still refuses to
+      // invoice off a test-mode meter at all, regardless of this value.
+      //
+      // Step 17D, item 11 — the test/remembill/generic-endpoint dispatch
+      // itself now lives in lib/meter-quantity-pull.ts's
+      // pullMeterQuantity, shared with lib/usage-quantity-resolver.ts,
+      // rather than only existing inline here. Behavior unchanged: same
+      // order, same fallback, same continue-with-a-log-line-never-throw
+      // discipline. periodEnd passed below is the ALREADY window-end-of-
+      // day-adjusted instant (windowEndUnix above) — Remembill's own
+      // connector only reads the calendar-date portion (unaffected by
+      // time-of-day), and the generic pull_endpoint_url branch needs
+      // exactly this adjusted value as its own period_end query param,
+      // matching this code's pre-extraction behavior exactly.
+      let totalUnits: number
+      let metricSource: 'meter_pull' | 'manual_entry' = 'meter_pull'
+      if (def?.connector === 'qualified_unit_aggregate') {
+        // Step 16B.4 — a Verdix-owned, contractually-qualified quantity
+        // (lib/qualified-unit-aggregation.ts) is a legitimate commercial
+        // quantity source in its own right, not a fake external meter —
+        // this is what actually solves "No suitable meter found" for a
+        // metric like an SQM that has no real external usage endpoint.
+        // cfg.meter_key IS the billable_unit_candidates.unit_type this
+        // meter measures — no separate mapping column, and no domain
+        // vocabulary (SQM/meeting/OS-2026-09) appears anywhere in this
+        // file; it only ever sees whatever meter_key the caller's own
+        // contract_meter_mappings row names. window.measureStart/
+        // measureEnd (already clamped to the contract's own start/end,
+        // exactly like every other branch here) become the aggregate's
+        // billing period — window.measureEnd is a CALENDAR-DAY start
+        // (see windowEndUnix's own +86_399 adjustment above), so +1 day
+        // gives the correct exclusive half-open upper bound.
+        const periodEnd = new Date(window.measureEnd.getTime() + 86_400_000)
+        const source = await resolveQualifiedUnitAggregateQuantitySource({
+          jobId, orgId, unitType: cfg.meter_key,
+          periodStart: window.measureStart.toISOString(), periodEnd: periodEnd.toISOString(),
+          asOf: billingAsOf.toISOString(),
+        })
+        const resolvedQty = resolveCommercialQuantity(source)
+        if (isRealBilling) {
+          // Fail closed — never substitutes 0, a known-so-far count, or a
+          // previous period's quantity. Thrown, not caught here, exactly
+          // like OpenBillingWindowError above: the caller's own existing
+          // fail-closed handling is what's expected to hold/fail this row.
+          totalUnits = requireReadyCommercialQuantity(resolvedQty)
+        } else {
+          if (!resolvedQty.ready) {
+            console.warn(`[usage-pull] qualified-unit aggregate for meter '${cfg.meter_key}' org ${orgId} not ready: ${resolvedQty.reason}`)
+            continue
+          }
+          totalUnits = resolvedQty.quantity
+        }
+      } else {
+        // Step 17F.2, item B — a period that has fully closed but whose
+        // invoice hasn't been sent yet (the caller's own 'pending'
+        // display case) prefers an already-pinned snapshot over a fresh
+        // pull, so a source value that changed since real billing close
+        // never makes this not-yet-invoiced period's DISPLAY disagree
+        // with what was actually billed. Checked BEFORE the fresh pull
+        // below — when nothing is pinned yet, this resolves ready:false
+        // and execution falls through to the existing fresh-pull path
+        // completely unchanged (never a behavior change for real
+        // billing, which never sets this flag).
+        let pinnedTotalUnits: number | null = null
+        if (preferClosedPeriodSnapshot && !isRealBilling && cfg.semantic_input_key) {
+          const pinned = await resolveUsageQuantityForPeriod({
+            jobId, orgId, semanticInputKey: cfg.semantic_input_key,
+            periodStart: window.measureStart, periodEnd: new Date(windowEndUnix * 1000),
+            asOf: billingAsOf, mode: 'closed_period_read',
+          })
+          if (pinned.ready) pinnedTotalUnits = pinned.quantity
+        }
+
+        let usedManualFallback = false
+        if (pinnedTotalUnits !== null) {
+          totalUnits = pinnedTotalUnits
+        } else {
+          const pulled = await pullMeterQuantity({
+            orgId, meterKey: cfg.meter_key, def, customerId,
+            periodStart: window.measureStart,
+            periodEnd: new Date(windowEndUnix * 1000),
+            ignoreTestModeGate,
+          })
+          if (pulled.status === 'skip') {
+            // Step 17F.1, item 3 — a metric genuinely configured for
+            // MANUAL entry (no meter_key at all — the real Remembill
+            // contract's own actual confirmed state) was previously
+            // skipped outright here: this loop only ever knew how to
+            // pull a real meter, with no fallback to usage_period_values
+            // at all, unlike lib/per-unit-fee-pull.ts's flat-fee path
+            // (which already goes through resolveUsageQuantityForPeriod's
+            // meter-then-manual fallback). Deliberately scoped to
+            // `!cfg.meter_key` ONLY — a metric that DOES have a real
+            // meter_key configured but whose pull just failed (connector
+            // error, wrong endpoint) must still fail closed exactly as
+            // before, never silently substituting a stale/absent manual
+            // figure that could mask a real connector problem (see this
+            // file's own real-meter-mapping-exists comment,
+            // computeOverageForPeriod's sibling early-return).
+            if (!cfg.meter_key && cfg.semantic_input_key) {
+              const manualResolved = await resolveUsageQuantityForPeriod({
+                jobId, orgId, semanticInputKey: cfg.semantic_input_key,
+                periodStart: window.measureStart, periodEnd: new Date(windowEndUnix * 1000),
+                asOf: billingAsOf, mode: isRealBilling ? 'closed_period_finalize' : 'live',
+              })
+              if (manualResolved.ready) {
+                totalUnits = manualResolved.quantity
+                usedManualFallback = true // resolveUsageQuantityForPeriod already finalized (mode-dependent) — the meter-finalize call below must not also run.
+                metricSource = 'manual_entry'
+              } else {
+                console.warn(`[usage-pull] ${pulled.reason}; manual fallback also not ready: ${manualResolved.reason}`)
+                continue
+              }
+            } else {
+              console.warn(`[usage-pull] ${pulled.reason}`)
+              continue
+            }
+          } else {
+            totalUnits = pulled.totalUnits
+          }
+        } // end fresh-pull fallback (pinnedTotalUnits === null)
+
+        // Step 17D.1, item H/I — real (non-preview) billing for a
+        // genuinely closed window (guaranteed by the isRealBilling throw
+        // check above) finalizes the EXACT quantity just pulled as the
+        // authoritative closed-period measurement — one pull, reused for
+        // both the invoice and the durable snapshot, never a second
+        // independent pull. Idempotent (finalizeClosedPeriodUsageQuantity
+        // never overwrites an existing pin). Best-effort: awaited so the
+        // snapshot is durable before this function returns, but any
+        // internal failure is caught and logged here, never allowed to
+        // fail the real invoice this loop iteration is building. Never
+        // runs for a live preview (isRealBilling false), a meter with no
+        // declared semantic_input_key, or the manual fallback above
+        // (which already finalized itself, as source:'manual', inside
+        // resolveUsageQuantityForPeriod — this block is meter-only).
+        if (isRealBilling && cfg.semantic_input_key && !usedManualFallback) {
+          await finalizeClosedPeriodUsageQuantity({
+            jobId, orgId, semanticInputKey: cfg.semantic_input_key,
+            periodStart: window.measureStart, periodEnd: new Date(windowEndUnix * 1000),
+            quantity: totalUnits, source: 'meter', meterKey: cfg.meter_key,
+          }).catch(err => console.error(`[usage-pull] failed to finalize closed-period snapshot for meter '${cfg.meter_key}' org ${orgId}:`, err))
+        }
+      }
+      if (totalUnits <= 0 && !includeZeroUsage) continue
+
+      resolved.push({ cfg, window, totalUnits, metricSource })
+    }
+  }
+  return { hasConfirmedMappings: true, resolved }
+}
+
 export async function computeOverageForPeriod(params: {
   orgId: string
   jobId: string
@@ -195,472 +517,206 @@ export async function computeOverageForPeriod(params: {
   const isRealBilling = livePreviewAsOfUnix == null
   const items: OverageLineItem[] = []
 
-  // Primary source: this job's own confirmed agreement-specific tiers.
-  // org_billing_config is deliberately NOT used here — it's a single shared
-  // row per (org, meter_key), so whichever agreement was confirmed most
-  // recently silently overwrites it for every other job at the same org.
-  // contract_meter_mappings is the one place tiers/included_units are kept
-  // genuinely per-agreement.
-  const { data: meterConfigs } = await supabaseServer
-    .from('contract_meter_mappings')
-    .select('meter_key, included_units, overage_tiers, billing_cycle, contract_unit_type, semantic_input_key')
-    .eq('job_id', jobId)
-    .eq('confirmed', true)
+  // Step 17H.2B.2 items 3/4/12 — quantity resolution (window enumeration,
+  // qualified-unit-aggregate, closed-snapshot preference, meter-then-
+  // manual fallback, real-billing finalize) now lives in ONE shared
+  // function, resolveUsageMeasurementWindows, also used by the new
+  // pricing-free measurement-summary path. Everything below this call is
+  // UNCHANGED pricing logic — same tiers/rolling-band/minimum-commitment
+  // math, over the exact same (cfg, window, totalUnits) tuples the old
+  // inline loop used to produce itself.
+  const { hasConfirmedMappings, resolved } = await resolveUsageMeasurementWindows({
+    orgId, jobId, terms, customerId, periodStartUnix, periodEndUnix, billingAsOf, isRealBilling,
+    ignoreTestModeGate, includeZeroUsage, livePreviewAsOfUnix, preferClosedPeriodSnapshot,
+  })
 
-  if (meterConfigs && meterConfigs.length > 0) {
+  if (hasConfirmedMappings) {
     const scanStart  = new Date(periodStartUnix * 1000)
     const scanEnd    = new Date(periodEndUnix   * 1000)
-    // Windows are anchored to the contract's start date so a quarterly meter
-    // always resets on the same day-of-cycle the contract began, not on
-    // whatever date this particular scan range happens to start — unless the
-    // contract explicitly states calendar-boundary cadence (reset_anchor
-    // below), in which case windows instead reset on fixed calendar dates
-    // regardless of when the contract itself began.
     const anchorDate = terms.contract_start_date
       ? new Date(terms.contract_start_date + 'T00:00:00')
       : scanStart
     const contractEndDate = terms.contract_end_date ? new Date(terms.contract_end_date + 'T00:00:00') : null
 
-    for (const cfg of meterConfigs as MeterCfg[]) {
-      // reset_anchor is stored per-tier (duplicated across a metric's tiers
-      // by extraction) — only switch to calendar cadence when the contract
-      // text was explicit about it; never inferred.
+    for (const { cfg, window, totalUnits } of resolved) {
       const cadenceAnchor: CadenceAnchorMode =
         cfg.overage_tiers?.some(t => t.reset_anchor === 'calendar') ? 'calendar' : 'contract_start'
 
-      // Step 17D.1, item A — billing_meters.org_id is the sole ownership
-      // column (no more org_id IS NULL platform-catalog fallback — every
-      // real business meter now has a real owning org). Step 17D.2, item A
-      // — is_platform_meter=false stated explicitly too: a customer
-      // contract's overage/per-unit execution must never resolve against a
-      // genuine Verdix system meter.
-      const { data: meterDef } = await supabaseServer
-        .from('billing_meters')
-        .select('pull_endpoint_url, pull_auth_token, pull_param_name, mode, test_usage_value, connector, response_metric_key')
-        .eq('org_id', orgId)
-        .eq('meter_key', cfg.meter_key)
-        .eq('is_platform_meter', false)
-        .maybeSingle()
-
-      const def = meterDef as MeterDef | null
-
-      // A meter measures on its own cadence (billing_cycle — derived from
-      // the contract's stated measurement_period for this metric, which can
-      // legitimately differ from the deal's overall billing_frequency) —
-      // e.g. a metric measured half-yearly inside a contract invoiced
-      // monthly. Enumerate every fully-closed window of THIS meter's
-      // cadence within the scan range. The common case (meter cadence ==
-      // invoice cadence) yields exactly one window spanning the whole scan
-      // range, so this is a superset of the old single-period behavior, not
-      // a divergent path for it.
-      // start/end stay the TRUE, unclamped cadence boundaries — resolveWindowMinimum
-      // (below) needs them unclamped to correctly compute its own day-proration
-      // overlap math, and isPartialWindow's detection depends on comparing
-      // them against the contract's real start/end. measureStart/measureEnd
-      // are the SEPARATE bounds usage may actually be pulled/counted over:
-      // [max(window.start, contract_start), min(window.end, contract_end)].
-      // Without this second pair, a calendar-anchored metric's final closed
-      // window (e.g. Aug 2028 for a contract ending 2028-08-16) queried the
-      // connector for the FULL calendar month (1–31 Aug), both counting
-      // post-termination usage toward the calculated fee and displaying a
-      // wrong "31 Aug" boundary on the timeline. Only applies to closed
-      // windows — the isOpen live-preview window below clips to "today" for
-      // its own, separate reason and keeps its own true, uncapped displayEnd.
-      const windows: Array<{ start: Date; end: Date; measureStart: Date; measureEnd: Date; displayEnd: Date; isOpen?: boolean; isPartial?: boolean }> =
-        enumerateCadenceWindows(anchorDate, cfg.billing_cycle, scanStart, scanEnd, cadenceAnchor)
-          .map(w => {
-            const { start: measureStart, end: measureEnd } = clampWindowToContract(w, anchorDate, contractEndDate)
-            return { ...w, measureStart, measureEnd, displayEnd: measureEnd, isPartial: isPartialWindow(w, anchorDate, contractEndDate) }
-          })
-
-      // Live preview: also surface the currently-open window (not yet
-      // closed) so usage-so-far is visible before it actually closes. Marked
-      // isOpen so its minimum_period_amount floor doesn't apply below — that
-      // guarantee is for the full period, not whatever's accrued on day one.
-      // The window queried/pulled is clipped to today (end) — querying the
-      // full future-reaching cadence window would ask connectors like
-      // Remembill's sandbox for a range it doesn't cap at "today", returning
-      // fabricated future usage. displayEnd keeps the *true, uncapped*
-      // window end so the UI can still show "this meter measures quarterly,
-      // Aug 11 – Nov 10" instead of a misleading same-day range.
-      if (livePreviewAsOfUnix != null) {
-        const asOf = new Date(livePreviewAsOfUnix * 1000)
-        const openWindow = findCadenceWindowContaining(anchorDate, cfg.billing_cycle, asOf, cadenceAnchor)
-        const alreadyCovered = windows.some(w => w.start.getTime() === openWindow.start.getTime())
-        if (!alreadyCovered && openWindow.start <= asOf) {
-          const openEnd = asOf < openWindow.end ? asOf : openWindow.end
-          const openMeasureStart = clampWindowToContract(openWindow, anchorDate, contractEndDate).start
-          windows.push({
-            start: openWindow.start,
-            end: openEnd,
-            measureStart: openMeasureStart,
-            measureEnd: openEnd,
-            displayEnd: openWindow.end,
-            isOpen: true,
-            isPartial: isPartialWindow(openWindow, anchorDate, contractEndDate),
-          })
+      const tiers = (cfg.overage_tiers ?? []).map((t, i) => ({
+        tier_label:    `Tier ${i + 1}`,
+        from_unit:     t.from_unit ?? null,
+        to_unit:       t.to_unit   ?? null,
+        rate_per_unit: t.rate_per_unit ?? 0,
+        unit_type:     cfg.meter_key,
+        minimum_period_amount: t.minimum_period_amount ?? null,
+        minimum_commitment: t.minimum_commitment ?? null,
+        tier_calculation: t.tier_calculation ?? null,
+      }))
+      // Step 17C.2b item A, revised 17C.2c — a rolling-band pricing
+      // transition, once active as of this WINDOW's own start (mirroring
+      // the fixed-fee reconciler's identical "periodStart >= effectiveFrom"
+      // rule for consistency between the two "which state governs this
+      // period" decisions), MAY raise the volume covered before overage
+      // applies — but only when the transition's own typed
+      // volume_transition_rule has actually been resolved (item A of
+      // 17C.2c: a pricing band's upper bound is never automatically the
+      // new included volume). Matched via contract_unit_type (what this
+      // meter measures, per MeterCfg's own doc) against the mechanism's
+      // aggregate.input_key, never meter_key (an arbitrary, org-side
+      // connector identifier with no reason to equal it).
+      //
+      // Three distinct outcomes:
+      //   no active transition yet       -> cfg.included_units, untouched
+      //                                      (pre-17C.2 behavior, exactly).
+      //   active + volume rule resolved  -> the resolver's own
+      //                                      effective_contracted_volume
+      //                                      (band_upper_bound/rolling_average/
+      //                                      specific_volume/unchanged).
+      //   active + volume rule UNRESOLVED -> HELD: this meter/window is
+      //                                      skipped entirely (no line
+      //                                      item, no charge) rather than
+      //                                      silently keeping the old
+      //                                      volume or guessing the new
+      //                                      band's capacity. The base
+      //                                      platform fee is completely
+      //                                      unaffected by this hold —
+      //                                      only this meter's overage is.
+      //
+      // Historical windows are unaffected either way: a window whose
+      // START predates the transition's effective_from resolves back to
+      // provenance 'contract_derived' (no transition active yet), via the
+      // SAME asOf-gated resolver every other "which state governs this
+      // period" decision in this codebase uses.
+      let includedUnits = cfg.included_units ?? 0
+      const rollingBandMechanism = (terms.unsupported_commercial_mechanisms ?? []).find(
+        m => m.execution_status === 'executable' && m.rolling_band_migration && cfg.contract_unit_type === m.rolling_band_migration.aggregate.input_key,
+      )
+      if (rollingBandMechanism) {
+        // asOf stays period-anchored (was this window covered by the
+        // pricing transition itself); volumeRuleAsOf is the REAL billing
+        // execution instant — a reviewer's volume-treatment decision has
+        // no calendar tie to the period being billed, and arrears
+        // billing means billingAsOf is always later than window.start
+        // (see resolveEffectiveCommercialStateForPeriod's own header for
+        // the real-Postgres-discovered defect this fixes).
+        const effectiveState = await resolveEffectiveCommercialStateForPeriod({ jobId, terms, asOf: window.start, volumeRuleAsOf: billingAsOf })
+        if (effectiveState.provenance === 'transition_active') {
+          if (effectiveState.effective_contracted_volume == null) {
+            console.warn(`[usage-pull] meter '${cfg.meter_key}' org ${orgId} job ${jobId}: an active rolling-band transition has no resolved contracted-volume treatment — holding this window's overage (Decision Required) rather than guessing`)
+            continue
+          }
+          includedUnits = effectiveState.effective_contracted_volume
         }
       }
-
-      for (const window of windows) {
-        // Fail-closed real-billing invariant — independent of, and in
-        // addition to, invoice-scheduler's own prior-period selection
-        // (which today already only ever passes a closed window). Checked
-        // FIRST, before pulling any usage or computing any charge, so a
-        // future bug anywhere upstream that hands this function an
-        // actually-open window can never produce a usage/minimum charge —
-        // it throws instead of silently returning zero and letting the
-        // caller treat this period as settled. Never applied in preview
-        // mode (isRealBilling false) — preview is explicitly allowed to
-        // inspect an open window via the isOpen branch above.
-        if (isRealBilling && !isBillingWindowClosed(window, billingAsOf)) {
-          throw new OpenBillingWindowError(cfg.meter_key, window.start, window.end)
-        }
-        // Actual usage query uses measureStart/measureEnd (clamped to the
-        // contract's real start/end), never the true unclamped cadence
-        // start/end — see the comment on the windows construction above.
-        const windowEndUnix = Math.floor(window.measureEnd.getTime() / 1000) + 86_399 // 23:59:59 on the end date
-
-        // Test mode swaps the input source to the admin's last-simulated
-        // reading instead of the real endpoint — that's the whole point of
-        // testing it. Real billing (invoice-scheduler) still refuses to
-        // invoice off a test-mode meter at all, regardless of this value.
-        //
-        // Step 17D, item 11 — the test/remembill/generic-endpoint dispatch
-        // itself now lives in lib/meter-quantity-pull.ts's
-        // pullMeterQuantity, shared with lib/usage-quantity-resolver.ts,
-        // rather than only existing inline here. Behavior unchanged: same
-        // order, same fallback, same continue-with-a-log-line-never-throw
-        // discipline. periodEnd passed below is the ALREADY window-end-of-
-        // day-adjusted instant (windowEndUnix above) — Remembill's own
-        // connector only reads the calendar-date portion (unaffected by
-        // time-of-day), and the generic pull_endpoint_url branch needs
-        // exactly this adjusted value as its own period_end query param,
-        // matching this code's pre-extraction behavior exactly.
-        let totalUnits: number
-        if (def?.connector === 'qualified_unit_aggregate') {
-          // Step 16B.4 — a Verdix-owned, contractually-qualified quantity
-          // (lib/qualified-unit-aggregation.ts) is a legitimate commercial
-          // quantity source in its own right, not a fake external meter —
-          // this is what actually solves "No suitable meter found" for a
-          // metric like an SQM that has no real external usage endpoint.
-          // cfg.meter_key IS the billable_unit_candidates.unit_type this
-          // meter measures — no separate mapping column, and no domain
-          // vocabulary (SQM/meeting/OS-2026-09) appears anywhere in this
-          // file; it only ever sees whatever meter_key the caller's own
-          // contract_meter_mappings row names. window.measureStart/
-          // measureEnd (already clamped to the contract's own start/end,
-          // exactly like every other branch here) become the aggregate's
-          // billing period — window.measureEnd is a CALENDAR-DAY start
-          // (see windowEndUnix's own +86_399 adjustment above), so +1 day
-          // gives the correct exclusive half-open upper bound.
-          const periodEnd = new Date(window.measureEnd.getTime() + 86_400_000)
-          const source = await resolveQualifiedUnitAggregateQuantitySource({
-            jobId, orgId, unitType: cfg.meter_key,
-            periodStart: window.measureStart.toISOString(), periodEnd: periodEnd.toISOString(),
-            asOf: billingAsOf.toISOString(),
-          })
-          const resolved = resolveCommercialQuantity(source)
-          if (isRealBilling) {
-            // Fail closed — never substitutes 0, a known-so-far count, or a
-            // previous period's quantity. Thrown, not caught here, exactly
-            // like OpenBillingWindowError above: the caller's own existing
-            // fail-closed handling is what's expected to hold/fail this row.
-            totalUnits = requireReadyCommercialQuantity(resolved)
-          } else {
-            if (!resolved.ready) {
-              console.warn(`[usage-pull] qualified-unit aggregate for meter '${cfg.meter_key}' org ${orgId} not ready: ${resolved.reason}`)
-              continue
-            }
-            totalUnits = resolved.quantity
-          }
-        } else {
-          // Step 17F.2, item B — a period that has fully closed but whose
-          // invoice hasn't been sent yet (the caller's own 'pending'
-          // display case) prefers an already-pinned snapshot over a fresh
-          // pull, so a source value that changed since real billing close
-          // never makes this not-yet-invoiced period's DISPLAY disagree
-          // with what was actually billed. Checked BEFORE the fresh pull
-          // below — when nothing is pinned yet, this resolves ready:false
-          // and execution falls through to the existing fresh-pull path
-          // completely unchanged (never a behavior change for real
-          // billing, which never sets this flag).
-          let pinnedTotalUnits: number | null = null
-          if (preferClosedPeriodSnapshot && !isRealBilling && cfg.semantic_input_key) {
-            const pinned = await resolveUsageQuantityForPeriod({
-              jobId, orgId, semanticInputKey: cfg.semantic_input_key,
-              periodStart: window.measureStart, periodEnd: new Date(windowEndUnix * 1000),
-              asOf: billingAsOf, mode: 'closed_period_read',
-            })
-            if (pinned.ready) pinnedTotalUnits = pinned.quantity
-          }
-
-          let usedManualFallback = false
-          if (pinnedTotalUnits !== null) {
-            totalUnits = pinnedTotalUnits
-          } else {
-            const pulled = await pullMeterQuantity({
-              orgId, meterKey: cfg.meter_key, def, customerId,
-              periodStart: window.measureStart,
-              periodEnd: new Date(windowEndUnix * 1000),
-              ignoreTestModeGate,
-            })
-            if (pulled.status === 'skip') {
-              // Step 17F.1, item 3 — a metric genuinely configured for
-              // MANUAL entry (no meter_key at all — the real Remembill
-              // contract's own actual confirmed state) was previously
-              // skipped outright here: this loop only ever knew how to
-              // pull a real meter, with no fallback to usage_period_values
-              // at all, unlike lib/per-unit-fee-pull.ts's flat-fee path
-              // (which already goes through resolveUsageQuantityForPeriod's
-              // meter-then-manual fallback). Deliberately scoped to
-              // `!cfg.meter_key` ONLY — a metric that DOES have a real
-              // meter_key configured but whose pull just failed (connector
-              // error, wrong endpoint) must still fail closed exactly as
-              // before, never silently substituting a stale/absent manual
-              // figure that could mask a real connector problem (see this
-              // file's own real-meter-mapping-exists comment,
-              // computeOverageForPeriod's sibling early-return).
-              if (!cfg.meter_key && cfg.semantic_input_key) {
-                const manualResolved = await resolveUsageQuantityForPeriod({
-                  jobId, orgId, semanticInputKey: cfg.semantic_input_key,
-                  periodStart: window.measureStart, periodEnd: new Date(windowEndUnix * 1000),
-                  asOf: billingAsOf, mode: isRealBilling ? 'closed_period_finalize' : 'live',
-                })
-                if (manualResolved.ready) {
-                  totalUnits = manualResolved.quantity
-                  usedManualFallback = true // resolveUsageQuantityForPeriod already finalized (mode-dependent) — the meter-finalize call below must not also run.
-                } else {
-                  console.warn(`[usage-pull] ${pulled.reason}; manual fallback also not ready: ${manualResolved.reason}`)
-                  continue
-                }
-              } else {
-                console.warn(`[usage-pull] ${pulled.reason}`)
-                continue
-              }
-            } else {
-              totalUnits = pulled.totalUnits
-            }
-          } // end fresh-pull fallback (pinnedTotalUnits === null)
-
-          // Step 17D.1, item H/I — real (non-preview) billing for a
-          // genuinely closed window (guaranteed by the isRealBilling throw
-          // check above) finalizes the EXACT quantity just pulled as the
-          // authoritative closed-period measurement — one pull, reused for
-          // both the invoice and the durable snapshot, never a second
-          // independent pull. Idempotent (finalizeClosedPeriodUsageQuantity
-          // never overwrites an existing pin). Best-effort: awaited so the
-          // snapshot is durable before this function returns, but any
-          // internal failure is caught and logged here, never allowed to
-          // fail the real invoice this loop iteration is building. Never
-          // runs for a live preview (isRealBilling false), a meter with no
-          // declared semantic_input_key, or the manual fallback above
-          // (which already finalized itself, as source:'manual', inside
-          // resolveUsageQuantityForPeriod — this block is meter-only).
-          if (isRealBilling && cfg.semantic_input_key && !usedManualFallback) {
-            await finalizeClosedPeriodUsageQuantity({
-              jobId, orgId, semanticInputKey: cfg.semantic_input_key,
-              periodStart: window.measureStart, periodEnd: new Date(windowEndUnix * 1000),
-              quantity: totalUnits, source: 'meter', meterKey: cfg.meter_key,
-            }).catch(err => console.error(`[usage-pull] failed to finalize closed-period snapshot for meter '${cfg.meter_key}' org ${orgId}:`, err))
+      // A minimum commitment guarantees a full cadence period's worth of
+      // payment — never applied to a window that hasn't closed (isOpen).
+      // For a window the contract wasn't in effect for the whole of
+      // (isPartial, calendar-anchored only), the applicable amount is
+      // resolved through the SAME confirmed prorate_partial_periods
+      // treatment real billing already uses for this exact question
+      // (lib/tariff.ts's resolveWindowMinimum) — full, prorated by days,
+      // or (while genuinely unconfirmed) withheld entirely. This used to
+      // unconditionally withhold the minimum for every partial window
+      // regardless of what a reviewer had actually confirmed; that was
+      // never wrong for an unresolved treatment, but silently ignored a
+      // reviewer's explicit "bill in full"/"prorate by days" decision
+      // once one existed. Usage-based charges still bill either way;
+      // only the minimum-floor/additive/etc. amount is affected.
+      let applyMinimum = !window.isOpen && !window.isPartial
+      let minimumTiers = tiers
+      if (!window.isOpen && window.isPartial) {
+        const activeMc = tiers.find(t => t.minimum_commitment && !t.minimum_commitment.requires_confirmation)?.minimum_commitment
+        if (activeMc) {
+          const wm = resolveWindowMinimum(
+            { start: window.start, end: window.end },
+            anchorDate, contractEndDate ?? window.end, cadenceAnchor,
+            activeMc,
+          )
+          if (!wm.requiresConfirmation && wm.amount != null) {
+            applyMinimum = true
+            minimumTiers = tiers.map(t => t.minimum_commitment === activeMc
+              ? { ...t, minimum_commitment: { ...activeMc, amount: wm.amount! } }
+              : t)
           }
         }
-        if (totalUnits <= 0 && !includeZeroUsage) continue
-
-        const tiers = (cfg.overage_tiers ?? []).map((t, i) => ({
-          tier_label:    `Tier ${i + 1}`,
-          from_unit:     t.from_unit ?? null,
-          to_unit:       t.to_unit   ?? null,
-          rate_per_unit: t.rate_per_unit ?? 0,
-          unit_type:     cfg.meter_key,
-          minimum_period_amount: t.minimum_period_amount ?? null,
-          minimum_commitment: t.minimum_commitment ?? null,
-          tier_calculation: t.tier_calculation ?? null,
-        }))
-        // Step 17C.2b item A, revised 17C.2c — a rolling-band pricing
-        // transition, once active as of this WINDOW's own start (mirroring
-        // the fixed-fee reconciler's identical "periodStart >= effectiveFrom"
-        // rule for consistency between the two "which state governs this
-        // period" decisions), MAY raise the volume covered before overage
-        // applies — but only when the transition's own typed
-        // volume_transition_rule has actually been resolved (item A of
-        // 17C.2c: a pricing band's upper bound is never automatically the
-        // new included volume). Matched via contract_unit_type (what this
-        // meter measures, per MeterCfg's own doc) against the mechanism's
-        // aggregate.input_key, never meter_key (an arbitrary, org-side
-        // connector identifier with no reason to equal it).
-        //
-        // Three distinct outcomes:
-        //   no active transition yet       -> cfg.included_units, untouched
-        //                                      (pre-17C.2 behavior, exactly).
-        //   active + volume rule resolved  -> the resolver's own
-        //                                      effective_contracted_volume
-        //                                      (band_upper_bound/rolling_average/
-        //                                      specific_volume/unchanged).
-        //   active + volume rule UNRESOLVED -> HELD: this meter/window is
-        //                                      skipped entirely (no line
-        //                                      item, no charge) rather than
-        //                                      silently keeping the old
-        //                                      volume or guessing the new
-        //                                      band's capacity. The base
-        //                                      platform fee is completely
-        //                                      unaffected by this hold —
-        //                                      only this meter's overage is.
-        //
-        // Historical windows are unaffected either way: a window whose
-        // START predates the transition's effective_from resolves back to
-        // provenance 'contract_derived' (no transition active yet), via the
-        // SAME asOf-gated resolver every other "which state governs this
-        // period" decision in this codebase uses.
-        let includedUnits = cfg.included_units ?? 0
-        const rollingBandMechanism = (terms.unsupported_commercial_mechanisms ?? []).find(
-          m => m.execution_status === 'executable' && m.rolling_band_migration && cfg.contract_unit_type === m.rolling_band_migration.aggregate.input_key,
-        )
-        if (rollingBandMechanism) {
-          // asOf stays period-anchored (was this window covered by the
-          // pricing transition itself); volumeRuleAsOf is the REAL billing
-          // execution instant — a reviewer's volume-treatment decision has
-          // no calendar tie to the period being billed, and arrears
-          // billing means billingAsOf is always later than window.start
-          // (see resolveEffectiveCommercialStateForPeriod's own header for
-          // the real-Postgres-discovered defect this fixes).
-          const effectiveState = await resolveEffectiveCommercialStateForPeriod({ jobId, terms, asOf: window.start, volumeRuleAsOf: billingAsOf })
-          if (effectiveState.provenance === 'transition_active') {
-            if (effectiveState.effective_contracted_volume == null) {
-              console.warn(`[usage-pull] meter '${cfg.meter_key}' org ${orgId} job ${jobId}: an active rolling-band transition has no resolved contracted-volume treatment — holding this window's overage (Decision Required) rather than guessing`)
-              continue
-            }
-            includedUnits = effectiveState.effective_contracted_volume
-          }
-        }
-        // A minimum commitment guarantees a full cadence period's worth of
-        // payment — never applied to a window that hasn't closed (isOpen).
-        // For a window the contract wasn't in effect for the whole of
-        // (isPartial, calendar-anchored only), the applicable amount is
-        // resolved through the SAME confirmed prorate_partial_periods
-        // treatment real billing already uses for this exact question
-        // (lib/tariff.ts's resolveWindowMinimum) — full, prorated by days,
-        // or (while genuinely unconfirmed) withheld entirely. This used to
-        // unconditionally withhold the minimum for every partial window
-        // regardless of what a reviewer had actually confirmed; that was
-        // never wrong for an unresolved treatment, but silently ignored a
-        // reviewer's explicit "bill in full"/"prorate by days" decision
-        // once one existed. Usage-based charges still bill either way;
-        // only the minimum-floor/additive/etc. amount is affected.
-        let applyMinimum = !window.isOpen && !window.isPartial
-        let minimumTiers = tiers
-        if (!window.isOpen && window.isPartial) {
-          const activeMc = tiers.find(t => t.minimum_commitment && !t.minimum_commitment.requires_confirmation)?.minimum_commitment
-          if (activeMc) {
-            const wm = resolveWindowMinimum(
-              { start: window.start, end: window.end },
-              anchorDate, contractEndDate ?? window.end, cadenceAnchor,
-              activeMc,
-            )
-            if (!wm.requiresConfirmation && wm.amount != null) {
-              applyMinimum = true
-              minimumTiers = tiers.map(t => t.minimum_commitment === activeMc
-                ? { ...t, minimum_commitment: { ...activeMc, amount: wm.amount! } }
-                : t)
-            }
-          }
-        }
-        const overageResult = tiers.length > 0 ? computeMetricOverage(totalUnits, minimumTiers, includedUnits, applyMinimum) : null
-        // A metric whose tier method (graduated/volume/block) isn't
-        // confirmed can't be invoiced off — the same rate table produces
-        // different totals under different methods, so there's no safe
-        // provisional amount to bill for real. Skip the metric entirely
-        // rather than guess; it stays visible as "needs interpretation" in
-        // the Review panel until a reviewer confirms it.
-        if (overageResult?.requiresConfirmation) continue
-        const overageEur = overageResult?.amount ?? 0
-        if (overageEur <= 0 && !includeZeroUsage) continue
-
-        // Whether a confirmed minimum commitment is what determined the
-        // final billed amount — compared against the pure tiered-usage
-        // charge with no floor/additive/etc. applied, so the Consumption
-        // timeline can show "Minimum floor applies: X" as a first-class
-        // line instead of it being buried in the description tooltip only.
-        const rawUsageCharge = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, false).amount : 0
-        // Derived from minimumTiers (not tiers) so a prorated partial-window
-        // floor is reported at its actual, prorated amount rather than the
-        // contract's full, unprorated figure.
-        const activeCommitment = minimumTiers.find(t => t.minimum_commitment && !t.minimum_commitment.requires_confirmation)?.minimum_commitment
-        const minimumFloorApplied = applyMinimum && overageEur !== rawUsageCharge
-          && (activeCommitment ? (activeCommitment.mode === 'floor' || activeCommitment.mode === 'minimum_spend') : true)
-        const minimumFloorAmount = minimumFloorApplied
-          ? (activeCommitment?.amount ?? tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0))
-          : undefined
-
-        // Show this meter's own measurement window whenever it doesn't
-        // exactly match the invoice period it's displayed under — either
-        // because several windows of a shorter cadence land on one invoice
-        // (multiple monthly windows inside a quarterly arrears row — each
-        // needs its own dates to stay legible), or because a single window
-        // of a *longer* cadence than the invoice period is being previewed
-        // mid-cycle (a quarterly meter shown inside a monthly Consumption
-        // row) — without this, that row silently looked like it was
-        // measuring the same (wrong) monthly window as everything else.
-        const fmtRange = (s: Date, e: Date) =>
-          `${s.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${e.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
-        // window.start/end are built via the local `new Date(y, m, d)`
-        // constructor (lib/tariff.ts) — toISOString() converts to UTC
-        // first, which would silently shift this a day off on any server
-        // not running in UTC. Use the date's own local calendar fields.
-        const dateOnly = (d: Date) => {
-          const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0')
-          return `${y}-${m}-${day}`
-        }
-        const matchesScanRange = dateOnly(window.measureStart) === dateOnly(scanStart) && dateOnly(window.displayEnd) === dateOnly(scanEnd)
-        const windowSuffix = !matchesScanRange
-          ? ` (${fmtRange(window.measureStart, window.displayEnd)})`
-          : ''
-        const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits, applyMinimum, overageResult?.method ?? 'graduated') + windowSuffix
-        items.push({
-          meter_key: cfg.meter_key, contractUnitType: cfg.contract_unit_type ?? null,
-          total_units: totalUnits, included_units: includedUnits,
-          billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,
-          amount: Math.round(overageEur * 100) / 100, currency: currency.toUpperCase(),
-          description: overageDesc, metric_source: 'meter_pull',
-          windowStart: dateOnly(window.measureStart),
-          windowEnd:   dateOnly(window.displayEnd),
-          windowOpen:  window.isOpen ?? false,
-          windowPartial: window.isPartial ?? false,
-          minimumFloorApplied: minimumFloorApplied || undefined,
-          minimumFloorAmount,
-        })
       }
+      const overageResult = tiers.length > 0 ? computeMetricOverage(totalUnits, minimumTiers, includedUnits, applyMinimum) : null
+      // A metric whose tier method (graduated/volume/block) isn't
+      // confirmed can't be invoiced off — the same rate table produces
+      // different totals under different methods, so there's no safe
+      // provisional amount to bill for real. Skip the metric entirely
+      // rather than guess; it stays visible as "needs interpretation" in
+      // the Review panel until a reviewer confirms it.
+      if (overageResult?.requiresConfirmation) continue
+      const overageEur = overageResult?.amount ?? 0
+      if (overageEur <= 0 && !includeZeroUsage) continue
+
+      // Whether a confirmed minimum commitment is what determined the
+      // final billed amount — compared against the pure tiered-usage
+      // charge with no floor/additive/etc. applied, so the Consumption
+      // timeline can show "Minimum floor applies: X" as a first-class
+      // line instead of it being buried in the description tooltip only.
+      const rawUsageCharge = tiers.length > 0 ? computeMetricOverage(totalUnits, tiers, includedUnits, false).amount : 0
+      // Derived from minimumTiers (not tiers) so a prorated partial-window
+      // floor is reported at its actual, prorated amount rather than the
+      // contract's full, unprorated figure.
+      const activeCommitment = minimumTiers.find(t => t.minimum_commitment && !t.minimum_commitment.requires_confirmation)?.minimum_commitment
+      const minimumFloorApplied = applyMinimum && overageEur !== rawUsageCharge
+        && (activeCommitment ? (activeCommitment.mode === 'floor' || activeCommitment.mode === 'minimum_spend') : true)
+      const minimumFloorAmount = minimumFloorApplied
+        ? (activeCommitment?.amount ?? tiers.reduce((max, t) => Math.max(max, t.minimum_period_amount ?? 0), 0))
+        : undefined
+
+      // Show this meter's own measurement window whenever it doesn't
+      // exactly match the invoice period it's displayed under — either
+      // because several windows of a shorter cadence land on one invoice
+      // (multiple monthly windows inside a quarterly arrears row — each
+      // needs its own dates to stay legible), or because a single window
+      // of a *longer* cadence than the invoice period is being previewed
+      // mid-cycle (a quarterly meter shown inside a monthly Consumption
+      // row) — without this, that row silently looked like it was
+      // measuring the same (wrong) monthly window as everything else.
+      const fmtRange = (s: Date, e: Date) =>
+        `${s.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${e.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
+      // window.start/end are built via the local `new Date(y, m, d)`
+      // constructor (lib/tariff.ts) — toISOString() converts to UTC
+      // first, which would silently shift this a day off on any server
+      // not running in UTC. Use the date's own local calendar fields.
+      const dateOnly = (d: Date) => {
+        const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0')
+        return `${y}-${m}-${day}`
+      }
+      const matchesScanRange = dateOnly(window.measureStart) === dateOnly(scanStart) && dateOnly(window.displayEnd) === dateOnly(scanEnd)
+      const windowSuffix = !matchesScanRange
+        ? ` (${fmtRange(window.measureStart, window.displayEnd)})`
+        : ''
+      const overageDesc = describeTieredUsage(cfg.meter_key, totalUnits, tiers, includedUnits, applyMinimum, overageResult?.method ?? 'graduated') + windowSuffix
+      items.push({
+        meter_key: cfg.meter_key, contractUnitType: cfg.contract_unit_type ?? null,
+        total_units: totalUnits, included_units: includedUnits,
+        billable_units: Math.max(0, totalUnits - includedUnits), rate_per_unit: tiers[0]?.rate_per_unit ?? 0,
+        amount: Math.round(overageEur * 100) / 100, currency: currency.toUpperCase(),
+        description: overageDesc, metric_source: 'meter_pull',
+        windowStart: dateOnly(window.measureStart),
+        windowEnd:   dateOnly(window.displayEnd),
+        windowOpen:  window.isOpen ?? false,
+        windowPartial: window.isPartial ?? false,
+        minimumFloorApplied: minimumFloorApplied || undefined,
+        minimumFloorAmount,
+      })
     }
     return items
   }
 
-  // Legacy org-level pull config fallback (no confirmed per-job mapping)
-  const { data: orgData } = await supabaseServer
-    .from('organizations')
-    .select('pull_config')
-    .eq('id', orgId)
-    .maybeSingle()
-  const pc = (orgData?.pull_config ?? {}) as Partial<PullCfg>
-  if (!pc.client_usage_url) return items
+  // Legacy org-level pull config fallback (no confirmed per-job mapping) —
+  // quantity resolution now lives in resolveLegacyClientPullQuantity (Step
+  // 17H.2C item 3), shared with the measurement-only path. Only the
+  // pricing (computeMetricOverage) stays here.
+  const legacy = await resolveLegacyClientPullQuantity({ orgId, jobId, customerId, periodStartUnix, periodEndUnix })
+  if (!legacy.ready) return items
 
-  const pullUrl = new URL(pc.client_usage_url)
-  pullUrl.searchParams.set('customer_id',  customerId)
-  pullUrl.searchParams.set('period_start', String(periodStartUnix))
-  pullUrl.searchParams.set('period_end',   String(periodEndUnix))
-
-  const pullHeaders: Record<string, string> = {}
-  if (pc.client_read_api_key) pullHeaders['Authorization'] = `Bearer ${pc.client_read_api_key}`
-
-  const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
-  if (!pullRes.ok) {
-    console.error(`[usage-pull] legacy pull failed (${pullRes.status}) for job ${jobId}`)
-    return items
-  }
-
-  const usageData      = await pullRes.json() as { total_billable_units?: number | string }
-  const aggregateUnits = Number(usageData.total_billable_units ?? 0)
+  const { aggregateUnits } = legacy
   const includedUnits  = terms.included_units ?? 0
-  if (aggregateUnits <= 0) return items
 
   const legacyResult = computeMetricOverage(aggregateUnits, terms.overage_tiers ?? [], includedUnits)
   if (legacyResult.requiresConfirmation) return items
@@ -675,4 +731,49 @@ export async function computeOverageForPeriod(params: {
     description: overageDesc, metric_source: 'client_pull',
   })
   return items
+}
+
+// Step 17H.2C item 3 — the pricing-FREE quantity resolution for the legacy
+// org-level client_usage_url fallback (only ever reached when a job has NO
+// confirmed contract_meter_mappings — see computeOverageForPeriod's own
+// precedence: this is called only after the confirmed-mapping branch has
+// already returned). Extracted verbatim from computeOverageForPeriod's own
+// body (zero behavior change — same HTTP call, same response parsing) so
+// lib/usage-measurement-summary.ts can obtain the same raw quantity without
+// duplicating the HTTP/meter fetch, and without ever reaching
+// computeMetricOverage.
+export async function resolveLegacyClientPullQuantity(params: {
+  orgId: string
+  jobId: string
+  customerId: string
+  periodStartUnix: number
+  periodEndUnix: number
+}): Promise<{ ready: false } | { ready: true; aggregateUnits: number }> {
+  const { orgId, jobId, customerId, periodStartUnix, periodEndUnix } = params
+  const { data: orgData } = await supabaseServer
+    .from('organizations')
+    .select('pull_config')
+    .eq('id', orgId)
+    .maybeSingle()
+  const pc = (orgData?.pull_config ?? {}) as Partial<PullCfg>
+  if (!pc.client_usage_url) return { ready: false }
+
+  const pullUrl = new URL(pc.client_usage_url)
+  pullUrl.searchParams.set('customer_id',  customerId)
+  pullUrl.searchParams.set('period_start', String(periodStartUnix))
+  pullUrl.searchParams.set('period_end',   String(periodEndUnix))
+
+  const pullHeaders: Record<string, string> = {}
+  if (pc.client_read_api_key) pullHeaders['Authorization'] = `Bearer ${pc.client_read_api_key}`
+
+  const pullRes = await fetch(pullUrl.toString(), { headers: pullHeaders })
+  if (!pullRes.ok) {
+    console.error(`[usage-pull] legacy pull failed (${pullRes.status}) for job ${jobId}`)
+    return { ready: false }
+  }
+
+  const usageData      = await pullRes.json() as { total_billable_units?: number | string }
+  const aggregateUnits = Number(usageData.total_billable_units ?? 0)
+  if (aggregateUnits <= 0) return { ready: false }
+  return { ready: true, aggregateUnits }
 }

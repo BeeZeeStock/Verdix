@@ -12,6 +12,10 @@ import type { ContractTerms } from './types'
 import { isOneTimeFeeHeldForExecution, type OperationalEventEvidence } from './operational-event-evidence'
 import type { LineItemInput } from './billing-writer'
 import type { VatMode } from './vat'
+import {
+  resolveOneTimeLineItemAssociation, ONE_TIME_ASSOCIATION_BLOCKED_REASON, ONE_TIME_ASSOCIATION_INTEGRITY_CONFLICT_REASON,
+  type BlockedOneTimeFee,
+} from './one-time-line-item-resolution'
 
 export type BillingPlanLineKind = 'period' | 'one_time_fee'
 
@@ -41,6 +45,14 @@ export interface BillingPlanSnapshot {
   // billing already requires).
   customerIdentityKey: string
   lines: BillingPlanLineInstruction[]
+  // Step 17H.4B0B — one-time fees excluded from `lines` this pass because
+  // their line_items association was ambiguous (see
+  // lib/one-time-line-item-resolution.ts). Never silently dropped: the
+  // caller (configureStripe/configureRemembill) must surface each of
+  // these. A fee here is safely retried on the next configure run — since
+  // it was never added to `lines`, no planned_invoices row was written for
+  // it, so alreadySentKeys never excludes it going forward.
+  blockedOneTimeFees: BlockedOneTimeFee[]
 }
 
 function fmtDate(d: Date): string {
@@ -89,6 +101,7 @@ export function buildBillingPlanSnapshot(params: {
     .digest('hex').slice(0, 16)
 
   const lines: BillingPlanLineInstruction[] = []
+  const blockedOneTimeFees: BlockedOneTimeFee[] = []
 
   for (const period of computeBillingSchedule(terms)) {
     const key = `period:${period.yearNum}:${fmtDate(period.periodStart)}`
@@ -113,7 +126,26 @@ export function buildBillingPlanSnapshot(params: {
     const feeDueDate = fee.due_date ? new Date(fee.due_date + 'T00:00:00') : null
     const isDue = !feeDueDate || feeDueDate <= now
     if (!isDue) continue
-    const li = lineItems.find(l => l.billing_period === 'one_time' && l.product_name === fee.fee_label) ?? null
+    // Cardinality-aware, ID-first (Step 17H.4B0D4B0B) — line_items.fee_id
+    // is the preferred positive association key once it exists; exact
+    // product_name/fee_label matching remains the transitional fallback
+    // for legacy rows. Never `.find()` — an ambiguous OR contradictory
+    // match (>1 candidate, or an explicit conflicting identity — e.g. from
+    // a re-extraction that duplicated line_items; 17H.4B0A) must never let
+    // row ordering or text silently decide which candidate's total_amount
+    // becomes the real invoiced amount. Blocked fees are excluded from
+    // `lines` entirely (never guessed, never invoiced this run) and
+    // reported via blockedOneTimeFees instead.
+    const association = resolveOneTimeLineItemAssociation({ feeId: fee.fee_id ?? null, feeLabel: fee.fee_label }, lineItems)
+    if (association.status === 'ambiguous') {
+      blockedOneTimeFees.push({ feeLabel: fee.fee_label, reason: ONE_TIME_ASSOCIATION_BLOCKED_REASON })
+      continue
+    }
+    if (association.status === 'integrity_conflict') {
+      blockedOneTimeFees.push({ feeLabel: fee.fee_label, reason: ONE_TIME_ASSOCIATION_INTEGRITY_CONFLICT_REASON })
+      continue
+    }
+    const li = association.status === 'matched' ? association.item : null
     const amount = li?.total_amount ?? fee.amount
     const hasBreakdown = !!li && li.quantity > 0 && li.unit_price > 0
     lines.push({
@@ -129,7 +161,7 @@ export function buildBillingPlanSnapshot(params: {
   }
 
   lines.sort((a, b) => a.componentKey.localeCompare(b.componentKey))
-  return { provider, currency, customerIdentityKey, lines }
+  return { provider, currency, customerIdentityKey, lines, blockedOneTimeFees }
 }
 
 // Step 14 final state-integrity correction — a snapshot's own `lines[]`

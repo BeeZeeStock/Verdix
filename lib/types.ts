@@ -48,6 +48,25 @@ export interface TierCalculationMethod {
 }
 
 export interface OverageTier {
+  /** Step 17H.4B0D4B1A — stable semantic identity for this specific tier
+   *  band, distinct from tier_label (a mutable display string) and from
+   *  any future line_items.tier_id (a PROJECTION of this same identity
+   *  onto the operational billing row — not this field itself). Generated
+   *  via crypto.randomUUID() whenever missing (lib/contract-extractor.ts),
+   *  a full UUID, never the truncated 8-char form discount_rule_id/
+   *  credit_rule_id use. Preserved across re-extraction only when a
+   *  structural fingerprint — (metricKey, from_unit, to_unit), see
+   *  lib/rule-id-stability.ts's preserveTierIdentity — is uniquely 1:1
+   *  between the prior and freshly-extracted tier sets; rate_per_unit,
+   *  tier_label, and every other mutable/presentation field are
+   *  deliberately EXCLUDED from that fingerprint, so correcting a rate or
+   *  relabeling a band never breaks identity. A structural boundary change
+   *  (from_unit/to_unit/metric identity) is treated as identity-not-
+   *  preserved, not as proof the commercial tier was removed or added —
+   *  that determination belongs to future reconciliation, never inferred
+   *  here. Absent on every existing persisted tier as of this pass —
+   *  legacy rows remain untouched until a real re-extraction assigns one. */
+  tier_id?: string
   tier_label: string
   from_unit: number | null
   to_unit: number | null
@@ -796,14 +815,29 @@ export interface OneTimeFee {
    *  registry it introduces. Absent for every fee that never entered the
    *  Step-12 lifecycle (manual_trigger-exempt fees, historical records) —
    *  those have no operational-event concept to key evidence against
-   *  anyway. Known, documented limitation carried over unfixed from Step
-   *  11/12: this id is NOT preserved across a real re-extraction (one_
-   *  time_fees has no id-preservation mechanism at all, unlike discount_
-   *  rule_id/credit_rule_id) — re-extracting a job assigns fresh fee_ids,
-   *  orphaning any prior evidence rows (they remain in the database,
-   *  intact and auditable, just no longer reachable from the new fee
-   *  object). Fixing that is a separate, pre-existing gap outside Step
-   *  13's scope. */
+   *  anyway. Generated via crypto.randomUUID() whenever missing
+   *  (lib/contract-extractor.ts), a full UUID string (not the truncated
+   *  8-char form discount_rule_id/credit_rule_id use).
+   *
+   *  Re-extraction preservation (corrected — Step 13 final amendment +
+   *  17H.4B0D4B0A.1's cardinality hardening; an earlier version of this
+   *  comment claimed re-extraction never preserves this id at all, which
+   *  is no longer — and, per lib/rule-id-stability.ts's own history,
+   *  wasn't actually — true): lib/rule-id-stability.ts's
+   *  preserveOneTimeFeeIdentity, called from execute/route.ts on every
+   *  re-extraction, DOES carry fee_id forward — but only when the fee's
+   *  `description` text is unique on BOTH the prior and freshly-extracted
+   *  side (exactly one old fee and exactly one new fee share that exact
+   *  description). This is not unconditional stability: a materially
+   *  changed description, or a description that collides with another
+   *  fee's on either side (ambiguous), means the fee is treated as new —
+   *  it keeps its own freshly-generated fee_id, and any operational_event_
+   *  evidence keyed to the OLD fee_id remains in the database (append-only,
+   *  never deleted) but is no longer reachable from the new fee object.
+   *  `amount`/`fee_label`/`billability_condition` may all change while
+   *  identity still survives, exactly like description-keyed preservation
+   *  elsewhere in this codebase (preserveStableRuleIds) — description
+   *  itself is the one field whose change breaks the match. */
   fee_id?: string
 }
 
@@ -868,6 +902,19 @@ export interface FixedFeeBillingTimingRule {
 }
 
 export interface AdditionalRecurringFee {
+  /** Step 17H.4B0D4H1B4E3.4 — stable identity for THIS commercial
+   *  mechanism, independent of fee_label's own AI-generated wording (a real
+   *  live extraction of the identical PDF produced "Success fee per
+   *  completed payment" on one pass and "Per-completed payment success fee"
+   *  on another — see lib/rule-id-stability.ts's preserveRecurringFeeIdentity
+   *  for the full doctrine). Same addressability role fee_id/tier_id already
+   *  play for one_time_fees/overage_tiers — populated at extraction time
+   *  (assignRecurringFeeIds), restored across re-extraction by a typed
+   *  structural fingerprint (semantic_input_key/billing_frequency/derived-
+   *  metric shape), never by fee_label text. Deliberately a SEPARATE field
+   *  from fee_id/tier_id, not a repurposing of either — those remain
+   *  domain-specific to one-time fees and tiers. */
+  recurring_fee_id?: string
   fee_label: string
   // Amount per billing period — 0 (falsy) when this fee has NO fixed
   // periodic amount at all: either it is priced per unit of operational

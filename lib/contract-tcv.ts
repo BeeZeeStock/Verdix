@@ -75,8 +75,13 @@ export async function getContractSummaries(jobIds: string[]): Promise<Record<str
       .from('contract_terms')
       .select('job_id, customer_name, currency, contract_term_months, contract_start_date, contract_end_date, one_time_fees, discounts, base_fee_proration')
       .in('job_id', jobIds),
+    // Step 17H.4B0D3B — current commercial configuration only
+    // (superseded_at IS NULL); does not fix pre-existing TCV inflation
+    // from any row that is a genuine duplicate and STILL current (D4's
+    // job), only ensures a superseded row can never contribute once D4
+    // starts superseding rows.
     supabaseServer
-      .from('line_items')
+      .from('current_line_items')
       .select('job_id, product_name, applied_rule, total_amount, billing_period')
       .in('job_id', jobIds),
     supabaseServer
@@ -100,17 +105,18 @@ export async function getContractSummaries(jobIds: string[]): Promise<Record<str
   ])
 
   // Agreement A final amendment (post-review correction) — the commercial-
-  // item construction boundary. line_items rows carry no stable identity
-  // back to a specific OneTimeFee (the line_items table has no fee_id
-  // column), and matching them to contract_terms.one_time_fees by
-  // product_name === fee_label was rejected: display labels are not stable
-  // commercial identity — that's exactly why OneTimeFee.fee_id exists (Step
-  // 13) — two fees can legitimately share a label, and a label match would
-  // silently misclassify one of them in a FINANCIAL total. Instead: exclude
-  // one-time rows from line_items entirely (a category filter on
-  // billing_period, not an identity match) and rebuild the one-time portion
-  // DIRECTLY from contract_terms.one_time_fees, which already carries
-  // amount and billability_condition natively — no matching needed at all.
+  // item construction boundary. Even now that line_items.fee_id exists
+  // (17H.4B0D4B0B) and an ID-first association is safe elsewhere
+  // (lib/one-time-line-item-resolution.ts), TCV deliberately still doesn't
+  // use it: an association can be missing/ambiguous/blocked for many
+  // legitimate reasons (17H.4B0B), and a FINANCIAL total must never
+  // silently omit or double-count a fee merely because its line-item
+  // association happens to be unresolved this run. Exclude one-time rows
+  // from line_items entirely (a category filter on billing_period, not an
+  // identity match) and rebuild the one-time portion DIRECTLY from
+  // contract_terms.one_time_fees, which already carries amount and
+  // billability_condition natively — no matching, and no dependency on
+  // line_items association state, needed at all.
   // Recurring rows need no classification either: Change-Order
   // conditionality only ever applies to one_time_fees in this domain model
   // (see isChangeOrderConditional), so every recurring row is committed by

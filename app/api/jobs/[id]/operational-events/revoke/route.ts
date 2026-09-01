@@ -28,6 +28,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { auth } from '@/lib/auth'
+import { AUTO_CONFIGURE_ONLY_MESSAGE } from '@/lib/auto-configure-guard'
 
 type Body = {
   subjectId: string
@@ -49,11 +50,18 @@ export async function POST(
 
   const { data: job } = await supabaseServer
     .from('jobs')
-    .select('id, contract_terms_id, execute_status')
+    .select('id, module, contract_terms_id, execute_status')
     .eq('id', jobId)
     .eq('org_id', org.orgId)
     .maybeSingle()
   if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 })
+
+  // Step 17H.4B0D4H1B4D1 §9/§10 — same AUTO_CONFIGURE-only boundary as
+  // attest (the sibling of this route); checked before the execute_status
+  // fail-closed checks below since those are AUTO_CONFIGURE-only fields too.
+  if (job.module !== 'AUTO_CONFIGURE') {
+    return NextResponse.json({ error: AUTO_CONFIGURE_ONLY_MESSAGE }, { status: 400 })
+  }
 
   if (job.execute_status === 'COMPLETED') {
     return NextResponse.json({

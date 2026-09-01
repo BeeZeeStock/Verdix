@@ -8,6 +8,7 @@ import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import type { ContractTerms, OneTimeFee } from '@/lib/types'
 import type { OperationalEventEvidence } from '@/lib/operational-event-evidence'
 import { resolveOperationalEventEvidence } from '@/lib/operational-event-evidence'
+import { loadActiveOperationalEventEvidence } from '@/lib/operational-event-evidence-loader'
 
 export async function GET(
   _req: NextRequest,
@@ -436,8 +437,9 @@ async function handlePlannedInvoicesPath({
   // ── commercialRuleEvents: confirmed metric-level commitments (additive fees,
   // minimum floors, etc.) that haven't closed yet, so no real planned_invoices
   // row exists for them — a confirmed rule must still show on the schedule
-  // before the window closes, or the timeline silently contradicts the
-  // Commercial Terms card that says it's confirmed. Reuses the same
+  // before the window closes, or the timeline silently contradicts
+  // Commercial Logic & Billing Setup, which already shows it as confirmed.
+  // Reuses the same
   // cadence-window engine and per-window proration math usage-pull.ts /
   // computeMinimumCommitmentSchedule use for real billing (lib/tariff.ts)
   // rather than a parallel date calculation.
@@ -528,17 +530,12 @@ async function handlePlannedInvoicesPath({
   // lib/operational-event-evidence.ts's isOneTimeFeeHeldForExecution and the
   // Review drawer's own evidence panel, so "is this event satisfied" is
   // answered identically everywhere in the product, never re-derived here.
+  // Loaded via the same shared helper approve/route.ts and
+  // rebuild-schedule/route.ts use (Step 17H.2A item 2) — one query+mapping,
+  // not a third independent copy.
   let activeEvidence: OperationalEventEvidence[] = []
   if (parkedRows.some(r => r.fee_id)) {
-    const { data: evidenceRows } = await supabaseServer
-      .from('operational_event_evidence')
-      .select('*')
-      .eq('job_id', id)
-      .eq('status', 'active')
-    activeEvidence = (evidenceRows ?? []).map(r => ({
-      id: r.id, subjectId: r.subject_id, eventType: r.event_type,
-      occurredAt: r.occurred_at, source: r.source, recordedAt: r.recorded_at, recordedBy: r.recorded_by, status: r.status,
-    }))
+    activeEvidence = await loadActiveOperationalEventEvidence(id)
   }
 
   const parkedInvoices = parkedRows.map(row => {

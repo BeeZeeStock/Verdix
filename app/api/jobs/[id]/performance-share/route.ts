@@ -58,6 +58,12 @@ export async function GET(
         feeLabel: fee.fee_label, status: 'not_started' as const,
         contractStartDate: terms?.contract_start_date,
         variableInvoiceTimingUnresolved: !isVariableInvoiceTimingConfirmed(fee.variable_invoice_timing),
+        // Step 17H.4B0D4H1B4E5.2 §7 — the raw confirmed value (never just
+        // the derived unresolved/resolved boolean), so Billing Timeline can
+        // distinguish "nothing chosen yet" from "reviewer chose the one
+        // value with no execution path yet" — same distinction Commercial
+        // Logic's own card now makes (lib/commercial-components.ts).
+        variableInvoiceTiming: fee.variable_invoice_timing?.timing ?? null,
       })),
     })
   }
@@ -80,6 +86,8 @@ export async function GET(
     // can be genuinely "known" while its invoice timing is still open,
     // same known-vs-final distinction the billing-period workspace makes).
     const variableInvoiceTimingUnresolved = !isVariableInvoiceTimingConfirmed(fee.variable_invoice_timing)
+    // Step 17H.4B0D4H1B4E5.2 §7 — see the not_started branch's identical comment above.
+    const variableInvoiceTiming = fee.variable_invoice_timing?.timing ?? null
 
     // Every distinct (period_start, period_end) pair this job has ANY
     // recorded value for, most recent first — the first one where every
@@ -99,7 +107,7 @@ export async function GET(
         contractStartDate: terms?.contract_start_date, contractEndDate: terms?.contract_end_date,
       })
       if (result.status === 'not_ready' || result.status === 'invalid') {
-        return { feeLabel: fee.fee_label, status: result.status, reason: result.reason, periodStart, periodEnd, variableInvoiceTimingUnresolved }
+        return { feeLabel: fee.fee_label, status: result.status, reason: result.reason, periodStart, periodEnd, variableInvoiceTimingUnresolved, variableInvoiceTiming }
       }
       return {
         feeLabel: fee.fee_label,
@@ -116,6 +124,7 @@ export async function GET(
         basisValue: result.trace.basis.value,
         amount: result.amount,
         variableInvoiceTimingUnresolved,
+        variableInvoiceTiming,
       }
     }
 
@@ -126,7 +135,7 @@ export async function GET(
     // generic "pending" state.
     const everFinalized = new Set(valueRows.filter(r => r.status === 'active' && r.finalized_at != null).map(r => r.input_key))
     const missingKeys = requiredKeys.filter(k => !everFinalized.has(k))
-    return { feeLabel: fee.fee_label, status: 'not_ready' as const, reason: 'Pending operational inputs', periodStart: null, periodEnd: null, missingKeys, variableInvoiceTimingUnresolved }
+    return { feeLabel: fee.fee_label, status: 'not_ready' as const, reason: 'Pending operational inputs', periodStart: null, periodEnd: null, missingKeys, variableInvoiceTimingUnresolved, variableInvoiceTiming }
   })
 
   return NextResponse.json({ fees: results })
