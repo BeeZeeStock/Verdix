@@ -1111,3 +1111,68 @@ describe('BillingSummaryCard — Rolling-band evaluation inside Billing Timeline
     expect(onViewSource).toHaveBeenCalled()
   })
 })
+
+// Step E9C §16/§18/§19 — the Timeline-side half of the safe FAILED ->
+// requeue recovery action: a "Retry billing →" button appears ONLY on a
+// genuinely FAILED entry, fires ONLY on an explicit click (never on
+// mount/expand/refresh alone), calls the dedicated requeue endpoint, and
+// on success triggers the same refetch every other mutating action here
+// already uses — never a direct vendor send from this component.
+describe('BillingSummaryCard — FAILED invoice retry (Step E9C)', () => {
+  const FAILED_INVOICE = {
+    ...PERIOD_INVOICE, id: 'inv-failed-1', status: 'failed',
+    errorMessage: "'Performance share' currency problem for job x, period 2026-08-01–2026-08-31: [currency_mismatch] input mismatch",
+  }
+
+  it('a FAILED entry shows business-facing copy and a Retry billing button; clicking it calls the requeue endpoint and refetches', async () => {
+    mockSummary({ invoices: [FAILED_INVOICE] })
+    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    render(<BillingSummaryCard jobId="job-1" terms={PERIOD_TERMS as never} usageSourceCards={PERIOD_USAGE_SOURCE_CARDS as never} />)
+    await waitFor(() => expect(screen.getByText('Aug 2026')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Aug 2026'))
+    await waitFor(() => expect(screen.getByText('Billing currency mismatch — needs correction')).toBeInTheDocument())
+    // The raw technical string exists only behind the subordinate
+    // "Technical details" disclosure, never as the primary visible copy.
+    expect(screen.getByText('Technical details')).toBeInTheDocument()
+
+    const callsBefore = fetchMock.mock.calls.length
+    const retryButton = screen.getByText('Retry billing →')
+    fireEvent.click(retryButton)
+    await waitFor(() => expect(fetchMock.mock.calls.some((c: unknown[]) =>
+      String(c[0]).includes('/planned-invoices/inv-failed-1/requeue') && (c[1] as RequestInit)?.method === 'POST',
+    )).toBe(true))
+    // A refetch of the summary happened after a successful requeue — more
+    // total calls than just the one requeue POST.
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBefore + 1))
+  })
+
+  it('a requeue rejection (e.g. server-side ineligibility) surfaces its exact reason, never a generic failure or a silent retry', async () => {
+    mockSummary({ invoices: [FAILED_INVOICE] })
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('/requeue') && init?.method === 'POST') {
+        return { ok: false, json: async () => ({ error: 'A Remembill provider invoice already exists — ambiguous state, requires manual reconciliation before retry.' }) }
+      }
+      if (u.includes('/vat-config')) return { ok: true, json: async () => ({ treatment: { mode: 'not_configured', ratePct: null } }) }
+      if (u.includes('/measurement-summary')) return { ok: true, json: async () => ({ periods: [] }) }
+      if (u.includes('/consumption-summary')) return { ok: true, json: async () => ({ periods: [] }) }
+      if (u.includes('/performance-share')) return { ok: true, json: async () => ({ fees: [] }) }
+      if (u.includes('/rolling-band-transitions')) return { ok: true, json: async () => ({ evaluations: [], transitions: [] }) }
+      return { ok: true, json: async () => ({ subscription: BASE_SUBSCRIPTION, invoices: [FAILED_INVOICE], annualDraftInvoices: [], oneTimeInvoices: [], commercialRuleEvents: [], parkedInvoices: [], paymentSchedule: null, oneTimeFees: [], contractStart: null, currency: 'SEK', paymentTermsDays: null, computedInvoices: [], billingPlatform: 'remembill', hasOverageTerms: false, overageMeterTypes: [], fixedFeeBillingTiming: null }) }
+    }) as unknown as typeof fetch)
+    render(<BillingSummaryCard jobId="job-1" terms={PERIOD_TERMS as never} usageSourceCards={PERIOD_USAGE_SOURCE_CARDS as never} />)
+    await waitFor(() => expect(screen.getByText('Aug 2026')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Aug 2026'))
+    await waitFor(() => expect(screen.getByText('Retry billing →')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Retry billing →'))
+    await waitFor(() => expect(screen.getByText(/ambiguous state, requires manual reconciliation/)).toBeInTheDocument())
+  })
+
+  it('a non-failed (e.g. draft/scheduled) entry never shows a Retry billing button', async () => {
+    mockSummary({ invoices: [PERIOD_INVOICE] })
+    render(<BillingSummaryCard jobId="job-1" terms={PERIOD_TERMS as never} usageSourceCards={PERIOD_USAGE_SOURCE_CARDS as never} />)
+    await waitFor(() => expect(screen.getByText('Aug 2026')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Aug 2026'))
+    expect(screen.queryByText('Retry billing →')).not.toBeInTheDocument()
+  })
+})

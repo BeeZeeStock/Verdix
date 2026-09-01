@@ -256,9 +256,46 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
   const [loading, setLoading]         = useState(true)
   const [error, setError]             = useState<string | null>(null)
   const [parking, setParking]         = useState<Set<string>>(new Set())
+  // Step E9C §16/§18 — per-entry FAILED-invoice requeue state, same shape
+  // as `parking` above. retryErrorState keeps a per-entry message (a
+  // requeue rejection — e.g. "already requeued", "ambiguous vendor
+  // state" — is a real, specific answer worth showing, never silently
+  // dropped) rather than a single shared error slot two entries could
+  // clobber.
+  const [retrying, setRetrying]       = useState<Set<string>>(new Set())
+  const [retryErrorState, setRetryErrorState] = useState<Map<string, string>>(new Map())
   const [syncing, setSyncing]         = useState(false)
   const [syncResult, setSyncResult]   = useState<{ checked: number; paid: number } | null>(null)
-  const [expanded, setExpanded]       = useState<Set<string>>(new Set())
+  // Step E9C §8 — a Dashboard/Commercial Logic deep link
+  // (#billing-timeline-invoice-{id}, matching the id every entry's own
+  // wrapper div below now carries) auto-expands that SPECIFIC invoice.
+  // Computed via a LAZY useState initializer (runs once, synchronously,
+  // during the initial render) rather than an effect calling setState —
+  // avoids react-hooks/set-state-in-effect's cascading-render warning
+  // entirely, and reads window.location.hash directly (safe: this whole
+  // component is 'use client', and this initializer only ever runs in
+  // the browser, never during any server render pass).
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set()
+    const hash = window.location.hash
+    const prefix = '#billing-timeline-invoice-'
+    if (!hash.startsWith(prefix)) return new Set()
+    return new Set([hash.slice(prefix.length)])
+  })
+  // The SCROLL half genuinely needs to wait for async-fetched entries to
+  // exist in the DOM (a plain browser anchor scroll only works for
+  // content already present at initial navigation) — this effect does
+  // NOT call setState, so it doesn't trigger the same lint concern.
+  useEffect(() => {
+    if (loading) return
+    const hash = window.location.hash
+    const prefix = '#billing-timeline-invoice-'
+    if (!hash.startsWith(prefix)) return
+    const targetId = hash.slice(prefix.length)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      document.getElementById(`billing-timeline-invoice-${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }))
+  }, [loading])
   // Step 17H.4B0D4H1B4E8 §10 — the period card's own "Calculation basis &
   // sources" disclosure, independent of `expanded` above (which gates the
   // whole period card's own expand/collapse). Collapsed by default for
@@ -851,6 +888,31 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
           }
         }
 
+        // Step E9C §16/§18/§19 — the ONLY way a FAILED invoice can be
+        // requeued: an explicit user click, never automatic (opening this
+        // card, receiving a Dashboard notification, or a page load never
+        // triggers it on their own). Calls the dedicated, safety-audited
+        // server-side endpoint (lib/invoice-requeue.ts) — this component
+        // never flips status itself and never talks to Stripe/Remembill
+        // directly; it only asks the existing scheduler machinery to
+        // reconsider the row, exactly like moveToParked above asks the
+        // existing parked-fee machinery to reconsider its own row.
+        const requeueFailed = async (entryId: string) => {
+          setRetrying(prev => new Set(prev).add(entryId))
+          setRetryErrorState(prev => { const m = new Map(prev); m.delete(entryId); return m })
+          try {
+            const res = await fetch(`/api/jobs/${jobId}/planned-invoices/${entryId}/requeue`, { method: 'POST' })
+            const body = await res.json().catch(() => null) as { error?: string } | null
+            if (!res.ok) {
+              setRetryErrorState(prev => new Map(prev).set(entryId, body?.error ?? 'Requeue failed — try again.'))
+              return
+            }
+            await handleRefresh()
+          } finally {
+            setRetrying(prev => { const s = new Set(prev); s.delete(entryId); return s })
+          }
+        }
+
         // Step 17H.2B item 3 — the ONE join point between a genuine
         // recurring-period timeline entry and the authoritative period-
         // execution model (lib/billing-period-workspace.ts's
@@ -1275,8 +1337,15 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
           // every other entry kind (overage, one-time, commercial-rule)
           // are untouched.
           const timingUnresolvedForThisEntry = !isPast && e.isFixedFeeComponent && !!fixedFeeBillingTiming?.requires_confirmation
+          // Step E9C §8 — id below is the deep-link target for a Dashboard
+          // invoice_parked/invoice_failed action (lib/billing-actions.ts's
+          // own destination string: /configure/{jobId}#billing-timeline-
+          // invoice-{id}) — the specific entry, not merely the top of
+          // Billing Timeline. e.id is the real planned_invoices row id, so
+          // the same URL keeps working across a PARKED->Ready transition
+          // (same row, same id, never recreated — §15).
           return (
-          <div key={e.id} className="flex gap-4 group">
+          <div key={e.id} id={`billing-timeline-invoice-${e.id}`} className="flex gap-4 group">
             {/* Icon */}
             <div className="flex flex-col items-center flex-shrink-0" style={{ width: 20 }}>
               <i className={`ti ${timelineIcon(effectiveStatus).icon} flex-shrink-0`}
@@ -1347,6 +1416,25 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
                               <summary className="text-[9px] text-stone/50 cursor-pointer select-none">Technical details</summary>
                               <p className="text-[9px] text-stone/50 font-mono mt-0.5 break-all">{failure.technicalReason}</p>
                             </details>
+                          )}
+                          {/* Step E9C §16/§18/§19 — visible ONLY on a
+                              genuinely FAILED invoice, and only ever fires
+                              on an explicit click here — never
+                              automatically. Server-side eligibility (lib/
+                              invoice-requeue-eligibility.ts) is the real
+                              gate; a rejection (e.g. Remembill ambiguous-
+                              vendor-state) surfaces here verbatim rather
+                              than silently retrying anyway. */}
+                          <button
+                            type="button"
+                            onClick={(ev) => { ev.stopPropagation(); requeueFailed(e.id) }}
+                            disabled={retrying.has(e.id)}
+                            className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-forest hover:underline disabled:opacity-50"
+                          >
+                            {retrying.has(e.id) ? 'Requeuing…' : 'Retry billing →'}
+                          </button>
+                          {retryErrorState.has(e.id) && (
+                            <p className="text-[9px] mt-0.5" style={{ color: '#DC2626' }}>{retryErrorState.get(e.id)}</p>
                           )}
                         </div>
                       )

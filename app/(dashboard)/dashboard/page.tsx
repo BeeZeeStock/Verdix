@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { supabaseServer } from '@/lib/supabase'
 import { getActiveOrg } from '@/lib/org'
+import { loadDashboardBillingActions } from '@/lib/dashboard-billing-actions'
 
 // ── Data fetching ──────────────────────────────────────────────────────────
 
@@ -132,10 +133,13 @@ function feedAction(job: { execute_status: string | null; status: string | null;
 export default async function DashboardPage() {
   const org = await getActiveOrg()
   if (!org) redirect('/login')
-  const {
-    contractsTotal, needsReview, totalLeakage, openFindingsCount,
-    actionItems, recentActivity,
-  } = await getDashboardData(org.orgId)
+  const [
+    { contractsTotal, needsReview, totalLeakage, openFindingsCount, actionItems, recentActivity },
+    billingActions,
+  ] = await Promise.all([
+    getDashboardData(org.orgId),
+    loadDashboardBillingActions(org.orgId),
+  ])
 
   const kpis = [
     {
@@ -197,6 +201,70 @@ export default async function DashboardPage() {
             <div className="text-[11px] text-stone/60">{m.sub}</div>
           </Link>
         ))}
+      </div>
+
+      {/* Step E9C §5-7 — Billing Actions: a cross-contract queue derived
+          entirely from authoritative billing state (lib/billing-actions.ts
+          + lib/dashboard-billing-actions.ts), never a persisted
+          notification — an action simply stops appearing once its
+          underlying condition resolves (input finalized, invoice
+          requeued/sent, event evidence recorded). Distinct from "Needs
+          attention" below, which is about JOB/CONTRACT review status
+          (ReviewPanel/configuration concerns) — this section is
+          exclusively about OPERATIONAL billing execution (§25). */}
+      <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden mb-6">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-forest/10">
+          <div className="flex items-center gap-2">
+            <i className="ti ti-receipt-2 text-forest" style={{ fontSize: 15 }} />
+            <h2 className="font-medium text-ink text-sm">Billing actions</h2>
+          </div>
+          {billingActions.length > 0 && (
+            <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: '#B45309' }}>
+              {billingActions.length} require{billingActions.length === 1 ? 's' : ''} attention
+            </span>
+          )}
+        </div>
+        {billingActions.length === 0 ? (
+          <div className="px-6 py-6 flex items-center gap-2">
+            <i className="ti ti-circle-check" style={{ fontSize: 14, color: '#9CA3AF' }} />
+            <p className="text-sm text-stone/60">No billing actions require attention.</p>
+          </div>
+        ) : (
+          <div className="px-3 py-2">
+            {billingActions.map(action => {
+              const isCritical = action.severity === 'critical'
+              return (
+                <Link
+                  key={action.id}
+                  href={action.destination}
+                  className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors group ${isCritical ? 'hover:bg-red-50/60' : 'hover:bg-amber-50/60'}`}
+                >
+                  <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: isCritical ? '#DC2626' : '#D97706' }} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm text-ink font-medium truncate max-w-[200px]">{action.customerName}</span>
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md flex-shrink-0" style={{ background: '#F0EFED', color: '#1A1A1A' }}>
+                        {action.title}
+                      </span>
+                    </div>
+                    <div className="text-[11px] mt-0.5 font-medium" style={{ color: isCritical ? '#DC2626' : '#B45309' }}>
+                      {action.description}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0 text-[11px] font-medium" style={{ color: isCritical ? '#DC2626' : '#B45309' }}>
+                    <span>
+                      {action.actionType === 'invoice_failed' ? 'Review failure'
+                        : action.actionType === 'invoice_parked' ? 'Review invoice'
+                        : action.actionType === 'event_confirmation_required' ? 'Review event'
+                        : 'Enter inputs'}
+                    </span>
+                    <i className="ti ti-arrow-right" style={{ fontSize: 11 }} />
+                  </div>
+                </Link>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {/* Unified activity feed */}

@@ -980,12 +980,14 @@ function humanizeKey(key: string): string {
 // period's value from one place, not just the currently-open one. A
 // minimal label stays so the entry widget is identifiable at a glance.
 function OperationalInputCard({
-  jobId, input, contractStartDate, onFinalized,
+  jobId, input, contractStartDate, onFinalized, initialPeriodStart, initialPeriodEnd,
 }: {
   jobId: string
   input: { key: string }
   contractStartDate?: string | null
   onFinalized?: () => void
+  initialPeriodStart?: string
+  initialPeriodEnd?: string
 }) {
   // Step 17E.3, item 1 — reuses the SAME hasContractStarted function the
   // Performance Share readiness banner uses (lib/performance-share-
@@ -999,7 +1001,10 @@ function OperationalInputCard({
     <div className="rounded-xl border p-4" style={{ borderColor: 'rgba(26,61,43,0.1)' }}>
       <p className="text-sm font-medium text-ink">{humanizeKey(input.key)}</p>
       {started ? (
-        <ManualInputEntry jobId={jobId} inputKey={input.key} onFinalized={onFinalized} />
+        <ManualInputEntry
+          jobId={jobId} inputKey={input.key} onFinalized={onFinalized}
+          initialPeriodStart={initialPeriodStart} initialPeriodEnd={initialPeriodEnd}
+        />
       ) : (
         <div className="mt-2 pt-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.06)' }}>
           <p className="text-[11px] font-medium" style={{ color: '#78716C' }}>Awaiting first billing period</p>
@@ -1017,12 +1022,14 @@ function OperationalInputCard({
 // consumer relationship is established at the owning component, not
 // repeated per-input in this entry list.
 function OperationalInputsSection({
-  jobId, inputs, contractStartDate, onFinalized,
+  jobId, inputs, contractStartDate, onFinalized, initialPeriodStart, initialPeriodEnd,
 }: {
   jobId: string
   inputs: Array<{ key: string; sources: string[] }>
   contractStartDate?: string | null
   onFinalized?: () => void
+  initialPeriodStart?: string
+  initialPeriodEnd?: string
 }) {
   if (inputs.length === 0) return null
   const started = hasContractStarted(contractStartDate)
@@ -1032,12 +1039,24 @@ function OperationalInputsSection({
     // onNavigateToOperationalInputs). No anchor existed here before this.
     <div id="operational-inputs-section" className="bg-white rounded-2xl border border-forest/10 p-6 space-y-4">
       <div>
-        <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Enter operational values</h2>
+        {/* Step E9C.3 §3 — renamed from "Enter operational values" to
+            match this section's real place in the page hierarchy
+            (Commercial Logic -> Billing Operations -> Manual Invoice ->
+            Billing Timeline): the authoritative surface WHERE a reviewer
+            actually acts, immediately following Commercial Logic's WHAT/
+            WHY. #operational-inputs-section (the actual deep-link target
+            every existing Dashboard/Commercial Logic/Timeline CTA already
+            points at) is unchanged — this is a heading/copy change only,
+            never a persistence or API rename. */}
+        <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Billing Operations</h2>
+        <p className="text-[11px] text-stone mt-1">Operational inputs and actions required to execute this agreement.</p>
         {/* Step 17E.3, item 1 — never invites data entry for a period
-            that cannot exist yet; the description itself changes to
-            explain WHEN this becomes actionable rather than implying it
-            already is. */}
-        <p className="text-[11px] text-stone mt-1">
+            that cannot exist yet; this second line states WHEN this
+            becomes actionable for the given contract, never implying it
+            already is (§4 — E9C due-state rules remain authoritative;
+            this text is presentation-only, unchanged in substance from
+            before the rename). */}
+        <p className="text-[11px] text-stone/70 mt-0.5">
           {started
             ? <>Enter and finalize a value for any billing period — what these are and why this agreement needs them is described under Commercial Logic & Billing Setup.</>
             : <>Required once billing begins on {contractStartDate ? new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(contractStartDate + 'T00:00:00')) : 'the contract start date'}.</>}
@@ -1051,6 +1070,8 @@ function OperationalInputsSection({
             input={input}
             contractStartDate={contractStartDate}
             onFinalized={onFinalized}
+            initialPeriodStart={initialPeriodStart}
+            initialPeriodEnd={initialPeriodEnd}
           />
         ))}
       </div>
@@ -6470,6 +6491,20 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // or a second persistence path.
   type OperationalDataInputRow = { key: string; kind: 'monetary' | 'countable'; sources: string[] }
   const [operationalDataInputs, setOperationalDataInputs] = useState<OperationalDataInputRow[]>([])
+  // Step E9C.1/E9C.2 §4/§8 — Commercial Logic's own "Current state" line,
+  // sourced from the SAME canonical due-state derivation Dashboard
+  // Billing Actions uses (GET /manual-input-due-state -> lib/operational-
+  // action-due-state.ts's classifyOperationalActionState) — never
+  // re-derived independently. Keyed by STABLE identity
+  // (recurringFeeId ?? componentLabel — the SAME componentStableId
+  // convention lib/operational-action-due-state.ts's own helper uses),
+  // now that lib/commercial-components.ts threads recurring_fee_id
+  // through to its own CommercialComponent.recurringFeeId (Step E9C.2 §4
+  // — a presentation-layer addition, no schema change). componentLabel
+  // remains the explicit legacy fallback for data extracted before
+  // recurring_fee_id existed.
+  type ManualInputDueStateEntry = { actionState: 'NOT_DUE' | 'INPUT_REQUIRED' | 'INPUT_DRAFT' | 'READY'; sourcePeriodStart: string; sourcePeriodEnd: string }
+  const [manualInputDueStateByKey, setManualInputDueStateByKey] = useState<Map<string, ManualInputDueStateEntry>>(new Map())
   // Step 17E, item 5 — lifted from PerformanceShareDisplay's own fetch (via
   // its onLoaded callback) so the period-readiness banner below can name
   // exactly which percentage-of-basis fee(s) are blocking the CURRENT
@@ -6580,6 +6615,43 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // so a period invoice that was PARKED can show its new state (Ready, or
   // still parked on a different blocker) without a page reload.
   const [readinessRecheckTick, setReadinessRecheckTick] = useState(0)
+  // Step E9C.1 §8/§15 — Commercial Logic's own "Current state" line,
+  // fetched from the SAME canonical due-state derivation Dashboard
+  // Billing Actions uses (GET /manual-input-due-state -> lib/operational-
+  // action-due-state.ts's classifyOperationalActionState) — never
+  // re-derived independently. Refetches on readinessRecheckTick (the
+  // SAME tick a manual-input finalize already bumps), so this line
+  // updates immediately after the action that would change it, without a
+  // page reload — the same targeted-refetch idiom used throughout this
+  // pass, never polling.
+  useEffect(() => {
+    let cancelled = false
+    fetch(`/api/jobs/${id}/manual-input-due-state`)
+      .then(r => r.json())
+      .then((res: { components?: Array<{ componentLabel: string; recurringFeeId: string | null; actionState: ManualInputDueStateEntry['actionState']; sourcePeriodStart: string; sourcePeriodEnd: string }> }) => {
+        if (cancelled) return
+        // Step E9C.2 §4/§5 — recurringFeeId ?? componentLabel: the SAME
+        // stable-identity-with-legacy-fallback convention as lib/
+        // operational-action-due-state.ts's componentStableId, so two
+        // components sharing a display label but carrying distinct
+        // recurring_fee_ids never collide here either.
+        setManualInputDueStateByKey(new Map((res.components ?? []).map(c => [c.recurringFeeId ?? c.componentLabel, { actionState: c.actionState, sourcePeriodStart: c.sourcePeriodStart, sourcePeriodEnd: c.sourcePeriodEnd }])))
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [id, refreshSignal, readinessRecheckTick])
+  // Step E9C §13 — a Dashboard/Timeline deep link names the SOURCE
+  // measurement period a missing manual input belongs to via
+  // ?input_period_start=&input_period_end= (lib/billing-actions.ts's own
+  // destination string). Read once, client-side (this page is 'use
+  // client' throughout — window.location, not useSearchParams, avoids
+  // that hook's Suspense-boundary requirement for a single read-once
+  // value). Pre-fills the date fields only; never auto-submits.
+  const [initialInputPeriod] = useState(() => {
+    if (typeof window === 'undefined') return { start: undefined, end: undefined }
+    const params = new URLSearchParams(window.location.search)
+    return { start: params.get('input_period_start') ?? undefined, end: params.get('input_period_end') ?? undefined }
+  })
   const [sentOneTimeInvoices, setSentOneTimeInvoices] = useState<{ feeLabel: string | null; amount: number }[]>([])
 
   // Audit-trail metadata (reviewer, timestamp, source clause) for every
@@ -8758,6 +8830,59 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     footer: bandFooter ?? rateScheduleFooter,
                   })
                 }
+                // Step E9C.1/E9C.2 §1/§2/§8 — one additional "Current
+                // state" row per component with a manual-input
+                // requirement — performance (percentage_of_basis) AND
+                // usage-manual-fallback (a flat usage fee with no
+                // confirmed meter) both real, execution-gated mechanisms
+                // (see lib/dashboard-billing-actions.ts's own header for
+                // the full audit of which mechanisms this covers and
+                // which are deliberately excluded). Sourced from the SAME
+                // canonical due-state derivation Dashboard Billing Actions
+                // uses (manualInputDueStateByKey, fetched from GET
+                // /manual-input-due-state). Purely additive — never
+                // modifies an existing row — and a no-op when the fetch
+                // hasn't loaded yet or finds no match (NOT_DUE/READY
+                // components render nothing extra either, matching §11's
+                // "never a premature/misleading CTA"). Keyed by STABLE
+                // identity (c.recurringFeeId ?? c.title) — §4/§5: two
+                // components sharing a label but carrying distinct
+                // recurring_fee_ids resolve independently, never collide.
+                if (c.pricingModel === 'performance' || c.pricingModel === 'usage') {
+                  const due = manualInputDueStateByKey.get(c.recurringFeeId ?? c.title)
+                  if (due && (due.actionState === 'INPUT_REQUIRED' || due.actionState === 'INPUT_DRAFT')) {
+                    const periodLabel = new Date(due.sourcePeriodStart + 'T00:00:00').toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
+                    const isDraft = due.actionState === 'INPUT_DRAFT'
+                    group.rows.push({
+                      key: `${c.key}:current-state`,
+                      label: 'Current state',
+                      value: isDraft ? `Draft inputs — ${periodLabel}` : `Awaiting ${periodLabel} inputs`,
+                      decisionRequired: false,
+                      footer: (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // Deliberate full navigation, not router.push:
+                            // ManualInputEntry's date fields are seeded from
+                            // initialPeriodStart/End ONLY at mount
+                            // (useState(initialPeriodStart ?? '')) — a
+                            // client-side route change wouldn't remount an
+                            // already-mounted instance, so the period
+                            // preselection (§13's own requirement) would
+                            // silently fail to apply. A full reload is
+                            // heavier but correct, and matches exactly what
+                            // the Dashboard's own equivalent CTA already does.
+                            // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+                            window.location.href = `/configure/${id}?input_period_start=${due.sourcePeriodStart}&input_period_end=${due.sourcePeriodEnd}#operational-inputs-section`
+                          }}
+                          className="text-[11px] font-medium text-forest hover:underline"
+                        >
+                          {isDraft ? `Finish ${periodLabel} inputs →` : `Enter ${periodLabel} inputs →`}
+                        </button>
+                      ),
+                    })
+                  }
+                }
               }
 
               // 1b. Step 17H.4B0D4H1B4E2.2 §17 (category corrected in
@@ -9805,26 +9930,110 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                  below shows its own blocked/pending state for whatever's
                  actually unresolved — it never means "everything is
                  ready." ── */}
-            {/* ── 6. Billing Timeline ──
-                 Step 17H.4B0D4H1B4E2.3 — renamed from "Billing Setup",
-                 which collided with "Commercial Logic & Billing Setup"
-                 above (two different things sharing one name). This is
-                 exclusively the WHEN surface: BillingSummaryCard IS
-                 "Billing Timeline" (its own single internal heading —
-                 Step 17H.4B0D4H1B4E2.4 §18 removed a short-lived second,
+            {/* ── 6. Billing Operations ──
+                 Step E9C.3 §1/§2 — reordered ahead of Billing Timeline
+                 (previously came after it — see the historical Step
+                 17H.4B0D4H1B4E2.3 §8 comment preserved below for why this
+                 became its own section in the first place). Required page
+                 hierarchy: Commercial Logic (WHAT/WHY) must be followed
+                 IMMEDIATELY by the surface WHERE a reviewer actually acts
+                 — Billing Timeline (a downstream, largely read-only WHEN
+                 view of the same execution state) belongs after the
+                 action surfaces, not between Commercial Logic and them.
+                 No behavior change: same gates, same components, same
+                 props — position only.
+                 Step 17H.4B0D4H1B4E2.3 §8 (original rationale, unchanged)
+                 — manual/cross-period operational entry (ManualInputEntry,
+                 via OperationalInputsSection) is neither HOW (Commercial
+                 Logic) nor WHEN (Billing Timeline) — it's an ACTION a
+                 reviewer takes, so it lives alongside Parked Invoices (the
+                 other existing operational action still adjacent to it —
+                 see §8's own placement audit below for Manual Invoice's
+                 separate placement). Deliberately kept on its OWN,
+                 broader hasOperationalBillingModel gate rather than
+                 folded into the narrower isConfigured/billingPlatform/subId
+                 gate ParkedInvoicesCard uses below — that broader gate is
+                 what lets a reviewer pre-enter/backfill operational values
+                 for a fully-reviewed-but-not-yet-pushed contract, and
+                 narrowing it purely to achieve one shared visual gate
+                 would be a real visibility regression, not a presentation-
+                 only change. Both blocks read as one "Billing Operations"
+                 section whenever both are visible; OperationalInputsSection
+                 can still appear on its own in the narrower window where
+                 review is complete but no billing platform/customer exists
+                 yet. */}
+            {hasOperationalBillingModel && (
+              <OperationalInputsSection
+                jobId={id}
+                inputs={operationalDataInputs}
+                contractStartDate={terms?.contract_start_date}
+                onFinalized={() => setReadinessRecheckTick(t => t + 1)}
+                initialPeriodStart={initialInputPeriod.start}
+                initialPeriodEnd={initialInputPeriod.end}
+              />
+            )}
+            {isConfigured && (billingPlatform === 'stripe' || billingPlatform === 'remembill') && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (parkedInvoices.length > 0) && (
+              // Step E9C §8 — deep-link target for a Dashboard event_
+              // confirmation_required action (lib/billing-actions.ts's
+              // own destination string) — the SAME "wrap the target in an
+              // id, scroll to it" idiom as operational-inputs-section.
+              <div id="parked-invoices-section">
+                <ParkedInvoicesCard
+                  jobId={id}
+                  parkedInvoices={parkedInvoices}
+                  onEvidenceRecorded={() => setParkedEvidenceTick(t => t + 1)}
+                />
+              </div>
+            )}
+
+            {/* ── 7. Manual Invoice ──
+                 Step E9C.3 §5/§8 — its own distinct step, immediately
+                 below Billing Operations (previously bundled inside the
+                 same "7. Billing Operations" block as ParkedInvoicesCard —
+                 separated here since Manual Invoice is an EXCEPTION/
+                 fallback billing action, not the normal operational-input
+                 flow, and the required hierarchy names it as its own
+                 stage). No change to ManualInvoiceCard itself, its gate,
+                 or anything it does internally (calculations,
+                 reconciliation warnings, Stripe/Remembill calls,
+                 billing_hold behavior) — position only. */}
+            {isConfigured && (billingPlatform === 'stripe' || billingPlatform === 'remembill') && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (
+              <ManualInvoiceCard jobId={id} />
+            )}
+
+            {/* ── 8. Billing Timeline ──
+                 Step E9C.3 §1/§2/§6 — now follows Billing Operations and
+                 Manual Invoice (previously came first, ahead of both —
+                 see §1/§2's own note above on why the action surfaces now
+                 lead). Step 17H.4B0D4H1B4E2.3 (original rationale,
+                 unchanged) — renamed from "Billing Setup", which collided
+                 with "Commercial Logic & Billing Setup" above (two
+                 different things sharing one name). This is exclusively
+                 the WHEN surface: BillingSummaryCard IS "Billing Timeline"
+                 (its own single internal heading — Step
+                 17H.4B0D4H1B4E2.4 §18 removed a short-lived second,
                  competing "Billing execution" outer heading once audited),
                  and now also hosts what used to be three separate
                  top-level pre-Timeline sections — Performance Share's
                  evaluated runtime result (inside each period's own
                  "Performance / outcome" detail) and Rolling-band
-                 evaluation's runtime state (a new cross-period section
-                 inside the same card) — since both are genuinely runtime/
+                 evaluation's runtime state (a cross-period section INSIDE
+                 the same card, rendered after its main period-entry list
+                 — confirmed by reading BillingSummaryCard.tsx directly;
+                 this already satisfies E9C.3 §7's "place supporting
+                 analysis after the primary Billing Timeline" without any
+                 change needed there) — since both are genuinely runtime/
                  execution state, not configuration. See
                  BillingSummaryCard.tsx's own doc comments for the full
                  rationale and for why no hard technical blocker prevented
                  this move (every 'ready'/'waived' performance-share result
                  always carries a real periodStart the existing per-period
-                 join already matches against). */}
+                 join already matches against). No Timeline redesign in
+                 this pass — same component, same props, same internal
+                 behavior (chronological order, NET PROJECTED, category
+                 tiles, PARKED/FAILED states, Invoice Projection, carried-
+                 forward obligations, calculation basis, authority-state
+                 logic) — position only. */}
             {isConfigured && (billingPlatform === 'stripe' || billingPlatform === 'remembill') && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (
               <>
                 {/* Step 17F.8, item 3/14 — ConsumptionTimelineCard removed:
@@ -9847,7 +10056,9 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                   // Step E8.3 §4/§6 — same anchor/pattern MeterMappingPanel's
                   // own onNavigateToOperationalInputs already uses below;
                   // BillingSummaryCard isn't inside a drawer, so a direct
-                  // scroll (no onClose/double-rAF) is enough.
+                  // scroll (no onClose/double-rAF) is enough. Works
+                  // identically regardless of Billing Operations' new
+                  // position — scrollIntoView scrolls in either direction.
                   onNavigateToOperationalInputs={() => {
                     document.getElementById('operational-inputs-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
                   }}
@@ -9889,45 +10100,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </>
             )}
 
-            {/* ── 7. Billing Operations ──
-                 Step 17H.4B0D4H1B4E2.3 §8 — manual/cross-period operational
-                 entry (ManualInputEntry, via OperationalInputsSection) is
-                 neither HOW (Commercial Logic) nor WHEN (Billing Timeline)
-                 — it's an ACTION a reviewer takes, so it moves here,
-                 alongside Parked Invoices and Manual Invoice (the other two
-                 existing operational actions). Deliberately kept on its
-                 OWN, broader hasOperationalBillingModel gate rather than
-                 folded into the narrower isConfigured/billingPlatform/subId
-                 gate ParkedInvoicesCard/ManualInvoiceCard use below — that
-                 broader gate is what let a reviewer pre-enter/backfill
-                 operational values for a fully-reviewed-but-not-yet-pushed
-                 contract before this pass, and narrowing it purely to
-                 achieve one shared visual gate would be a real visibility
-                 regression, not a presentation-only change. Both blocks
-                 read as one "Billing Operations" section whenever both are
-                 visible; OperationalInputsSection can still appear on its
-                 own in the narrower window where review is complete but no
-                 billing platform/customer exists yet. */}
-            {hasOperationalBillingModel && (
-              <OperationalInputsSection
-                jobId={id}
-                inputs={operationalDataInputs}
-                contractStartDate={terms?.contract_start_date}
-                onFinalized={() => setReadinessRecheckTick(t => t + 1)}
-              />
-            )}
-            {isConfigured && (billingPlatform === 'stripe' || billingPlatform === 'remembill') && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (parkedInvoices.length > 0) && (
-              <ParkedInvoicesCard
-                jobId={id}
-                parkedInvoices={parkedInvoices}
-                onEvidenceRecorded={() => setParkedEvidenceTick(t => t + 1)}
-              />
-            )}
-            {isConfigured && (billingPlatform === 'stripe' || billingPlatform === 'remembill') && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (
-              <ManualInvoiceCard jobId={id} />
-            )}
-
-            {/* ── 8. Historical Billing Execution / Reconciliation ──
+            {/* ── 9. Historical Billing Execution / Reconciliation ──
+                 (renumbered from 8 — Step E9C.3's reordering above shifted
+                 Billing Operations/Manual Invoice/Billing Timeline to
+                 6/7/8; this section's own position and content are
+                 otherwise unchanged.)
                  Step 17H.4B0D4H1B4E2.4 §13-15 — relocated from directly
                  below the top-level readiness/billing-safety area (where
                  it previously sat, ahead of Contract Brief/BoM/Commercial

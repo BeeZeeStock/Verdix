@@ -116,9 +116,20 @@ type OperationalInputValueRow = {
 // refetch Billing Timeline — the SAME "bump a tick, include it in
 // BillingSummaryCard's remount key" idiom already used for parked-invoice
 // evidence recording, never a new refresh mechanism.
-export function ManualInputEntry({ jobId, inputKey, onFinalized }: { jobId: string; inputKey: string; onFinalized?: () => void }) {
-  const [periodStart, setPeriodStart] = useState('')
-  const [periodEnd, setPeriodEnd] = useState('')
+export function ManualInputEntry({ jobId, inputKey, onFinalized, initialPeriodStart, initialPeriodEnd }: {
+  jobId: string; inputKey: string; onFinalized?: () => void
+  // Step E9C §13 — a Dashboard/Commercial Logic/Timeline deep link names
+  // the SOURCE measurement period a missing input belongs to (never the
+  // destination invoice's own period — those are frequently different
+  // periods under arrears billing, see lib/billing-actions.ts's own
+  // sourcePeriodLabel/invoicePeriodLabel distinction). Pre-fills the date
+  // fields only — never auto-submits; the reviewer still explicitly types
+  // the value and clicks Save/Mark final.
+  initialPeriodStart?: string
+  initialPeriodEnd?: string
+}) {
+  const [periodStart, setPeriodStart] = useState(initialPeriodStart ?? '')
+  const [periodEnd, setPeriodEnd] = useState(initialPeriodEnd ?? '')
   const [value, setValue] = useState('')
   const [currency, setCurrency] = useState('')
   const [saving, setSaving] = useState<'draft' | 'final' | null>(null)

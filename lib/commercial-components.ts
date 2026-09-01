@@ -57,10 +57,27 @@ export interface CommercialComponent {
   // unsupported_commercial_mechanisms sources) — a typed relationship, not
   // a label guess, and never duplicated/re-derived by the caller.
   consumedOperationalInputKeys?: string[]
+  // Step E9C.2 §4 — the fee/mechanism's own stable identity
+  // (AdditionalRecurringFee.recurring_fee_id), threaded through to the
+  // presentation layer so a caller (Commercial Logic's own due-state
+  // correlation) can key off it instead of `key`/`title`, both of which
+  // are DERIVED FROM fee_label — a mutable display string, not an id
+  // (confirmed: `key: \`performance_${f.fee_label}\`` below has always
+  // been label-derived). No schema change — recurring_fee_id already
+  // exists on AdditionalRecurringFee; this only carries it one layer
+  // further than it previously travelled. Null/undefined for legacy data
+  // extracted before recurring_fee_id existed, or for a component kind
+  // that has no such id at all (e.g. the fixed base fee) — callers must
+  // fall back to `title`/`key` in that case, never treat absence as an error.
+  recurringFeeId?: string | null
 }
 
 export interface CommercialComponentFee {
   fee_label: string
+  // Step E9C.2 §4 — see CommercialComponent.recurringFeeId's own comment;
+  // this is the raw field this function reads it from (AdditionalRecurringFee.
+  // recurring_fee_id, already extraction-populated — no schema change).
+  recurring_fee_id?: string | null
   amount?: number | null
   rate_per_unit?: number | null
   metric_name?: string | null
@@ -496,6 +513,7 @@ function buildUsageComponents(terms: CommercialComponentsTerms, cur: string): Co
       detail,
       hasUnresolvedDecision: false,
       consumedOperationalInputKeys: requiredInputKeys,
+      recurringFeeId: f.recurring_fee_id ?? null,
     }
   })
 }
@@ -624,6 +642,7 @@ function buildPerformanceComponents(terms: CommercialComponentsTerms): Commercia
       rateSchedule: config.rate_schedule.bands,
       hasUnresolvedDecision: detail.some(d => d.decisionRequired),
       consumedOperationalInputKeys: requiredInputKeys,
+      recurringFeeId: f.recurring_fee_id ?? null,
     }
   })
 }
