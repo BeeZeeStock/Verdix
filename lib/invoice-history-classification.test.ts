@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isGenuinelyIssuedInvoice } from './invoice-history-classification'
+import { isGenuinelyIssuedInvoice, isManualOriginInvoice, MANUAL_INVOICE_FEE_LABEL } from './invoice-history-classification'
 
 describe('isGenuinelyIssuedInvoice — Step 17F.9, item 1', () => {
   it('paid, failed, open, and sent are genuine invoice history', () => {
@@ -24,5 +24,22 @@ describe('isGenuinelyIssuedInvoice — Step 17F.9, item 1', () => {
     expect(isGenuinelyIssuedInvoice('pending')).toBe(false)
     expect(isGenuinelyIssuedInvoice(null)).toBe(false)
     expect(isGenuinelyIssuedInvoice(undefined)).toBe(false)
+  })
+})
+
+describe('isManualOriginInvoice — Step 17H.2A item 18', () => {
+  it('matches exactly the literal app/api/jobs/[id]/manual-invoice/route.ts writes', () => {
+    expect(isManualOriginInvoice(MANUAL_INVOICE_FEE_LABEL)).toBe(true)
+    expect(isManualOriginInvoice('Manual verification invoice')).toBe(true)
+  })
+
+  it('a contract-derived one-time fee with a different label is never flagged manual', () => {
+    expect(isManualOriginInvoice('Integration Fee')).toBe(false)
+    expect(isManualOriginInvoice('Onboarding')).toBe(false)
+  })
+
+  it('null/undefined feeLabel is never flagged manual', () => {
+    expect(isManualOriginInvoice(null)).toBe(false)
+    expect(isManualOriginInvoice(undefined)).toBe(false)
   })
 })

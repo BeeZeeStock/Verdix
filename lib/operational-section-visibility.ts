@@ -43,6 +43,43 @@ export function hasOperationalBillingModel(params: {
 // status only) would have called it done. Suffix-only (never replaces
 // the base label) so "Configured in Remembill" stays true and visible;
 // only the qualifier changes.
+// Step 17H.4B0D4H1B4E2 §28/§29 — never the generic "Action required": the
+// exact detail row directly below this badge (the same totalOutstanding)
+// already spells out what's needed, so the badge itself now names the
+// specific, countable reason rather than repeating a vague label the
+// reader has to go decode elsewhere.
 export function configuredBadgeSuffix(totalOutstanding: number): string {
-  return totalOutstanding > 0 ? ' · Action required' : ''
+  return totalOutstanding > 0
+    ? ` · ${totalOutstanding} decision${totalOutstanding > 1 ? 's' : ''} pending`
+    : ''
+}
+
+// Step 17H.4B0D4H1B4E2.4 §9/10 — "Configured in Remembill" (isConfigured
+// true — a Remembill/Stripe CUSTOMER already exists, billing_customer_id
+// persisted) and Billing Timeline's own "Local projection — not yet
+// created in Remembill" (no planned_invoices row exists yet) are BOTH true
+// facts that can hold simultaneously — traced via
+// app/(dashboard)/configure/[id]/page.tsx's own existing "Rebuild banner —
+// shown when customer exists but no planned schedule yet" gate
+// (!subId && !rebuildDone && scheduleExists === false), which already
+// proves this exact combination is reachable in production. The provider
+// CONNECTION and the downstream SCHEDULE are two independent facts; a
+// single "Configured in X" label conflates them. scheduleExists is the
+// SAME signal BillingSummaryCard already reports via onHasSchedule (real
+// planned_invoices rows exist) — never a second, independently-derived
+// schedule check. null (not yet loaded) is treated the same as false —
+// never overclaims "schedule created" before that's actually confirmed.
+export type ProviderConfigurationState =
+  | { kind: 'not_configured' }
+  | { kind: 'provider_connected_schedule_pending' }
+  | { kind: 'provider_connected_schedule_created' }
+
+export function deriveProviderConfigurationPresentation(params: {
+  isConfigured: boolean
+  scheduleExists: boolean | null | undefined
+}): ProviderConfigurationState {
+  if (!params.isConfigured) return { kind: 'not_configured' }
+  return params.scheduleExists === true
+    ? { kind: 'provider_connected_schedule_created' }
+    : { kind: 'provider_connected_schedule_pending' }
 }

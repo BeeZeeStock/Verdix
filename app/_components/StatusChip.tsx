@@ -12,7 +12,7 @@ export type StatusChipKind = 'confirmed' | 'sourceClear' | 'reviewerPolicy' | 'u
 const CHIP_STYLE: Record<StatusChipKind, { icon: string; label: string; bg: string; color: string }> = {
   confirmed:     { icon: 'ti-circle-check-filled', label: 'Confirmed',       bg: 'var(--color-state-confirmed-bg)', color: 'var(--color-state-confirmed)' },
   sourceClear:   { icon: 'ti-circle-check-filled', label: 'Clear from source', bg: 'var(--color-state-confirmed-bg)', color: 'var(--color-state-confirmed)' },
-  reviewerPolicy:{ icon: 'ti-user-check',          label: 'Reviewer policy',  bg: 'var(--color-state-reviewer-bg)',  color: 'var(--color-state-reviewer)' },
+  reviewerPolicy:{ icon: 'ti-user-check',          label: 'Reviewer confirmed',  bg: 'var(--color-state-reviewer-bg)',  color: 'var(--color-state-reviewer)' },
   userProvided:  { icon: 'ti-user-check',          label: 'User provided',    bg: 'var(--color-state-reviewer-bg)',  color: 'var(--color-state-reviewer)' },
   pending:       { icon: 'ti-clock',               label: 'Pending',          bg: 'var(--color-state-reviewer-bg)',  color: 'var(--color-state-pending)' },
   blocked:       { icon: 'ti-alert-triangle',       label: 'Decision required', bg: 'var(--color-state-blocked-bg)',  color: 'var(--color-state-blocked)' },

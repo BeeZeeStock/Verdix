@@ -177,7 +177,7 @@ describe('computeCommercialRuleWorkload — Step 17F.3, item 6: variable_invoice
       discounts: [],
       service_credits: [],
       additional_recurring_fees: [
-        { fee_label: 'Performance share', variable_invoice_timing: { requires_confirmation: true } },
+        { fee_label: 'Performance share', variable_invoice_timing: { requires_confirmation: true, timing: 'unclear' } },
       ],
     }
     const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
@@ -185,19 +185,41 @@ describe('computeCommercialRuleWorkload — Step 17F.3, item 6: variable_invoice
     expect(workload.blockers).toContain('variable_invoice_timing:Performance share')
   })
 
-  it('the SAME contract with variable_invoice_timing confirmed IS all_commercial_rules_confirmed', () => {
+  it('the SAME contract with variable_invoice_timing confirmed to the ONE executable value IS all_commercial_rules_confirmed', () => {
     const terms: CommercialRuleTerms = {
       overage_tiers: [],
       escalators: [],
       discounts: [],
       service_credits: [],
       additional_recurring_fees: [
-        { fee_label: 'Performance share', variable_invoice_timing: { requires_confirmation: false } },
+        { fee_label: 'Performance share', variable_invoice_timing: { requires_confirmation: false, timing: 'invoice_at_next_period_start' } },
       ],
     }
     const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
     expect(workload.status).toBe('all_commercial_rules_confirmed')
     expect(workload.blockers).not.toContain('variable_invoice_timing:Performance share')
+  })
+
+  // Step 17H.4B0D4H1B4E5.2 — the live-reproduced "dangerous state" this
+  // pass fixes: requires_confirmation:false alone used to satisfy this
+  // gate even for 'invoice_at_period_end', which has no execution path
+  // (lib/rule-interpretation.ts's isVariableInvoiceTimingConfirmed). A
+  // reviewer-confirmed but non-executable timing must still count as an
+  // outstanding decision — "resolved" and "executable" are not the same
+  // question.
+  it('a fee CONFIRMED (requires_confirmation:false) to the non-executable invoice_at_period_end value is STILL NOT all_commercial_rules_confirmed', () => {
+    const terms: CommercialRuleTerms = {
+      overage_tiers: [],
+      escalators: [],
+      discounts: [],
+      service_credits: [],
+      additional_recurring_fees: [
+        { fee_label: 'Performance share', variable_invoice_timing: { requires_confirmation: false, timing: 'invoice_at_period_end' } },
+      ],
+    }
+    const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
+    expect(workload.status).not.toBe('all_commercial_rules_confirmed')
+    expect(workload.blockers).toContain('variable_invoice_timing:Performance share')
   })
 
   it('a fee with no percentage_of_basis (no variable_invoice_timing at all) is never counted — nothing to resolve', () => {
@@ -231,10 +253,59 @@ describe('computeCommercialRuleWorkload — Step 17F.3, item 3: fixed_fee_billin
     expect(workload.blockers).not.toContain('fixed_fee_billing_timing')
   })
 
-  it('a contract with no fixed_fee_billing_timing rule at all (no fixed fee) is never counted', () => {
+  it('with the default hasFixedFee=false (every pre-existing caller), an absent fixed_fee_billing_timing is never counted — exact prior behavior preserved', () => {
     const terms: CommercialRuleTerms = { overage_tiers: [], escalators: [], discounts: [], service_credits: [] }
     const workload = computeCommercialRuleWorkload(terms, { total: 0, confirmed: 0 })
     expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+})
+
+// Step 17H.4B0D4H1B4E2.5 §14-17/38 — closes the real undercounting bug
+// found via live-screenshot audit: the Commercial Logic UI's own
+// "Recurring fixed-fee timing" row treats an ABSENT fixed_fee_billing_timing
+// as unresolved whenever a fixed fee genuinely exists (never scheduler-
+// assumed), but this function previously only counted it when the field
+// object existed at all — silently undercounting the global decision total
+// relative to what the component-level badge already showed.
+describe('computeCommercialRuleWorkload — hasFixedFee closes the absent-timing undercount (Step 17H.4B0D4H1B4E2.5)', () => {
+  const baseTerms: CommercialRuleTerms = { overage_tiers: [], escalators: [], discounts: [], service_credits: [] }
+
+  it('hasFixedFee=true + absent fixed_fee_billing_timing -> counted as a real, unresolved decision (matching the Commercial Logic row\'s own doctrine)', () => {
+    const workload = computeCommercialRuleWorkload(
+      baseTerms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, undefined, undefined, true,
+    )
+    expect(workload.blockers).toContain('fixed_fee_billing_timing')
+    expect(workload.status).not.toBe('all_commercial_rules_confirmed')
+  })
+
+  it('hasFixedFee=false (no fixed fee on this contract) + absent fixed_fee_billing_timing -> correctly NOT counted, never a phantom decision', () => {
+    const workload = computeCommercialRuleWorkload(
+      baseTerms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, undefined, undefined, false,
+    )
+    expect(workload.blockers).not.toContain('fixed_fee_billing_timing')
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+
+  it('hasFixedFee=true + an EXPLICITLY confirmed fixed_fee_billing_timing -> not double-counted, not flagged unresolved', () => {
+    const terms: CommercialRuleTerms = { ...baseTerms, fixed_fee_billing_timing: { requires_confirmation: false } }
+    const workload = computeCommercialRuleWorkload(
+      terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, undefined, undefined, true,
+    )
+    expect(workload.blockers).not.toContain('fixed_fee_billing_timing')
+    expect(workload.status).toBe('all_commercial_rules_confirmed')
+  })
+
+  it('a component-level "3 unresolved decisions" scenario (proration + timing + discount, all genuinely unresolved) produces a global count of exactly 3 — the top-level and component-level counts can never disagree', () => {
+    const terms: CommercialRuleTerms = {
+      overage_tiers: [], escalators: [], service_credits: [],
+      base_fee_proration: { requires_confirmation: true },
+      discounts: [{ discount_rule_id: 'd1' }],
+    }
+    const workload = computeCommercialRuleWorkload(
+      terms, { total: 0, confirmed: 0 }, 0, undefined, undefined, undefined, undefined, undefined, true,
+    )
+    expect(workload.blockers.sort()).toEqual(['base_fee_proration', 'discount:d1', 'fixed_fee_billing_timing'].sort())
+    expect(workload.totalToConfirm).toBe(3)
   })
 })
 

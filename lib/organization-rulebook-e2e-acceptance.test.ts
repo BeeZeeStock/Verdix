@@ -64,7 +64,7 @@ const report: AcceptanceRow[] = []
 // for a given persisted provenance value.
 function uiProvenanceLabel(p: string | null | undefined): string {
   return p === 'contract_derived' ? 'Clear from contract'
-    : p === 'reviewer_policy' ? 'Reviewer policy'
+    : p === 'reviewer_policy' ? 'Reviewer confirmed'
     : p === 'organization_rulebook' ? 'Organization policy'
     : 'Decision required'
 }

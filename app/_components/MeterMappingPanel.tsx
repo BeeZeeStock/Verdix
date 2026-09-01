@@ -1,7 +1,16 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { allMeterMappingsResolved } from '@/lib/meter-mapping-status'
+import { allMeterMappingsResolved, isMeterMappingResolved } from '@/lib/meter-mapping-status'
+import { hasContractStarted } from '@/lib/performance-share-timing'
+
+// Step 17H.4B0D4H1B4E6.1 §8 — business label before the raw input_key
+// (same one-liner as page.tsx's own humanizeKey; not worth centralizing a
+// single-expression pure function into a shared lib just to avoid this one
+// duplication).
+function humanizeKey(key: string): string {
+  return key.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())
+}
 
 type MinimumCommitment = {
   mode: 'floor' | 'additive' | 'minimum_spend' | 'prepaid_commitment' | 'minimum_quantity'
@@ -324,13 +333,27 @@ interface Props {
    *  an ambiguity as unresolved even after it was actually resolved
    *  elsewhere, until the page was reloaded. */
   refreshSignal?: number
+  /** Step 17H.4B0D4H1B4E6.1 §3/§4/§16 — contract start date, used only to
+   *  decide whether operational-data-input summary reads "required now" vs
+   *  "required once billing begins on {date}" (the same hasContractStarted
+   *  predicate OperationalInputsSection/OperationalInputCard already use —
+   *  never a second, independently-computed check). */
+  contractStartDate?: string | null
+  /** Step 17H.4B0D4H1B4E6.1 §3/§4/§15/§16 — the manual-entry widget itself
+   *  (ManualInputEntry) is owned exclusively by Billing Operations
+   *  (OperationalInputsSection on the main page); this panel only summarizes
+   *  and deep-links there. Optional so a caller that doesn't yet have a
+   *  navigate target (none today — every caller is inside ReviewPanel,
+   *  which always provides one) still renders a working summary, just
+   *  without a clickable link. */
+  onNavigateToOperationalInputs?: () => void
 }
 
 const CYCLE_LABELS: Record<string, string> = {
   monthly: 'Monthly', quarterly: 'Quarterly', 'semi-annual': 'Semi-annual', yearly: 'Yearly', annual: 'Annual',
 }
 
-export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, contractBillingFrequency, refreshSignal }: Props) {
+export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, contractBillingFrequency, refreshSignal, contractStartDate, onNavigateToOperationalInputs }: Props) {
   const [suggestions, setSuggestions] = useState<MeterSuggestion[]>([])
   const [meters, setMeters]           = useState<AvailableMeter[]>([])
   const [operationalDataInputs, setOperationalDataInputs] = useState<OperationalDataInput[]>([])
@@ -380,21 +403,35 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
   // etc. and mirrors into contract_meter_mappings AND contract_terms). This
   // panel used to offer its own inline before/after-allowance mini-resolution,
   // but that path only ever wrote to contract_meter_mappings — contract_terms
-  // (what the Commercial Terms view and every other ambiguity check reads)
-  // never updated, so the flag would reappear even after a reviewer thought
-  // they'd resolved it here. Never re-add a second write path for the same fact.
+  // (what Commercial Logic & Billing Setup and every other ambiguity check
+  // reads) never updated, so the flag would reappear even after a reviewer
+  // thought they'd resolved it here. Never re-add a second write path for
+  // the same fact.
   const resolveMinimumCommitment = (s: MeterSuggestion): MinimumCommitment | null => {
     const tiers = get(s.contract_unit_type, 'overage_tiers', s.overage_tiers)
     for (const t of tiers) if (t.minimum_commitment) return t.minimum_commitment
     return null
   }
 
-  const allConfirmed = allMeterMappingsResolved(suggestions.map(s => ({
-    classification: s.input_classification ?? 'meter',
+  const mappingResolutionRows = suggestions.map(s => ({
+    classification: s.input_classification ?? 'meter' as const,
     confirmed: get(s.contract_unit_type, 'confirmed', s.confirmed),
     meter_key: get(s.contract_unit_type, 'meter_key', s.meter_key),
     manual_value_configured: get(s.contract_unit_type, 'manual_value_configured', s.manual_value_configured ?? false),
-  })))
+  }))
+  const allConfirmed = allMeterMappingsResolved(mappingResolutionRows)
+  // Step 17H.4B0D4H1B4E6.1 §5/§6 — "No billing meters registered" used to
+  // render for ANY empty available_meters list, even when every suggestion
+  // present is 'derived'/'persisted_balance' (never meter-mapped at all) or
+  // already satisfied by manual entry — producing a false "no meters"
+  // warning alongside a genuinely correct "all confirmed" state. Only shown
+  // when at least one suggestion could actually be resolved by a meter.
+  const anySuggestionNeedsMeter = mappingResolutionRows.some(r =>
+    (r.classification === 'meter' || r.classification === 'meter_or_manual_input') && !r.manual_value_configured)
+  // Step 17H.4B0D4H1B4E6.1 §5/§25 — "N of M confirmed" count for the compact
+  // header badge, reusing the same per-row predicate allConfirmed is built
+  // from rather than a second, independently-derived count.
+  const confirmedCount = mappingResolutionRows.filter(isMeterMappingResolved).length
 
   // A minimum commitment still awaiting a reviewer's interpretation blocks
   // "all confirmed" the same way an unmapped meter does — surfaced, never
@@ -500,17 +537,40 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
 
   const hasUnsaved = Object.keys(edits).length > 0
 
-  // Step 17B0, item G — rendered as its own block below, standalone from
-  // the meter-suggestions panel proper (which returns null here when there
-  // are no usage meters to map at all — a real case for a contract whose
-  // only operational dependencies are monetary/derived, with no countable
-  // usage metric of its own).
+  // Step 17H.4B0D4H1B4E6.1 §3/§4/§6/§16 — split by kind. Countable inputs
+  // are usage events with no other home (informational only — the raw
+  // usage mapping itself, if any, is one of the per-metric cards below).
+  // Monetary inputs ARE entered somewhere, but that entry widget
+  // (ManualInputEntry) is owned exclusively by Billing Operations
+  // (OperationalInputsSection on the main page, same jobId/inputKey,
+  // same operational_input_period_values API) — this panel summarizes
+  // and deep-links there instead of duplicating the form.
+  const monetaryInputs  = operationalDataInputs.filter(i => i.kind === 'monetary')
+  const countableInputs = operationalDataInputs.filter(i => i.kind !== 'monetary')
+  const billingStarted  = hasContractStarted(contractStartDate)
+  const contractStartLabel = contractStartDate
+    ? new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(contractStartDate + 'T00:00:00'))
+    : null
+
+  // sources are developer-shaped ("overage_tiers: Issued payment requests",
+  // "additional_recurring_fees: Growth Credit (derived_metric)") — the part
+  // before the colon names the raw array it came from, never meant for a
+  // reviewer. Only the business-readable label after it is shown by default.
+  const humanizeSource = (source: string): string =>
+    (source.includes(': ') ? source.slice(source.indexOf(': ') + 2) : source)
+      .replace(/\s*\(derived_metric\)\s*$/, '')
+      .trim()
+
   const operationalDataInputsSection = operationalDataInputs.length > 0 && (
     <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
       <div className="px-7 py-4" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
         <p className="text-sm font-medium text-ink">Operational data inputs</p>
         <p className="text-xs text-stone mt-0.5">
-          These commercial rules depend on the operational data below. Countable inputs are real usage events, just not yet mapped through a billing meter here. Monetary inputs aren&apos;t billing-meter-shaped at all — they&apos;re entered manually per period below (the current source method; a future automated source would fill the same input_key, never a separate mechanism).
+          {countableInputs.length > 0 && monetaryInputs.length > 0
+            ? 'These commercial rules depend on the usage and manual values below.'
+            : monetaryInputs.length > 0
+            ? 'These commercial rules depend on values entered manually.'
+            : 'These commercial rules depend on usage data mapped below.'}
         </p>
       </div>
       <div className="px-7 py-4 space-y-2.5">
@@ -520,40 +580,55 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
               color: input.kind === 'monetary' ? '#B45309' : '#0369A1',
               background: input.kind === 'monetary' ? '#FEF3C7' : '#E0F2FE',
             }}>
-              {input.kind === 'monetary' ? 'Monetary' : 'Countable'}
+              {input.kind === 'monetary' ? 'Manual' : 'Usage-based'}
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-mono text-ink">{input.key}</p>
-              <p className="text-[11px] text-stone/70">{input.sources.join(' · ')}</p>
-              {input.kind === 'monetary' && <ManualInputEntry jobId={jobId} inputKey={input.key} />}
+              <p className="text-xs font-medium text-ink">{humanizeKey(input.key)}</p>
+              <p className="text-[11px] text-stone/70">{input.sources.map(humanizeSource).join(' · ')}</p>
             </div>
           </div>
         ))}
       </div>
+      {monetaryInputs.length > 0 && (
+        <div className="px-7 py-3 flex items-center justify-between gap-3 flex-wrap" style={{ borderTop: '1px solid rgba(26,61,43,0.07)', background: '#FAFAF9' }}>
+          <p className="text-[11px] text-stone">
+            {billingStarted
+              ? `${monetaryInputs.length} manual input${monetaryInputs.length > 1 ? 's' : ''} entered each billing period`
+              : `${monetaryInputs.length} manual input${monetaryInputs.length > 1 ? 's' : ''} required once billing begins${contractStartLabel ? ` on ${contractStartLabel}` : ''}`}
+          </p>
+          {onNavigateToOperationalInputs && (
+            <button
+              onClick={onNavigateToOperationalInputs}
+              className="text-xs font-semibold text-forest hover:text-sage underline underline-offset-2"
+            >
+              Manage in Billing Operations →
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 
-  // Corrections pass (post-17B0.4) — a derived metric's raw_inputs still
-  // show up in Operational data inputs above (they DO need a real data
-  // source); this section shows the computed rate itself, which needs none.
+  // Step 17H.4B0D4H1B4E6.1 §7/§8 — purely informational, zero reviewer
+  // action possible on a derived metric (no confirm/edit/interpret call
+  // anywhere below) — compacted to business-labeled rows, formula demoted
+  // to a muted secondary line rather than shown as primary copy. A derived
+  // metric's raw_inputs still show up in Operational data inputs above
+  // (they DO need a real data source); this section shows the computed
+  // rate itself, which needs none.
   const derivedMetricsSection = derivedMetrics.length > 0 && (
-    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
-      <div className="px-7 py-4" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-        <p className="text-sm font-medium text-ink">Derived metrics</p>
-        <p className="text-xs text-stone mt-0.5">
-          These rates are computed from the operational inputs above via a formula stated in the contract. Derived metrics require no external mapping — there is nothing to map, only the raw inputs they&apos;re computed from.
+    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(11,92,54,0.15)', background: '#F8FDF9' }}>
+      <div className="px-7 py-3.5 flex items-center gap-2">
+        <i className="ti ti-circle-check-filled" style={{ fontSize: 13, color: '#0B5C36' }} />
+        <p className="text-sm font-medium text-ink">
+          Performance calculation{derivedMetrics.length > 1 ? 's' : ''} configured
         </p>
       </div>
-      <div className="px-7 py-4 space-y-2.5">
+      <div className="px-7 pb-4 space-y-2">
         {derivedMetrics.map(metric => (
-          <div key={metric.metric_name} className="flex items-start gap-3">
-            <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full flex-shrink-0" style={{ color: '#6D28D9', background: '#EDE9FE' }}>
-              Derived
-            </span>
-            <div className="min-w-0">
-              <p className="text-xs font-mono text-ink">{metric.metric_name} = {metric.formula}</p>
-              <p className="text-[11px] text-stone/70">{metric.source}</p>
-            </div>
+          <div key={metric.metric_name} className="min-w-0">
+            <p className="text-xs text-ink">{humanizeKey(metric.metric_name)}</p>
+            <p className="text-[10px] text-stone/50 font-mono">{metric.metric_name} = {metric.formula}</p>
           </div>
         ))}
       </div>
@@ -630,7 +705,7 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
             <span className="text-sm font-medium text-ink whitespace-nowrap">Usage mappings</span>
             {allConfirmed && (
               <span className="inline-flex items-center gap-1 text-[10px] font-semibold whitespace-nowrap" style={{ color: '#4A7C59' }}>
-                · <i className="ti ti-check" style={{ fontSize: 10 }} /> All confirmed
+                · <i className="ti ti-check" style={{ fontSize: 10 }} /> {`${confirmedCount} of ${mappingResolutionRows.length} confirmed`}
               </span>
             )}
             {/* Status made visually secondary to the section title —
@@ -701,8 +776,8 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
       </div>
 
       {!collapsed && <>
-      {/* No meters registered */}
-      {meters.length === 0 && (
+      {/* No meters registered — only when some suggestion actually needs one */}
+      {meters.length === 0 && anySuggestionNeedsMeter && (
         <div className="px-7 py-6 flex items-start gap-3 bg-amber-50/60 border-t border-amber-100">
           <i className="ti ti-alert-triangle text-amber-600 flex-shrink-0 mt-0.5" style={{ fontSize: 15 }} />
           <div>
@@ -727,6 +802,18 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
           const confirmed    = get(s.contract_unit_type, 'confirmed', s.confirmed)
           const noMatch      = !meterKey
           const matchedMeter = meters.find(m => m.meter_key === meterKey)
+          // Step 17H.4B0D4H1B4E6.1 §6 Case D — a previously-confirmed
+          // mapping whose meter_key no longer appears in the CURRENT
+          // available_meters list (e.g. the meter was later deleted/
+          // renamed at the source). Distinct from both "resolved" (green)
+          // and "no mapping exists" (the noMatch/unconfirmed path below) —
+          // this row IS confirmed and its meter_key IS set, but what it
+          // points at cannot be verified against live data right now.
+          // Presentation-only: isMeterMappingResolved still treats this row
+          // as resolved (meter_key is non-empty), matching existing backend
+          // semantics unchanged — only the wording/color here stops
+          // silently asserting a match that can no longer be confirmed.
+          const sourceUnavailable = !!meterKey && !matchedMeter
           const minCommitment = resolveMinimumCommitment(s)
           const classification = s.input_classification ?? 'meter'
           // Step 17D.2, item C — manual entry is available for ANY usage
@@ -792,9 +879,11 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
                   // meterKey there is not an error, it's the reviewer's
                   // actual choice.
                   <div>
-                    <div className="flex items-center gap-2 text-xs font-medium" style={{ color: manualConfigured || meterKey ? '#0B5C36' : '#991B1B' }}>
-                      <i className={`ti ${manualConfigured || meterKey ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 14 }} />
-                      {manualConfigured ? 'Configured for manual entry each period' : meterKey ? `Mapped to ${matchedMeter?.display_name ?? meterKey}` : 'No meter selected'}
+                    <div className="flex items-center gap-2 text-xs font-medium" style={{ color: sourceUnavailable ? '#B45309' : manualConfigured || meterKey ? '#0B5C36' : '#991B1B' }}>
+                      <i className={`ti ${sourceUnavailable ? 'ti-alert-triangle' : manualConfigured || meterKey ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 14 }} />
+                      {sourceUnavailable
+                        ? `Configured source unavailable — "${meterKey}" is no longer registered`
+                        : manualConfigured ? 'Configured for manual entry each period' : meterKey ? `Mapped to ${matchedMeter?.display_name ?? meterKey}` : 'No meter selected'}
                       <button onClick={() => setEdit(s.contract_unit_type, 'confirmed', false)} className="ml-auto text-stone hover:text-ink underline underline-offset-2 font-normal">
                         Change
                       </button>
@@ -811,7 +900,7 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
                         true together with confirmed_by (POST handler,
                         same route), so a real human decision is the one
                         thing this note can honestly claim. */}
-                    {!manualConfigured && meterKey && (
+                    {!manualConfigured && meterKey && !sourceUnavailable && (
                       <p className="text-[10px] text-stone mt-1 flex items-center gap-1">
                         <i className="ti ti-user-check" style={{ fontSize: 11 }} /> Reviewer-confirmed mapping
                       </p>
@@ -887,8 +976,8 @@ export function MeterMappingPanel({ jobId, isConfigured, onConfirmedChange, cont
                   gets resolved (the Review panel's own rule-interpretation
                   card for this metric), never a second interactive widget
                   here. Resolving it in THIS panel used to only ever write to
-                  contract_meter_mappings — the Commercial Terms view and
-                  every other ambiguity check read contract_terms, which
+                  contract_meter_mappings — Commercial Logic & Billing Setup
+                  and every other ambiguity check read contract_terms, which
                   never updated, so the flag reappeared even after a
                   reviewer thought they'd already resolved it. */}
               {minCommitment?.requires_confirmation && (

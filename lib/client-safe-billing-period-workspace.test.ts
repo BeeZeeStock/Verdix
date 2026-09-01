@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
-// Step 17F.7 — regression guardrail for the exact production crash: this
-// file is imported by the client-side BillingPeriodWorkspaceCard, so it (and
-// everything it imports) ships in the BROWSER bundle. lib/billing-writer.ts
+// Step 17F.7 (still load-bearing after Step 17H.2C's removal of the
+// standalone BillingPeriodWorkspaceCard) — regression guardrail for the
+// exact production crash: this file is imported by the client-side
+// BillingSummaryCard (the now-sole consumer of derivePeriodExecutionModel
+// for the enriched Billing Timeline), so it (and everything it imports)
+// ships in the BROWSER bundle. lib/billing-writer.ts
 // eagerly instantiates a service-role Supabase client (and imports Stripe)
 // at module scope — pulling it into client code crashes the whole page on
 // load the moment the browser evaluates it (SUPABASE_SERVICE_ROLE_KEY is

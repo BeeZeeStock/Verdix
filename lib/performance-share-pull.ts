@@ -12,30 +12,18 @@ import { computePerformanceShareFee } from '@/lib/performance-share-fee'
 import { buildOperationalInputMap, findMonetaryCurrencyProblem, type OperationalInputPeriodValueRow } from '@/lib/operational-input-binding'
 import { isMonetaryOperationalInput } from '@/lib/operational-data-inputs'
 import { PERFORMANCE_SHARE_FEE_COMPONENT } from '@/lib/performance-share-materiality'
-import type { ContractTerms, VariableInvoiceTimingRule } from '@/lib/types'
+import type { ContractTerms } from '@/lib/types'
 import type { OverageLineItem } from '@/lib/usage-pull'
-
-// Step 17F.3, item 6 (renamed from isArrearsSettlementTimingConfirmed —
-// Step 17F.1, item 6) — extracted as its own pure, exported predicate (the
-// same "small typed gate, unit-tested in isolation" pattern this codebase
-// uses throughout — isProvenanceResolved, isMeterMappingResolved, etc.)
-// rather than left inline. Renamed to describe what it actually gates now:
-// WHEN the already-determined charge is invoiced, never WHETHER it's
-// determined in arrears (that's structural — see computePerformanceShareFee's
-// own 'not_ready' handling below, unconditional, no rule involved).
-// 'invoice_at_next_period_start' AND requires_confirmation false are BOTH
-// required — a fee whose rule was reset to 'unclear' pending re-review must
-// never execute merely because requires_confirmation briefly reads false
-// from stale data, and a confirmed-but-still-'unclear' timing (should never
-// happen, but not structurally impossible) must never be treated as
-// authorization either. 'invoice_at_period_end' is a resolvable VALUE (a
-// contract can state this arrangement) but has no distinct execution path
-// yet, so it is deliberately NOT authorized here either — held exactly
-// like an unresolved rule, never silently executed on the
-// next-period-start cycle as if it were the same arrangement.
-export function isVariableInvoiceTimingConfirmed(rule: VariableInvoiceTimingRule | null | undefined): boolean {
-  return !!rule && !rule.requires_confirmation && rule.timing === 'invoice_at_next_period_start'
-}
+// Step 17H.4B0D4H1B4E5.2 — moved to lib/rule-interpretation.ts (the
+// established client-safe, zero-supabaseServer home — see that file's own
+// header) so lib/commercial-rule-status.ts and lib/commercial-components.ts
+// (both imported directly by page.tsx) can reuse this SAME predicate for
+// readiness/display without pulling this file's supabaseServer import into
+// the browser bundle. Re-exported below, unchanged in behavior, so this
+// file's own existing callers (further down, and app/api/jobs/[id]/
+// performance-share/route.ts) need no import-path changes.
+import { isVariableInvoiceTimingConfirmed } from '@/lib/rule-interpretation'
+export { isVariableInvoiceTimingConfirmed } from '@/lib/rule-interpretation'
 
 export async function computePerformanceShareLineItemsForPeriod(params: {
   jobId: string

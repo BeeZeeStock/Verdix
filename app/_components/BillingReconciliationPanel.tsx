@@ -64,6 +64,10 @@ export function BillingReconciliationPanel({ jobId, currency, onResolved }: Prop
   const [actionError, setActionError] = useState<string | null>(null)
   const [actingOperationId, setActingOperationId] = useState<string | null>(null)
   const [externalIdDrafts, setExternalIdDrafts] = useState<Record<string, string>>({})
+  // Step 17H.4B0D4H1B4E2 §25 — collapsed by default for the neutral
+  // (structural-only, no monetary impact) case only; history is preserved,
+  // never erased, just not left as a permanent large banner.
+  const [neutralExpanded, setNeutralExpanded] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -110,11 +114,55 @@ export function BillingReconciliationPanel({ jobId, currency, onResolved }: Prop
   const { state, correctionAssessment } = data
   if (state.kind === 'none' || state.kind === 'safe_to_resume' || state.kind === 'executed_same_plan') return null
 
+  // Step 17H.4B0D4H1B4E2 §24/§25 — this panel used one uniform strong
+  // amber "Billing reconciliation required" treatment for every non-clean
+  // state, including the common executed_plan_changed + correctionAssessment
+  // 'none' case — a structural configuration difference with NO detected
+  // monetary impact. That visually implied money was wrong when it wasn't,
+  // and kept a large warning permanently at the top of an otherwise-fine
+  // workflow. Severity now reflects what actually requires attention:
+  //   - 'critical' (operation_outcome_uncertain / partially_executed) —
+  //     genuine operational uncertainty, unchanged strong warning language.
+  //   - 'warning' (executed_plan_changed with a detected monetary delta) —
+  //     a real reconciliation question, unchanged strong warning language.
+  //   - 'neutral' (executed_plan_changed with correctionAssessment 'none')
+  //     — collapsed by default, muted styling, explicitly says no monetary
+  //     impact was detected — history is preserved (expandable), never
+  //     erased, but never rendered as if money is wrong.
+  const isNeutralStructuralDiff = state.kind === 'executed_plan_changed' && correctionAssessment.kind === 'none'
+  const severity: 'critical' | 'warning' | 'neutral' =
+    state.kind === 'operation_outcome_uncertain' || state.kind === 'partially_executed' ? 'critical'
+      : isNeutralStructuralDiff ? 'neutral' : 'warning'
+
+  if (isNeutralStructuralDiff && !neutralExpanded) {
+    return (
+      <button
+        onClick={() => setNeutralExpanded(true)}
+        className="w-full rounded-xl border border-stone-200 bg-stone-50 px-4 py-2.5 flex items-center justify-between gap-3 text-left hover:bg-stone-100 transition-colors"
+      >
+        <span className="text-xs font-medium text-stone flex items-center gap-1.5">
+          <i className="ti ti-info-circle" style={{ fontSize: 13 }} /> Structural difference, no detected monetary impact
+        </span>
+        <span className="text-[11px] text-stone/70">View details</span>
+      </button>
+    )
+  }
+
+  const panelClass = severity === 'neutral' ? 'border-stone-200 bg-stone-50' : 'border-amber-200 bg-amber-50'
+  const headingClass = severity === 'neutral' ? 'text-sm font-semibold text-ink flex items-center gap-1.5' : 'text-sm font-semibold text-amber-900 flex items-center gap-1.5'
+  const heading = severity === 'neutral' ? 'Structural difference, no detected monetary impact' : 'Billing reconciliation required'
+  const headingIcon = severity === 'neutral' ? 'ti-info-circle' : 'ti-alert-triangle'
+
   return (
-    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 space-y-3">
-      <p className="text-sm font-semibold text-amber-900 flex items-center gap-1.5">
-        <i className="ti ti-alert-triangle" style={{ fontSize: 14 }} /> Billing reconciliation required
-      </p>
+    <div className={`rounded-xl border px-4 py-4 space-y-3 ${panelClass}`}>
+      <div className="flex items-center justify-between gap-3">
+        <p className={headingClass}>
+          <i className={`ti ${headingIcon}`} style={{ fontSize: 14 }} /> {heading}
+        </p>
+        {isNeutralStructuralDiff && (
+          <button onClick={() => setNeutralExpanded(false)} className="text-[11px] text-stone hover:underline flex-shrink-0">Collapse</button>
+        )}
+      </div>
 
       {state.kind === 'operation_outcome_uncertain' && (
         <div className="space-y-2">
@@ -176,8 +224,10 @@ export function BillingReconciliationPanel({ jobId, currency, onResolved }: Prop
 
       {state.kind === 'executed_plan_changed' && (
         <div className="space-y-2">
-          <p className="text-xs text-amber-800">
-            Billing already executed on {state.provider} using an earlier billing plan. The current configuration differs and cannot be billed again automatically.
+          <p className={isNeutralStructuralDiff ? 'text-xs text-stone' : 'text-xs text-amber-800'}>
+            {isNeutralStructuralDiff
+              ? `The currently configured plan differs from the plan previously executed on ${state.provider}, but no component-level amount difference was detected.`
+              : `Billing already executed on ${state.provider} using an earlier billing plan. The current configuration differs and cannot be billed again automatically.`}
           </p>
 
           {correctionAssessment.kind === 'manual_assessment_required' && (
@@ -215,11 +265,7 @@ export function BillingReconciliationPanel({ jobId, currency, onResolved }: Prop
             </div>
           )}
 
-          {correctionAssessment.kind === 'none' && (
-            <p className="text-xs text-stone">No component-level amount difference was detected between the executed and current plans.</p>
-          )}
-
-          <p className="text-[11px] text-amber-700 italic">
+          <p className={isNeutralStructuralDiff ? 'text-[11px] text-stone/70 italic' : 'text-[11px] text-amber-700 italic'}>
             Automatic rebilling is disabled. This is an assessment only — it does not authorize any billing action.
           </p>
         </div>

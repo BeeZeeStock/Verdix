@@ -63,6 +63,43 @@ export interface UsageMappingGroups {
   extractedSemanticKeys: Map<string, string>
 }
 
+export interface ExistingMappingRow {
+  contract_unit_type: string
+  semantic_input_key?: string | null
+}
+
+// Step 17G.6C — found via a real production regression: "Completed
+// payments" (a flat additional_recurring_fee with NO overage_tiers entry
+// of its own) previously showed "Not configured" in Commercial Logic &
+// Billing Setup even though its meter mapping had genuinely been
+// confirmed as manual usage. Root cause, traced directly (not guessed):
+// buildUsageMappingGroups above keys a fee-only group by that fee's OWN
+// fee_label (line ~111, "Per-completed payment success fee") when it has
+// no overage tier to inherit a raw unit_type from — but the ORIGINAL
+// contract_meter_mappings row for this exact canonical fact was persisted
+// under a DIFFERENT contract_unit_type string ("completed payment", a
+// plain human phrase from an earlier code path). The route's join
+// (existingMap.get(unitType)) is a strict string match on contract_unit_
+// type, so it silently missed the existing confirmed row and treated the
+// metric as newly unconfigured — a pure identity-drift bug, not a change
+// in the underlying database state (verified directly against the real
+// row: confirmed:true, manual_value_configured:true, unchanged).
+//
+// Fix: fall back to matching on semantic_input_key — the stable canonical
+// identity BOTH the fresh group and the persisted row carry — whenever
+// the raw contract_unit_type strings don't match. This only ever RECOVERS
+// an orphaned confirmation for the same canonical fact; it never treats a
+// genuinely different fact as already confirmed (semantic_input_key
+// equality is required, not inferred).
+export function resolveExistingMappingRow<T extends ExistingMappingRow>(
+  unitType: string, semanticInputKey: string | null | undefined, existing: T[],
+): T | undefined {
+  const byUnitType = existing.find(r => r.contract_unit_type === unitType)
+  if (byUnitType) return byUnitType
+  if (!semanticInputKey) return undefined
+  return existing.find(r => r.semantic_input_key === semanticInputKey)
+}
+
 export function buildUsageMappingGroups(params: {
   overageTiers: RawOverageTier[]
   additionalRecurringFees: RawAdditionalRecurringFee[]

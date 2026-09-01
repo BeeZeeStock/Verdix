@@ -5,40 +5,52 @@ import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import { RevenueModelTab } from '@/app/_components/RevenueModelTab'
 import { BillingSummaryCard } from '@/app/_components/BillingSummaryCard'
-import { BillingPeriodWorkspaceCard } from '@/app/_components/BillingPeriodWorkspaceCard'
 import type { ContractTerms } from '@/lib/types'
-import { VatConfigRow } from '@/app/_components/VatConfigRow'
+import { VatEditableStat } from '@/app/_components/VatConfigRow'
 import { useVatConfig } from '@/app/_components/useVatConfig'
 import { MeterMappingPanel, ManualInputEntry } from '@/app/_components/MeterMappingPanel'
 import { ParkedInvoicesCard } from '@/app/_components/ParkedInvoicesCard'
 import { ManualInvoiceCard } from '@/app/_components/ManualInvoiceCard'
+import { SourceClauseLink, type SourceLocator } from '@/app/_components/SourceClauseLink'
+import { applyProductNameCorrections, buildProductNameCorrectionRequests } from '@/lib/product-name-corrections'
+import { humanizeMechanismKind, type RollingBandMigrationConfig } from '@/app/_components/RollingBandMigrationCard'
 import { computeBaseTcv, computeCommittedFixedFees, computeConditionalFixedFees, contractLifecycleStatus, type BaseTcvItem } from '@/lib/contract-tcv-calc'
-import { resolveCommittedFixedFeeValue, type CommittedFixedFeeResolution } from '@/lib/committed-fixed-fee-resolver'
-import { ruleCadenceLabel, cadenceNoun, contractMonthLabel, volumeTierCopy } from '@/lib/cadence-labels'
-import { optionsForRuleType, optionsForEdit, deriveSelectedOption, baseFeeHasExpiringWaiver, discountHasUnresolvedComponentScope, describeDiscountComponentScope, CREDIT_SURVIVAL_OPTIONS, looksLikeMalformedReasoning, truncateSentences, type RuleType, type StructuredOption, type RuleProposal, type DiscountScopeContext } from '@/lib/rule-interpretation'
+import { resolveCommittedFixedFeeValue } from '@/lib/committed-fixed-fee-resolver'
+import { buildContractBrief } from '@/lib/contract-brief'
+import { buildCommercialComponents } from '@/lib/commercial-components'
+import { deriveVariableRateFeeLabels, pricingModelLabelFor, bomDisplayLabel } from '@/lib/commercial-bom'
+import { matchUsageComponentTitle, summarizeGroupRowLabels, sectionizeRows, describeComponentReadiness, pluralizeUsageComponentTitle, splitComponentTitle, classifyCommercialCategory, buildComponentMechanismSummary, selectSnapshotRows, looksLikeInternalTestLabel, type CommercialCategory } from '@/lib/commercial-logic-grouping'
+import { ruleCadenceLabel, cadenceNoun, contractMonthLabel } from '@/lib/cadence-labels'
+import { optionsForRuleType, optionsForEdit, deriveSelectedOption, baseFeeHasExpiringWaiver, discountHasUnresolvedComponentScope, describeDiscountComponentScope, describeDiscountComponentScopeSplit, describeWhatWillChange, CREDIT_SURVIVAL_OPTIONS, buildDecisionRequiredDisplay, buildRecommendationDisplay, type RuleType, type StructuredOption, type RuleProposal, type DiscountScopeContext } from '@/lib/rule-interpretation'
 import { detectRuleInteractionCandidates } from '@/lib/rule-interactions'
 import { computeCommercialRuleWorkload, isMinimumCommitmentModeUnresolved, isMinimumCommitmentProrationUnresolved, isServiceCreditUnresolved, isDiscountUnresolved, countSourceConfirmations, isOneTimeFeeUnresolved, isProvenanceResolved, type CommercialRuleWorkload } from '@/lib/commercial-rule-status'
 import { isMonetaryBasisRecognitionApplicable, isPaidBasisFinalizationApplicable } from '@/lib/paid-basis-finalization'
 import { isMeterMappingResolved } from '@/lib/meter-mapping-status'
-import { buildUsageSourceCards, type UsageSourceCard } from '@/lib/usage-source-cards'
-import { buildPricingDependencyGroups } from '@/lib/pricing-dependency'
-import { describeDiscountForBrief } from '@/lib/discount-brief-summary'
-import { describeOperationalInputConsumers, type OperationalInputConsumer } from '@/lib/operational-input-usage-display'
+import { buildUsageSourceCards } from '@/lib/usage-source-cards'
 import { hasContractStarted } from '@/lib/performance-share-timing'
-import { deriveConfirmedRulesLabel } from '@/lib/confirmed-rules-label'
-import { describeBillabilityCondition, isChangeOrderConditional, resolveOneTimeFeeTypeLabel } from '@/lib/billability-condition'
+import { describeBillabilityCondition, isChangeOrderConditional } from '@/lib/billability-condition'
+import { classifyOneTimeFeeKind, deriveOneTimeFeeBillabilityRow } from '@/lib/one-time-fee-commercial-logic'
+import { resolveDiscountComponentAttachment, discountBusinessLabel, resolveDiscountPeriod, resolveDiscountContractWordingContext } from '@/lib/discount-commercial-logic'
+import {
+  parseTierRateInput, parseEscalatorPctInput, describeTierCorrectionError, describeEscalatorCorrectionError,
+  persistTierRateCorrection as libPersistTierRateCorrection, persistEscalatorPctCorrection as libPersistEscalatorPctCorrection,
+  classifyTierCorrectionTarget,
+  type TierCorrectionResult, type EscalatorCorrectionResult,
+} from '@/lib/tier-escalator-correction'
 import { formatEligibleComponentsFact, formatCarryForwardFact, formatCashRedeemableFact, formatEarningBasisFact, computeExcludedFromEarningBasisKeys } from '@/lib/review-card-format'
 import { getCreditRepresentationCapability } from '@/lib/connectors/billing/types'
 import { FinancialAmount, FinancialMetaTag } from '@/app/_components/FinancialAmount'
 import { FinancialKPICard } from '@/app/_components/FinancialKPICard'
+import { BandTableToggle } from '@/app/_components/BandTableToggle'
+import { RateScheduleToggle } from '@/app/_components/RateScheduleToggle'
 import { StatusInline } from '@/app/_components/StatusChip'
 import { BillingReconciliationPanel } from '@/app/_components/BillingReconciliationPanel'
+import { BillingSafetyBanner } from '@/app/_components/BillingSafetyBanner'
 import { describeMatchConditions, describeEffectivePeriod } from '@/lib/rulebook/organization-rulebook-display'
 import { formatRenewalNoticePeriod } from '@/lib/contract-notice-period'
-import { resolveFixedFeeBand } from '@/lib/fixed-fee-band'
 import {
   hasOperationalBillingModel as hasOperationalBillingModelPredicate,
-  configuredBadgeSuffix as configuredBadgeSuffixPredicate,
+  deriveProviderConfigurationPresentation,
 } from '@/lib/operational-section-visibility'
 import type { OrganizationRuleRecord } from '@/lib/rulebook/organization-rules'
 
@@ -156,10 +168,6 @@ type ServiceCredit = {
     } | null
   } | null
 }
-// Named aliases for the two nested shapes above — used by the Confirmed
-// billing rules section's credit-card builders, which need to name these
-// types in helper-function signatures rather than inline every time.
-type ServiceCreditInterp = NonNullable<ServiceCredit['interpretation']>
 type Tier       = {
   tier_label?: string; from_unit?: number; to_unit?: number; rate_per_unit?: number; unit_type?: string
   measurement_period?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
@@ -189,6 +197,10 @@ type Tier       = {
   // (Step 17D.1's extraction field), used to group this tier's source
   // card with any fee/rolling-migration referencing the same identity.
   semantic_input_key?: string | null
+  // Step 17H.4B0D4B1G — this band's stable semantic identity (see
+  // lib/rule-id-stability.ts's preserveTierIdentity). Consumed only by
+  // resolveTierForLineItem's ID-first matching — never rendered.
+  tier_id?: string | null
 }
 
 type OneTimeFee = {
@@ -234,10 +246,6 @@ type FixedFeeBillingTimingRule = {
 // viewer (copied verbatim from the original document — never translated,
 // never given an invented "Section N" label); display_label is a friendlier
 // UI caption only.
-type SourceLocator = {
-  exact_source_heading: string
-  display_label?: string | null
-}
 type AdditionalRecurringFee = {
   fee_label: string; amount: number; description?: string | null
   billing_frequency?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual' | null
@@ -288,22 +296,6 @@ type AdditionalRecurringFee = {
     source_clause?: string | null
   } | null
 }
-// Step 17C.2 — mirrors lib/types.ts's own RollingBandMigrationConfig; kept
-// as a local structural type here rather than importing, matching this
-// file's own existing convention for extraction-shaped types (see
-// AdditionalRecurringFee/SourceLocator above).
-type RollingBandMigrationConfig = {
-  aggregate: {
-    input_key: string
-    window_count: number
-    window_unit: 'billing_period'
-    operation: 'mean'
-    require_complete_windows: true
-  }
-  trigger_comparator: 'greater_than'
-  compared_to: 'contracted_volume'
-  notice_required: boolean
-}
 type UnsupportedCommercialMechanism = {
   kind: string
   description: string
@@ -353,12 +345,21 @@ type LineItem = {
   billing_period: string; total_amount: number; currency: string
   confidence_score: number; source_section?: string
   stripe_price_id?: string; applied_rule?: string
+  // Step 17H.4B0D4B1G — this row's projected tier identity, when it has
+  // one (see lib/line-items.ts's buildLineItems). Consumed only by the
+  // canonical tier-correction resolver — never rendered.
+  tier_id?: string | null
 }
 
 type Job = {
   id: string; name: string; execute_status: string; currency: string
   contract_pdf_url?: string; error_message?: string
   billing_subscription_id?: string; billing_platform?: string; billing_customer_id?: string
+  // Step 17H.4B0D4H1B4E2 §16-21 — the durable server-side billing-safety
+  // signal (lib/billing-hold.ts) is now exposed to the GUI for the first
+  // time. Never rendered directly by reason string — always translated
+  // into commercial language by BillingSafetyBanner below.
+  billing_hold?: { reason: 'reexecution' | 'reconciliation_blocked' | 'schedule_rebuild_required'; started_at?: string } | null
   // Step 17F.9, item 2 — whether at least one real planned_invoices row
   // exists for this job (GET /api/jobs/[id]'s own existence check) — the
   // durable "operational billing" signal; billing_customer_id alone can
@@ -442,165 +443,6 @@ function parseLocalDate(s: string): Date {
   return new Date(y, (m || 1) - 1, d || 1)
 }
 
-// Builds 2–3 natural-language sentences summarising the contract for the
-// "at a glance" card. Pure data transform — no React, no side-effects.
-function buildContractSummary(
-  terms: Terms | undefined,
-  cur: string,
-  // committedFixedFees/conditionalFixedFees — the full-contract split
-  // (recurring + one-time, annotated by the caller via
-  // computeCommittedFixedFees/computeConditionalFixedFees), NOT the
-  // one-time-fees-only split this function derives internally below for
-  // oneTimeStr. Agreement A final amendment, item 2 — the summary sentence
-  // must never call the Change-Order-conditional portion "committed".
-  // Hardening item 3 — a readiness object, not a bare number: when
-  // unresolved, the sentence must say so instead of ever printing a
-  // computed figure a billing-impacting decision could still change.
-  committedFixedFeeReadiness: CommittedFixedFeeResolution,
-  conditionalFixedFees: number,
-  userTiers: Tier[],
-  apiTiers: Tier[],
-): string[] {
-  if (!terms) return []
-  const lines: string[] = []
-
-  // ── Sentence 1: pricing structure · customer · dates · TCV ───────────────
-  // "flat" specifically claims the entire bill is this one fixed number —
-  // false the moment any usage-based pricing exists on the contract, even if
-  // that usage hasn't been invoiced yet. A hybrid contract's base fee is
-  // still fixed and recurring, just not the whole story, hence "base" here.
-  const hasVariablePricing = (terms.overage_tiers?.length ?? 0) > 0
-  let pricing: string
-  if (terms.ramp_schedule && terms.ramp_schedule.length > 0) {
-    const first = terms.ramp_schedule[0]
-    const last  = terms.ramp_schedule[terms.ramp_schedule.length - 1]
-    pricing = first.monthly_fee === last.monthly_fee
-      ? `${hasVariablePricing ? 'base' : 'flat'} ${fmt(first.monthly_fee, cur)}/month subscription`
-      : `${terms.ramp_schedule.length}-stage ramp (${fmt(first.monthly_fee, cur)} → ${fmt(last.monthly_fee, cur)}/mo)`
-  } else if (terms.year_pricing && Object.keys(terms.year_pricing).length > 0) {
-    const vals = Object.values(terms.year_pricing)
-    pricing = vals.length === 1
-      ? `${fmt(vals[0], cur)}/year subscription`
-      : `multi-year pricing (${vals.map(v => fmt(v, cur)).join(' → ')}/yr)`
-  } else if (terms.base_monthly_fee) {
-    const addlMonthly = (terms.additional_recurring_fees ?? []).reduce((s, f) => s + Number(f.amount ?? 0), 0)
-    const totalMonthly = terms.base_monthly_fee + addlMonthly
-    pricing = addlMonthly > 0
-      ? `combined ${fmt(totalMonthly, cur)}/month subscription`
-      : `${hasVariablePricing ? 'base' : 'flat'} ${fmt(terms.base_monthly_fee, cur)}/month subscription`
-  } else if (terms.base_annual_fee) {
-    pricing = `${fmt(terms.base_annual_fee, cur)}/year subscription`
-  } else {
-    pricing = 'subscription'
-  }
-
-  const duration = terms.contract_term_months ? `${terms.contract_term_months}-month ` : ''
-  const customer = terms.customer_name ? ` with ${terms.customer_name}` : ''
-  const dates    = terms.contract_start_date && terms.contract_end_date
-    ? `, running ${fmtDate(terms.contract_start_date)} to ${fmtDate(terms.contract_end_date)}`
-    : terms.contract_start_date ? `, starting ${fmtDate(terms.contract_start_date)}` : ''
-
-  // One-time fees (setup/integration/onboarding) are named separately from
-  // the recurring subscription description — folding them into "valued at
-  // X" right after "subscription" reads as if X were the subscription's own
-  // value, when Fixed fees (tcv) is actually subscription + one-time combined.
-  const oneTimeFees = (terms.one_time_fees ?? []).filter(f => (f.amount ?? 0) > 0)
-  // Item 3 — same conditionality split as the Pricing overview's own
-  // cards (isChangeOrderConditionalFee): a fee gated on a Change Order
-  // that may never be executed is never folded into the same total as a
-  // fee that's definitely going to be billed, so this sentence can never
-  // disagree with the overview cards' own figures again.
-  const unconditionalSummaryFees = oneTimeFees.filter(f => !isChangeOrderConditionalFee(f))
-  const conditionalSummaryFees   = oneTimeFees.filter(isChangeOrderConditionalFee)
-  const unconditionalSummaryTotal = unconditionalSummaryFees.reduce((s, f) => s + Number(f.amount ?? 0), 0)
-  const conditionalSummaryTotal   = conditionalSummaryFees.reduce((s, f) => s + Number(f.amount ?? 0), 0)
-  const oneTimeStr = (unconditionalSummaryFees.length === 1
-    ? ` plus a ${fmt(unconditionalSummaryFees[0].amount, cur)} one-time ${unconditionalSummaryFees[0].fee_label.toLowerCase()}`
-    : unconditionalSummaryFees.length > 1
-      ? ` plus ${fmt(unconditionalSummaryTotal, cur)} in one-time fees`
-      : '') + (conditionalSummaryFees.length > 0
-    ? `${unconditionalSummaryFees.length > 0 ? ' (' : ' plus '}${fmt(conditionalSummaryTotal, cur)} conditional on a signed Change Order${unconditionalSummaryFees.length > 0 ? ')' : ''}`
-    : '')
-  const committedFixedFees = committedFixedFeeReadiness.amount ?? 0
-  const tcvStr = committedFixedFeeReadiness.status === 'unresolved'
-    ? ` Committed fixed fees: not yet determinable — ${committedFixedFeeReadiness.reasons[0] ?? 'a billing-impacting decision is unresolved'}.`
-    : committedFixedFees > 0
-      ? ` Committed fixed fees over the initial term: ${fmt(committedFixedFees, cur)}${conditionalFixedFees > 0 ? ` (plus ${fmt(conditionalFixedFees, cur)} conditional on a signed Change Order — potential total ${fmt(committedFixedFees + conditionalFixedFees, cur)})` : ''}.`
-      : ''
-  lines.push(`${duration}contract${customer}${dates} — ${pricing}${oneTimeStr}.${tcvStr}`)
-
-  // ── Sentence 2: billing cadence · payment terms · auto-renewal ───────────
-  const bits: string[] = []
-  // A metric measured on a different cadence than the contract's own
-  // billing_frequency makes a flat "billed monthly" misleading — it reads as
-  // if everything on the contract invoices monthly, when usage/commercial
-  // rules on a different cadence won't. Mirrors the Contract Overview's own
-  // "Billing cycle: Mixed" detection (mixedBillingSchedule) so the two can
-  // never contradict each other.
-  const contractCycleLower = (terms.billing_frequency ?? '').toLowerCase()
-  const otherCycles = Array.from(new Set(
-    (terms.overage_tiers ?? [])
-      .filter(t => t.unit_type && t.measurement_period && t.measurement_period.toLowerCase() !== contractCycleLower)
-      .map(t => t.measurement_period!.toLowerCase())
-  ))
-  if (terms.billing_frequency && otherCycles.length > 0) {
-    bits.push(`Base fee billed ${terms.billing_frequency.toLowerCase()}`)
-    bits.push(`usage and applicable commercial rules evaluated ${otherCycles.join(' / ')}`)
-  } else if (terms.billing_frequency) {
-    bits.push(`billed ${terms.billing_frequency.toLowerCase()}`)
-  }
-  if (terms.payment_terms_text) bits.push(terms.payment_terms_text)
-  else if (terms.payment_terms_days) bits.push(`Net ${terms.payment_terms_days}`)
-  if (terms.auto_renews === true) {
-    const notice = formatRenewalNoticePeriod(terms) ?? 'advance notice required'
-    bits.push(`auto-renews (${notice})`)
-  } else if (terms.auto_renews === false) {
-    bits.push('does not auto-renew')
-  } else {
-    bits.push('auto-renewal terms unclear — review contract')
-  }
-  if (bits.length > 0) lines.push(bits.join(' · ') + '.')
-
-  // ── Sentence 3: escalators · discounts · overages ────────────────────────
-  const extras: string[] = []
-  if (terms.escalators && terms.escalators.length > 0) {
-    const e = terms.escalators[0]
-    const interp = e.interpretation
-    if (interp && !interp.requires_confirmation) {
-      // A reviewer's confirmed decision is stated as fact, never re-flagged
-      // as something still needing a rate confirmed from the source clause —
-      // that stale phrasing is exactly the kind of internal contradiction
-      // (confirmed vs. "needs review") this brief must not reintroduce.
-      extras.push(interp.treatment === 'not_applied'
-        ? 'price escalation not applied per confirmed reviewer interpretation'
-        : `${interp.index === 'CPI' ? 'CPI-linked' : interp.index === 'fixed_pct' ? 'fixed-percentage' : 'confirmed'} price escalation${interp.cap_pct != null ? `, capped at ${interp.cap_pct}%` : ''}`)
-    } else {
-      const cap = e.cap_pct ? ` capped at ${e.cap_pct}%` : ''
-      extras.push(e.escalator_pct != null
-        ? `${e.escalator_pct}% annual escalator${cap}`
-        : 'price escalator — needs interpretation')
-    }
-  }
-  if (terms.discounts && terms.discounts.length > 0) {
-    // Step 17E, item 10 — see lib/discount-brief-summary.ts's header: a
-    // bare "100% introductory discount" reads as "the whole contract is
-    // free," wrong for a pilot waiving only one component. Rendered from
-    // the discount's own typed scope fields, never free-form prose.
-    extras.push(describeDiscountForBrief(terms.discounts[0], fmtDate))
-  }
-  if (userTiers.length > 0) {
-    const min = Math.min(...userTiers.map(t => t.rate_per_unit ?? 0).filter(v => v > 0))
-    extras.push(min > 0 ? `user overages from ${fmt(min, cur)}/user/mo` : 'user overage tiers')
-  }
-  if (apiTiers.length > 0) extras.push('API call overages apply')
-  if (extras.length > 0) {
-    const s = extras.join(' · ')
-    lines.push(s.charAt(0).toUpperCase() + s.slice(1) + '.')
-  }
-
-  return lines
-}
-
 // Derives billing model from contract structure (no LLM required)
 function deriveBillingModel(terms: Terms | undefined): 'fixed' | 'hybrid' | 'consumption' {
   const hasTiers = (terms?.overage_tiers?.length ?? 0) > 0
@@ -609,14 +451,6 @@ function deriveBillingModel(terms: Terms | undefined): 'fixed' | 'hybrid' | 'con
   if (hasTiers && hasFixed) return 'hybrid'
   if (hasTiers) return 'consumption'
   return 'fixed'
-}
-
-// Classifies a one-time fee label into service / hardware / other
-function classifyFee(label: string): 'service' | 'hardware' | 'other' {
-  const l = label.toLowerCase()
-  if (/service|implement|setup|onboard|profession|training|consult|deploy|migration/.test(l)) return 'service'
-  if (/hardware|device|equipment|physical|machine|sensor/.test(l)) return 'hardware'
-  return 'other'
 }
 
 // billabilityConditionLabel/isChangeOrderConditionalFee now live in
@@ -628,22 +462,19 @@ function classifyFee(label: string): 'service' | 'hardware' | 'other' {
 function billabilityConditionLabel(c: OneTimeFee['billability_condition']): string | null {
   return describeBillabilityCondition(c ?? null)
 }
-function isChangeOrderConditionalFee(f: OneTimeFee): boolean {
-  return isChangeOrderConditional(f.billability_condition ?? null)
-}
-
-// Item 10 final amendment — thin JSX wrapper around
-// lib/billability-condition.ts's resolveOneTimeFeeTypeLabel (the tested,
-// pure undefined/null discriminator — see its own doc comment). Only the
-// presentational bits (styling, this table's own generic fallback string)
-// live here; the governing logic is the same one every future one-time-fee
-// consumer should reuse, not re-derived per call site.
-function oneTimeFeeTypeLabel(f: OneTimeFee, genericFallback: string) {
-  const result = resolveOneTimeFeeTypeLabel(f.billability_condition)
-  if (result.kind === 'condition') return result.label
-  if (result.kind === 'needs_review') return 'Needs review'
-  return f.manual_trigger ? <span className="text-amber-600">On delivery</span> : genericFallback
-}
+// Step 17H.3C3 — classifyFee/oneTimeFeeKindLabel now live in
+// lib/one-time-fee-commercial-logic.ts (classifyOneTimeFeeKind), imported
+// Item 10 final amendment — oneTimeFeeTypeLabel (a thin JSX wrapper around
+// lib/billability-condition.ts's resolveOneTimeFeeTypeLabel) was removed in
+// Step 17H.3C3: its sole consumer was the now-fully-retired standalone
+// "Products, Services & Pricing" card. resolveOneTimeFeeTypeLabel's
+// undefined/null discriminator logic itself is untouched and still owns
+// the "genuine legacy record vs. Step-12-evaluated" distinction — the
+// Commercial Logic "Billability" row this page now renders instead
+// reimplements the SAME discriminator inline (billability_condition ===
+// undefined && manual_trigger), matching ReviewPanel's own established
+// wording ("Manual billing") rather than this function's retired "On
+// delivery" fallback — see the 17H.3C3 report for why the two disagreed.
 
 // Exports billing line items as a Stripe-compatible CSV
 function downloadBillingCSV(items: LineItem[], jobName: string, cur: string) {
@@ -758,63 +589,11 @@ function MeterMappingStatusChip({ total, confirmed, onClick }: { total: number; 
   )
 }
 
-// Step 17F, item 1/2 — one tile per lib/usage-source-cards.ts UsageSourceCard,
-// extracted out of the Usage sources section so it can be reused wherever a
-// usage source needs to render (this standalone section today, potentially
-// a billing-period workspace tomorrow). status/sourceName are the SAME
-// already-corrected fields the lib now derives via isMeterMappingResolved
-// (item 2's fix) — this component never re-decides confirmation state
-// itself, only renders what it's given.
-function UsageSourceCardTile({ card, onConfirm }: { card: UsageSourceCard; onConfirm: () => void }) {
-  return (
-    <div className="rounded-xl border p-3" style={{ borderColor: card.status === 'confirmed' ? 'rgba(26,61,43,0.1)' : '#FAC775' }}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-[12px] font-medium text-ink truncate">{card.label}</p>
-          {card.semanticInputKey && <p className="text-[10px] font-mono text-stone/60 truncate">{card.semanticInputKey}</p>}
-        </div>
-        <button onClick={onConfirm} className="text-[11px] font-medium text-stone hover:text-ink flex-shrink-0">{card.status === 'confirmed' ? 'Change' : 'Confirm'}</button>
-      </div>
-      <div className="mt-1.5 space-y-0.5 text-[11px]">
-        <p className="text-stone">Source: <span className="text-ink font-medium">{card.sourceName}</span></p>
-        {card.sourceType === 'api_meter' && <p className="text-stone">Type: <span className="text-ink">API meter</span></p>}
-        {card.sourceType === 'manual' && <p className="text-stone">Type: <span className="text-ink">Manual usage</span></p>}
-        <p className="text-stone">
-          Status:{' '}
-          <span className="font-medium" style={card.status === 'confirmed' ? { color: '#0B5C36' } : { color: '#B45309' }}>
-            {card.status === 'confirmed' ? 'Confirmed' : 'Not yet confirmed'}
-          </span>
-        </p>
-      </div>
-      {card.consumers.length > 0 && (
-        <div className="mt-2 pt-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.06)' }}>
-          <p className="text-[10px] font-semibold text-stone uppercase tracking-wide mb-1">Used by</p>
-          <ul className="space-y-0.5">
-            {card.consumers.map((consumer, i) => (
-              <li key={i} className="text-[11px] text-stone flex items-start gap-1.5">
-                <span className="text-stone/40">•</span>{consumer}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function BillingModelBadge({ model }: { model: 'fixed' | 'hybrid' | 'consumption' }) {
-  const map = {
-    fixed:       { label: 'Fixed — Subscription',        bg: '#EEF9F2', color: '#1A3D2B' },
-    hybrid:      { label: 'Hybrid — Fixed + Consumption', bg: '#EFF6FF', color: '#1E40AF' },
-    consumption: { label: 'Consumption',                  bg: '#FEF9C3', color: '#854D0E' },
-  }[model]
-  return (
-    <span className="text-[10px] font-semibold px-3 py-1.5 rounded-full"
-      style={{ background: map.bg, color: map.color }}>
-      {map.label}
-    </span>
-  )
-}
+// Step 17H.3D3 — BillingModelBadge (Fixed/Hybrid/Consumption pill) was
+// removed: its only mount was Commercial Terms' own header, retired along
+// with that section. billingModel (deriveBillingModel(terms)) itself is
+// still used elsewhere on this page (unrelated readiness-banner logic) —
+// only this rendering wrapper became dead.
 
 // Shared structured-fact row — used everywhere a card shows a label/value
 // pair (Applies to, Carry-forward, Cash, Trigger, Rebate, Basis, Timing,
@@ -857,6 +636,15 @@ function FactList({ rows, dense, className }: { rows: { label: string; value: Re
   )
 }
 
+// Step 17G.4A — CommercialComponentCard (one expandable card per
+// CommercialComponent) was removed in Step 17H.3C2 once Commercial Logic &
+// Billing Setup's accordion gained full parity with everything this card
+// showed for fixed/usage/performance components, including the band/rate
+// schedule tables (17H.3C1/17H.3C2). BandTableToggle/RateScheduleToggle
+// (now app/_components/) are still used — by Commercial Logic's own
+// footers — this card was their only OTHER consumer, and is genuinely
+// dead: see the 17H.3C2 report for the reference check.
+
 function Stat({ label, value, sub }: { label: string; value?: string | null; sub?: string }) {
   return (
     <div>
@@ -867,11 +655,10 @@ function Stat({ label, value, sub }: { label: string; value?: string | null; sub
   )
 }
 
-function EditableStat({ label, value, sub, hint, inputType = 'text', placeholder, onSave }: {
+function EditableStat({ label, value, sub, inputType = 'text', placeholder, onSave }: {
   label: string
   value?: string | null
   sub?: string
-  hint?: string
   inputType?: 'text' | 'date' | 'number'
   placeholder?: string
   onSave: (v: string) => Promise<void>
@@ -935,8 +722,18 @@ function EditableStat({ label, value, sub, hint, inputType = 'text', placeholder
           >
             {value ?? <span className="text-stone/40">—</span>}
           </p>
+          {/* Step 17H.4B0D4H1B4E6.3 A3 — an always-shown "hint" line here
+              used to make an EMPTY field taller than a filled one, and
+              since CSS grid rows size to their tallest cell, one empty
+              field with a hint inflated the height of the WHOLE grid row.
+              Every current caller passed the identical string to both
+              `hint` and `placeholder` (see EditableStat's Props/callers) —
+              the guidance is still there the moment you click to edit
+              (the input's own placeholder), so nothing is hidden, the
+              field stays exactly as visible/editable as before, and empty
+              fields now share the same compact baseline height as filled
+              ones. */}
           {sub && <p className="text-[11px] text-stone mt-0.5">{sub}</p>}
-          {!value && hint && <p className="text-[11px] mt-0.5 leading-snug" style={{ color: '#B45309' }}>{hint}</p>}
         </div>
         <button
           onClick={startEdit}
@@ -950,69 +747,13 @@ function EditableStat({ label, value, sub, hint, inputType = 'text', placeholder
   )
 }
 
-function CalcTooltip({ calc, children }: { calc?: string | null; children: React.ReactNode }) {
-  const [show, setShow] = useState(false)
-  if (!calc) return <>{children}</>
-  return (
-    <span className="relative inline-block" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
-      <span className="cursor-help border-b border-dashed" style={{ borderColor: 'rgba(26,61,43,0.35)' }}>
-        {children}
-      </span>
-      {show && (
-        <div
-          className="absolute z-50 bottom-full mb-2.5 rounded-xl shadow-xl pointer-events-none text-left"
-          style={{ background: '#1A3D2B', color: '#fff', padding: '10px 13px', width: 290, left: '50%', transform: 'translateX(-50%)' }}
-        >
-          <p className="text-[9px] font-bold uppercase tracking-[0.15em] mb-1.5" style={{ color: 'rgba(255,255,255,0.45)' }}>
-            How this is calculated
-          </p>
-          <p className="text-[11px] leading-relaxed whitespace-pre-line" style={{ color: 'rgba(255,255,255,0.88)' }}>{calc}</p>
-          <div className="absolute left-1/2 -translate-x-1/2 top-full" style={{ width: 0, height: 0, borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderTop: '6px solid #1A3D2B' }} />
-        </div>
-      )}
-    </span>
-  )
-}
-
-function BigValue({ label, value, unit, warn, note, calcNote, children }: {
-  label: string; value: string; unit?: string; warn?: boolean; note?: string; calcNote?: string; children?: React.ReactNode
-}) {
-  return (
-    <div>
-      <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-2 flex items-center gap-2">
-        {label}
-        {warn && (
-          <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200">
-            verify
-          </span>
-        )}
-      </p>
-      <div className="flex items-baseline gap-1.5">
-        <CalcTooltip calc={calcNote}>
-          <span className="text-[30px] font-medium leading-none" style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }}>{value}</span>
-        </CalcTooltip>
-        {unit && <span className="text-[12px] text-stone">{unit}</span>}
-      </div>
-      {note && <p className="text-[11px] text-stone mt-1">{note}</p>}
-      {children}
-    </div>
-  )
-}
-
-function SectionChip({ heading, onClick }: { heading?: string; onClick: () => void }) {
-  if (!heading) return null
-  const num = heading.match(/^[\d.]+/)?.[0]
-  return (
-    <button
-      onClick={onClick}
-      className="hover:underline whitespace-nowrap transition-colors"
-      style={{ fontSize: 11, fontWeight: 600, color: '#1F7A4A', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-      title={`Open §${heading} in contract PDF`}
-    >
-      §{num ?? heading}
-    </button>
-  )
-}
+// CalcTooltip/BigValue/SectionChip — removed (surgical generic rule pass).
+// Their sole consumer was the "Verify extracted amounts"/"Pricing" section
+// removed alongside them; BigValue's calc-tooltip capability was never
+// actually exercised in practice (calcNote was never passed a value
+// anywhere on this page even before removal). Commercial BoM's own table
+// cells are the surviving, authoritative rendering for every value these
+// used to duplicate.
 
 // Item 6 — a small, adjacent "View source clause ↗" affordance for a
 // review card, using the SAME onViewSource callback (and PDF-scrolling
@@ -1035,60 +776,6 @@ function SectionChip({ heading, onClick }: { heading?: string; onClick: () => vo
 // that pass neither `sections` nor `hasClauseText` keep their exact prior
 // behavior (silently render nothing when there's no section) — fully
 // backward compatible.
-function SourceClauseLink({
-  section, sections, onViewSource, hasClauseText,
-}: {
-  // Single-locator call sites (the common case, e.g. an escalator or the
-  // base fee) still just pass a plain heading string here — wrapped into
-  // one SourceLocator below so there's only one code path either way.
-  section?: string
-  sections?: SourceLocator[] | null
-  onViewSource?: (section: string) => void
-  hasClauseText?: boolean
-}) {
-  const list: SourceLocator[] = sections?.length ? sections : (section ? [{ exact_source_heading: section }] : [])
-  if (list.length === 0) {
-    if (hasClauseText) {
-      return (
-        <span
-          className="text-[10px] text-stone/50 whitespace-nowrap flex-shrink-0"
-          title="The clause text was preserved, but no navigable PDF location was captured for it."
-        >
-          Source text preserved — exact PDF location unavailable
-        </span>
-      )
-    }
-    return null
-  }
-  if (!onViewSource) return null
-  if (list.length === 1) {
-    return (
-      <button
-        // Step 17B0.4 — exact_source_heading only, NEVER display_label —
-        // the viewer searches the original document's text layer for
-        // exactly this string.
-        onClick={() => onViewSource(list[0].exact_source_heading)}
-        className="text-[10px] font-medium text-forest hover:underline whitespace-nowrap flex-shrink-0"
-      >
-        View source clause ↗
-      </button>
-    )
-  }
-  return (
-    <span className="flex items-center gap-2 flex-wrap justify-end">
-      {list.map((loc, i) => (
-        <button
-          key={i}
-          onClick={() => onViewSource(loc.exact_source_heading)}
-          className="text-[10px] font-medium text-forest hover:underline whitespace-nowrap flex-shrink-0"
-        >
-          {loc.display_label ?? `Source ${i + 1}`} ↗
-        </button>
-      ))}
-    </span>
-  )
-}
-
 // Unsupported-mechanism review UI compacted for scannability (data itself
 // unchanged): the default row shows only title/badge, one-line
 // description, dependencies, and source links; the extracted source
@@ -1221,7 +908,9 @@ function PerformanceShareCard({
         </div>
         {fee.description && <p className="text-xs text-stone leading-relaxed mb-2">{fee.description}</p>}
         {!!fee.required_operational_inputs?.length && (
-          <p className="text-[11px] text-stone mb-2">Depends on: {fee.required_operational_inputs.join(' · ')}</p>
+          // Step 17H.4B0D4H1B4E6.1 §8 — business labels, not raw keys, as
+          // default (non-expanded) copy.
+          <p className="text-[11px] text-stone mb-2">Depends on: {fee.required_operational_inputs.map(humanizeKey).join(' · ')}</p>
         )}
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <button
@@ -1243,8 +932,8 @@ function PerformanceShareCard({
                     repeated here — they already live in the Operational
                     Data Inputs section, this card only names WHICH derived
                     metric and WHICH basis this fee's rate uses. */}
-                <p className="text-[11px] text-stone">Derived metric: {config.derived_metric.metric_key}</p>
-                <p className="text-[11px] text-stone">Charge basis: {config.basis_input_key}</p>
+                <p className="text-[11px] text-stone">Derived metric: {humanizeKey(config.derived_metric.metric_key)}</p>
+                <p className="text-[11px] text-stone">Charge basis: {humanizeKey(config.basis_input_key)}</p>
                 <p className="text-[11px] text-stone">
                   {config.rate_schedule.bands.length} rate bands, {config.rate_schedule.min_selector_value}–{config.rate_schedule.max_selector_value ?? '∞'}
                   {config.derived_metric.output_unit === 'percentage' ? '%' : ''}
@@ -1276,12 +965,25 @@ function humanizeKey(key: string): string {
 // period, not just during review. Reuses the exact same <ManualInputEntry>
 // widget (same operational_input_period_values API/versioning) — no
 // second persistence path, just a persistent place to reach it from.
+// Step 17H.4B0D4H1B4E2.2 — this card used to duplicate the input's business
+// label/technical key/"Source method: Manual entry"/"Used by" consumer list
+// (definition facts) alongside its entry widget (runtime capability). The
+// definition now lives exactly once, as a "Required inputs" row under the
+// owning component in Commercial Logic & Billing Setup (or, for an input
+// with no owning component, under "Other required inputs" — see the
+// consumedOperationalInputKeys set-difference computation above). This card
+// keeps ONLY what Commercial Logic cannot represent: the actual entry
+// widget, which is genuinely cross-period (ManualInputEntry carries its own
+// independent period-start/period-end fields, unlike the period-locked
+// PeriodOperationalInputEntry used inside a single Billing Timeline period
+// card) — so a reviewer can back-fill or correct any past or future
+// period's value from one place, not just the currently-open one. A
+// minimal label stays so the entry widget is identifiable at a glance.
 function OperationalInputCard({
-  jobId, input, consumers, contractStartDate,
+  jobId, input, contractStartDate,
 }: {
   jobId: string
   input: { key: string }
-  consumers: OperationalInputConsumer[]
   contractStartDate?: string | null
 }) {
   // Step 17E.3, item 1 — reuses the SAME hasContractStarted function the
@@ -1295,20 +997,6 @@ function OperationalInputCard({
   return (
     <div className="rounded-xl border p-4" style={{ borderColor: 'rgba(26,61,43,0.1)' }}>
       <p className="text-sm font-medium text-ink">{humanizeKey(input.key)}</p>
-      <p className="text-[11px] font-mono text-stone/60 mt-0.5">{input.key}</p>
-      <p className="text-[11px] text-stone mt-1">Source method: Manual entry</p>
-      {consumers.length > 0 && (
-        <div className="text-[10px] text-stone/50 mt-0.5">
-          <span>Used by: </span>
-          {consumers.map((c, i) => (
-            <span key={c.label}>
-              {i > 0 && ' · '}
-              <span className="text-stone/70">{c.label}</span>
-              {c.detail && <span className="text-stone/40"> — {c.detail}</span>}
-            </span>
-          ))}
-        </div>
-      )}
       {started ? (
         <ManualInputEntry jobId={jobId} inputKey={input.key} />
       ) : (
@@ -1320,27 +1008,36 @@ function OperationalInputCard({
   )
 }
 
+// Step 17H.4B0D4H1B4E2.2 — renamed from "Operational inputs" (a definition-
+// sounding name) to make clear this is now purely the entry/backfill tool;
+// the WHAT/WHY (which inputs this agreement needs and what they feed) is
+// answered once, in Commercial Logic & Billing Setup's "Required inputs"
+// rows. `fees`/consumer-description are no longer needed here — the
+// consumer relationship is established at the owning component, not
+// repeated per-input in this entry list.
 function OperationalInputsSection({
-  jobId, inputs, fees, contractStartDate,
+  jobId, inputs, contractStartDate,
 }: {
   jobId: string
   inputs: Array<{ key: string; sources: string[] }>
-  fees: AdditionalRecurringFee[]
   contractStartDate?: string | null
 }) {
   if (inputs.length === 0) return null
   const started = hasContractStarted(contractStartDate)
   return (
-    <div className="bg-white rounded-2xl border border-forest/10 p-6 space-y-4">
+    // Step 17H.4B0D4H1B4E6.1 §15/§16 — deep-link target for ReviewPanel's
+    // compact operational-data-inputs summary (MeterMappingPanel's
+    // onNavigateToOperationalInputs). No anchor existed here before this.
+    <div id="operational-inputs-section" className="bg-white rounded-2xl border border-forest/10 p-6 space-y-4">
       <div>
-        <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Operational inputs</h2>
+        <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Enter operational values</h2>
         {/* Step 17E.3, item 1 — never invites data entry for a period
             that cannot exist yet; the description itself changes to
             explain WHEN this becomes actionable rather than implying it
             already is. */}
         <p className="text-[11px] text-stone mt-1">
           {started
-            ? <>Recurring monetary facts this agreement needs every billing period — enter and finalize the current period&apos;s value here.</>
+            ? <>Enter and finalize a value for any billing period — what these are and why this agreement needs them is described under Commercial Logic & Billing Setup.</>
             : <>Required once billing begins on {contractStartDate ? new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(contractStartDate + 'T00:00:00')) : 'the contract start date'}.</>}
         </p>
       </div>
@@ -1350,7 +1047,6 @@ function OperationalInputsSection({
             key={input.key}
             jobId={jobId}
             input={input}
-            consumers={describeOperationalInputConsumers({ inputKey: input.key, fees })}
             contractStartDate={contractStartDate}
           />
         ))}
@@ -1394,508 +1090,106 @@ type PerformanceShareResult = {
   variableInvoiceTimingUnresolved?: boolean
 }
 
-function PerformanceShareDisplay({ jobId, currency, onLoaded }: { jobId: string; currency: string; onLoaded?: (fees: PerformanceShareResult[]) => void }) {
-  const [fees, setFees] = useState<PerformanceShareResult[] | null>(null)
-
-  useEffect(() => {
-    let dead = false
-    fetch(`/api/jobs/${jobId}/performance-share`).then(r => r.json())
-      .then((res: { fees?: PerformanceShareResult[] }) => {
-        if (dead) return
-        const loaded = res.fees ?? []
-        setFees(loaded)
-        onLoaded?.(loaded)
-      })
-      .catch(() => { if (!dead) setFees([]) })
-    return () => { dead = true }
-    // onLoaded is a stable per-render callback the caller controls; only
-    // jobId identifies a genuinely new fetch target.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId])
-
-  if (fees === null || fees.length === 0) return null
-
-  return (
-    <div className="bg-white rounded-2xl border border-forest/10 p-6 space-y-4">
-      <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Performance share</h2>
-      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
-        {fees.map(f => (
-          <div key={f.feeLabel} className="rounded-xl border p-4" style={{ borderColor: 'rgba(26,61,43,0.1)' }}>
-            <p className="text-sm font-medium text-ink mb-2">{f.feeLabel}</p>
-            {(f.status === 'ready' || f.status === 'waived') ? (
-              <div className="space-y-1 text-[12px]">
-                {f.numeratorKey && <p className="text-stone">{humanizeKey(f.numeratorKey)}: <span className="text-ink font-medium">{fmt(f.numeratorValue, f.currency ?? currency)}</span></p>}
-                {f.denominatorKey && <p className="text-stone">{humanizeKey(f.denominatorKey)}: <span className="text-ink font-medium">{fmt(f.denominatorValue, f.currency ?? currency)}</span></p>}
-                <p className="text-stone">Payment rate: <span className="text-ink font-medium">{f.derivedPct?.toFixed(2)}%</span></p>
-                <p className="text-stone">Selected rate: <span className="text-ink font-medium">{f.selectedRatePct?.toFixed(2)}%</span></p>
-                <p className="text-stone pt-1.5 mt-1 border-t" style={{ borderColor: 'rgba(26,61,43,0.06)' }}>
-                  Performance share:{' '}
-                  <span className="text-ink font-semibold">
-                    {f.status === 'waived' ? `${fmt(0, f.currency ?? currency)} — waived (pilot)` : fmt(f.amount, f.currency ?? currency)}
-                  </span>
-                </p>
-                {f.periodStart && <p className="text-[10px] text-stone/50 mt-1">For period {f.periodStart} – {f.periodEnd}</p>}
-                {/* Step 17F.8, item 6 — the amount above is genuinely
-                    "known"; this is a separate, additional fact about
-                    whether it can actually be TRANSMITTED yet — matches
-                    the billing-period workspace's own known-vs-final
-                    doctrine, never silently implying readiness the real
-                    scheduler wouldn't grant. */}
-                {f.variableInvoiceTimingUnresolved && (
-                  <p className="text-[11px] font-medium mt-1" style={{ color: '#B45309' }}>Variable invoice timing: Decision required</p>
-                )}
-              </div>
-            ) : f.status === 'not_started' ? (
-              <div>
-                <p className="text-[12px] font-medium text-stone/60">Awaiting first billing period</p>
-                {f.contractStartDate && <p className="text-[11px] text-stone/50 mt-0.5">Contract begins {fmtDate(f.contractStartDate)}</p>}
-                {f.variableInvoiceTimingUnresolved && (
-                  <p className="text-[11px] font-medium mt-1" style={{ color: '#B45309' }}>Variable invoice timing: Decision required</p>
-                )}
-              </div>
-            ) : (
-              <div>
-                <p className="text-[12px] font-medium" style={{ color: '#B45309' }}>Pending operational inputs</p>
-                {f.reason && f.reason !== 'Pending operational inputs' && <p className="text-[11px] text-stone/60 mt-0.5">{f.reason}</p>}
-                {f.variableInvoiceTimingUnresolved && (
-                  <p className="text-[11px] font-medium mt-1" style={{ color: '#B45309' }}>Variable invoice timing: Decision required</p>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// Step 17E.3, item 3 — a friendly, GENERIC (never Remembill-specific —
-// this is the SAME 17C.2 mechanism type any future contract with a
-// rolling-band migration would also use) title for the two mechanism
-// `kind` strings this codebase's extraction actually produces (see
-// lib/commercial-mechanism-compiler.ts / the Remembill fixture). Falls
-// back to a plain humanization for any other kind, never asserting a
-// business name this function doesn't actually know.
-const ROLLING_MECHANISM_TITLES: Record<string, string> = {
-  rolling_volume_band_migration: 'Rolling volume-band migration',
-  rolling_volume_pricing_transition: 'Rolling volume-band migration',
-}
-function humanizeMechanismKind(kind: string): string {
-  return ROLLING_MECHANISM_TITLES[kind] ?? humanizeKey(kind)
-}
-
-// Step 17C.2, item 13 — replaces the old "Unsupported" card for a
-// mechanism that now has a real rolling_band_migration config: shows
-// live monitoring/trigger/lifecycle status instead. Details (rolling
-// average trace, band comparison, notice/effective-date state) stay
-// collapsed by default, same shell convention as UnsupportedMechanismCard/
-// PerformanceShareCard. Never auto-activates anything — the only
-// mutating action exposed is confirming that advance notice was given,
-// and even that leaves the actual band change to be derived, at read
-// time, from (notice_status, effective_from, asOf).
-type RollingBandEvaluation =
-  | { status: 'not_ready' | 'invalid'; reason: string }
-  | { status: 'no_transition'; rollingAverage: number; contractedVolume: number }
-  | { status: 'transition_triggered_not_executable'; rollingAverage: number; contractedVolume: number; fromBand: { from_unit: number; to_unit: number | null; monthly_fee: number | null }; proposedBand: { from_unit: number; to_unit: number | null; monthly_fee: number | null } | null; reason: string }
-  | { status: 'transition_triggered'; rollingAverage: number; contractedVolume: number; fromBand: { from_unit: number; to_unit: number | null; monthly_fee: number | null }; toBand: { from_unit: number; to_unit: number | null; monthly_fee: number | null } }
-type RollingBandTransitionRow = {
-  id: string
-  trigger_metric: string
-  trigger_value: number
-  from_band: { from_unit: number; to_unit: number | null; monthly_fee: number | null }
-  to_band: { from_unit: number; to_unit: number | null; monthly_fee: number | null }
-  notice_required: boolean
-  notice_status: 'pending' | 'confirmed' | null
-  notice_confirmed_at: string | null
-  effective_rule: { kind: 'next_billing_period' | 'next_renewal_term' | 'specific_date'; specific_date?: string | null; provenance: string } | null
-  effective_from: string | null
-  volume_transition_rule: { kind: 'band_upper_bound' | 'rolling_average' | 'specific_volume' | 'unchanged'; value?: number | null; provenance: string } | null
-  status: 'pending_notice' | 'decision_required' | 'pending_effective_date' | 'pricing_required'
-  lifecycle_status: 'pending_notice' | 'decision_required' | 'pending_effective_date' | 'pricing_required' | 'active'
-}
-
-// Step 17C.2c — the effective contracted/included volume a resolved
-// volume_transition_rule implies, computed CLIENT-SIDE purely for display
-// (the real, authoritative computation is lib/rolling-band-migration-
-// pull.ts's resolveEffectiveContractedVolume, used server-side by the
-// overage engine) — mirrors that function's exact same four-way logic so
-// the review card never shows a number the server itself wouldn't produce.
-function describeVolumeTreatment(
-  rule: RollingBandTransitionRow['volume_transition_rule'],
-  toBand: { to_unit: number | null },
-  triggerValue: number,
-  contractedVolume: number | null,
-): string {
-  if (!rule) return 'Decision required'
-  const provenanceSuffix = rule.provenance === 'contract_derived' ? ' (from the contract)' : ' (reviewer confirmed)'
-  if (rule.kind === 'band_upper_bound') {
-    return toBand.to_unit != null ? `${toBand.to_unit.toLocaleString()} (band upper limit)${provenanceSuffix}` : `Decision required — this band has no upper limit`
-  }
-  if (rule.kind === 'rolling_average') {
-    // Step 17C.2d, item 2 — ceiled to whole units, matching
-    // resolveEffectiveContractedVolume's own Math.ceil exactly; the raw
-    // (possibly fractional) average stays visible parenthetically — the
-    // audit trace this rounding must never lose.
-    const ceiled = Math.ceil(triggerValue)
-    const rawSuffix = ceiled !== triggerValue ? `, raw average ${triggerValue.toLocaleString(undefined, { maximumFractionDigits: 3 })}` : ''
-    return `${ceiled.toLocaleString()} (rolling average, rounded up to whole requests${rawSuffix})${provenanceSuffix}`
-  }
-  if (rule.kind === 'specific_volume') return rule.value != null ? `${rule.value.toLocaleString()} (specific volume)${provenanceSuffix}` : 'Decision required'
-  // unchanged
-  return contractedVolume != null ? `${contractedVolume.toLocaleString()} (unchanged)${provenanceSuffix}` : 'Decision required'
-}
-
-function fmtBand(band: { from_unit: number; to_unit: number | null; monthly_fee: number | null }, currency?: string): string {
-  const range = `${band.from_unit.toLocaleString()}–${band.to_unit != null ? band.to_unit.toLocaleString() : '∞'}`
-  const fee = band.monthly_fee != null ? `${currency ?? ''} ${band.monthly_fee.toLocaleString()}/month`.trim() : 'Price required (Offereras)'
-  return `${range} → ${fee}`
-}
-
-function RollingBandMigrationCard({
-  jobId, mechanismKind, title, description, sourceClause, requiredInputs, config, sections, fieldSourceFallback, onViewSource, currency, contractedVolume, contractStartDate,
-}: {
-  jobId: string
-  mechanismKind: string
-  title: string
-  description?: string | null
-  sourceClause?: string | null
-  requiredInputs?: string[] | null
-  config: RollingBandMigrationConfig
-  sections?: SourceLocator[] | null
-  fieldSourceFallback?: string
-  onViewSource?: (section: string) => void
-  currency?: string
-  contractedVolume?: number | null
-  // Step 17E.3, item 3 — see the preStart derivation below.
-  contractStartDate?: string | null
-}) {
-  const [expanded, setExpanded] = useState(false)
-  const [data, setData] = useState<{ evaluation: RollingBandEvaluation | null; transition: RollingBandTransitionRow | null } | null>(null)
-  const [confirming, setConfirming] = useState(false)
-  const [resolvingRule, setResolvingRule] = useState(false)
-  const [ruleKind, setRuleKind] = useState<'next_billing_period' | 'next_renewal_term' | 'specific_date'>('next_billing_period')
-  const [specificDate, setSpecificDate] = useState('')
-  const [resolvingVolumeRule, setResolvingVolumeRule] = useState(false)
-  const [volumeRuleKind, setVolumeRuleKind] = useState<'band_upper_bound' | 'rolling_average' | 'unchanged' | 'specific_volume'>('band_upper_bound')
-  const [specificVolume, setSpecificVolume] = useState('')
-
-  const load = useCallback(() => {
-    fetch(`/api/jobs/${jobId}/rolling-band-transitions`)
-      .then(r => r.json())
-      .then((res: { evaluations?: Array<{ mechanismKind: string; evaluation: RollingBandEvaluation }>; transitions?: RollingBandTransitionRow[] }) => {
-        const evaluation = res.evaluations?.find(e => e.mechanismKind === mechanismKind)?.evaluation ?? null
-        const transition = res.transitions?.find(t => t.trigger_metric === config.aggregate.input_key) ?? null
-        setData({ evaluation, transition })
-      })
-      .catch(() => setData({ evaluation: null, transition: null }))
-  }, [jobId, mechanismKind, config.aggregate.input_key])
-
-  useEffect(() => { load() }, [load])
-
-  const confirmNotice = async (transitionId: string) => {
-    setConfirming(true)
-    try {
-      const res = await fetch(`/api/jobs/${jobId}/rolling-band-transitions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'confirm_notice', transition_id: transitionId }),
-      })
-      if (res.ok) load()
-    } finally {
-      setConfirming(false)
-    }
-  }
-
-  const resolveEffectiveRule = async (transitionId: string) => {
-    if (ruleKind === 'specific_date' && !specificDate) return
-    setResolvingRule(true)
-    try {
-      const res = await fetch(`/api/jobs/${jobId}/rolling-band-transitions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'resolve_effective_rule', transition_id: transitionId, kind: ruleKind, specific_date: ruleKind === 'specific_date' ? specificDate : undefined }),
-      })
-      if (res.ok) load()
-    } finally {
-      setResolvingRule(false)
-    }
-  }
-
-  const resolveVolumeRule = async (transitionId: string) => {
-    if (volumeRuleKind === 'specific_volume' && !specificVolume) return
-    setResolvingVolumeRule(true)
-    try {
-      const res = await fetch(`/api/jobs/${jobId}/rolling-band-transitions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'resolve_volume_rule', transition_id: transitionId, kind: volumeRuleKind, value: volumeRuleKind === 'specific_volume' ? Number(specificVolume) : undefined }),
-      })
-      if (res.ok) load()
-    } finally {
-      setResolvingVolumeRule(false)
-    }
-  }
-
-  const transition = data?.transition ?? null
-  const evaluation = data?.evaluation ?? null
-
-  const badge = data === null
-    ? { label: 'Checking…', color: '#57534E', background: '#F5F5F4' }
-    : transition
-      ? transition.lifecycle_status === 'active'
-        ? { label: 'Active', color: '#15803D', background: '#DCFCE7' }
-        : transition.lifecycle_status === 'pricing_required'
-          ? { label: 'Price required', color: '#DC2626', background: '#FEE2E2' }
-          : transition.lifecycle_status === 'pending_notice'
-            ? { label: 'Triggered — Notice required', color: '#B45309', background: '#FEF3C7' }
-            : transition.lifecycle_status === 'decision_required'
-              ? { label: 'Triggered — Decision required', color: '#DC2626', background: '#FEE2E2' }
-              : { label: 'Triggered — Pending effective date', color: '#B45309', background: '#FEF3C7' }
-      : evaluation?.status === 'transition_triggered'
-        ? { label: 'Triggered', color: '#B45309', background: '#FEF3C7' }
-        : evaluation?.status === 'transition_triggered_not_executable'
-          ? { label: 'Price required', color: '#DC2626', background: '#FEE2E2' }
-          : evaluation?.status === 'invalid'
-            ? { label: 'Configuration issue', color: '#DC2626', background: '#FEE2E2' }
-            : { label: 'Monitoring', color: '#57534E', background: '#F5F5F4' }
-
-  const summaryLine = transition
-    ? `Average ${transition.trigger_value.toLocaleString(undefined, { maximumFractionDigits: 2 })} · ${fmtBand(transition.from_band, currency)} → ${fmtBand(transition.to_band, currency)}`
-    : evaluation && (evaluation.status === 'no_transition' || evaluation.status === 'transition_triggered' || evaluation.status === 'transition_triggered_not_executable')
-      ? `Rolling average: ${evaluation.rollingAverage.toLocaleString(undefined, { maximumFractionDigits: 2 })} (contracted volume: ${evaluation.contractedVolume.toLocaleString()})`
-      : evaluation?.reason ?? null
-
-  // Step 17E.3, item 3 — pre-start supplementary fact, derived from the
-  // SAME contractStartDate check the Operational Inputs/Performance
-  // Share sections already use (lib/performance-share-timing.ts's
-  // hasContractStarted — never a second date computation) and the
-  // mechanism's own typed window_count. Only shown before the contract
-  // has started (the one case genuinely known to be "0 of N" — once
-  // started, evaluation.reason's own "only X of the required Y periods
-  // have closed" wording is already the more precise fact and is not
-  // duplicated here).
-  const preStart = !transition && !hasContractStarted(contractStartDate)
-    ? `0 of ${config.aggregate.window_count} completed billing periods available`
-    : null
-
-  return (
-    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
-      <div className="px-4 pt-4 pb-3">
-        <div className="flex items-center gap-1.5 mb-0.5">
-          <i className="ti ti-chart-arrows-vertical text-stone" style={{ fontSize: 12 }} />
-          <span className="text-sm font-medium text-ink">{title}</span>
-        </div>
-        {/* Step 17E.3, item 3 — "Status: <badge>" on its own clearly-
-            separated line, fixing the reported "rolling volume band
-            migrationMonitoring" concatenation (the title and badge
-            previously sat directly adjacent in one flex row with nothing
-            but CSS padding between them — visually fine, but read as one
-            run-on string wherever the page's text content is extracted
-            without the badge's own background/padding, e.g. copy/paste
-            or a screen reader). */}
-        <div className="flex items-center gap-1.5 mb-2 ml-[18px]">
-          <span className="text-[11px] text-stone">Status:</span>
-          <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full whitespace-nowrap" style={{ color: badge.color, background: badge.background }}>
-            {badge.label}
-          </span>
-        </div>
-        {description && <p className="text-xs text-stone leading-relaxed mb-2">{description}</p>}
-        {summaryLine && <p className="text-[11px] text-stone mb-2">{summaryLine}</p>}
-        {preStart && <p className="text-[11px] text-stone/60 mb-2">{preStart}</p>}
-        {transition && transition.status !== 'pricing_required' && (
-          <p className="text-[11px] mb-2" style={{ color: transition.volume_transition_rule ? '#57534E' : '#DC2626' }}>
-            Contracted volume for overage: {describeVolumeTreatment(transition.volume_transition_rule, transition.to_band, transition.trigger_value, contractedVolume ?? null)}
-          </p>
-        )}
-        {!!requiredInputs?.length && (
-          <p className="text-[11px] text-stone mb-2">Depends on: {requiredInputs.join(' · ')}</p>
-        )}
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <button
-            onClick={() => setExpanded(e => !e)}
-            className="text-[10px] font-medium text-stone hover:text-ink whitespace-nowrap flex-shrink-0"
-          >
-            {expanded ? 'Hide details' : 'View details'}
-          </button>
-          <SourceClauseLink sections={sections} section={fieldSourceFallback} onViewSource={onViewSource} hasClauseText={!!sourceClause} />
-        </div>
-        {expanded && (
-          <div className="mt-3 pt-3 space-y-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.08)' }}>
-            {transition && transition.status === 'pricing_required' && (
-              <>
-                <p className="text-[11px] text-stone">Current band: {fmtBand(transition.from_band, currency)}</p>
-                <p className="text-[11px] text-stone">Proposed band: {fmtBand(transition.to_band, currency)}</p>
-                <p className="text-[11px] text-stone">No numeric price is configured for the proposed band — a real price must be added to base_fee_bands before this can ever activate. No price is ever invented.</p>
-              </>
-            )}
-            {transition && transition.status !== 'pricing_required' && (
-              <>
-                <p className="text-[11px] text-stone">Current band: {fmtBand(transition.from_band, currency)}</p>
-                <p className="text-[11px] text-stone">Proposed band: {fmtBand(transition.to_band, currency)}</p>
-                <p className="text-[11px] text-stone">
-                  Notice: {transition.notice_required ? (transition.notice_status === 'confirmed' ? `Confirmed ${transition.notice_confirmed_at ? new Date(transition.notice_confirmed_at).toLocaleDateString() : ''}` : 'Required — not yet confirmed') : 'Not required'}
-                </p>
-                <p className="text-[11px] text-stone">
-                  Effective timing: {transition.effective_rule ? `${transition.effective_rule.kind.replace(/_/g, ' ')}${transition.effective_from ? ` — ${transition.effective_from}` : ''} (${transition.effective_rule.provenance === 'contract_derived' ? 'from the contract' : 'reviewer confirmed'})` : 'Not yet resolved — Decision required'}
-                </p>
-                {transition.lifecycle_status === 'pending_notice' && (
-                  <button
-                    onClick={() => confirmNotice(transition.id)}
-                    disabled={confirming}
-                    className="text-[11px] font-medium px-3 py-1.5 rounded-lg mt-1"
-                    style={{ background: '#1A3D2B', color: 'white', opacity: confirming ? 0.6 : 1 }}
-                  >
-                    {confirming ? 'Confirming…' : 'Confirm notice was given'}
-                  </button>
-                )}
-                {(transition.lifecycle_status === 'decision_required' || transition.lifecycle_status === 'pending_effective_date') && (
-                  <div className="mt-1 space-y-1.5">
-                    <p className="text-[11px] text-stone font-medium">When does this take effect?</p>
-                    <select
-                      value={ruleKind}
-                      onChange={e => setRuleKind(e.target.value as typeof ruleKind)}
-                      className="text-[11px] border rounded-lg px-2 py-1"
-                      style={{ borderColor: 'rgba(26,61,43,0.15)' }}
-                    >
-                      <option value="next_billing_period">Next billing period</option>
-                      <option value="next_renewal_term">Next renewal/contract term</option>
-                      <option value="specific_date">Specific effective date</option>
-                    </select>
-                    {ruleKind === 'specific_date' && (
-                      <input
-                        type="date"
-                        value={specificDate}
-                        onChange={e => setSpecificDate(e.target.value)}
-                        className="text-[11px] border rounded-lg px-2 py-1 ml-1"
-                        style={{ borderColor: 'rgba(26,61,43,0.15)' }}
-                      />
-                    )}
-                    <button
-                      onClick={() => resolveEffectiveRule(transition.id)}
-                      disabled={resolvingRule || (ruleKind === 'specific_date' && !specificDate)}
-                      className="text-[11px] font-medium px-3 py-1.5 rounded-lg mt-1 block"
-                      style={{ background: '#1A3D2B', color: 'white', opacity: resolvingRule ? 0.6 : 1 }}
-                    >
-                      {resolvingRule ? 'Resolving…' : transition.effective_rule ? 'Update effective timing' : 'Resolve effective timing'}
-                    </button>
-                  </div>
-                )}
-                {/* Step 17C.2c — a SEPARATE structured decision from the
-                    effective-timing one above: which pricing band applies
-                    is never assumed to also answer which contracted/
-                    included volume governs future overage. Available
-                    independent of notice/effective-timing lifecycle state
-                    (it only affects live overage calculations, never a
-                    pre-built schedule), and shown even once the transition
-                    is already active — since a reviewer correcting this
-                    choice is always safe (see the route's own comment). */}
-                <div className="mt-2 pt-2 space-y-1.5 border-t" style={{ borderColor: 'rgba(26,61,43,0.06)' }}>
-                  <p className="text-[11px] text-stone font-medium">What contracted volume applies after this pricing-band change?</p>
-                  <select
-                    value={volumeRuleKind}
-                    onChange={e => setVolumeRuleKind(e.target.value as typeof volumeRuleKind)}
-                    className="text-[11px] border rounded-lg px-2 py-1"
-                    style={{ borderColor: 'rgba(26,61,43,0.15)' }}
-                  >
-                    <option value="band_upper_bound">Use the selected band&apos;s upper limit</option>
-                    <option value="rolling_average">Use rolling average, rounded up to whole requests</option>
-                    <option value="unchanged">Keep existing contracted volume</option>
-                    <option value="specific_volume">Set a specific contracted volume</option>
-                  </select>
-                  {volumeRuleKind === 'specific_volume' && (
-                    <input
-                      type="number"
-                      value={specificVolume}
-                      onChange={e => setSpecificVolume(e.target.value)}
-                      placeholder="e.g. 10000"
-                      className="text-[11px] border rounded-lg px-2 py-1 ml-1"
-                      style={{ borderColor: 'rgba(26,61,43,0.15)', width: 120 }}
-                    />
-                  )}
-                  <button
-                    onClick={() => resolveVolumeRule(transition.id)}
-                    disabled={resolvingVolumeRule || (volumeRuleKind === 'specific_volume' && !specificVolume)}
-                    className="text-[11px] font-medium px-3 py-1.5 rounded-lg mt-1 block"
-                    style={{ background: '#1A3D2B', color: 'white', opacity: resolvingVolumeRule ? 0.6 : 1 }}
-                  >
-                    {resolvingVolumeRule ? 'Resolving…' : transition.volume_transition_rule ? 'Update contracted volume' : 'Resolve contracted volume'}
-                  </button>
-                </div>
-              </>
-            )}
-            {!transition && evaluation?.status === 'transition_triggered' && (
-              <>
-                <p className="text-[11px] text-stone">Current band: {fmtBand(evaluation.fromBand, currency)}</p>
-                <p className="text-[11px] text-stone">Proposed band: {fmtBand(evaluation.toBand, currency)}</p>
-                <p className="text-[11px] text-stone/60">Detected just now — will be recorded on the next scheduled billing run.</p>
-              </>
-            )}
-            {!transition && evaluation?.status === 'transition_triggered_not_executable' && (
-              <p className="text-[11px] text-stone">{evaluation.reason}</p>
-            )}
-            {sourceClause && (
-              <p className="text-[11px] text-stone/70 leading-relaxed italic">&ldquo;{sourceClause}&rdquo;</p>
-            )}
-            <p className="text-[11px] text-stone/60">
-              Evaluated from the last {config.aggregate.window_count} completed billing periods&apos; {config.aggregate.input_key}. Only ever moves the future base-fee band — never rewrites the signed agreement or a past invoice.
-            </p>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function CorrectionInput({
-  value,
+// Step 17H.4B0D4H1B4E2.3 §3/10 — the standalone visual card this type used
+// to back (PerformanceShareDisplay) is retired: its evaluated (ready/
+// waived) content now renders inside Billing Timeline's own per-period
+// "Performance / outcome" detail (BillingSummaryCard.tsx), sourced from the
+// SAME GET .../performance-share fetch. This type is kept because
+// performanceShareStatus (below) still drives the separate, unrelated
+// "Current-period billing" KPI/readiness line further down this page —
+// see the useEffect that replaces PerformanceShareDisplay's old fetch.
+// Step 17H.4B0D4H1B4E2.5 §3-4 — traced exactly what this writes before
+// touching its wording: its one real call site (the BoM's "Commercial
+// component" name cell) feeds corrections[item.id].value into
+// handleApprove's `product_name: corrections[i.id]?.value || i.product_name`
+// — this ONLY ever edits the component's display NAME, never unit_price/
+// quantity/total_amount (a genuinely separate, working correction path
+// exists for those — ReviewPanel's own saveCorrection, ctx.primaryField
+// === 'unit_price' — a different UI entirely, reached from the review
+// drawer, not this component).
+//
+// Step: surgical UI fix — presentation only, same correction contract.
+// Previously rendered as an always-visible form beneath the row (heavy,
+// and only ever shown for confidence_score < 0.95 — implying editability
+// itself was confidence-gated, when only the WARNING icon should be).
+// Now mirrors EditableStat's own established pencil-on-hover pattern
+// (this file, ~line 658): the name reads as plain text; a pencil appears
+// on hover/focus and swaps just that span to an inline editor. Editing
+// capability no longer depends on confidence_score at all — matching the
+// BoM's quantity/unit-price cells, which have never been confidence-gated
+// either (see saveLineItemField's call sites). onChange still writes
+// straight into the SAME corrections[item.id] local state as before —
+// nothing about persistence (deferred to Approve via
+// applyProductNameCorrections/buildProductNameCorrectionRequests) changed.
+export function CorrectionInput({
+  displayName,
+  correctedValue,
   onChange,
-  onConfirm,
-  confirmLabel = '✓',
+  textStyle,
 }: {
-  value: string
+  displayName: string
+  correctedValue: string
   onChange: (v: string) => void
-  onConfirm?: (v: string) => Promise<void>
-  confirmLabel?: string
+  textStyle?: { color?: string }
 }) {
-  const [saving, setSaving] = useState(false)
-  const [saved,  setSaved]  = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
 
-  const handleConfirm = async () => {
-    if (!value || !onConfirm) return
-    setSaving(true)
-    setSaved(false)
-    try { await onConfirm(value); setSaved(true) } finally { setSaving(false) }
+  const startEdit = () => { setDraft(correctedValue || displayName); setEditing(true) }
+  const cancel = () => setEditing(false)
+  const save = () => {
+    const trimmed = draft.trim()
+    if (trimmed) onChange(trimmed)
+    setEditing(false)
   }
 
+  if (editing) return (
+    <span className="inline-flex items-center gap-1 align-middle">
+      <input
+        autoFocus
+        type="text"
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') cancel() }}
+        className="text-[12px] text-ink border border-forest/30 rounded px-1.5 py-0.5 outline-none focus:border-forest min-w-[160px]"
+      />
+      <button onClick={cancel} title="Cancel" className="text-stone/50 hover:text-ink p-0.5 flex-shrink-0 transition-colors">
+        <i className="ti ti-x" style={{ fontSize: 11 }} />
+      </button>
+      <button
+        onClick={save}
+        disabled={!draft.trim()}
+        title="Save"
+        className="flex items-center justify-center w-5 h-5 rounded text-white flex-shrink-0 disabled:opacity-50"
+        style={{ background: '#1A3D2B' }}
+      >
+        <i className="ti ti-check" style={{ fontSize: 10 }} />
+      </button>
+    </span>
+  )
+
   return (
-    <div className="mt-2.5 pt-2.5 border-t border-amber-200">
-      <p className="text-[9px] uppercase tracking-widest text-stone mb-1.5">Correct this value</p>
-      <div className="flex items-center gap-2">
-        <input
-          type="text"
-          placeholder="Enter correct value..."
-          value={value}
-          onChange={e => { onChange(e.target.value); setSaved(false) }}
-          className="flex-1 text-xs bg-amber-50 border border-amber-300 rounded-lg px-3 py-1.5 outline-none focus:border-amber-400 placeholder:text-stone/50"
-        />
-        {onConfirm && value && (
-          <button
-            onClick={handleConfirm}
-            disabled={saving}
-            title="Save correction"
-            className="flex items-center justify-center w-8 h-8 rounded-lg border transition-colors flex-shrink-0 disabled:opacity-50"
-            style={saved
-              ? { background: '#D4EAD9', borderColor: 'rgba(74,124,89,0.35)', color: '#1A3D2B' }
-              : { background: '#F0F8F3', borderColor: 'rgba(26,61,43,0.25)',   color: '#1A3D2B' }}
-          >
-            {saving
-              ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 12 }} />
-              : <i className="ti ti-check" style={{ fontSize: 12 }} />
-            }
-          </button>
-        )}
-      </div>
-    </div>
+    <span className="group/name inline-flex items-center gap-1 align-middle">
+      {/* The name text itself is also a click target (not just the pencil)
+          — same reasoning as EditableStat's own comment: a hover-only
+          pencil is needlessly fiddly to hunt for, and this is what makes
+          editing reachable on touch devices with no hover state at all. */}
+      <span
+        onClick={startEdit}
+        title="Edit component name"
+        style={textStyle}
+        className="cursor-pointer rounded -mx-0.5 px-0.5 hover:bg-forest/5 transition-colors"
+      >
+        {correctedValue || displayName}
+      </span>
+      <button
+        onClick={startEdit}
+        title="Edit component name"
+        className="opacity-0 group-hover/name:opacity-100 transition-opacity flex-shrink-0 p-0.5 rounded hover:bg-forest/5"
+      >
+        <i className="ti ti-pencil-minus" style={{ fontSize: 10, color: '#9CA3AF' }} />
+      </button>
+    </span>
   )
 }
 
@@ -1903,14 +1197,11 @@ function Divider() {
   return <div className="border-t border-forest/8" />
 }
 
-function SectionHeader({ title, section, onSection }: { title: string; section?: string; onSection: (s: string) => void }) {
-  return (
-    <div className="flex items-center justify-between mb-5">
-      <h3 className="text-[11px] font-bold text-stone uppercase tracking-[0.14em]">{title}</h3>
-      <SectionChip heading={section} onClick={() => section && onSection(section)} />
-    </div>
-  )
-}
+// Step 17H.3D3 — SectionHeader (title + source-clause SectionChip, used by
+// Commercial Terms' Discounts/Charging parameters/Price escalations
+// sub-headers) was removed along with that section. SectionChip itself
+// (the shared source-clause pill) is still used directly elsewhere on
+// this page — only this specific title+chip wrapper became dead.
 
 // ── Review panel helpers ───────────────────────────────────────────────────
 
@@ -1930,6 +1221,15 @@ function stripTierSuffix(label: string): string {
   return label.replace(/\s*—\s*(included in base fee|overage)\s*$/i, '').trim().toLowerCase()
 }
 
+// DISPLAY ONLY — a first-match, non-cardinality-aware label lookup, safe
+// only for read-only rendering (a summary figure, a tooltip, which review
+// card to show) where picking an arbitrary candidate on a label collision
+// is a cosmetic inconvenience, never a correctness risk. Step 17H.4B0D4B1G
+// retired this from the write path entirely: persistTierRateCorrection now
+// owns its own bidirectional, cardinality-aware, ID-first resolution
+// (lib/tier-escalator-correction.ts's resolveTierForLineItem/
+// resolveTierLineItemAssociation) and must never be bypassed by calling
+// this function to compute a tier index or target row for a mutation.
 function findTierForItem(item: LineItem, tiers: Tier[]): Tier | undefined {
   const cleanName = stripTierSuffix(item.product_name)
   return tiers.find(t => stripTierSuffix(t.tier_label ?? '') === cleanName)
@@ -2019,9 +1319,9 @@ function classifyItem(item: LineItem, escalators: Escalator[] = []): ItemKind {
 
 // classifyItem no longer decides tier_calculation (see its own comment) —
 // this is the direct replacement for call sites outside ReviewPanel (e.g.
-// the Commercial Terms table) that need to know whether a metric's tier
-// method is still unresolved, without duplicating the full metricNeededKinds
-// precomputation ReviewPanel itself uses.
+// Commercial BoM's own line-item table) that need to know whether a
+// metric's tier method is still unresolved, without duplicating the full
+// metricNeededKinds precomputation ReviewPanel itself uses.
 function isTierCalculationUnresolvedFor(unitType: string | undefined, tiers: Tier[]): boolean {
   if (!unitType) return false
   const metricTiers = tiers.filter(t => t.unit_type === unitType)
@@ -2724,6 +2024,44 @@ function RuleInterpretationCard({
     }
   }
 
+  // Step 17H.4B0D4H1B4E5 — live-reproduced fix for "Unknown ruleType:
+  // fixed_fee_billing_timing": the button used to always call generate()
+  // (interpret-rule) even for a KNOWN structured choice, and interpret-rule
+  // had no case for this ruleType at all. A known choice here is fully
+  // self-explanatory — the option id already IS the typed enum value (see
+  // FIXED_FEE_BILLING_TIMING_OPTIONS, lib/rule-interpretation.ts) — so no AI
+  // round-trip is needed. Builds the exact same shape of typed proposal
+  // interpret-rule would have produced and hands off to the EXISTING
+  // proposal-review phase: the reviewer still explicitly confirms via the
+  // same Confirm & apply button/confirmAndApply() every other rule type
+  // uses (structured option -> deterministic typed rule -> reviewer
+  // confirms/applies), never an auto-submit on selection.
+  const applyDeterministicFixedFeeTiming = () => {
+    if (selectedOption !== 'bill_at_period_start' && selectedOption !== 'bill_at_period_end') return
+    setErrorMsg(null)
+    setProposal({ timing: selectedOption, source_clause: sourceClause || null })
+    setWhatWillChange(describeWhatWillChange('fixed_fee_billing_timing', null))
+    setPhase('proposal')
+  }
+
+  // Step 17H.4B0D4H1B4E5.1 — direct mirror of applyDeterministicFixedFeeTiming
+  // above, for variable_invoice_timing's own two structured options (option
+  // ids already ARE VariableInvoiceTimingRule['timing']'s typed values — see
+  // VARIABLE_INVOICE_TIMING_OPTIONS, lib/rule-interpretation.ts). Per-fee,
+  // not job-level: contractUnitType (the fee_label prop this card already
+  // receives, unchanged) still flows through confirmAndApply()'s existing
+  // POST body exactly as the free-text path already sends it — confirm-rule
+  // already does recurring_fee_id-first audit addressing server-side from
+  // that fee_label (see confirm-rule/route.ts's recurringFeeTargetId), so
+  // no new identity-passing is needed here.
+  const applyDeterministicVariableInvoiceTiming = () => {
+    if (selectedOption !== 'invoice_at_next_period_start' && selectedOption !== 'invoice_at_period_end') return
+    setErrorMsg(null)
+    setProposal({ timing: selectedOption, source_clause: sourceClause || null })
+    setWhatWillChange(describeWhatWillChange('variable_invoice_timing', contractUnitType ?? null))
+    setPhase('proposal')
+  }
+
   const confirmAndApply = async () => {
     if (!proposal) return
     setPhase('confirming')
@@ -2948,7 +2286,7 @@ function RuleInterpretationCard({
         <p className="text-sm font-medium flex items-center gap-1.5" style={{ color: '#0B5C36' }}>
           <i className="ti ti-circle-check-filled" style={{ fontSize: 15 }} /> Rule confirmed and applied
         </p>
-        <p className="text-[11px] text-stone mt-1">Updated: Commercial Terms · Billing Configuration · Billing Schedule</p>
+        <p className="text-[11px] text-stone mt-1">Updated: Commercial Logic · Commercial BoM · Billing Schedule</p>
       </div>
     )
   }
@@ -3000,7 +2338,24 @@ function RuleInterpretationCard({
                 available on demand (View source clause / More details,
                 immediately below this block) — never inline here by
                 default, so the default card is facts-first, not
-                paragraph-first. */}
+                paragraph-first.
+                Step 17H.4B0D4H1B4E6.3 §C6 — calculation_preview is
+                documented as optional ("omit if not usefully computable
+                yet" — lib/rule-interpretation.ts), so factRows can
+                legitimately be empty for ANY rule type (escalator being
+                the reported case, not a special case). FactList already
+                returns null on an empty array, which used to leave this
+                card with a badge and nothing else — a blank "Verdix
+                recommendation" box with only "More details" beneath it.
+                Root cause: the default view had exactly one summary
+                source (calculation_preview) with no text fallback, unlike
+                the decision_required branch below (which always falls
+                back to reasoning via buildDecisionRequiredDisplay). Fixed
+                the same way, generically: whenever there are no fact rows
+                to show, fall back to the identical pure summary/details
+                split already used for Decision Required — same complete-
+                sentence guarantee, same never-repeats-on-expand guarantee,
+                nothing rule-type-specific. */}
             {(() => {
               const appRule = (aiProposal.proposed_interpretation as Record<string, unknown> | null)?.application_rule as Record<string, unknown> | undefined
               const cashRedeemable = (aiProposal.proposed_interpretation as Record<string, unknown> | null)?.cash_redeemable as boolean | 'unclear' | undefined
@@ -3014,19 +2369,33 @@ function RuleInterpretationCard({
               if (ruleType === 'service_credit' && aiProposal.cash_redeemable_state === 'clear_from_source') {
                 factRows.push({ label: 'Cash', value: formatCashRedeemableFact(cashRedeemable) })
               }
-              return <FactList rows={factRows} />
+              // Step 17H.4B0D4H1B4E6.3 §C5/§C6 — buildRecommendationDisplay
+              // (lib/rule-interpretation.ts) is the single, pure, directly
+              // tested decision of which text (if any) to show — prefers
+              // the fact list when present, falls back to the same
+              // reasoning-summary split Decision Required uses when it's
+              // empty. Fixes the reported "blank Verdix recommendation"
+              // bug generically, for every rule type, not just escalator.
+              const { summary, details } = buildRecommendationDisplay(factRows.length > 0, aiProposal.reasoning)
+              return (
+                <>
+                  {factRows.length > 0
+                    ? <FactList rows={factRows} />
+                    : summary && <p className="text-xs text-ink leading-relaxed">{summary}</p>}
+                  {details && (
+                    <div className="mt-2 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
+                      <button
+                        onClick={() => setShowFullReasoning(v => !v)}
+                        className="text-[11px] font-medium text-forest hover:underline"
+                      >
+                        {showFullReasoning ? 'Hide details' : 'More details'}
+                      </button>
+                      {showFullReasoning && <p className="text-xs text-ink leading-relaxed mt-1.5">{details}</p>}
+                    </div>
+                  )}
+                </>
+              )
             })()}
-            {!!aiProposal.reasoning && (
-              <div className="mt-2 pt-2" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
-                <button
-                  onClick={() => setShowFullReasoning(v => !v)}
-                  className="text-[11px] font-medium text-forest hover:underline"
-                >
-                  {showFullReasoning ? 'Hide details' : 'More details'}
-                </button>
-                {showFullReasoning && <p className="text-xs text-ink leading-relaxed mt-1.5">{aiProposal.reasoning}</p>}
-              </div>
-            )}
           </div>
           {/* Inline alternatives for a whole-card "Verdix recommendation" —
               same principle as the survival sub-field picker above, applied
@@ -3429,31 +2798,30 @@ function RuleInterpretationCard({
               {/* Item 5 — heading + one short fact, then choices immediately
                   below (unchanged). A single short sentence, not the AI's
                   full reasoning paragraph — that stays available under
-                  More details, never inline here by default. */}
+                  More details, never inline here by default.
+                  Step 17H.4B0D4H1B4E6.2 §5-§7 — decisionSummary/
+                  decisionDetails come from buildDecisionRequiredDisplay
+                  (lib/rule-interpretation.ts), a pure presentation-level
+                  split: decisionSummary is always a complete sentence
+                  (never a mid-word character cut), and decisionDetails is
+                  the leftover text ONLY — "More details" now always reads
+                  as a continuation, never a repeat of decisionSummary from
+                  the beginning. Generic across every RuleInterpretationCard
+                  kind — driven entirely by sentence-boundary structure and
+                  looksLikeMalformedReasoning, nothing rule/contract-
+                  specific. */}
               {(() => {
-                const text = aiProposal.reasoning || 'Contract does not specify how this should be handled — nothing is preselected.'
-                const { short, truncated } = truncateSentences(text, 1, 140)
-                // Step 17C.3b, item D — truncateSentences' own sentence-
-                // boundary regex can produce a meaningless fragment (e.g.
-                // "e." from text starting "E.g. ...") even though the full
-                // `text` is fine. Never render that fragment as Verdix's
-                // stated reasoning — omit the explanatory paragraph
-                // entirely and fall straight to the deterministic headline
-                // ("Decision required" above) + structured decision
-                // options below. The full, untruncated text is very likely
-                // fine on its own, so "More details" still offers it
-                // rather than losing real information over a bad cut point.
-                const shortIsMalformed = looksLikeMalformedReasoning(short)
+                const { decisionSummary, decisionDetails } = buildDecisionRequiredDisplay(aiProposal.reasoning)
                 return (
                   <>
-                    {!shortIsMalformed && <p className="text-xs" style={{ color: '#7F1D1D' }}>{short}</p>}
-                    {(truncated || shortIsMalformed) && !looksLikeMalformedReasoning(text) && (
+                    {decisionSummary && <p className="text-xs" style={{ color: '#7F1D1D' }}>{decisionSummary}</p>}
+                    {decisionDetails && (
                       <button onClick={() => setShowFullReasoning(v => !v)} className="text-[11px] font-medium mt-1 hover:underline" style={{ color: '#991B1B' }}>
                         {showFullReasoning ? 'Hide details' : 'More details'}
                       </button>
                     )}
-                    {(truncated || shortIsMalformed) && showFullReasoning && !looksLikeMalformedReasoning(text) && (
-                      <p className="text-xs mt-1.5" style={{ color: '#7F1D1D' }}>{text}</p>
+                    {decisionDetails && showFullReasoning && (
+                      <p className="text-xs mt-1.5" style={{ color: '#7F1D1D' }}>{decisionDetails}</p>
                     )}
                   </>
                 )
@@ -3506,21 +2874,50 @@ function RuleInterpretationCard({
             <textarea
               value={freeText}
               onChange={e => setFreeText(e.target.value)}
-              placeholder="Example: Apply the stated minimum as the quarterly floor after the included allowance. Do not add it on top of calculated usage."
+              placeholder={
+                // Step 17H.4B0D4H1B4E5/§5.1 §9 — rule-specific, not a global
+                // change: every other rule type keeps its existing (mostly
+                // minimum-commitment-shaped) example text unchanged.
+                ruleType === 'fixed_fee_billing_timing'
+                  ? 'Example: Invoice on the first day of each billing period, in advance.'
+                  : ruleType === 'variable_invoice_timing'
+                  ? 'Example: Invoice the calculated usage charge on the next monthly invoice after the measurement period closes.'
+                  : 'Example: Apply the stated minimum as the quarterly floor after the included allowance. Do not add it on top of calculated usage.'
+              }
               rows={3}
               className="w-full text-xs border rounded-xl px-3 py-2 outline-none"
               style={{ borderColor: 'rgba(26,61,43,0.15)', background: '#FAFAF9' }}
             />
           </div>
           {errorMsg && <p className="text-xs" style={{ color: '#DC2626' }}>{errorMsg}</p>}
-          <button
-            onClick={generate}
-            disabled={phase === 'loading' || (!selectedOption && !freeText.trim())}
-            className="w-full py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
-            style={{ background: '#1A3D2B', color: 'white' }}
-          >
-            {phase === 'loading' ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : 'Generate billing rule'}
-          </button>
+          {(() => {
+            // Step 17H.4B0D4H1B4E5/§5.1 §8 — context-sensitive button: a
+            // known deterministic structured choice needs no AI generation
+            // step (applyDeterministicFixedFeeTiming/
+            // applyDeterministicVariableInvoiceTiming, defined above), so it
+            // reads "Apply billing rule" and skips straight to the same
+            // proposal-review phase every other confirmation uses. Custom
+            // free text (or "Other / unclear") still goes through generate()
+            // -> interpret-rule, unchanged, and keeps the original wording.
+            const isDeterministicFixedFeeTiming = ruleType === 'fixed_fee_billing_timing'
+              && (selectedOption === 'bill_at_period_start' || selectedOption === 'bill_at_period_end')
+            const isDeterministicVariableInvoiceTiming = ruleType === 'variable_invoice_timing'
+              && (selectedOption === 'invoice_at_next_period_start' || selectedOption === 'invoice_at_period_end')
+            const isDeterministicChoice = isDeterministicFixedFeeTiming || isDeterministicVariableInvoiceTiming
+            const deterministicHandler = isDeterministicFixedFeeTiming ? applyDeterministicFixedFeeTiming : applyDeterministicVariableInvoiceTiming
+            return (
+              <button
+                onClick={isDeterministicChoice ? deterministicHandler : generate}
+                disabled={phase === 'loading' || (!selectedOption && !freeText.trim())}
+                className="w-full py-2 rounded-xl text-sm font-semibold transition-colors disabled:opacity-40"
+                style={{ background: '#1A3D2B', color: 'white' }}
+              >
+                {phase === 'loading'
+                  ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} />
+                  : isDeterministicChoice ? 'Apply billing rule' : 'Generate billing rule'}
+              </button>
+            )
+          })()}
         </>
       )}
 
@@ -3665,10 +3062,6 @@ const CREDIT_BASIS_LABEL: Record<string, string> = {
 // credit's own description/CREDIT_BASIS_LABEL wherever a credit_type isn't
 // one of these three named product concepts.
 const CREDIT_TYPE_LABEL: Record<string, string> = { rebate: 'Annual Rebate', conditional_credit: 'Growth Credit', service_credit: 'Service Credit' }
-// Icon per credit_type for the Confirmed billing rules cards — falls back
-// to the same receipt icon the review-panel Service credits section
-// already uses for anything not one of these three named product concepts.
-const CREDIT_TYPE_ICON: Record<string, string> = { rebate: 'ti-percentage', conditional_credit: 'ti-rocket', service_credit: 'ti-clock-check' }
 
 function formatFieldValue(field: string, value: unknown, currency: string): string {
   if (value == null) return '—'
@@ -3687,38 +3080,25 @@ function formatFieldValue(field: string, value: unknown, currency: string): stri
 
 // Shared label for FieldProvenance — never invents a badge for a field with
 // no real provenance record (null/undefined stays unlabeled) since a
-// fabricated "Clear from source"/"Reviewer policy" on a field this codebase
-// never actually graded would misrepresent it. See lib/types.ts's
+// fabricated "Clear from source"/"Reviewer confirmed" on a field this
+// codebase never actually graded would misrepresent it. See lib/types.ts's
 // FieldProvenance and isProvenanceResolved (lib/commercial-rule-status.ts) —
 // 'verdix_recommends' is deliberately absent here too: a rule reaching this
 // persistent confirmed-rules section has already cleared that gate, so only
 // the three resolving values are ever shown. 'organization_rulebook' (Step
 // 5C) reads "Organization policy", not "Verdix recommendation" — it was an
 // org's own confirmed default applying, never AI interpretation.
+// Step 17H.4B0D4H1B4E6 §20 — 'reviewer_policy' relabeled from "Reviewer
+// policy" to "Reviewer confirmed": this is a one-off, contract-specific
+// reviewer decision, never a durable, reusable policy (that's what
+// 'organization_rulebook' is for) — the old wording could visually imply
+// the two are the same kind of thing. Presentation only; the backend
+// decision_provenance value itself is untouched.
 function provenanceLabel(p?: string | null): string | null {
   return p === 'contract_derived' ? 'Clear from source'
-    : p === 'reviewer_policy' ? 'Reviewer policy'
+    : p === 'reviewer_policy' ? 'Reviewer confirmed'
     : p === 'organization_rulebook' ? 'Organization policy'
     : null
-}
-
-// Small icon per parameter row, matched heuristically off the label text
-// rather than threading an icon through every params.push(...) call site —
-// the label vocabulary here is small and stable (cadence/date fields,
-// trigger, scope, exclusions, repeatability, balance), so a substring match
-// stays accurate without coupling every card builder to a fixed icon list.
-// Falls back to a plain bullet for anything unmatched, never a wrong icon.
-function paramIcon(label: string): string {
-  const l = label.toLowerCase()
-  if (l.includes('billing period') || l.includes('partial-period') || l.includes('effective')) return 'ti-calendar'
-  if (l.includes('trigger')) return 'ti-bolt'
-  if (l.includes('eligible') || l.includes('applies to')) return 'ti-list-check'
-  if (l.includes('excluded')) return 'ti-circle-x'
-  if (l.includes('repeatable')) return 'ti-repeat'
-  if (l.includes('unused balance')) return 'ti-wallet'
-  if (l.includes('cap')) return 'ti-gauge'
-  if (l.includes('frequency')) return 'ti-refresh'
-  return 'ti-point-filled'
 }
 
 // Final amendment — the outcome states app/api/org/rulebook/promote
@@ -4356,105 +3736,194 @@ function OrganizationPolicyControls({
   return null
 }
 
-// Read-only card for the "Confirmed billing rules" section — the persistent,
-// post-confirmation counterpart to RuleInterpretationCard's pre-confirmation
-// review flow. Deliberately does not reuse RuleInterpretationCard itself:
-// that component's 'applied' phase is a one-line "confirmed and applied"
-// banner with no way to redisplay what was actually approved days/weeks
-// earlier (it only ever holds the state from the confirm click that just
-// happened, in-memory). This renders directly from contract_terms — the
-// durable operational value — so it survives reload, is never blank on a
-// freshly-opened job, and can never show a different value than what
-// billing/invoicing itself reads.
-function ConfirmedRuleCard({
-  icon, typeLabel, title, sourceClause, interpretation, params, provenance, auditReviewer, auditDate, onViewSource, onEdit, footer,
+
+// Step 17G.5A — one fact row inside "Commercial Logic & Billing Rules".
+// Deliberately a plain label/value row, never a second pricing-table cell
+// (item 13 — amounts belong to the Commercial BoM, this section states
+// rule BEHAVIOR) and never a second decision-form (item 10 — a
+// decisionRequired row's only action is the existing setReviewPanelOpen
+// mechanism; edit/source affordances, when present, are the exact same
+// setEditingRule/openPDF callbacks the pre-existing "Confirmed billing
+// rules" cards already used — never a new route). provenanceValue is only
+// ever passed a REAL FieldProvenance value (contract_derived /
+// reviewer_policy / organization_rulebook) already present on the typed
+// record — reuses the shared provenanceLabel() (never invents a badge for
+// a field with no real provenance record, per that function's own
+// contract) — never a plain extracted fact styled as though it had been
+// through the confirm-rule/interpretation gate.
+function CommercialLogicRow({
+  label, value, decisionRequired, provenanceValue, auditCaption, secondaryValue, helperText, onReview, onEdit, onViewSource, footer,
 }: {
-  // Tabler icon name (e.g. "ti-wallet"), no "ti " prefix — chosen per rule
-  // kind at the card-builder call site, not guessed here.
-  icon: string
-  typeLabel: string
-  title: string
-  sourceClause?: string | null
-  interpretation: string
-  params: { label: string; value: string }[]
-  // Usually one entry — a rule bundling two independently-graded questions
-  // (a service credit's eligibility vs. its unused-balance survival) passes
-  // two, each labeled, so the card never claims a single verdict for
-  // sub-fields that were actually resolved through different routes.
-  provenance: { label: string; value?: string | null }[]
-  auditReviewer?: string | null
-  auditDate?: string | null
+  label: string
+  value: string
+  decisionRequired?: boolean
+  provenanceValue?: string | null
+  auditCaption?: string | null
+  // Step 17G.6E, item 2 — small technical/audit text that belongs with
+  // the VALUE (e.g. a billing metric's raw semantic_input_key under its
+  // business-readable name), never with the label. auditCaption stays
+  // reserved for what it already means everywhere else on this card
+  // ("Confirmed by X · date," about the RULE) — putting a semantic key
+  // there instead put it in the LEFT column, ahead of the business value
+  // in the single-column mobile layout (label, then key, then value) —
+  // exactly backwards. secondaryValue renders directly under the value
+  // in the RIGHT column instead, so the order is always label -> value ->
+  // secondary, in both layouts.
+  secondaryValue?: string | null
+  // Step 17G.6F, items 2/3/4/5 — a full-width supporting line below the
+  // row: for a decisionRequired row, the specific business question the
+  // ReviewPanel decision actually answers (never an invented contractual
+  // ANSWER — this only ever states the question, the same doctrine
+  // "Review" already followed, now made visible inline too); for an
+  // informational row (e.g. Invoice status), a short explanation of why
+  // (e.g. which upstream decision blocks it). Plain, never a second
+  // decision surface.
+  helperText?: string | null
+  onReview?: () => void
+  onEdit?: () => void
   onViewSource?: () => void
-  onEdit: () => void
-  // Step 5D — an optional, rule-kind-specific control block rendered below
-  // the provenance badges (Organization Rulebook promotion/view-policy/
-  // override-for-this-agreement, today only ever passed for a service
-  // credit's survival sub-field). Every other rule kind passes nothing —
-  // this card stays generic; the specifics live entirely at the call site.
+  // Step 17G.5A — a rule-kind-specific control block below this one row
+  // (today only ever OrganizationPolicyControls, for a service credit's
+  // unused-balance policy) — same optional-footer pattern
+  // ConfirmedRuleCard already used, preserved rather than dropped when
+  // this row format replaced that card.
   footer?: React.ReactNode
 }) {
-  const resolvedProvenance = provenance.filter(p => provenanceLabel(p.value) != null)
+  const badge = provenanceLabel(provenanceValue)
+  // Step 17H.4B0D4H1B4E7 §0/§21 — verified against the real Verdix design
+  // tokens (app/globals.css) before touching this: --color-state-reviewer
+  // is #92400E, the exact value the "else" branch below already used for
+  // "Reviewer confirmed" — this mapping was already correct/on-palette,
+  // not a bug. (An earlier draft of this pass nearly "fixed" it to a blue
+  // matching Organization policy, reasoning from the reference mock's
+  // rendered appearance alone rather than the actual token source of
+  // truth — reverted before landing; noted here so the reasoning isn't
+  // silently lost.)
+  const colors = badge === 'Clear from source' ? { bg: 'rgba(11,92,54,0.1)', fg: '#0B5C36' }
+    : badge === 'Organization policy' ? { bg: 'rgba(30,64,175,0.1)', fg: '#1E40AF' }
+    : { bg: 'rgba(180,83,9,0.1)', fg: '#92400E' }
   return (
-    <div className="rounded-2xl p-6 bg-white" style={{ border: '1px solid rgba(26,61,43,0.1)', boxShadow: '0 1px 2px rgba(26,61,43,0.04)' }}>
-      <div className="flex items-start gap-4 mb-4">
-        <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 bg-mint-soft">
-          <i className={`ti ${icon} text-forest`} style={{ fontSize: 22 }} />
+    // Step 17H.4B0D4H1B4E6.3 B2/B3 — row vertical padding tightened
+    // (py-2 -> py-1.5) to offset the larger label/value type below, so the
+    // net effect on card height stays similar (or slightly improved), not
+    // "larger text + taller card."
+    <div className="py-1.5" style={{ borderTop: '1px solid rgba(26,61,43,0.05)' }}>
+      {/* Step 17G.5B — a real two-column fact layout (label ~28%, value/
+          state/actions ~72% on desktop — item 3), stacking to one column
+          on mobile, rather than a flex row whose label/value fight over
+          space and collide on long text. Nothing here changes the VALUE
+          being shown, only how much room it's given. */}
+      <div className="grid grid-cols-1 sm:grid-cols-[28%_1fr] gap-x-4 gap-y-1">
+        <div className="min-w-0">
+          {/* Step 17G.6C, item 27 — an empty label (the caller passes ''
+              when this row's label is identical to its enclosing
+              subsection heading, e.g. a "Calculation" fact inside the
+              "Calculation" section — see the sectionizeRows render loop)
+              renders nothing here rather than repeating the same word
+              twice in a row.
+              Step 17H.4B0D4H1B4E6.3 B2 — bumped 11px -> 13px (the row's
+              own PRIMARY label, not the smaller section/category metadata
+              headings above it, which stay untouched per the task's own
+              instruction) — this and the value below were the two sizes
+              that made "Price escalation"/"Recurring fixed-fee timing"
+              hard to read at normal desktop scale. */}
+          {label && <p className="text-[13px] text-stone">{label}</p>}
+          {/* Item 8 — reviewer identity/date demoted to a small secondary
+              line, never a separate major column. */}
+          {auditCaption && <p className="text-[10px] text-stone/50 mt-0.5">{auditCaption}</p>}
         </div>
-        <div className="min-w-0 pt-0.5">
-          <p className="text-[10px] font-bold uppercase tracking-widest mb-1.5" style={{ color: '#0B5C36' }}>{typeLabel}</p>
-          <p className="text-lg font-semibold text-ink leading-snug mb-1.5">{title}</p>
-          {interpretation && <p className="text-[13px] text-stone leading-relaxed">{interpretation}</p>}
-        </div>
-      </div>
-      {/* No inline verbatim quote by default (concision pass) — "View
-          source" below is the sole source affordance, avoiding a duplicate
-          of the same clause on one card. sourceClause is still accepted as
-          a prop (some callers pass it) but only ever used to decide whether
-          this card has a source to show at all — never rendered directly. */}
-      {params.length > 0 && (
-        <div className="pt-4 mb-4" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
-          <FactList dense rows={params.map(p => ({ label: p.label, value: p.value, icon: paramIcon(p.label) }))} />
-        </div>
-      )}
-      {resolvedProvenance.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 mb-1">
-          {resolvedProvenance.map((p, i) => {
-            const label = provenanceLabel(p.value)!
-            // Three distinct treatments: green (contract-grounded), amber
-            // (reviewer decision), blue (Step 5C — an organization's own
-            // confirmed policy, never AI interpretation, never the contract
-            // itself — see provenanceLabel's own comment above).
-            const colors = label === 'Clear from source' ? { bg: 'rgba(11,92,54,0.1)', fg: '#0B5C36' }
-              : label === 'Organization policy' ? { bg: 'rgba(30,64,175,0.1)', fg: '#1E40AF' }
-              : { bg: 'rgba(180,83,9,0.1)', fg: '#92400E' }
-            return (
-              <span key={i} className="text-[11px] font-semibold px-3 py-1 rounded-full" style={{ background: colors.bg, color: colors.fg }}>
-                {resolvedProvenance.length > 1 ? `${p.label}: ${label}` : label}
+        {/* Step 17H.4B0D4H1B4E7.2 — replaced the old "cluster everything
+            and right-justify the group" layout with a real two-part row:
+            the value TEXT always anchored to a stable left edge in its own
+            flex-1 block (so it wraps like a normal paragraph, never
+            hugging the row's right edge regardless of length), and every
+            badge/pill/icon action pinned to a separate flex-shrink-0
+            cluster on the right. isLongFormValue's classification and the
+            sm:text-right/items-end conditionals are gone — they only ever
+            controlled this same left-vs-right question per value, and
+            still got it wrong for a short-but-still-descriptive phrase
+            with no terminal punctuation ("Confirmed via ...", "Start
+            fixed fee from next full billing period" — both under the old
+            48-char/no-period heuristic's radar). The row's DESCRIPTIVE
+            TEXT is always left-aligned now; only badges/pills/icons ever
+            sit on the right. */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            {decisionRequired ? (
+              // Step 17G.6G, item 11 — the value text stays plain,
+              // left-aligned prose (same as every other row); only the
+              // "Review" affordance moves into the right-hand action
+              // cluster below, as its own clickable pill, instead of the
+              // whole row being one run-together button.
+              <p className="text-[13px] font-medium" style={{ color: '#B45309', overflowWrap: 'anywhere' }}>
+                {value.split('\n').map((line, i) => <span key={i} className="block">{line}</span>)}
+              </p>
+            ) : (
+              <>
+                {/* Step 17G.6E, item 3 — each line of a multi-line value
+                    (e.g. "Used to calculate"'s bullet list of consumers)
+                    rendered as its own block-level element, never relying
+                    on `white-space: pre-line` alone. */}
+                <p className="text-[13px] font-medium text-ink" style={{ overflowWrap: 'anywhere' }}>
+                  {value.split('\n').map((line, i) => <span key={i} className="block">{line}</span>)}
+                </p>
+                {secondaryValue && (
+                  <p className="text-[10px] text-stone/50 mt-0.5" style={{ overflowWrap: 'anywhere' }}>{secondaryValue}</p>
+                )}
+              </>
+            )}
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {decisionRequired ? (
+              <button
+                onClick={onReview}
+                className="text-[10px] font-semibold px-2.5 py-1 rounded-full whitespace-nowrap"
+                style={{ background: 'rgba(180,83,9,0.1)', color: '#B45309' }}
+              >
+                ⚠ Review →
+              </button>
+            ) : badge ? (
+              // Step 17H.4B0D4H1B4E7.1 §9 — "Reviewer confirmed" is a
+              // CLOSED decision, not an active state, and used to carry
+              // the same visual weight (solid tinted pill, semibold) as
+              // an in-progress/attention state — dominating a component
+              // already marked Ready. Same real token color (unchanged,
+              // #92400E is genuinely --color-state-reviewer, verified
+              // earlier this pass), just a lighter fill/weight so it reads
+              // as settled provenance, not something still demanding
+              // attention. "Clear from source"/"Organization policy" keep
+              // their existing full-weight pill — both are still
+              // distinguishable states, not something a reviewer had to
+              // personally close out.
+              <span
+                className={badge === 'Reviewer confirmed' ? 'text-[10px] font-medium px-2 py-0.5 rounded-full whitespace-nowrap' : 'text-[10px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap'}
+                style={{ background: badge === 'Reviewer confirmed' ? 'rgba(180,83,9,0.06)' : colors.bg, color: colors.fg }}
+              >
+                {badge}
               </span>
-            )
-          })}
-        </div>
-      )}
-      {footer}
-      <div className="flex items-center justify-between gap-3 pt-4 mt-4" style={{ borderTop: '1px solid rgba(26,61,43,0.08)' }}>
-        <p className="text-[11px] text-stone/70">
-          {(auditReviewer || auditDate) && <>Confirmed{auditReviewer ? ` by ${auditReviewer}` : ''}{auditDate ? ` · ${auditDate}` : ''}</>}
-        </p>
-        <div className="flex items-center gap-4 flex-shrink-0">
-          {onViewSource && (
-            <button
-              onClick={onViewSource}
-              title={sourceClause ?? undefined}
-              className="flex items-center gap-1 text-[12px] font-medium text-forest hover:underline"
-            >
-              <i className="ti ti-external-link" style={{ fontSize: 13 }} /> View source clause
-            </button>
-          )}
-          <button onClick={onEdit} className="flex items-center gap-1 text-[12px] font-medium text-stone hover:text-ink">
-            <i className="ti ti-pencil" style={{ fontSize: 13 }} /> Edit interpretation
-          </button>
+            ) : null}
+            {onViewSource && (
+              <button onClick={onViewSource} className="text-stone/40 hover:text-forest transition-colors flex-shrink-0" title="View source clause">
+                <i className="ti ti-external-link" style={{ fontSize: 12 }} />
+              </button>
+            )}
+            {onEdit && (
+              <button onClick={onEdit} className="text-stone/40 hover:text-forest transition-colors flex-shrink-0" title="Edit interpretation">
+                <i className="ti ti-pencil" style={{ fontSize: 12 }} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
+      {/* Step 17H.4B0D4H1B4E6.3 B2 — the "question/help text" B1 named
+          directly: 10px at 50% opacity was under the comfortable-reading
+          bar even as secondary text. Bumped one step (11px/60%) — stays
+          visually subordinate to the 13px primary label/value above it,
+          per B4's hierarchy, just no longer strains to read. */}
+      {helperText && (
+        <p className="text-[11px] text-stone/60 mt-1 leading-relaxed sm:pl-[calc(28%+1rem)]" style={{ overflowWrap: 'anywhere' }}>{helperText}</p>
+      )}
+      {footer && <div className="mt-1.5 sm:pl-[calc(28%+1rem)]">{footer}</div>}
     </div>
   )
 }
@@ -4629,7 +4098,7 @@ function EditCommercialRuleDrawer({
               <p className="text-sm font-medium flex items-center gap-1.5" style={{ color: '#0B5C36' }}>
                 <i className="ti ti-circle-check-filled" style={{ fontSize: 15 }} /> Change confirmed and applied
               </p>
-              <p className="text-[11px] text-stone mt-1">Updated: Commercial Terms · Billing Configuration · Billing Schedule</p>
+              <p className="text-[11px] text-stone mt-1">Updated: Commercial Logic · Commercial BoM · Billing Schedule</p>
             </div>
           )}
 
@@ -4776,7 +4245,6 @@ function ReviewPanel({
   discounts,
   serviceCredits,
   baseFeeAmount,
-  baseFeeCommittedVolume,
   baseFeeProration,
   fixedFeeBillingTiming,
   additionalRecurringFees,
@@ -4809,10 +4277,6 @@ function ReviewPanel({
   discounts?: Discount[]
   serviceCredits?: ServiceCredit[]
   baseFeeAmount?: number | null
-  // Step 17C.2c — threaded down to RollingBandMigrationCard so its volume-
-  // treatment "unchanged" display can show the real original committed
-  // volume, not just a label.
-  baseFeeCommittedVolume?: number | null
   baseFeeProration?: PeriodProrationRule | null
   // Step 17F.3, item 2 — WHEN the fixed recurring fee's invoice is issued
   // relative to its own billing period, distinct from baseFeeProration
@@ -4968,7 +4432,10 @@ function ReviewPanel({
     sourceConfirmationsInPanel > 0 && `${sourceConfirmationsInPanel} source confirmation${sourceConfirmationsInPanel > 1 ? 's' : ''}`,
     usageMappingsOutstanding > 0 && `${usageMappingsOutstanding} usage mapping${usageMappingsOutstanding > 1 ? 's' : ''}`,
     vatOutstandingInPanel && '1 VAT',
-    needsReviewInPanel > 0 && `${needsReviewInPanel} extracted field${needsReviewInPanel > 1 ? 's' : ''}`,
+    // Step 17H.4B0D4H1B4E2.5 §5-6 — "items," not "fields": same row-level
+    // (not field-level) confidence_score as the main page's identical
+    // wording fix — see that fix's own comment for the full trace.
+    needsReviewInPanel > 0 && `${needsReviewInPanel} extracted item${needsReviewInPanel > 1 ? 's' : ''}`,
   ].filter((x): x is string => typeof x === 'string')
 
   const resolvedCount = items.filter(i => resolved[i.id] || i.id in corrections).length
@@ -5172,46 +4639,103 @@ function ReviewPanel({
           return
         }
 
-        // Update the line item record directly (confidence_score: 1 prevents banner from reappearing)
+        // Step 17H.4B0D1.1 — routing to the hardened tier-persistence
+        // operation must never depend on display text (classifyItem's own
+        // "overage"/"tier" label fallback is a display-classification
+        // convenience, not safe for deciding which authoritative table a
+        // correction mutates — see lib/tier-escalator-correction.ts's own
+        // doc comment). classifyTierCorrectionTarget uses only structural
+        // facts (billing_period, the recurring-base-fee family's
+        // deterministic marker strings, quantity) plus the transitional
+        // tier_label<->product_name identity bridge — never a label
+        // substring — to decide whether this row is confidently a tier, is
+        // confidently something else, or is a genuinely unresolvable
+        // zero-quantity row (e.g. a variable-rate additional recurring fee,
+        // which also has quantity 0 and an arbitrary label) that must not
+        // be guessed either way.
+        const routing = classifyTierCorrectionTarget(item, overageTiers ?? [])
+        if (routing.target === 'uncertain') {
+          setSaveError(e => ({
+            ...e,
+            [item.id]: routing.reason === 'ambiguous_structural_match'
+              ? 'Multiple billing line items match this tier. The correction was not applied.'
+              : routing.reason === 'integrity_conflict'
+              ? 'The billing item identity conflicts with the current contract tier. Refresh or review the configuration before correcting this rate.'
+              : 'Verdix could not safely determine which commercial rule this value belongs to. The correction was not applied.',
+          }))
+          return
+        }
+        if (routing.target === 'tier') {
+          // Step 17H.4B0D4B1G — routing above is UI classification only
+          // (decides which error message to show early); the actual write
+          // target is independently re-resolved from `item` itself by
+          // persistTierRateCorrection's own bidirectional preflight, never
+          // substituted by this pre-classification.
+          const result = await libPersistTierRateCorrection({
+            jobId, targetItem: item, overageTiers: overageTiers ?? [], lineItems: items, rate: price,
+          })
+          // Always reload authoritative state after an attempt — success or
+          // failure — so the drawer/BoM never diverge from what the server
+          // actually persisted (same doctrine 17H.4A applied to the BoM's
+          // own tier correction).
+          onRefresh()
+          if (result.status !== 'success') {
+            setSaveError(e => ({ ...e, [item.id]: describeTierCorrectionError(result) }))
+            return
+          }
+          // Log the correction for future learning — only after the
+          // commercial write itself is confirmed successful.
+          await fetch('/api/corrections', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jobId,
+              fieldName:        'unit_price',
+              extractedValue:   String(item.unit_price),
+              correctedValue:   String(price),
+              correctionReason: `Corrected rate for: ${item.product_name}`,
+              applyToFuture:    true,
+            }),
+          })
+          // Step 17H.4B0D4H1B4E2.6 §8-14 — onCorrect(item.id, String(price))
+          // REMOVED here: `corrections`/onCorrect is the product_name-only
+          // state (handleApprove submits corrections[i.id]?.value verbatim
+          // as `product_name`, and Object.entries(corrections) is POSTed
+          // to /api/corrections with fieldName: 'product_name' at approve
+          // time) — writing a stringified PRICE into that same slot would
+          // have silently replaced this item's submitted product_name with
+          // a number, and logged a bogus product_name "correction" whose
+          // correctedValue was actually a price. setResolved below already
+          // independently marks this item resolved for the drawer's own
+          // progress UI, and the real PATCH above already sets
+          // confidence_score: 1, which independently excludes it from
+          // needsReview — nothing else depended on this write.
+          setResolved(r => ({ ...r, [item.id]: 'corrected' }))
+          setEditing(null)
+          setPreviewing(null)
+          scrollToNextUnresolved(item.id)
+          onRefresh()
+          return
+        }
+
+        // Non-tier rows — update the line item record directly
+        // (confidence_score: 1 prevents banner from reappearing). Step
+        // 17H.4B0D2 — total_amount here is DERIVED from the reviewer's own
+        // unit_price input (price * quantity), never independently
+        // authored, so only unit_price is marked reviewer-corrected.
         const lineRes = await fetch(`/api/jobs/${jobId}/line-items`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             itemId: item.id,
             fields: { unit_price: price, total_amount: price * (item.quantity || 1), confidence_score: 1 },
+            markReviewerCorrectedFields: ['unit_price'],
           }),
         })
         if (!lineRes.ok) {
           const err = await lineRes.text().catch(() => lineRes.statusText)
           setSaveError(e => ({ ...e, [item.id]: `Save failed: ${err}` }))
           return
-        }
-
-        // If this is an overage tier, also update contract_terms.overage_tiers so
-        // the Charging parameters display reflects the corrected rate immediately
-        if (overageTiers && overageTiers.length > 0) {
-          const baseName = item.product_name.replace(/\s*[—–-]\s*overage\s*$/i, '').trim()
-          const matchIdx = overageTiers.findIndex(t =>
-            t.tier_label && (
-              t.tier_label.toLowerCase() === baseName.toLowerCase() ||
-              item.product_name.toLowerCase().includes(t.tier_label.toLowerCase())
-            )
-          )
-          if (matchIdx >= 0) {
-            const updatedTiers = overageTiers.map((t, i) =>
-              i === matchIdx ? { ...t, rate_per_unit: price } : t
-            )
-            const termsRes = await fetch(`/api/jobs/${jobId}/terms`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ overage_tiers: updatedTiers }),
-            })
-            if (!termsRes.ok) {
-              const err = await termsRes.text().catch(() => termsRes.statusText)
-              setSaveError(e => ({ ...e, [item.id]: `Rate saved but charging parameters update failed: ${err}` }))
-              return
-            }
-          }
         }
 
         // Log the correction for future learning
@@ -5227,7 +4751,11 @@ function ReviewPanel({
             applyToFuture:    true,
           }),
         })
-        onCorrect(item.id, String(price))
+        // Step 17H.4B0D4H1B4E2.6 §8-14 — same removal, same rationale, as
+        // the tier-routing price-correction branch above: this must never
+        // write a price into the product_name-only corrections state.
+        // setResolved below (shared with the name branch) already marks
+        // this item resolved.
       } else {
         const name = draftName[item.id]?.trim()
         if (!name) {
@@ -5327,6 +4855,19 @@ function ReviewPanel({
                 onConfirmedChange={c => onMeterMappingsConfirmedChange?.(c)}
                 contractBillingFrequency={contractBillingFrequency}
                 refreshSignal={refreshSignal}
+                contractStartDate={contractStartDate}
+                // Step 17H.4B0D4H1B4E6.1 §3/§4/§15/§16 — manual operational
+                // value entry belongs to Billing Operations, not this
+                // drawer; close the drawer and scroll the main page to its
+                // anchor rather than duplicating the entry form here. Double
+                // rAF so the scroll happens after the drawer's own onClose
+                // re-render (and the layout it un-shifts) has committed.
+                onNavigateToOperationalInputs={() => {
+                  onClose()
+                  requestAnimationFrame(() => requestAnimationFrame(() => {
+                    document.getElementById('operational-inputs-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                  }))
+                }}
               />
             </div>
           )}
@@ -5674,7 +5215,9 @@ function ReviewPanel({
                       <div className="px-4 pt-4 pb-3">
                         <div className="flex items-center gap-1.5 mb-2.5">
                           <i className="ti ti-calendar-exclamation text-stone" style={{ fontSize: 12 }} />
-                          <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">{f.fee_label}: when is this invoiced?</span>
+                          {/* Step 17G.6A, item 13 — the plain business
+                              question, not "variable invoice timing." */}
+                          <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">{f.fee_label}: when should the calculated variable charge be invoiced?</span>
                           <SourceClauseLink section={findSourceSection(f.fee_label)} onViewSource={onViewSource} />
                         </div>
                         {/* Step 17F.5 — the source establishes the charge is
@@ -5713,7 +5256,11 @@ function ReviewPanel({
             return (
               <div>
                 <div className="flex items-center gap-2 mb-3">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Fixed-fee billing timing</p>
+                  {/* Step 17G.6A, items 7/14 — "Recurring fixed-fee
+                      timing" is the canonical vocabulary now, matching
+                      Commercial Logic & Billing Setup and Billing
+                      Timeline. */}
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Recurring fixed-fee timing</p>
                   <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
                 </div>
                 <div className="space-y-3">
@@ -5721,7 +5268,7 @@ function ReviewPanel({
                     <div className="px-4 pt-4 pb-3">
                       <div className="flex items-center gap-1.5 mb-2.5">
                         <i className="ti ti-calendar-exclamation text-stone" style={{ fontSize: 12 }} />
-                        <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">When is the platform fee invoiced?</span>
+                        <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">When should the recurring fixed fee be invoiced?</span>
                         <SourceClauseLink section={fieldSources?.base_monthly_fee ?? fieldSources?.base_annual_fee} onViewSource={onViewSource} />
                       </div>
                       {/* Step 17F.5 — the linked clause is the fee's own
@@ -5809,10 +5356,19 @@ function ReviewPanel({
           {/* Step 17C.2, item 13 — a rolling-window volume-band pricing
               transition mechanism (execution_status: 'executable', a
               rolling_band_migration config present) has a real runtime via
-              lib/rolling-band-migration-pull.ts. Own section, same
-              reasoning as percentage-of-basis fees just below: the
-              "Unsupported commercial mechanisms" section's own disclaimer
-              text would be actively wrong for these. */}
+              lib/rolling-band-migration-pull.ts.
+              Step 17H.4B0D4H1B4E6 §18/§28 — this used to mount the FULL,
+              live-evaluated <RollingBandMigrationCard> here — the exact
+              same component (same live status fetch) Billing Timeline
+              already renders (app/_components/BillingSummaryCard.tsx),
+              making this a genuine parallel runtime-monitoring surface,
+              not just a compact reference. The contractual RULE (what the
+              mechanism is, from source) stays visible here — this drawer's
+              own review question ("what must I review before approval?")
+              never needed the live evaluation state at all, since nothing
+              here is confirmable/actionable (the mechanism already has its
+              own runtime, no reviewer decision pending on it). Live status
+              now lives exclusively in Billing Timeline. */}
           {(() => {
             const rollingBandMechanisms = (unsupportedCommercialMechanisms ?? []).filter(
               (m): m is UnsupportedCommercialMechanism & { rolling_band_migration: RollingBandMigrationConfig } =>
@@ -5825,22 +5381,15 @@ function ReviewPanel({
                   <p className="text-[10px] font-bold uppercase tracking-widest text-stone">Rolling volume-band pricing transitions</p>
                   <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.1)' }} />
                 </div>
-                <div className="space-y-3">
+                <div className="space-y-2">
                   {rollingBandMechanisms.map((m, i) => (
-                    <RollingBandMigrationCard
-                      key={`rbm:${i}`}
-                      jobId={jobId}
-                      mechanismKind={m.kind}
-                      title={humanizeMechanismKind(m.kind)}
-                      description={m.description}
-                      sourceClause={m.source_clause}
-                      requiredInputs={m.required_operational_inputs}
-                      config={m.rolling_band_migration}
-                      sections={m.source_sections}
-                      onViewSource={onViewSource}
-                      currency={cur}
-                      contractedVolume={baseFeeCommittedVolume}
-                    />
+                    <div key={`rbm:${i}`} className="rounded-2xl border px-4 py-3" style={{ borderColor: 'rgba(26,61,43,0.12)', background: 'white' }}>
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="text-sm font-medium text-ink">{humanizeMechanismKind(m.kind)}</span>
+                        <SourceClauseLink sections={m.source_sections} onViewSource={onViewSource} hasClauseText={!!m.source_clause} />
+                      </div>
+                      <p className="text-[11px] text-stone/60 mt-2">Live evaluation status is shown in Billing Timeline, not repeated here.</p>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -6073,7 +5622,7 @@ function ReviewPanel({
                                   action: amountResolved ? (
                                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full inline-flex items-center gap-1 whitespace-nowrap" style={{ background: 'rgba(11,92,54,0.1)', color: '#0B5C36' }}>
                                       <i className="ti ti-check" style={{ fontSize: 10 }} />
-                                      {f.amount_provenance === 'contract_derived' ? 'Clear from source' : 'Reviewer policy'}
+                                      {f.amount_provenance === 'contract_derived' ? 'Clear from source' : 'Reviewer confirmed'}
                                     </span>
                                   ) : (
                                     <button
@@ -6136,7 +5685,7 @@ function ReviewPanel({
                                       : billabilityResolved ? (
                                         <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full inline-flex items-center gap-1 whitespace-nowrap" style={{ background: 'rgba(11,92,54,0.1)', color: '#0B5C36' }}>
                                           <i className="ti ti-check" style={{ fontSize: 10 }} />
-                                          {f.billability_provenance === 'contract_derived' ? 'Clear from source' : 'Reviewer policy'}
+                                          {f.billability_provenance === 'contract_derived' ? 'Clear from source' : 'Reviewer confirmed'}
                                         </span>
                                       ) : (
                                         <button
@@ -6323,44 +5872,23 @@ function ReviewPanel({
           </div>
           )}
 
-          {/* Extraction notes — free-text flags for anything the model
-              noticed but couldn't fit into a structured field (e.g. a
-              penalty clause, which is the opposite polarity from
-              service_credits). No structured rule to confirm here, just
-              visibility — the point is that it never silently disappears
-              just because nothing downstream knows how to structure it. */}
-          {extractionNotes && (
-            <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'rgba(26,61,43,0.12)', background: '#FAFAF9' }}>
-              <div className="px-4 pt-4 pb-3">
-                <button
-                  onClick={() => setExtractionNotesOpen(v => !v)}
-                  className="flex items-center gap-1.5 w-full text-left"
-                >
-                  <i className="ti ti-note text-stone" style={{ fontSize: 12 }} />
-                  <span className="text-[10px] font-semibold uppercase tracking-widest text-stone flex-1">Extraction notes</span>
-                  <span className="text-[11px] font-medium text-forest">{extractionNotesOpen ? 'Hide' : 'View notes'}</span>
-                </button>
-                {/* Secondary diagnostic information, not primary review
-                    content (item 10) — collapsed by default. This text is
-                    written once, at extraction time, and never rewritten
-                    afterward — a policy it flags as unresolved here may
-                    since have been confirmed via its own review card above
-                    (or may have none at all if it doesn't map to a
-                    structured rule type). It is a point-in-time snapshot,
-                    not a live list of outstanding decisions — the review
-                    cards above and the "items to review" count are the
-                    live signal for what's actually still open. */}
-                {extractionNotesOpen && (
-                  <>
-                    <p className="text-xs text-stone leading-relaxed whitespace-pre-line mt-2">{extractionNotes}</p>
-                    <p className="text-[10px] text-stone/70 italic mt-2">
-                      Reflects the original extraction — a decision mentioned here may already be resolved by a review card above; it is not itself a live outstanding-decision indicator.
-                    </p>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
+          {/* Step 17H.4B0D4H1B4E6.2 §2 — extraction_notes (contract_terms.
+              extraction_notes) is a single free-text blob written once at
+              extraction time (lib/contract-extractor.ts's prompt: "brief
+              note on what could not be determined"). There is no typed
+              field anywhere associating any portion of it with a specific
+              mechanism (partial_period/minimum_commitment/escalator/
+              overage/...) — confirmed by reading lib/types.ts and the
+              extraction prompt, not inferred. Rendering it here, as a
+              standalone card sitting among/above specific per-item review
+              cards, implied an ownership it doesn't have — a reviewer could
+              reasonably read it as "context for the card below," when it
+              may cover several unrelated topics or none of the cards on
+              screen at all. Moved to the panel footer (below) as a plain,
+              unmistakably-non-actionable link instead — never deleted from
+              persistence, never removed from the "items to review" count
+              (it was never counted), still fully readable, just no longer
+              shaped like one more queue item. */}
 
           {/* Item 2 (final amendment) — this used to be grouped under a
               "Contract §X — View source clause" header per source_section,
@@ -6616,8 +6144,8 @@ function ReviewPanel({
                               </div>
                               <p className="text-[10px] font-semibold uppercase tracking-widest text-stone/60 mb-1">Affected configuration</p>
                               <ul className="text-[11px] text-stone space-y-0.5">
-                                <li>• Billing Configuration</li>
-                                <li>• Commercial Terms</li>
+                                <li>• Commercial BoM</li>
+                                <li>• Commercial Logic</li>
                               </ul>
                             </div>
                             {saveError[item.id] && (
@@ -6756,6 +6284,32 @@ function ReviewPanel({
               Confirm each term against its source clause, or edit it before approval.
             </p>
           )}
+          {/* Step 17H.4B0D4H1B4E6.2 §2 — relocated from a standalone
+              action-queue card (see the removal comment above) to plain
+              footer chrome: outside the scrollable item list, never styled
+              as a bordered card, so it reads unambiguously as a reference
+              link rather than one more thing to review. Still the exact
+              same underlying text, still not deleted or hidden from the
+              product — just not presented as if it belonged to any one
+              item. */}
+          {extractionNotes && (
+            <div className="mt-2 pt-2 border-t border-forest/10">
+              <button
+                onClick={() => setExtractionNotesOpen(v => !v)}
+                className="text-[11px] font-medium text-stone hover:text-ink"
+              >
+                {extractionNotesOpen ? 'Hide extraction notes' : 'View extraction notes'}
+              </button>
+              {extractionNotesOpen && (
+                <>
+                  <p className="text-xs text-stone leading-relaxed whitespace-pre-line mt-2">{extractionNotes}</p>
+                  <p className="text-[10px] text-stone/70 italic mt-2">
+                    General notes from the original extraction, not tied to any one item above — a topic mentioned here may already be resolved by a review card, or may not correspond to any of them.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -6867,12 +6421,23 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
 
   const [activeTab, setActiveTab]       = useState<'terms' | 'model'>('terms')
   const [reviewPanelOpen, setReviewPanelOpen] = useState(false)
-  // Collapsed by default — the Confirmed billing rules section can hold a
-  // card per commercial rule plus the usage-input list, which is a lot of
-  // vertical space to show unprompted on every page load once a contract
-  // has several rules confirmed. The reviewer opens it deliberately via the
-  // header, same collapse affordance MeterMappingPanel already uses.
-  const [confirmedRulesExpanded, setConfirmedRulesExpanded] = useState(false)
+  // Step 17G.5B — which Commercial Logic & Billing Rules component groups
+  // are expanded. Collapsed by default (matches the approved compact
+  // collapsed-row mockup); a group's own key (already stable/unique — see
+  // getGroup below) addresses it, so expand state survives re-renders
+  // without depending on array position.
+  const [expandedLogicGroups, setExpandedLogicGroups] = useState<Set<string>>(() => new Set())
+  // Step 17H.4B0D4H1B4E7 §10 — per-NAMED-section progressive disclosure
+  // within an already-expanded component group (e.g. "Pricing adjustment"'s
+  // 4-5 rolling-band rows) — a second, independent expand state from
+  // expandedLogicGroups above (that one gates the whole component;
+  // this one gates one verbose section inside it), keyed by
+  // `${group.key}:${section.name}` so it never collides across components.
+  const [expandedLogicSections, setExpandedLogicSections] = useState<Set<string>>(() => new Set())
+  // Step 17H.4B0D4H1B4E6 §2 — the "Rule interpretations confirmed" panel's
+  // own detail toggle (default collapsed — a success state gets less UI,
+  // not more). See that panel's own comment for what this reveals.
+  const [showRuleConfirmationDetail, setShowRuleConfirmationDetail] = useState(false)
 
   // Read-only summary for the main-tab meter-mapping status chip — the
   // review-drawer's MeterMappingPanel mount (inside ReviewPanel) is the only
@@ -6908,6 +6473,25 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // period, not just whether the static contract configuration is
   // confirmed. null = not yet fetched (never treated as "no blockers").
   const [performanceShareStatus, setPerformanceShareStatus] = useState<PerformanceShareResult[] | null>(null)
+  // Step 17H.4B0D4H1B4E2.3 — replaces the old <PerformanceShareDisplay>
+  // component's own fetch (that component's VISUAL card is retired; its
+  // evaluated content now lives inside Billing Timeline instead — see
+  // PerformanceShareResult's own doc comment further up this file). Must
+  // sit here, alongside every other top-level hook, and NOT be gated on
+  // hasOperationalBillingModel (computed later, after this component's
+  // early-return guards for !job/isProcessing/isExtractionFailed — a hook
+  // can never be placed after those without violating rules-of-hooks).
+  // Functionally equivalent to the old gating anyway: the "Current-period
+  // billing" KPI line below already branches on hasOperationalBillingModel
+  // FIRST, before ever reading performanceShareStatus, so fetching a
+  // little earlier than strictly necessary changes no visible behavior.
+  useEffect(() => {
+    let cancelled = false
+    fetch(`/api/jobs/${id}/performance-share`).then(r => r.json())
+      .then((res: { fees?: PerformanceShareResult[] }) => { if (!cancelled) setPerformanceShareStatus(res.fees ?? []) })
+      .catch(() => { if (!cancelled) setPerformanceShareStatus([]) })
+    return () => { cancelled = true }
+  }, [id])
   useEffect(() => {
     // Same out-of-order-response guard as fetchJob's own fetchJobSeq — this
     // effect re-runs on every refreshSignal bump (meter-mapping confirm,
@@ -6933,12 +6517,31 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       .catch(() => {})
     return () => { cancelled = true }
   }, [id, refreshSignal])
-  const [escEditing,   setEscEditing]   = useState<number | null>(null)
-  const [escEditValue, setEscEditValue] = useState('')
-  const [escSaving,    setEscSaving]    = useState(false)
-  const [tierEditing,   setTierEditing]   = useState<number | null>(null)
-  const [tierEditValue, setTierEditValue] = useState('')
-  const [tierSaving,    setTierSaving]    = useState(false)
+  // Step 17H.3D3 — the legacy Commercial Terms tier/escalator inline-edit
+  // state (escEditing/escEditValue/escSaving/tierEditing/tierEditValue/
+  // tierSaving) and the saveTierRate/saveEscalatorPct functions that
+  // closed over it were removed along with Commercial Terms itself —
+  // Commercial BoM's own correction UI (below) is now the sole raw-value
+  // correction entry point, via the shared persistTierRateCorrection/
+  // persistEscalatorPctCorrection (lib/tier-escalator-correction.ts),
+  // which are preserved — Commercial BoM depends on them directly.
+  // Step 17H.3D2 — Commercial BoM's own escalator-correction affordance.
+  // Index-keyed against terms.escalators directly (same identity
+  // Commercial Logic's esc: rows already use).
+  const [bomEscEditing,   setBomEscEditing]   = useState<number | null>(null)
+  const [bomEscEditValue, setBomEscEditValue] = useState('')
+  const [bomEscSaving,    setBomEscSaving]    = useState(false)
+  // Step 17H.4A — compact, truthful failure surfacing (item 0/13/16).
+  // Keyed by escalator idx so a stale error from a DIFFERENT escalator's
+  // earlier attempt can never appear to belong to the one currently open.
+  const [bomEscError, setBomEscError] = useState<string | null>(null)
+  // Step 17H.4A — tier correction has no explicit Save button (it reuses
+  // the generic onBlur-only billingEdit mechanism — see that handler's
+  // own comment for why its failure UX deliberately differs from the
+  // escalator block's explicit-button retry flow). itemId-keyed so the
+  // error is shown against the exact row that failed, cleared the moment
+  // that row is edited again.
+  const [tierCorrectionError, setTierCorrectionError] = useState<{ itemId: string; message: string } | null>(null)
   const [dateDraftStart, setDateDraftStart] = useState('')
   const [dateDraftEnd,   setDateDraftEnd]   = useState('')
   const [dateEditing,    setDateEditing]    = useState<'start' | 'end' | null>(null)
@@ -6968,10 +6571,11 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const [sentOneTimeInvoices, setSentOneTimeInvoices] = useState<{ feeLabel: string | null; amount: number }[]>([])
 
   // Audit-trail metadata (reviewer, timestamp, source clause) for every
-  // currently-confirmed commercial rule — enriches the Commercial Terms
-  // "Confirmed rules" card beyond what contract_terms alone can show, since
-  // contract_terms only holds the current operational value, not who
-  // approved it or when. Resilient to the audit table not existing yet.
+  // currently-confirmed commercial rule — enriches Commercial Logic &
+  // Billing Setup's own rows (via findAudit/auditCaptionFor) beyond what
+  // contract_terms alone can show, since contract_terms only holds the
+  // current operational value, not who approved it or when. Resilient to
+  // the audit table not existing yet.
   // Every revision, current and historical — the GET route returns them all
   // so "View previous version" can browse history without a second endpoint.
   const [ruleInterpretations, setRuleInterpretations] = useState<RuleInterpretationRecord[]>([])
@@ -7170,56 +6774,45 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [needsReview, job?.execute_status, id, items.length])
 
-  const saveTierRate = async (idx: number) => {
-    const rate = parseFloat(tierEditValue.replace(/[^0-9.,]/g, '').replace(',', '.'))
-    if (isNaN(rate) || !terms?.overage_tiers) return
-    setTierSaving(true)
-    try {
-      const tier = terms.overage_tiers[idx]
-      const newTiers = terms.overage_tiers.map((t, i) => i === idx ? { ...t, rate_per_unit: rate } : t)
-      // Update contract_terms.overage_tiers
-      await fetch(`/api/jobs/${id}/terms`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ overage_tiers: newTiers }),
-      })
-      // Also sync the corresponding line_item unit_price so billing config stays consistent
-      if (tier.tier_label) {
-        const matchingItem = items.find(item => {
-          const baseName = item.product_name.replace(/\s*—\s*overage\s*$/i, '').trim()
-          return baseName.toLowerCase() === tier.tier_label!.toLowerCase() ||
-            item.product_name.toLowerCase().includes(tier.tier_label!.toLowerCase())
-        })
-        if (matchingItem) {
-          await fetch(`/api/jobs/${id}/line-items`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ itemId: matchingItem.id, fields: { unit_price: rate, confidence_score: 1 } }),
-          })
-        }
-      }
-      setTierEditing(null)
-      await fetchJob()
-    } finally {
-      setTierSaving(false)
-    }
-  }
+  // Step 17H.4A, revised 17H.4B0D4B1G — the actual write-sequence/response-
+  // handling/bidirectional-preflight logic lives entirely in lib/tier-
+  // escalator-correction.ts's persistTierRateCorrection/persistEscalatorPct
+  // Correction (moved out of this page, not just its pure sub-pieces), so
+  // it has direct, fetch-mockable unit-test coverage without a browser/
+  // render harness. This wrapper supplies this page's own live `id`/
+  // `terms`/`items` — the caller passes the LINE ITEM being edited, never a
+  // precomputed tier index: the persistence helper resolves both directions
+  // (line item -> tier, tier -> current line items) and verifies they agree
+  // before writing anything, so no caller-side matching logic (this page's
+  // own former findTierForItem included) can influence what gets corrected.
+  const persistTierRateCorrection = (targetItem: LineItem, rate: number): Promise<TierCorrectionResult> =>
+    libPersistTierRateCorrection({ jobId: id, targetItem, overageTiers: terms?.overage_tiers ?? [], lineItems: items, rate })
 
-  const saveEscalatorPct = async (idx: number) => {
-    const pct = parseFloat(escEditValue.replace(/[^0-9.]/g, ''))
-    if (isNaN(pct) || !terms?.escalators) return
-    setEscSaving(true)
-    try {
-      const newEscalators = terms.escalators.map((e, i) => i === idx ? { ...e, escalator_pct: pct } : e)
-      await fetch(`/api/jobs/${id}/terms`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ escalators: newEscalators }),
-      })
-      setEscEditing(null)
-      await fetchJob()
-    } finally {
-      setEscSaving(false)
+  const persistEscalatorPctCorrection = (idx: number, pct: number): Promise<EscalatorCorrectionResult> =>
+    libPersistEscalatorPctCorrection({ jobId: id, escalators: terms?.escalators ?? [], idx, pct })
+
+  // Step 17H.4A — on failure, the editor deliberately stays OPEN (never
+  // closed as though saved — item 4's explicit instruction) so the user
+  // can retry without re-typing; the explicit Save button (disabled
+  // while bomEscSaving, so a duplicate click can't fire a second
+  // request — item 15) makes this safe, unlike the tier correction's
+  // onBlur-only interaction (see that handler's own comment for why it
+  // takes a different, equally-safe approach). fetchJob() always runs
+  // after a failure too, so if the user cancels instead of retrying, the
+  // card reflects the true persisted (unchanged) value, never a stale
+  // optimistic one (item 14).
+  const saveBomEscalatorPct = async (idx: number) => {
+    const pct = parseEscalatorPctInput(bomEscEditValue)
+    if (pct === null || !terms?.escalators) return
+    setBomEscSaving(true)
+    setBomEscError(null)
+    const result = await persistEscalatorPctCorrection(idx, pct)
+    await fetchJob()
+    setBomEscSaving(false)
+    if (result.status === 'success') {
+      setBomEscEditing(null)
+    } else {
+      setBomEscError(describeEscalatorCorrectionError())
     }
   }
 
@@ -7270,8 +6863,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   const setCorr    = (itemId: string, value: string) =>
     setCorrections(c => ({ ...c, [itemId]: { value, remember: c[itemId]?.remember ?? true } }))
 
-  const findItem = (keyword: string) => items.find(i => i.product_name.toLowerCase().includes(keyword.toLowerCase()))
-
   const saveLineItemField = async (itemId: string, field: 'quantity' | 'unit_price' | 'billing_period', raw: string) => {
     const item = items.find(i => i.id === itemId)
     if (!item) return
@@ -7287,10 +6878,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       fields.total_amount = Math.round(qty * up * 100) / 100
     }
     setItems(prev => prev.map(i => i.id === itemId ? { ...i, ...fields } : i))
+    // Step 17H.4B0D2 — `field` is the one value the reviewer actually typed
+    // into; total_amount above is always derived from it, never
+    // independently authored here, so only `field` itself is marked.
     await fetch(`/api/jobs/${id}/line-items`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ itemId, fields }),
+      body: JSON.stringify({ itemId, fields, markReviewerCorrectedFields: [field] }),
     })
   }
 
@@ -7322,25 +6916,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       }
     }
 
-    const modifiedItems = items.map(i => ({
-      ...i,
-      product_name: corrections[i.id]?.value || i.product_name,
-    }))
-
-    const corrSaves = Object.entries(corrections)
-      .filter(([, c]) => c.value)
-      .map(([itemId, c]) => {
-        const item = items.find(i => i.id === itemId)
-        return fetch('/api/corrections', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jobId: id, fieldName: 'product_name',
-            extractedValue: item?.product_name, correctedValue: c.value,
-            customerName: terms?.customer_name, applyToFuture: c.remember,
-          }),
-        })
-      })
+    // Step 17H.4B0D4H1B4E2.6 §8-14 — extracted to lib/product-name-
+    // corrections.ts (pure, tested): `corrections` is product_name-only by
+    // contract, and this is the ONE place that contract is enforced/relied
+    // on for submission — see that file's own doc comment for the bug it
+    // closes.
+    const modifiedItems = applyProductNameCorrections(items, corrections)
+    const corrSaves = buildProductNameCorrectionRequests(items, corrections, { jobId: id, customerName: terms?.customer_name })
+      .map(body => fetch('/api/corrections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }))
     await Promise.all(corrSaves)
 
     try {
@@ -7364,6 +6951,27 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       setApproveError('Network error — please check your connection and try again.')
     } finally {
       setApproving(false)
+    }
+  }
+
+  // Step 17H.4B0D4H1B4E2 §20 — extracted from the pre-existing "Generate
+  // billing schedule" button (the schedule-not-built-yet case) so the new
+  // BillingSafetyBanner's "Rebuild billing schedule" action (the
+  // schedule_rebuild_required case) can call the exact same, only,
+  // production rebuild mechanism (POST /api/jobs/[id]/rebuild-schedule) —
+  // never a second implementation of the same request.
+  const handleRebuildSchedule = async () => {
+    setRebuilding(true)
+    setRebuildError(null)
+    try {
+      const res = await fetch(`/api/jobs/${id}/rebuild-schedule`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) setRebuildError(data.error ?? 'Rebuild failed')
+      else { setRebuildDone(true); fetchJob() }
+    } catch {
+      setRebuildError('Network error — please try again')
+    } finally {
+      setRebuilding(false)
     }
   }
 
@@ -7502,25 +7110,28 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     chargingGroups.get(key)!.push({ tier: tiers[i], origIdx: i })
   }
 
-  // Step 17F, item 1/2 — Usage sources is the authoritative configuration
-  // section ("which semantic usage metric is supplied by which meter") and
-  // must reflect EVERY confirmed metric, not only the ones that also
-  // happen to have an overage tier. Previously this was scoped to
-  // `chargedUnitTypes` (derived from chargingGroups, i.e. overage_tiers
-  // only) — a flat per-unit fee with no tier of its own (e.g. Remembill's
-  // "SEK 0.38 per issued payment request") was silently excluded, which is
-  // exactly the reported bug: 2/2 metrics confirmed, only 1 source card
-  // shown. meterInputRows (GET /api/jobs/[id]/meter-mappings' own
-  // `suggestions`) is ALREADY the complete, server-computed set of
-  // metrics this contract actually needs a source for (built via
-  // lib/meter-mapping-groups.ts's buildUsageMappingGroups, covering
-  // overage_tiers + flat additional_recurring_fees + rolling mechanisms) —
-  // passed through directly, with no second, narrower client-side filter.
+  // Step 17F, item 1/2 (superseded by Step 17H.3B — the standalone "Usage
+  // sources" section this was originally computed for has been removed;
+  // Commercial Logic & Billing Setup's "Usage billing mapping" rows below
+  // are now the sole authoritative renderer of this data, plus
+  // BillingSummaryCard's period execution model) — must reflect EVERY
+  // confirmed metric, not only the ones that also happen to have an
+  // overage tier. Previously this was scoped to `chargedUnitTypes` (derived
+  // from chargingGroups, i.e. overage_tiers only) — a flat per-unit fee
+  // with no tier of its own (e.g. Remembill's "SEK 0.38 per issued payment
+  // request") was silently excluded, which is exactly the reported bug:
+  // 2/2 metrics confirmed, only 1 source card shown. meterInputRows
+  // (GET /api/jobs/[id]/meter-mappings' own `suggestions`) is ALREADY the
+  // complete, server-computed set of metrics this contract actually needs
+  // a source for (built via lib/meter-mapping-groups.ts's
+  // buildUsageMappingGroups, covering overage_tiers + flat
+  // additional_recurring_fees + rolling mechanisms) — passed through
+  // directly, with no second, narrower client-side filter.
   // buildUsageSourceCards itself already excludes derived/persisted_balance
   // rows (see its own header), so nothing further needs excluding here.
   // Computed at top level (not nested inside the "Confirmed billing rules"
-  // block below, which can legitimately have zero cards) so Usage sources
-  // is never accidentally hidden by an unrelated section being empty.
+  // block below, which can legitimately have zero cards) so this data is
+  // never accidentally hidden by an unrelated section being empty.
   const usageSourceCards = buildUsageSourceCards({
     mappings: meterInputRows,
     meters: availableMeters,
@@ -7528,10 +7139,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     tiers: terms?.overage_tiers ?? [],
     rollingMechanisms: terms?.unsupported_commercial_mechanisms ?? [],
   })
-
-  // Keep backward-compat refs used by buildContractSummary
-  const userTiers  = tiers.filter(t => t.unit_type?.toLowerCase().includes('user'))
-  const apiTiers   = tiers.filter(t => t.unit_type?.toLowerCase().includes('api') || t.unit_type?.toLowerCase().includes('call'))
 
   // "Configured in X" claims the whole contract is set up in the billing
   // platform — true for the fixed fees, not true while a metric's tier
@@ -7558,13 +7165,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     const credit = (terms?.service_credits ?? []).find(c => c.credit_rule_id === cand.creditId)
     return !!credit?.interpretation && !credit.interpretation.requires_confirmation && !credit.interpretation.interaction_note
   })
-  // Readiness audit fix — this component (ConfigureResultsPage) is a
-  // separate scope from ReviewPanel, which computes its own identical call
-  // for its own drawer cards; the "Confirmed billing rules" cards below are
-  // rendered from here instead, so they need their own instance of the SAME
-  // shared, date-aware helper — never a second, duplicated date
-  // calculation, just called from the scope that actually needs it.
-  const partialPeriodMetricsTop = computePartialPeriodMetrics(terms?.contract_start_date, terms?.contract_end_date, terms?.overage_tiers ?? [])
   const commercialRuleWorkload = computeCommercialRuleWorkload(
     terms ?? null,
     // Same real per-suggestion meterMappingSummary (fetched once, eagerly,
@@ -7586,6 +7186,13 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     // Step 13 — real evidence for this job, so the Approve footer/status
     // banner agree with the server-side approve/route.ts gate exactly.
     job?.operational_event_evidence,
+    undefined,
+    // Step 17H.4B0D4H1B4E2.5 §14-16 — same fixed-fee-existence signal
+    // buildFixedComponent itself gates on, so an absent
+    // fixed_fee_billing_timing counts as a real commercial decision here
+    // exactly when the Commercial Logic card already shows it as one —
+    // closes the "top summary says 2, component says 3" discrepancy.
+    !!(terms?.base_monthly_fee || terms?.base_annual_fee),
   )
 
   // Step 17E.1, item A — the persistent operating sections (Operational
@@ -7669,22 +7276,17 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
     sourceConfirmationsOutstanding > 0 && `${sourceConfirmationsOutstanding} source confirmation${sourceConfirmationsOutstanding > 1 ? 's' : ''} outstanding`,
     usageMappingsOutstanding > 0 && `${usageMappingsOutstanding} usage mapping${usageMappingsOutstanding > 1 ? 's' : ''} outstanding`,
     vatOutstanding && 'VAT not configured',
-    needsReview > 0 && `${needsReview} extracted field${needsReview > 1 ? 's' : ''} below confidence threshold`,
+    // Step 17H.4B0D4H1B4E2.5 §5-6 — "fields" implies field-level confidence
+    // identity, which doesn't exist: `needsReview` counts LineItem ROWS
+    // (confidence_score is a single, row-level/whole-line-item score —
+    // traced directly, not assumed — the SAME score gets set to 1 by
+    // either a name correction OR a price correction, proving it isn't
+    // tracked per-field). "items" states only what's actually true.
+    needsReview > 0 && `${needsReview} extracted item${needsReview > 1 ? 's' : ''} below confidence threshold`,
     approvalBlockersOutstanding > 0 && `${approvalBlockersOutstanding} unresolved execution blocker${approvalBlockersOutstanding > 1 ? 's' : ''}`,
   ].filter((x): x is string => typeof x === 'string')
   const totalOutstanding = commercialDecisionsOutstanding + usageMappingsOutstanding + (vatOutstanding ? 1 : 0) + needsReview + approvalBlockersOutstanding
 
-  // Step 17F.9, item 1 — "Configured in Remembill" states a fact about
-  // the EXTERNAL platform (a push already happened) that must never be
-  // retracted or hidden once true. But it must not be read as "current
-  // Verdix commercial configuration is fully executable" when it isn't —
-  // qualified with "· Action required" whenever totalOutstanding > 0,
-  // the SAME aggregate the "N items to review" callout below uses.
-  // reviewComplete alone (commercial-rule status only) under-counted a
-  // contract with 0 commercial decisions outstanding but a still-
-  // unmapped usage source — that contract is not fully configured
-  // either, and the badge must say so.
-  const configuredBadgeSuffix = configuredBadgeSuffixPredicate(totalOutstanding)
 
   // Readiness audit — "ready to approve" (totalOutstanding === 0) and
   // "every fee is billable now" are two different questions (Approve gates
@@ -7703,30 +7305,19 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       eventLabel: describeBillabilityCondition({ kind: 'event', event_type: b.event_type }) ?? b.event_type,
     }))
 
-  // Classify one-time fees into services / hardware / credits / other
-  const allFees      = terms?.one_time_fees ?? []
-  const serviceFees  = allFees.filter(f => f.amount >= 0 && classifyFee(f.fee_label) === 'service')
-  const hardwareFees = allFees.filter(f => f.amount >= 0 && classifyFee(f.fee_label) === 'hardware')
-  const otherPosFees = allFees.filter(f => f.amount >= 0 && classifyFee(f.fee_label) === 'other')
-  const creditFees   = allFees.filter(f => f.amount < 0)
-  // Item 3 — the Pricing overview's own total, kept SEPARATE from the
-  // service/hardware/other TYPE split above (still used by the detailed
-  // Products & Services table below, item 10). The type split previously
-  // doubled as the summary card here too, which was wrong two ways: (a)
-  // "other"-classified fees (e.g. a fee whose label doesn't match any
-  // service/hardware keyword — a real example: "ERP connector") had no
-  // card at all and were silently dropped from this summary, and (b) even
-  // if they had one, fee TYPE has nothing to do with whether the fee will
-  // ever actually be billed — a Change-Order-gated fee may never occur,
-  // regardless of what kind of fee it is. Conditionality (isChangeOrder
-  // ConditionalFee) is the dimension that actually matters for a "how
-  // much will this contract collect" summary, and it accounts for every
-  // positive one-time fee, never silently dropping one.
-  const positiveOneTimeFees     = allFees.filter(f => f.amount >= 0)
-  const unconditionalOneTimeFees = positiveOneTimeFees.filter(f => !isChangeOrderConditionalFee(f))
-  const conditionalOneTimeFees   = positiveOneTimeFees.filter(isChangeOrderConditionalFee)
-  const unconditionalOneTimeFeeTotal = unconditionalOneTimeFees.reduce((s, f) => s + f.amount, 0)
-  const conditionalOneTimeFeeTotal   = conditionalOneTimeFees.reduce((s, f) => s + f.amount, 0)
+  // Step 17H.3C3 — allFees stays (still backs Commercial BoM's per-row
+  // termFee lookup); the service/hardware/other/credit TYPE split
+  // (serviceFees/hardwareFees/otherPosFees/creditFees) was only ever
+  // consumed by the now-fully-retired standalone "Products, Services &
+  // Pricing" card and is genuinely dead — deleted, not left as an unused
+  // fork of oneTimeFeeKindLabel's own classification (the one classifier
+  // this page uses now, shared by Commercial BoM and Commercial Logic).
+  // positiveOneTimeFees/unconditionalOneTimeFee(s)/conditionalOneTimeFee(s)
+  // — the now-removed "Verify extracted amounts"/"Pricing" card's own
+  // aggregate totals — removed alongside it (surgical generic rule pass):
+  // a pure sum of one-time rows Commercial BoM already lists individually,
+  // with no correction affordance of its own to preserve.
+  const allFees = terms?.one_time_fees ?? []
 
   const billingModel = deriveBillingModel(terms)
   const src = terms?.field_sources ?? {}
@@ -7801,9 +7392,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // total under a different label, per the terminology-standardisation plan.
   const isCompleted             = lifecycleStatus === 'completed'
 
-  const summaryLines = buildContractSummary(terms, cur, committedFixedFeeReadiness, conditionalFixedFeeTotal, userTiers, apiTiers)
-
-  const baseItem = findItem('base subscription')
+  const summaryLines = buildContractBrief(terms, cur)
 
   return (
     <>
@@ -7839,25 +7428,127 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               ))}
             </div>
           </div>
-          {isConfigured ? (
-            <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: configuredBadgeSuffix ? '#B45309' : '#4A7C59' }}>
-              <i className={`ti ${configuredBadgeSuffix ? 'ti-alert-triangle' : 'ti-circle-check'}`} style={{ fontSize: 13 }} /> {hasUnresolvedTierCalculation ? 'Fixed fees configured in' : 'Configured in'} {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}{configuredBadgeSuffix}
-            </span>
-          ) : isFailed ? (
-            <span className="text-xs font-medium flex items-center gap-1.5 text-red-500">
-              <i className="ti ti-alert-circle" style={{ fontSize: 13 }} /> Push failed — fix &amp; retry below
-            </span>
-          ) : totalOutstanding === 0 && vatConfigured !== undefined ? (
-            <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: '#4A7C59' }}>
-              <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> Ready to approve
-              {pendingExecutionHolds.length > 0 && (
-                <span className="text-stone font-normal">
-                  · {pendingExecutionHolds.length} billing condition{pendingExecutionHolds.length > 1 ? 's' : ''} pending
-                </span>
-              )}
-            </span>
-          ) : null}
+          {/* Step 17G.1, item 2 — the platform/action-required badge that
+              used to live here has moved into the new Contract Status
+              block immediately below (same underlying state, no logic
+              change) — this bar keeps only navigation. */}
         </div>
+
+        {/* ── Contract Status (Step 17G.1, compacted 17G.1a) ── ONE
+             compact, consolidated top-level status block, replacing two
+             previously-duplicated surfaces: the nav-bar platform/action-
+             required badge (removed above) and the separate "N items to
+             review" banner that used to sit below Contract Brief (removed
+             below, item 7). Every piece of state here is reused verbatim
+             from the SAME authoritative computations those two surfaces
+             already used — isConfigured/isFailed/totalOutstanding/
+             vatConfigured/pendingExecutionHolds/readinessBreakdown/
+             billingPlatform/hasUnresolvedTierCalculation — no new count,
+             no new readiness/platform logic (deriveProviderConfiguration-
+             Presentation, Step 17H.4B0D4H1B4E2.4, is the one new pure
+             predicate — it composes isConfigured with the SAME
+             scheduleExists BillingSummaryCard already reports, never a
+             new count). Two compact
+             rows instead of a taller stack: Row 1 = customer name (left) +
+             platform/status (right, omitted entirely — no empty
+             placeholder — when none of isConfigured/isFailed/ready-to-
+             approve applies, e.g. a not-yet-reviewed contract); Row 2 =
+             review summary (left) + "Review items →" (right), rendered
+             only while totalOutstanding > 0. flex-wrap on both rows lets
+             narrow viewports stack the two sides instead of overlapping. */}
+        <div className="flex-shrink-0 px-8 py-2.5 border-b border-forest/10">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <p className="text-sm font-medium text-ink truncate">{terms?.customer_name || job.name}</p>
+            {isConfigured ? (() => {
+              // Step 17H.4B0D4H1B4E2.4 §9/10/11/12 — two fixes at once:
+              // (a) "Configured in X" no longer overclaims once a real
+              // downstream schedule exists to check — a customer/provider
+              // connection existing is NOT the same fact as a real
+              // planned_invoices schedule existing (Billing Timeline's own
+              // "Local projection — not yet created in X" states the
+              // latter), so this badge now says exactly which is true,
+              // never both/neither. (b) the trailing " · N decisions
+              // pending" count is dropped from THIS badge — Row 2 directly
+              // below (rendered whenever totalOutstanding > 0, the exact
+              // same condition) already states the same count with its
+              // full categorized breakdown; repeating it here added no
+              // information, just the same number twice.
+              const platformName = billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'
+              const providerState = deriveProviderConfigurationPresentation({ isConfigured, scheduleExists })
+              const needsAttention = totalOutstanding > 0 || providerState.kind === 'provider_connected_schedule_pending'
+              return (
+                <p className="text-xs font-medium flex items-center gap-1.5 flex-shrink-0" style={{ color: needsAttention ? '#B45309' : '#4A7C59' }}>
+                  <i className={`ti ${needsAttention ? 'ti-alert-triangle' : 'ti-circle-check'}`} style={{ fontSize: 13 }} />
+                  {providerState.kind === 'provider_connected_schedule_pending'
+                    ? `${platformName} connected — billing schedule not yet created`
+                    : `${hasUnresolvedTierCalculation ? 'Fixed fees configured in' : 'Configured in'} ${platformName}`}
+                </p>
+              )
+            })() : isFailed ? (
+              <p className="text-xs font-medium flex items-center gap-1.5 text-red-500 flex-shrink-0">
+                <i className="ti ti-alert-circle" style={{ fontSize: 13 }} /> Push failed — fix &amp; retry below
+              </p>
+            ) : totalOutstanding === 0 && vatConfigured !== undefined ? (
+              <p className="text-xs font-medium flex items-center gap-1.5 flex-shrink-0" style={{ color: '#4A7C59' }}>
+                <i className="ti ti-circle-check" style={{ fontSize: 13 }} /> Ready to approve
+                {pendingExecutionHolds.length > 0 && (
+                  <span className="text-stone font-normal">
+                    · {pendingExecutionHolds.length} billing condition{pendingExecutionHolds.length > 1 ? 's' : ''} pending
+                  </span>
+                )}
+              </p>
+            ) : null}
+          </div>
+
+          {/* Item 5/6 — the SAME totalOutstanding/readinessBreakdown that
+              drove the old standalone banner, and the SAME setReviewPanelOpen
+              action behind "Review items →". No per-category deep link
+              exists today (setReviewPanelOpen is a single boolean — the
+              drawer has no "open to this section" targeting mechanism), so
+              both the summary text and the button open the one existing
+              review surface rather than inventing new routing.
+              readinessBreakdown's own " outstanding" suffix is dropped
+              ONLY for display in this compact strip (a presentational
+              shortening, e.g. "2 commercial decisions" instead of "2
+              commercial decisions outstanding") — the underlying counts
+              and the un-shortened wording used elsewhere (the Approve
+              footer's hint text) are untouched. */}
+          {totalOutstanding > 0 && (
+            <div className="flex items-center justify-between gap-4 mt-1 flex-wrap">
+              <button
+                onClick={() => setReviewPanelOpen(true)}
+                className="text-xs font-medium text-left hover:underline"
+                style={{ color: '#92400E' }}
+              >
+                {[
+                  `${totalOutstanding} item${totalOutstanding > 1 ? 's' : ''} need${totalOutstanding > 1 ? '' : 's'} review`,
+                  ...readinessBreakdown.map(s => s.replace(/ outstanding$/, '')),
+                ].join(' · ')}
+              </button>
+              <button
+                onClick={() => setReviewPanelOpen(true)}
+                className="flex-shrink-0 text-xs font-medium transition-colors whitespace-nowrap hover:underline"
+                style={{ color: '#92400E' }}
+              >
+                Review items →
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Billing safety status — Step 17H.4B0D4H1B4E2 §20-21. The ONE
+            authoritative billing_hold surface, placed near the top-level
+            readiness area, directly below Contract Status and above the
+            unrelated refresh/push-failed technical banners. Step
+            17H.4B0D4H1B4E2.4 §15 — this is current/future billing safety,
+            unrelated to the historical BillingReconciliationPanel (moved
+            to its own "Historical Billing Execution / Reconciliation"
+            section, below Billing Operations — see that section's own
+            comment) and stays here regardless. */}
+        <BillingSafetyBanner
+          hold={job.billing_hold} onRebuild={handleRebuildSchedule} rebuilding={rebuilding} rebuildError={rebuildError}
+          commercialDecisionsOutstanding={commercialRuleWorkload.totalToConfirm}
+        />
 
         {/* Readiness audit — a refresh failure after a successful mutation
             (see fetchJob's own comment) must not leave the page silently
@@ -7883,16 +7574,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
             </div>
           </div>
         )}
-
-        {/* Step 15 — derived reconciliation state, shown whenever it
-            genuinely needs admin attention (renders nothing for
-            none/safe_to_resume/executed_same_plan — item 9). Deliberately
-            shown regardless of isFailed/isConfigured: an executed-plan-
-            changed correction assessment is just as relevant on an
-            already-COMPLETED job (item 10/23) as on a FAILED one. */}
-        <div className="flex-shrink-0 mx-8 mt-4">
-          <BillingReconciliationPanel jobId={id} currency={cur} onResolved={fetchJob} />
-        </div>
 
         {/* Content row */}
         <div className="flex flex-1 overflow-hidden">
@@ -7922,135 +7603,175 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               </div>
             )}
 
-            {/* ── Items need review callout ── Driven entirely by the
-                 unified readiness model above (totalOutstanding /
-                 readinessBreakdown) — the same numbers the meter-mapping
-                 summary chip and the Approve footer read, so this can never
-                 show a different count than either of those. Previously
-                 gated on needsReview alone (confidence-only), which could
-                 hide this banner entirely while commercial-rule or VAT
-                 decisions were still outstanding. */}
-            {totalOutstanding > 0 && (
-              <div className="flex items-center justify-between gap-4 py-3 border-t border-b border-amber-200/60">
-                <div className="flex items-start gap-2.5">
-                  <i className="ti ti-alert-triangle flex-shrink-0 mt-0.5" style={{ fontSize: 14, color: '#D97706' }} />
-                  <div>
-                    <p className="text-sm font-medium" style={{ color: '#92400E' }}>
-                      {totalOutstanding} item{totalOutstanding > 1 ? 's' : ''} to review
-                    </p>
-                    <p className="text-xs mt-0.5 leading-relaxed" style={{ color: '#B45309' }}>
-                      {readinessBreakdown.join(' · ') || 'Review these items against the source agreement before approving.'}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setReviewPanelOpen(true)}
-                  className="flex-shrink-0 text-xs font-medium transition-colors whitespace-nowrap hover:underline"
-                  style={{ color: '#92400E' }}
-                >
-                  Review items →
-                </button>
-              </div>
-            )}
+            {/* Step 17G.1, item 7 — the standalone "N items to review"
+                banner that used to live here has been consolidated into
+                the Contract Status block at the top of the page (same
+                totalOutstanding/readinessBreakdown/setReviewPanelOpen —
+                no logic change, presentation only). There is now only one
+                top-level review callout. */}
 
-            {/* ── 2. Contract Overview ── */}
+            {/* ── 2. Contract Setup (Step 17G.3, renamed/restructured from
+                 "Contract Overview") — this card's purpose is contract
+                 hygiene: making sure the core facts CRM/billing/finance
+                 need are complete and correct, grouped by what they're
+                 FOR (identity / billing / lifecycle / connection) rather
+                 than a flat 3-column field dump. Every field below is the
+                 SAME field, same saveField/EditableStat write path, same
+                 value — this step only reorganizes and relabels; no
+                 extraction/persistence/billing-calculation change.
+                 Committed fixed fees (a pricing OUTCOME, not a setup fact)
+                 removed from this card — still computed and shown
+                 elsewhere (KPI cards / Billing Configuration footer), only
+                 removed from here. VAT (item 3) relocated in from its
+                 former standalone "VAT (pre-approval)" card below, using
+                 the SAME VatConfigRow/useVatConfig mechanism — it already
+                 resolves pre- vs. post-approval persistence server-side
+                 (see VatConfigRow's own header), so one instance here
+                 works for both states; BillingSummaryCard's own duplicate
+                 editable VatConfigRow instance was removed to avoid a
+                 second editable VAT control (its read-only per-invoice
+                 VAT breakdown is untouched). ── */}
             <div className="bg-white rounded-2xl border border-forest/10 p-6">
-              <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-5">Contract overview</h2>
-              <div className="grid grid-cols-3 gap-x-8 gap-y-6">
-                <EditableStat
-                  label="Contract ID / Number"
-                  value={terms?.contract_id ?? null}
-                  placeholder="e.g. CLR-2024-0001"
-                  onSave={v => saveField('contract_id', v)}
-                />
-                <EditableStat
-                  label="CRM ID"
-                  value={terms?.crm_id ?? null}
-                  placeholder="Enter CRM deal ID"
-                  onSave={v => saveField('crm_id', v)}
-                />
-                <EditableStat
-                  label="Customer name"
-                  value={terms?.customer_name}
-                  onSave={v => saveField('customer_name', v)}
-                />
-                <EditableStat
-                  label="Customer billing address"
-                  value={terms?.customer_address ?? null}
-                  onSave={v => saveField('customer_address', v)}
-                />
-                <EditableStat
-                  label="Customer invoice email"
-                  value={terms?.customer_email ?? null}
-                  onSave={v => saveField('customer_email', v)}
-                />
-                <EditableStat
-                  label="Customer org / reg number"
-                  value={terms?.customer_org_number ?? null}
-                  onSave={v => saveField('customer_org_number', v)}
-                />
-                {/* Currency — editable dropdown */}
-                <div className="group">
-                  <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Currency</p>
-                  {currencyEditing ? (
-                    <div className="flex items-center gap-1.5">
-                      <select
-                        autoFocus
-                        value={currencyDraft}
-                        onChange={e => setCurrencyDraft(e.target.value)}
-                        className="text-sm font-medium text-ink border border-forest/30 rounded-lg px-2 py-1 outline-none focus:border-forest bg-white"
-                      >
-                        {COMMON_CURRENCIES.map(c => (
-                          <option key={c.code} value={c.code}>{c.code} — {c.name}</option>
-                        ))}
-                      </select>
-                      <button onClick={() => setCurrencyEditing(false)} className="text-stone/50 hover:text-ink p-1 transition-colors flex-shrink-0" title="Cancel">
-                        <i className="ti ti-x" style={{ fontSize: 13 }} />
-                      </button>
-                      <button
-                        onClick={async () => { await saveField('currency', currencyDraft); setCurrencyEditing(false) }}
-                        className="flex items-center justify-center w-7 h-7 rounded-lg text-white flex-shrink-0 transition-colors"
-                        style={{ background: '#1A3D2B' }}
-                        title="Save"
-                      >
-                        <i className="ti ti-check" style={{ fontSize: 12 }} />
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex items-start gap-1">
-                      <p
-                        onClick={() => { setCurrencyDraft(cur); setCurrencyEditing(true) }}
-                        title="Change currency"
-                        className="text-[15px] font-medium text-ink leading-snug cursor-pointer rounded -mx-1 px-1 hover:bg-forest/5 transition-colors"
-                      >
-                        {cur}
-                      </p>
-                      <button
-                        onClick={() => { setCurrencyDraft(cur); setCurrencyEditing(true) }}
-                        title="Change currency"
-                        className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 p-1 rounded hover:bg-forest/5 mt-0.5"
-                      >
-                        <i className="ti ti-pencil-minus" style={{ fontSize: 11, color: '#9CA3AF' }} />
-                      </button>
-                    </div>
-                  )}
-                </div>
+              <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Contract setup</h2>
+              <p className="text-[11px] text-stone mt-1 mb-4">Core agreement and billing details used to configure downstream systems.</p>
 
-                {/* Contract term — start and end date each independently editable */}
-                <div className="group">
-                  <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Contract term</p>
-                  <p className="text-[15px] font-medium text-ink leading-snug">
-                    {terms?.contract_term_months ? `${terms.contract_term_months} months` : '—'}
-                  </p>
-                  <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+              {/* Contract identity */}
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-stone/50 mb-2.5">Contract identity</p>
+                <div className="grid grid-cols-3 gap-x-8 gap-y-4">
+                  <EditableStat
+                    label="Customer name"
+                    value={terms?.customer_name}
+                    onSave={v => saveField('customer_name', v)}
+                  />
+                  <EditableStat
+                    label="Org / registration number"
+                    value={terms?.customer_org_number ?? null}
+                    onSave={v => saveField('customer_org_number', v)}
+                  />
+                  <EditableStat
+                    label="Contract ID / number"
+                    value={terms?.contract_id ?? null}
+                    placeholder="e.g. CLR-2024-0001"
+                    onSave={v => saveField('contract_id', v)}
+                  />
+                  <EditableStat
+                    label="CRM ID"
+                    value={terms?.crm_id ?? null}
+                    placeholder="Enter CRM deal ID"
+                    onSave={v => saveField('crm_id', v)}
+                  />
+                </div>
+              </div>
+
+              {/* Billing details */}
+              <div className="mt-4 pt-4" style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-stone/50 mb-2.5">Billing details</p>
+                <div className="grid grid-cols-3 gap-x-8 gap-y-4">
+                  <EditableStat
+                    label="Billing address"
+                    value={terms?.customer_address ?? null}
+                    onSave={v => saveField('customer_address', v)}
+                  />
+                  <EditableStat
+                    label="Invoice email"
+                    value={terms?.customer_email ?? null}
+                    onSave={v => saveField('customer_email', v)}
+                  />
+                  {/* Currency — editable dropdown */}
+                  <div className="group">
+                    <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Currency</p>
+                    {currencyEditing ? (
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          autoFocus
+                          value={currencyDraft}
+                          onChange={e => setCurrencyDraft(e.target.value)}
+                          className="text-sm font-medium text-ink border border-forest/30 rounded-lg px-2 py-1 outline-none focus:border-forest bg-white"
+                        >
+                          {COMMON_CURRENCIES.map(c => (
+                            <option key={c.code} value={c.code}>{c.code} — {c.name}</option>
+                          ))}
+                        </select>
+                        <button onClick={() => setCurrencyEditing(false)} className="text-stone/50 hover:text-ink p-1 transition-colors flex-shrink-0" title="Cancel">
+                          <i className="ti ti-x" style={{ fontSize: 13 }} />
+                        </button>
+                        <button
+                          onClick={async () => { await saveField('currency', currencyDraft); setCurrencyEditing(false) }}
+                          className="flex items-center justify-center w-7 h-7 rounded-lg text-white flex-shrink-0 transition-colors"
+                          style={{ background: '#1A3D2B' }}
+                          title="Save"
+                        >
+                          <i className="ti ti-check" style={{ fontSize: 12 }} />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-start gap-1">
+                        <p
+                          onClick={() => { setCurrencyDraft(cur); setCurrencyEditing(true) }}
+                          title="Change currency"
+                          className="text-[15px] font-medium text-ink leading-snug cursor-pointer rounded -mx-1 px-1 hover:bg-forest/5 transition-colors"
+                        >
+                          {cur}
+                        </p>
+                        <button
+                          onClick={() => { setCurrencyDraft(cur); setCurrencyEditing(true) }}
+                          title="Change currency"
+                          className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 p-1 rounded hover:bg-forest/5 mt-0.5"
+                        >
+                          <i className="ti ti-pencil-minus" style={{ fontSize: 11, color: '#9CA3AF' }} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <EditableStat
+                    label="Billing cycle"
+                    value={mixedBillingSchedule
+                      ? 'Mixed'
+                      : terms?.billing_frequency
+                        ? terms.billing_frequency.charAt(0).toUpperCase() + terms.billing_frequency.slice(1)
+                        : null}
+                    sub={mixedBillingSchedule
+                      ? `Base fee: ${terms?.billing_frequency} · ${Array.from(chargingGroups.keys()).map(unitType => {
+                          const cycle = chargingGroups.get(unitType)?.find(({ tier }) => tier.measurement_period)?.tier.measurement_period
+                          return cycle && cycle.toLowerCase() !== contractCycleLower ? `${unitType}: ${cycle}` : null
+                        }).filter(Boolean).join(' · ')}`
+                      : undefined}
+                    placeholder="e.g. monthly, annual"
+                    onSave={v => saveField('billing_frequency', v)}
+                  />
+                  <EditableStat
+                    label="Payment terms"
+                    value={terms?.payment_terms_text ?? (terms?.payment_terms_days ? `Net ${terms.payment_terms_days} days` : null)}
+                    placeholder="e.g. Net 30 days from invoice date"
+                    onSave={v => saveField('payment_terms_text', v)}
+                  />
+                  {/* VAT — Step 17G.3a: rendered as a normal grid tile
+                      (VatEditableStat, a hover-reveal-pencil presentation
+                      of the SAME useVatConfig hook/persistence VatConfigRow
+                      uses — see that file's header) rather than a
+                      full-width row with a permanently visible "Edit"
+                      button, matching every other field in this grid.
+                      Never a second VAT data path. */}
+                  <VatEditableStat jobId={id} onStatusChange={setVatConfigured} refreshSignal={refreshSignal} onSaved={handleVatSaved} />
+                </div>
+              </div>
+
+              {/* Contract lifecycle */}
+              <div className="mt-4 pt-4" style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-stone/50 mb-2.5">Contract lifecycle</p>
+                <div className="grid grid-cols-3 gap-x-8 gap-y-4">
+                  {/* Start date */}
+                  <div className="group">
+                    <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Start date</p>
                     {dateEditing === 'start' ? (
                       <div className="flex items-center gap-1">
                         <input autoFocus type="date" value={dateDraftStart}
                           onChange={e => setDateDraftStart(e.target.value)}
                           onKeyDown={e => { if (e.key === 'Enter') saveDateField('start'); if (e.key === 'Escape') setDateEditing(null) }}
-                          className="text-[11px] border border-forest/30 rounded px-1.5 py-0.5 outline-none focus:border-forest" />
+                          className="text-[13px] border border-forest/30 rounded px-1.5 py-0.5 outline-none focus:border-forest" />
                         <button onClick={() => setDateEditing(null)} className="text-stone/50 hover:text-ink transition-colors" title="Cancel">
-                          <i className="ti ti-x" style={{ fontSize: 11 }} />
+                          <i className="ti ti-x" style={{ fontSize: 12 }} />
                         </button>
                         <button onClick={() => saveDateField('start')} disabled={dateSaving || !dateDraftStart}
                           className="flex items-center justify-center w-5 h-5 rounded text-white disabled:opacity-50"
@@ -8060,20 +7781,23 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       </div>
                     ) : (
                       <button onClick={() => { setDateDraftStart(terms?.contract_start_date ?? ''); setDateEditing('start') }}
-                        className={`text-[11px] hover:underline transition-colors ${terms?.contract_start_date ? 'text-stone hover:text-forest' : 'text-amber-600 hover:text-amber-700 font-medium'}`}
+                        className={`text-[15px] font-medium leading-snug hover:underline transition-colors ${terms?.contract_start_date ? 'text-ink' : 'text-amber-600 hover:text-amber-700'}`}
                         title="Edit start date">
                         {terms?.contract_start_date ? fmtDate(terms.contract_start_date) : 'Add start date'}
                       </button>
                     )}
-                    <span className="text-[11px] text-stone/40">–</span>
+                  </div>
+                  {/* End date */}
+                  <div className="group">
+                    <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">End date</p>
                     {dateEditing === 'end' ? (
                       <div className="flex items-center gap-1">
                         <input autoFocus type="date" value={dateDraftEnd}
                           onChange={e => setDateDraftEnd(e.target.value)}
                           onKeyDown={e => { if (e.key === 'Enter') saveDateField('end'); if (e.key === 'Escape') setDateEditing(null) }}
-                          className="text-[11px] border border-forest/30 rounded px-1.5 py-0.5 outline-none focus:border-forest" />
+                          className="text-[13px] border border-forest/30 rounded px-1.5 py-0.5 outline-none focus:border-forest" />
                         <button onClick={() => setDateEditing(null)} className="text-stone/50 hover:text-ink transition-colors" title="Cancel">
-                          <i className="ti ti-x" style={{ fontSize: 11 }} />
+                          <i className="ti ti-x" style={{ fontSize: 12 }} />
                         </button>
                         <button onClick={() => saveDateField('end')} disabled={dateSaving || !dateDraftEnd}
                           className="flex items-center justify-center w-5 h-5 rounded text-white disabled:opacity-50"
@@ -8083,467 +7807,1939 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       </div>
                     ) : (
                       <button onClick={() => { setDateDraftEnd(terms?.contract_end_date ?? ''); setDateEditing('end') }}
-                        className={`text-[11px] hover:underline transition-colors ${terms?.contract_end_date ? 'text-stone hover:text-forest' : 'text-amber-600 hover:text-amber-700 font-medium'}`}
+                        className={`text-[15px] font-medium leading-snug hover:underline transition-colors ${terms?.contract_end_date ? 'text-ink' : 'text-amber-600 hover:text-amber-700'}`}
                         title="Edit end date">
                         {terms?.contract_end_date ? fmtDate(terms.contract_end_date) : 'Add end date'}
                       </button>
                     )}
                   </div>
+                  {/* Term — read-only, derived from contract_term_months;
+                      no separate editable field exists for it today (item
+                      4: "do not create a separate editable field unless
+                      one already exists" — start/end dates above remain
+                      the one authoritative editable source). */}
+                  <Stat
+                    label="Term"
+                    value={terms?.contract_term_months ? `${terms.contract_term_months} months` : null}
+                  />
+                  <EditableStat
+                    label="Auto-renewal"
+                    value={terms?.auto_renews == null ? null : terms.auto_renews ? 'Yes' : 'No'}
+                    placeholder="Yes or No"
+                    onSave={v => saveField('auto_renews', v)}
+                  />
+                  {/* Notice period — read-only. saveField's numeric-field
+                      list only coerces renewal_notice_days, not the
+                      renewal_notice_months this real contract (and
+                      formatRenewalNoticePeriod's own preference order)
+                      actually uses — wiring an edit control here would be
+                      a genuinely new write path, not the "trivial,
+                      already-supported" case item 7 permits. Shown
+                      read-only, same computation as before (previously
+                      sub-text under Auto-renewal), now its own row. */}
+                  <Stat
+                    label="Notice period"
+                    value={terms ? formatRenewalNoticePeriod(terms) : null}
+                  />
                 </div>
-
-                <EditableStat
-                  label="Billing cycle"
-                  value={mixedBillingSchedule
-                    ? 'Mixed'
-                    : terms?.billing_frequency
-                      ? terms.billing_frequency.charAt(0).toUpperCase() + terms.billing_frequency.slice(1)
-                      : null}
-                  sub={mixedBillingSchedule
-                    ? `Base fee: ${terms?.billing_frequency} · ${Array.from(chargingGroups.keys()).map(unitType => {
-                        const cycle = chargingGroups.get(unitType)?.find(({ tier }) => tier.measurement_period)?.tier.measurement_period
-                        return cycle && cycle.toLowerCase() !== contractCycleLower ? `${unitType}: ${cycle}` : null
-                      }).filter(Boolean).join(' · ')}`
-                    : undefined}
-                  placeholder="e.g. monthly, annual"
-                  onSave={v => saveField('billing_frequency', v)}
-                />
-                <EditableStat
-                  label="Payment terms"
-                  value={terms?.payment_terms_text ?? (terms?.payment_terms_days ? `Net ${terms.payment_terms_days} days` : null)}
-                  hint="e.g. Net 30 days from invoice date"
-                  placeholder="e.g. Net 30 days from invoice date"
-                  onSave={v => saveField('payment_terms_text', v)}
-                />
-                <EditableStat
-                  label="Auto-renewal"
-                  value={terms?.auto_renews == null ? null : terms.auto_renews ? 'Yes' : 'No'}
-                  hint="Enter Yes or No"
-                  placeholder="Yes or No"
-                  sub={terms ? formatRenewalNoticePeriod(terms) ?? undefined : undefined}
-                  onSave={v => saveField('auto_renews', v)}
-                />
-                {/* Item 3 (final amendment) — committedFixedFeeTotal, not
-                    tcv (the potential total, which can include a
-                    Change-Order-conditional fee) — the same TCV
-                    commitment-model figure Card A/the Billing Configuration
-                    footer show, never re-derived independently here. */}
-                <Stat
-                  label="Committed fixed fees"
-                  value={committedFixedFeeReadiness.status === 'unresolved'
-                    ? 'Not yet determinable'
-                    : committedFixedFeeTotal > 0 ? fmt(committedFixedFeeTotal, cur) : billingModel === 'consumption' ? 'Usage-based' : '—'}
-                  sub={committedFixedFeeReadiness.status === 'unresolved'
-                    ? 'Resolve pending decisions above'
-                    : conditionalFixedFeeTotal > 0 ? `+ ${fmt(conditionalFixedFeeTotal, cur)} conditional (Change Order)` : undefined}
-                />
               </div>
+
+              {/* Step 17G.3a, item 5 — System Connection removed: platform/
+                  configuration state is already surfaced at the top status
+                  strip ("Configured in <platform> [· Action required]")
+                  and will be represented again in the billing/execution
+                  area later — showing it a third time here duplicated
+                  that fact without adding anything Contract Setup itself
+                  needs. Underlying billingPlatform/isConfigured state is
+                  untouched, just no longer rendered in this card. */}
             </div>
 
-            {/* Step 17B0.2, item 5 — fixed-fee band provenance, surfaced
-                directly from the already-structured base_fee_bands/
-                base_fee_committed_volume data (lib/fixed-fee-band.ts's
-                resolveFixedFeeBand — the SAME pure function
-                lib/line-items.test.ts/lib/step-17b0-1.test.ts already
-                exercise), never re-derived from display text. Always
-                visible when a band table was extracted, independent of
-                any review/confirmation state — this is a factual causal
-                chain (volume -> band -> fee), not an ambiguity to resolve. */}
-            {terms?.base_fee_bands && terms.base_fee_bands.length > 0 && (() => {
-              const resolution = resolveFixedFeeBand(terms.base_fee_bands, terms.base_fee_committed_volume)
+            {/* ── Commercial BoM (Step 17G.4B, renamed/relabeled from
+                 "Billing Configuration", moved here from its former
+                 position near "Products & Services Breakdown") ── this is
+                 the SAME table/data/edit paths as before — same `items`
+                 (lib/line-items.ts's buildLineItems), same saveLineItemField
+                 persistence, same classifyItem grouping, same
+                 committedFixedFeeTotal/committedFixedFeeReadiness
+                 calculation (lib/contract-tcv-calc.ts) for the footer, now
+                 relabeled "Deterministic contract value" — no new
+                 arithmetic. What changed: (1) column headers reflect what
+                 this table is actually FOR now (commercial map, not "how
+                 Verdix executes"); (2) a pricing-model sub-label under each
+                 component name, since a flat variable-rate
+                 additional_recurring_fee (e.g. "Per-issued payment request
+                 fee") and the true fixed base fee both previously fell
+                 into the same classifyItem bucket with no way to tell them
+                 apart in this table; (3) that same flat variable-rate row
+                 previously showed a literal "€0.00"/quantity "0" (verified
+                 against the real job's own line_items — total_amount: 0,
+                 quantity: 0 — a real pre-existing false-zero this pass
+                 fixes, not a regression); (4) Performance Share appended
+                 as a read-only informational row sourced directly from
+                 terms.additional_recurring_fees (percentage_of_basis) —
+                 lib/line-items.ts's buildLineItems already deliberately
+                 excludes it from `items` (see that file's own comment),
+                 so this row is never added to `items`, never persisted,
+                 never exported by Download CSV, exactly per your explicit
+                 constraint; (5) the "Configured in <platform>" badge
+                 removed from this card's header (verbatim duplicate of
+                 the top status strip) — the "Platform: X" line at the
+                 bottom is kept, since it can show states ("Not yet
+                 selected") the top strip doesn't.
+
+                 Step 17G.4C (presentation-only, on top of the above): the
+                 group headings under groupOf below are now
+                 FIXED/VARIABLE/PERFORMANCE (business wording — not
+                 "informational — not yet executable"; executability is a
+                 later Verdix logic-layer concept, not this table's); a
+                 usage-dependent Deterministic value now reads "Variable"
+                 instead of "Usage-based — not yet billed"/"—"; component
+                 names go through the new bomDisplayLabel()
+                 (lib/commercial-bom.ts) for a light, globally-safe
+                 business rename (never touching the underlying
+                 product_name/fee_label identity used for classification,
+                 edits or CSV); an overage-tier's rate cell now shows its
+                 threshold ("SEK 0.60 / issued payment request above
+                 5,000") instead of a bare rate; and padding throughout is
+                 tightened for vertical density — no data model,
+                 calculation, editability or CSV behavior changed. */}
+            {(() => {
+              // Which additional_recurring_fees are flat variable-rate
+              // (rate_per_unit, no percentage_of_basis) — classifyItem
+              // alone can't distinguish these from the true fixed base fee
+              // (both fall through to its same default bucket), so this is
+              // matched by product_name against the fee's own fee_label,
+              // the same identity buildLineItems itself used to create the
+              // row.
+              const variableRateFeeLabels = deriveVariableRateFeeLabels(terms?.additional_recurring_fees)
+              const performanceFees = (terms?.additional_recurring_fees ?? []).filter(f => !!f.percentage_of_basis)
+              if (items.length === 0 && performanceFees.length === 0) return null
+
               return (
-                <div className="bg-white rounded-2xl border border-forest/10 p-6">
-                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em] mb-5">Fixed platform fee — band selection</h2>
-                  <div className="grid grid-cols-3 gap-x-8 gap-y-6">
-                    <div>
-                      <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Contracted monthly volume</p>
-                      <p className="text-[15px] font-medium text-ink leading-snug">
-                        {terms.base_fee_committed_volume != null ? terms.base_fee_committed_volume.toLocaleString() : '—'}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Selected band</p>
-                      <p className="text-[15px] font-medium text-ink leading-snug">
-                        {resolution.status === 'resolved'
-                          ? `${resolution.band.from_unit.toLocaleString()}–${resolution.band.to_unit != null ? resolution.band.to_unit.toLocaleString() : '∞'}`
-                          : <span className="text-amber-600">{resolution.reason}</span>}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">Fixed platform fee</p>
-                      <p className="text-[15px] font-medium text-ink leading-snug">
-                        {resolution.status === 'resolved'
-                          ? (resolution.band.monthly_fee != null ? `${fmt(resolution.band.monthly_fee, cur)}/month` : <span className="text-amber-600">Offereras / Price required</span>)
-                          : '—'}
-                      </p>
-                    </div>
+              <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
+                <div className="px-6 py-3.5 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                  <div>
+                    <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Commercial BoM</h2>
+                    <p className="text-[11px] text-stone mt-0.5">High-level view of the agreement&apos;s commercial components, quantities and determinable value.</p>
                   </div>
-                  <div className="mt-5 pt-4" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
-                    <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-2">Full band table</p>
-                    <div className="space-y-1">
-                      {[...terms.base_fee_bands].sort((a, b) => a.from_unit - b.from_unit).map((band, i) => (
-                        <p key={i} className={`text-[12px] ${resolution.status === 'resolved' && resolution.band.from_unit === band.from_unit ? 'text-ink font-medium' : 'text-stone'}`}>
-                          {band.from_unit.toLocaleString()}–{band.to_unit != null ? band.to_unit.toLocaleString() : '∞'}: {band.monthly_fee != null ? `${fmt(band.monthly_fee, cur)}/month` : 'Offereras / Price required'}
-                          {resolution.status === 'resolved' && resolution.band.from_unit === band.from_unit && ' (selected)'}
-                        </p>
-                      ))}
-                    </div>
-                  </div>
+                  {items.length > 0 && (
+                    <button onClick={() => downloadBillingCSV(items, job.name, cur)}
+                      className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl transition-colors flex-shrink-0"
+                      style={{ background: '#EEF9F2', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.25)' }}>
+                      <i className="ti ti-download" style={{ fontSize: 12 }} /> Download CSV
+                    </button>
+                  )}
                 </div>
-              )
-            })()}
 
-            {/* ── 3. Commercial Terms ── */}
-            <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
-              {/* Header with billing model badge */}
-              <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Commercial terms</h2>
-                <BillingModelBadge model={billingModel} />
-              </div>
+                {(() => {
+                const platformLabel = isConfigured
+                  ? (billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : billingPlatform === 'stripe' ? 'Stripe' : 'Not yet configured')
+                  : selectedBillingPlatform
+                    ? selectedBillingPlatform.charAt(0).toUpperCase() + selectedBillingPlatform.slice(1)
+                    : connectedBillingPlatforms.length === 1
+                      ? connectedBillingPlatforms[0].charAt(0).toUpperCase() + connectedBillingPlatforms[0].slice(1)
+                      : 'Not yet selected'
+                const periodOptions = ['monthly', 'quarterly', 'semi-annual', 'annual', 'one_time']
+                const editCellStyle = 'w-full text-right bg-transparent border-0 border-b border-forest/30 focus:outline-none focus:border-forest text-[12px] tabular-nums py-0 px-0'
 
-              {/* Discounts */}
-              {(terms?.discounts?.length ?? 0) > 0 && (
-                <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                  <SectionHeader title="Discounts" section={src.discounts} onSection={openPDF} />
-                  <div className="grid grid-cols-3 gap-8">
-                    {terms!.discounts!.map((d, i) => {
-                      const typeLabel = d.discount_type === 'introductory' ? 'One-time · introductory'
-                        : d.discount_type === 'volume' ? 'Recurring · volume'
-                        : d.discount_type === 'negotiated' ? 'Recurring · negotiated'
-                        : d.discount_type?.replace(/_/g, ' ') ?? 'Discount'
-                      const discountedFee = terms?.base_monthly_fee && d.discount_pct
-                        ? terms.base_monthly_fee * (1 - d.discount_pct / 100) : null
-                      const rampNote = !discountedFee && terms?.ramp_schedule?.length && d.discount_pct
-                        ? `Applied to ramp rates — e.g. ${fmt(terms.ramp_schedule[0].monthly_fee * (1 - d.discount_pct / 100), cur)}/mo net in Ramp 1`
-                        : null
-                      return (
-                        <BigValue key={i} label={typeLabel}
-                          value={d.discount_pct != null ? `${d.discount_pct}%` : fmt(d.discount_amount, cur)}
-                          unit="off"
-                          note={[
-                            d.start_date && d.end_date ? `${fmtDate(d.start_date)} – ${fmtDate(d.end_date)}` : null,
-                            discountedFee ? `Net fee: ${fmt(discountedFee, cur)}/mo` : null,
-                            rampNote,
-                            d.applies_to ? `Applies to: ${d.applies_to}` : null,
-                          ].filter(Boolean).join(' · ') || undefined}
-                        />
-                      )
-                    })}
-                  </div>
-                  {/* Tier/volume structure interpretation, per discount — "before/
-                      after usage tiers" alone can't distinguish a staircase from a
-                      volume schedule, and each discount is resolved independently
-                      (a contract can have several: onboarding, volume, reseller...),
-                      never bundled into a single "primary discount" interpretation. */}
-                  <div className="mt-4 pt-4 space-y-3" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
-                    {terms!.discounts!.map((d, i) => {
-                      const discountId = d.discount_rule_id ?? String(i)
-                      const editKey = `disc:${discountId}`
-                      const interp = d.interpretation
-                      // Step 17B0.5 (corrections pass) — same deterministic-
-                      // scope-first rule as the review card above; this
-                      // summary reflects whatever confirm-rule most recently
-                      // wrote to affected_components/possibly_affected_components.
-                      const label = describeDiscountComponentScope(d) || d.description || d.applies_to || `Discount ${i + 1}`
-                      if (interp && !interp.requires_confirmation) {
-                        return (
-                          <div key={discountId} className="flex items-start justify-between gap-4">
-                            <div className="text-[11px] text-stone space-y-0.5 min-w-0">
-                              <p className="font-medium text-ink truncate">{label}</p>
-                              {interp.tier_method && (
-                                <p>Tier method: <span className="font-medium text-ink">{TIER_METHOD_DISPLAY[interp.tier_method] ?? interp.tier_method}</span></p>
-                              )}
-                              {interp.worked_example && <p className="text-stone/80 italic">{interp.worked_example}</p>}
-                            </div>
-                            <button onClick={() => setEditingRule(editKey)} className="text-[11px] font-medium text-stone hover:text-ink flex-shrink-0">Edit interpretation</button>
-                          </div>
-                        )
-                      }
-                      // Step 17B0.1, item 3 — this used to always say "can't
-                      // tell a staircase from a volume schedule," even for a
-                      // flat, non-tiered waiver whose actual open question is
-                      // which component(s) it covers, not tier mechanics.
-                      // The message must derive from the discount's real
-                      // shape, same signal RuleInterpretationCard itself uses
-                      // to choose between DISCOUNT_OPTIONS and the scope
-                      // options (see getComponentScopeOptions).
-                      const scopeUnresolved = discountHasUnresolvedComponentScope(d)
-                      return (
-                        <div key={discountId} className="flex items-center justify-between gap-4">
-                          <p className="text-[11px] text-amber-700 min-w-0">
-                            <i className="ti ti-alert-triangle mr-1" style={{ fontSize: 11 }} />
-                            <span className="font-medium">{label}</span> — {scopeUnresolved
-                              ? <>which component(s) this waiver covers has not been confirmed.</>
-                              : <>structure not yet interpreted; &quot;applies to&quot; alone can&apos;t tell a staircase from a volume schedule.</>}
-                          </p>
-                          <button onClick={() => setEditingRule(editKey)} className="text-[11px] font-semibold px-3 py-1.5 rounded-lg flex-shrink-0" style={{ background: '#1A3D2B', color: 'white' }}>
-                            Resolve interpretation
-                          </button>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              )}
+                // Step 17G.4C: 'Fixed'/'Variable' — plain business words,
+                // rendered upper-case via the existing `uppercase` CSS
+                // class on the group-header cell below (no separate label
+                // map needed).
+                const groupOf = (item: LineItem): 'Variable' | 'Fixed' => {
+                  const k = classifyItem(item, terms?.escalators ?? [])
+                  if (k === 'overage_tier' || variableRateFeeLabels.has(item.product_name)) return 'Variable'
+                  return 'Fixed'
+                }
+                const groupOrder = ['Fixed', 'Variable'] as const
+                const orderedItems = groupOrder.flatMap(g => items.filter(i => groupOf(i) === g))
+                let lastGroup: string | null = null
 
-              {/* Charging parameters — dynamic groups by unit_type, only if tiers exist */}
-              {chargingGroups.size > 0 && (
-                <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                  <SectionHeader title="Charging parameters" section={src.overage_tiers} onSection={openPDF} />
-                  <div className="space-y-6">
-                    {Array.from(chargingGroups.entries()).map(([unitType, tierList]) => {
-                      const paidTiers = tierList.filter(({ tier: t }) => (t.rate_per_unit ?? 0) > 0)
-                      const tierCalc = tierList.find(({ tier: t }) => t.tier_calculation)?.tier.tier_calculation
-                      // Only a metric with 2+ paid tiers has a graduated-vs-volume
-                      // distinction to resolve at all — a single flat rate has
-                      // nothing to disambiguate.
-                      const needsTierMethod = paidTiers.length >= 2
-                      const tierMethodResolved = !!tierCalc && !tierCalc.requires_confirmation
-                      const cadence = tierList.find(({ tier: t }) => t.measurement_period)?.tier.measurement_period ?? 'billing period'
-                      return (
-                      <div key={unitType}>
-                        <div className="flex items-center justify-between mb-1">
-                          <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] capitalize">{unitType}</p>
-                          {needsTierMethod && tierMethodResolved && (
-                            <button onClick={() => setEditingRule(`tier:${unitType}`)} className="text-[10px] font-medium text-stone hover:text-ink">
-                              Calculation: <span className="font-semibold text-ink">{TIER_METHOD_DISPLAY[tierCalc!.method] ?? tierCalc!.method}</span>
-                            </button>
+                return (
+                <div className="p-4">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr>
+                          {(['Commercial component', 'Qty / basis', 'Unit price / rate', 'Deterministic value', 'Cadence'] as const).map((h, idx) => (
+                            <th key={h} className="text-[10px] font-semibold text-stone/60 tracking-[0.1em] pb-1.5"
+                              style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: idx === 0 ? 'left' : 'right', paddingRight: idx < 4 ? 16 : 0 }}>
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orderedItems.map(item => {
+                          const rowKind = classifyItem(item, terms?.escalators ?? [])
+                          const isEscalator = rowKind === 'escalator'
+                          const isEscalatorUnresolved = rowKind === 'escalator_interpretation'
+                          const isVariableTier = rowKind === 'overage_tier'
+                          const isFlatUsageRate = variableRateFeeLabels.has(item.product_name)
+                          const isBaseFeeProrationUnresolved = rowKind === 'base_fee_proration'
+                          const isTierCalcUnresolved = isTierCalculationUnresolvedFor(findTierForItem(item, tiers)?.unit_type, tiers)
+                          const isVariable  = rowKind === 'one_time' && item.total_amount === 0
+                          // Step 17H.3C3 — the one_time_fees record backing
+                          // this line item, when it is one (fee_label match,
+                          // the SAME identity link the unit-price cell below
+                          // already used twice, independently — now
+                          // computed once and shared). Carries description/
+                          // classification/sign, none of which live on the
+                          // persisted LineItem row itself.
+                          const termFee = rowKind === 'one_time' ? allFees.find(f => f.fee_label === item.product_name) : undefined
+                          const isCredit = rowKind === 'one_time' && item.total_amount < 0
+                          const escalatorNotApplied = isEscalator && (terms?.escalators ?? []).some(e => e.interpretation?.treatment === 'not_applied')
+                          const isEscalatorLike = isEscalator || isEscalatorUnresolved
+                          const isNonEditableRow = isEscalatorLike || isBaseFeeProrationUnresolved || isFlatUsageRate
+                          const group = groupOf(item)
+                          const showGroupHeader = group !== lastGroup
+                          lastGroup = group
+                          return (
+                          <Fragment key={item.id}>
+                          {showGroupHeader && (
+                            <tr>
+                              <td colSpan={5} className="pt-2.5 pb-1 text-[9px] font-bold text-stone/50 uppercase tracking-[0.14em]">{group}</td>
+                            </tr>
                           )}
+                          <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                            {/* Commercial component — display text runs
+                                through bomDisplayLabel() (a light,
+                                globally-safe business rename, Step
+                                17G.4C); item.product_name itself is
+                                untouched and stays the identity used for
+                                classification/edits/CSV. A human
+                                correction always wins over both. */}
+                            <td className="py-1.5 pr-4 text-[12px] text-ink leading-tight">
+                              {item.confidence_score < 0.95 && !correction(item.id) && (
+                                <i className="ti ti-alert-triangle mr-1.5" style={{ fontSize: 11, color: '#D97706' }} />
+                              )}
+                              <CorrectionInput
+                                displayName={bomDisplayLabel(item.product_name)}
+                                correctedValue={correction(item.id)}
+                                onChange={v => setCorr(item.id, v)}
+                                textStyle={isCredit ? { color: '#B45309' } : undefined}
+                              />
+                              {item.source_section && (
+                                <button onClick={() => openPDF(item.source_section)} className="ml-1.5 text-stone/40 hover:text-forest transition-colors" title="View in PDF">
+                                  <i className="ti ti-file-text" style={{ fontSize: 10 }} />
+                                </button>
+                              )}
+                              {/* Step 17H.3C3/17H.3C4 — a one-time row's
+                                  generic "One-time" subtitle
+                                  (pricingModelLabelFor) is replaced with
+                                  the same classification Commercial
+                                  Logic's "Commercial treatment" row shows
+                                  (classifyOneTimeFeeKind — never a second
+                                  classifier). Step 17H.3C4 removed that
+                                  classifier's label-regex service/hardware/
+                                  other guessing (no authoritative typed
+                                  subtype exists anywhere in this codebase
+                                  — see that step's report) — it is sign-
+                                  only now (Credit / adjustment vs. the
+                                  generic One-time / project fee), never
+                                  inferred from fee_label text. Free-text
+                                  description — previously the sole
+                                  responsibility of the now-removed
+                                  Products, Services & Pricing card — is
+                                  preserved directly beneath it, unaffected
+                                  by 17H.3C4 (source data, not inferred
+                                  classification). Every other row kind
+                                  keeps its original pricingModelLabelFor
+                                  subtitle unchanged. */}
+                              <span className="block text-[10px] leading-tight" style={{ color: isCredit ? '#B45309' : 'rgba(87,83,78,0.6)' }}>
+                                {rowKind === 'one_time' && termFee ? classifyOneTimeFeeKind(termFee) : pricingModelLabelFor(rowKind, isFlatUsageRate)}
+                              </span>
+                              {rowKind === 'one_time' && termFee?.description && (
+                                <span className="block text-[10px] text-stone/50 leading-tight mt-0.5">{termFee.description}</span>
+                              )}
+                            </td>
+
+                            {/* Qty / basis — editable, except for a
+                                usage-dependent row (item 10: a
+                                business-readable basis, never a forced
+                                numeric quantity, for something inherently
+                                future-variable). */}
+                            <td className="py-1.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums', minWidth: 48 }}>
+                              {!isNonEditableRow && billingEdit?.itemId === item.id && billingEdit.field === 'quantity' ? (
+                                <input autoFocus type="number" min="0" step="1"
+                                  className={editCellStyle}
+                                  style={{ width: 56 }}
+                                  value={billingEdit.value}
+                                  onChange={e => setBillingEdit(b => b && ({ ...b, value: e.target.value }))}
+                                  onBlur={() => { saveLineItemField(item.id, 'quantity', billingEdit.value); setBillingEdit(null) }}
+                                  onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                                />
+                              ) : (
+                                <span
+                                  className={isNonEditableRow ? '' : 'cursor-pointer hover:text-forest transition-colors'}
+                                  title={isNonEditableRow ? undefined : 'Click to edit'}
+                                  onClick={() => !isNonEditableRow && setBillingEdit({ itemId: item.id, field: 'quantity', value: String(item.quantity) })}
+                                >
+                                  {isBaseFeeProrationUnresolved ? <span className="text-stone/40">—</span>
+                                    : (isFlatUsageRate || (isVariableTier && item.quantity === 0)) ? <span className="text-stone/50">Future usage</span>
+                                    : item.quantity}
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Unit price / rate — editable */}
+                            <td className="py-1.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums', minWidth: 96 }}>
+                              {isBaseFeeProrationUnresolved ? (
+                                <span>{fmtUnit(item.unit_price, cur)}</span>
+                              ) : isEscalatorLike ? (
+                                <span>
+                                  {isEscalatorUnresolved
+                                    ? <span className="text-amber-600">Pending interpretation</span>
+                                    : escalatorNotApplied
+                                      ? <span className="text-stone/50">Not applied</span>
+                                      // Step 17H.3D2.1 — item.unit_price is
+                                      // a persisted placeholder, always 0
+                                      // (lib/line-items.ts hard-codes it;
+                                      // nothing has ever written a real
+                                      // value there for an escalator row —
+                                      // audited directly, not assumed).
+                                      // Rendering it as "0%" claimed to be
+                                      // the authoritative escalator
+                                      // percentage while a DIFFERENT,
+                                      // correct value (terms.escalators
+                                      // [idx].escalator_pct) was shown a
+                                      // few rows below in the dedicated
+                                      // "Price escalation" block — two
+                                      // contradictory numbers for the same
+                                      // fact. This row never was the
+                                      // source of truth for the value, so
+                                      // it no longer claims to be one.
+                                      : <span className="text-stone/40">See Price escalation below</span>}
+                                </span>
+                              ) : billingEdit?.itemId === item.id && billingEdit.field === 'unit_price' ? (
+                                <input autoFocus type="number" min="0" step="any"
+                                  className={editCellStyle}
+                                  style={{ width: 96 }}
+                                  value={billingEdit.value}
+                                  onChange={e => setBillingEdit(b => b && ({ ...b, value: e.target.value }))}
+                                  onBlur={async () => {
+                                    // Step 17H.3D2, item 10 — typed row
+                                    // metadata (isVariableTier), never
+                                    // label matching, decides which write
+                                    // path this row uses. A tier row's
+                                    // correction goes through the SAME
+                                    // dual-write (contract_terms +
+                                    // line_items) Commercial Terms'
+                                    // saveTierRate always performed — a
+                                    // plain saveLineItemField here would
+                                    // silently desync contract_terms from
+                                    // this edit, which is exactly the drift
+                                    // this migration exists to prevent.
+                                    // Every other row kind keeps its
+                                    // existing, unmodified line-items-only
+                                    // path.
+                                    if (isVariableTier) {
+                                      // Step 17H.4B0D4B1G — no longer computes its
+                                      // own write-path index via findTierForItem
+                                      // (a non-cardinality-aware, display-only
+                                      // .find()) — persistTierRateCorrection now
+                                      // owns the complete bidirectional
+                                      // resolution/preflight itself, from this
+                                      // exact edited row.
+                                      const rate = parseTierRateInput(billingEdit.value)
+                                      if (rate === null) { setBillingEdit(null); return }
+                                      const result = await persistTierRateCorrection(item, rate)
+                                      // contract_terms.overage_tiers may have
+                                      // changed — Commercial Logic reads terms
+                                      // directly, so it must refresh too, not
+                                      // just items (item 21: both surfaces
+                                      // must converge) — reload unconditionally
+                                      // (success or failure) so whatever is
+                                      // actually persisted is what's shown next
+                                      // (17H.4A item 14), never the user's
+                                      // rejected optimistic input.
+                                      await fetchJob()
+                                      // Step 17H.4A — never report success
+                                      // unless every required write actually
+                                      // succeeded (item 0). On failure the
+                                      // editor closes (this input has no
+                                      // explicit Save/Cancel pair — only
+                                      // onBlur — so leaving it open risks a
+                                      // second onBlur silently re-submitting;
+                                      // see saveBomEscalatorPct's own comment
+                                      // for the escalator block's different,
+                                      // explicit-button approach), but a
+                                      // persistent, row-keyed error replaces
+                                      // the normal "closed and saved" silence
+                                      // so the failure is never invisible.
+                                      if (result.status === 'success') {
+                                        setTierCorrectionError(null)
+                                      } else {
+                                        setTierCorrectionError({ itemId: item.id, message: describeTierCorrectionError(result) })
+                                      }
+                                    } else {
+                                      await saveLineItemField(item.id, 'unit_price', billingEdit.value)
+                                    }
+                                    setBillingEdit(null)
+                                  }}
+                                  onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                                />
+                              ) : isFlatUsageRate ? (
+                                <span>{fmtUnit(item.unit_price, cur)}<span className="text-stone/60"> / {(terms?.additional_recurring_fees ?? []).find(f => f.fee_label === item.product_name)?.metric_name?.replace(/_/g, ' ') ?? 'unit'}</span></span>
+                              ) : (
+                                <span
+                                  className="cursor-pointer hover:text-forest transition-colors"
+                                  // Step 17H.3D2, item 5 — a tier's own
+                                  // rate here is a raw extracted VALUE
+                                  // correction (this same click routes
+                                  // through persistTierRateCorrection
+                                  // above), never a contractual-meaning
+                                  // edit — that stays "Edit interpretation"
+                                  // in Commercial Logic. Distinct wording
+                                  // so the two actions are never conflated.
+                                  title={isVariableTier ? 'Correct value' : 'Click to edit'}
+                                  onClick={() => {
+                                    // Step 17H.4A — reopening this row's
+                                    // editor clears any stale error from a
+                                    // PRIOR failed attempt, so a successful
+                                    // retry (or simply abandoning the retry)
+                                    // never leaves an old failure message
+                                    // attached to a value that's since moved
+                                    // on.
+                                    if (isVariableTier) setTierCorrectionError(null)
+                                    if (rowKind === 'one_time' && item.unit_price === 0 && termFee?.manual_trigger && termFee.rate_per_unit) {
+                                      setBillingEdit({ itemId: item.id, field: 'unit_price', value: String(termFee.rate_per_unit) })
+                                      return
+                                    }
+                                    setBillingEdit({ itemId: item.id, field: 'unit_price', value: String(item.unit_price) })
+                                  }}
+                                >
+                                  {rowKind === 'one_time' && item.unit_price === 0 && termFee?.manual_trigger && termFee.rate_per_unit
+                                    ? <span>{fmt(termFee.rate_per_unit, cur)}<span className="text-stone/60">/{termFee.metric_name ?? 'unit'}</span></span>
+                                    : fmtUnit(item.unit_price, cur)}
+                                  {/* Step 17G.4C, item 6: an overage-tier
+                                      rate is meaningless on its own ("SEK
+                                      0.6") without the threshold it kicks
+                                      in above — derived from the tier's
+                                      own from_unit, same identity
+                                      findTierForItem already uses
+                                      elsewhere on this page, no new data. */}
+                                  {isVariableTier && (() => {
+                                    const tier = findTierForItem(item, tiers)
+                                    if (!tier?.unit_type) return null
+                                    const includedUpTo = (tier.from_unit ?? 1) - 1
+                                    return <span className="text-stone/60"> / {tier.unit_type.replace(/_/g, ' ')} above {includedUpTo.toLocaleString()}</span>
+                                  })()}
+                                </span>
+                              )}
+                              {/* Step 17H.4A, item 13/16 — a failed/partial
+                                  correction is never silent: this persists,
+                                  keyed to the exact row that failed, until
+                                  the row is edited again (cleared above) or
+                                  a later correction on it succeeds. Never a
+                                  raw DB error — always the compact,
+                                  pre-mapped message (describeTierCorrectionError). */}
+                              {isVariableTier && tierCorrectionError?.itemId === item.id && (
+                                <p className="text-[10px] mt-0.5" style={{ color: '#DC2626' }}>{tierCorrectionError.message}</p>
+                              )}
+                            </td>
+
+                            {/* Deterministic value — calculated, read-only.
+                                A usage-dependent row (flat variable-rate fee
+                                OR overage tier) with no usage yet is a
+                                pricing RULE waiting to be consumed, never an
+                                invoice line for SEK 0 (item 7: never imply
+                                an unknown future-variable amount is zero).
+                                Step 17G.4C: wording changed from
+                                "Usage-based — not yet billed" to plain
+                                "Variable" — execution/billing-readiness
+                                language ("not yet billed") belongs to a
+                                later layer, not this commercial map. */}
+                            <td className="py-1.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                              {isBaseFeeProrationUnresolved
+                                ? <span className="text-amber-600 font-normal text-[11px]">Pending interpretation</span>
+                                : isEscalatorUnresolved
+                                ? <span className="text-amber-600 font-normal text-[11px]">Pending interpretation</span>
+                                : escalatorNotApplied
+                                  ? <span className="text-stone/50 font-normal text-[11px]">Not applied</span>
+                                  : isEscalator
+                                    // Step 17H.3D2.1 — same placeholder
+                                    // issue as the unit-price cell above:
+                                    // item.total_amount is hard-coded to 0
+                                    // for every escalator row at
+                                    // persistence time (lib/line-items.ts)
+                                    // and never updated afterward. An
+                                    // escalator also has no standalone
+                                    // "deterministic value" of its own in
+                                    // this column's actual sense (a money
+                                    // amount) — it adjusts OTHER fees'
+                                    // amounts over time, which is exactly
+                                    // why computeCommittedFixedFees/
+                                    // computeBaseTcv (lib/contract-tcv-calc.ts)
+                                    // already exclude every escalator row
+                                    // from every total (verified directly —
+                                    // this row has never contributed to
+                                    // TCV/committed-fee figures, so this
+                                    // presentation change cannot alter any
+                                    // total).
+                                    ? <span className="text-stone/40 font-normal text-[11px]">Adjusts other fees</span>
+                                    : isTierCalcUnresolved
+                                    ? <span className="text-amber-600 font-normal text-[11px]">Pending interpretation</span>
+                                    : isVariable
+                                    ? <span className="text-amber-600 font-normal text-[11px]">Variable — on delivery</span>
+                                    : (isFlatUsageRate || (isVariableTier && item.quantity === 0))
+                                      ? <span className="text-stone/50 font-normal text-[11px]">Variable</span>
+                                      // Step 17H.3C3 — a one-time credit/
+                                      // adjustment (negative total_amount)
+                                      // keeps the same amber treatment the
+                                      // now-removed creditFees card used,
+                                      // rather than reading as an ordinary
+                                      // positive charge (item 5).
+                                      : isCredit
+                                        ? <span style={{ color: '#B45309' }}>{fmt(item.total_amount, cur)}</span>
+                                        : fmt(item.total_amount, cur)}
+                            </td>
+
+                            {/* Cadence — editable via select */}
+                            <td className="py-1.5 text-[11px] text-stone text-right">
+                              {isEscalator ? (
+                                <span className="capitalize">{item.billing_period}</span>
+                              ) : (
+                                <select
+                                  value={item.billing_period ?? 'monthly'}
+                                  onChange={e => saveLineItemField(item.id, 'billing_period', e.target.value)}
+                                  className="bg-transparent border-0 text-[11px] text-stone text-right focus:outline-none cursor-pointer hover:text-forest transition-colors capitalize appearance-none"
+                                  style={{ direction: 'rtl' }}
+                                >
+                                  {periodOptions.map(p => (
+                                    <option key={p} value={p} style={{ direction: 'ltr' }}>{p.replace('_', ' ')}</option>
+                                  ))}
+                                </select>
+                              )}
+                            </td>
+                          </tr>
+                          </Fragment>
+                        )})}
+
+                        {/* Performance share — Step 17G.4B, item 5:
+                            informational-only. lib/line-items.ts's
+                            buildLineItems already deliberately excludes any
+                            percentage_of_basis fee from `items` (see that
+                            file's own comment — the executable
+                            PerformanceShareCard/lib/performance-share-*.ts
+                            path is authoritative). This row is built
+                            directly from terms.additional_recurring_fees,
+                            outside `items` entirely — never added to
+                            line_items, never persisted, never exported by
+                            Download CSV (which only ever serializes
+                            `items`), no edit affordance (nothing to save
+                            it to). Step 17G.4C: group heading changed to
+                            plain "Performance" — "executable" is a later
+                            Verdix logic-layer concept, not a Commercial
+                            BoM one — and Deterministic value changed from
+                            "—" to "Variable" for consistency with every
+                            other usage-dependent row. */}
+                        {performanceFees.length > 0 && (
+                          <tr>
+                            <td colSpan={5} className="pt-2.5 pb-1 text-[9px] font-bold text-stone/50 uppercase tracking-[0.14em]">Performance</td>
+                          </tr>
+                        )}
+                        {performanceFees.map((f, i) => (
+                          <tr key={`perf-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
+                            <td className="py-1.5 pr-4 text-[12px] text-ink leading-tight">
+                              {bomDisplayLabel(f.fee_label)}
+                              <span className="block text-[10px] text-stone/60 leading-tight">Performance-based</span>
+                            </td>
+                            <td className="py-1.5 pr-4 text-[12px] text-stone/50 text-right">Future result</td>
+                            <td className="py-1.5 pr-4 text-[12px] text-stone text-right">Contractual rate schedule</td>
+                            <td className="py-1.5 pr-4 text-[12px] font-normal text-stone/50 text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>Variable</td>
+                            <td className="py-1.5 text-[11px] text-stone text-right capitalize">{(f.billing_frequency ?? terms?.billing_frequency ?? 'monthly')}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      {/* Deterministic contract value — Step 17G.4B, item 6:
+                          the SAME committedFixedFeeTotal/
+                          committedFixedFeeReadiness figure the old
+                          "Committed fixed fees" footer already showed
+                          (lib/contract-tcv-calc.ts's computeCommittedFixedFees
+                          — confirmed by reading it directly: sums every
+                          non-escalator, non-Change-Order-conditional item's
+                          total_amount, and every usage/overage-tier/
+                          variable-rate item's total_amount is already 0 at
+                          the source in lib/line-items.ts — never
+                          re-summed independently here, no new arithmetic). */}
+                      <tfoot>
+                        <tr style={{ borderTop: '2px solid rgba(26,61,43,0.10)' }}>
+                          {/* Step 17H.4B0D4H1B4E6 §7 — "Deterministic
+                              contract value" could read as the whole
+                              agreement's worth, when this figure is fixed
+                              fees only (usage/performance charges are
+                              additional and genuinely variable — see the
+                              comment above). "Known fixed" states exactly
+                              what's summed; no calculation change. */}
+                          <td colSpan={3} className="pt-2 text-[10px] font-bold text-stone uppercase tracking-[0.1em]">Known fixed contract value</td>
+                          <td className="pt-2 text-[13px] font-semibold text-ink text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            {committedFixedFeeReadiness.status === 'unresolved'
+                              ? <span className="text-amber-600 font-normal text-[11px]">Not yet determinable</span>
+                              : committedFixedFeeTotal === 0
+                                ? <span className="text-stone/50 font-normal text-[11px]">{baseFeeHasExpiringWaiver(terms?.discounts) ? 'Pilot waiver active' : 'None'}</span>
+                                : fmt(committedFixedFeeTotal, cur)}
+                          </td>
+                          <td />
+                        </tr>
+                        {conditionalFixedFeeTotal > 0 && (
+                          <tr>
+                            <td colSpan={3} className="pt-1 text-[10px] font-semibold text-stone uppercase tracking-[0.1em]">Conditional — pending signed Change Order</td>
+                            <td className="pt-1 text-[12px] font-medium text-stone text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                              {fmt(conditionalFixedFeeTotal, cur)}
+                            </td>
+                            <td />
+                          </tr>
+                        )}
+                        {conditionalFixedFeeTotal > 0 && (
+                          <tr>
+                            <td colSpan={3} className="pt-1 text-[10px] font-semibold text-stone uppercase tracking-[0.1em]">Potential total</td>
+                            <td className="pt-1 text-[12px] font-medium text-stone text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                              {fmt(committedFixedFeeTotal + conditionalFixedFeeTotal, cur)}
+                            </td>
+                            <td />
+                          </tr>
+                        )}
+                        <tr>
+                          <td colSpan={5} className="pt-1 text-[10px] text-stone/50 leading-snug">
+                            Net · excl. VAT · Excludes usage-, consumption- and outcome-dependent amounts until known.
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+
+                  {(() => {
+                    const confirmed = tiers.filter(t => t.unit_type && t.minimum_commitment && !t.minimum_commitment.requires_confirmation)
+                    const seen = new Set<string>()
+                    const rules = confirmed.filter(t => t.unit_type && !seen.has(t.unit_type) && seen.add(t.unit_type))
+                    if (rules.length === 0) return null
+                    return (
+                      <div className="mt-3 pt-2.5" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
+                        <p className="text-[9px] font-bold text-stone/50 uppercase tracking-[0.14em] mb-2">Commercial rules</p>
+                        <div className="flex flex-wrap gap-2">
+                          {rules.map(t => (
+                            <span key={t.unit_type} className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full"
+                              style={{ background: '#F6FAF4', color: '#0B5C36', border: '1px solid rgba(74,124,89,0.25)' }}>
+                              <i className="ti ti-shield-check" style={{ fontSize: 11 }} />
+                              {t.unit_type} · {fmt(t.minimum_commitment!.amount, cur)} {ruleModeShortLabel(t.minimum_commitment!.mode)}{ruleCadenceLabel(t.minimum_commitment!.period, t.reset_anchor) ? ` / ${ruleCadenceLabel(t.minimum_commitment!.period, t.reset_anchor)}` : ''} · Confirmed
+                            </span>
+                          ))}
                         </div>
-                        {/* "Volume / all-units" alone reads ambiguously next
-                            to a per-band rate table — spell out the actual
-                            semantics so it can't be misread as progressive. */}
-                        {needsTierMethod && tierMethodResolved && tierCalc!.method === 'volume' && (
-                          <p className="text-[10px] text-stone/60 mb-2 -mt-0.5">
-                            {volumeTierCopy(unitType)}
-                          </p>
-                        )}
-                        {/* The tier structure itself (e.g. the 1–500 included allowance below)
-                            is not what's uncertain here — it's HOW the paid bands are evaluated
-                            once usage spans more than one of them. A bare "Needs interpretation"
-                            chip sitting above the tier rows reads as if the allowance were in
-                            question, so this names the actual ambiguity explicitly instead. */}
-                        {needsTierMethod && !tierMethodResolved && (
-                          <div className="mb-3 rounded-lg p-2.5 flex items-center justify-between gap-3" style={{ background: '#FEF3C7' }}>
-                            <div>
-                              <p className="text-[10px] font-semibold" style={{ color: '#92400E' }}>{unitType} tier calculation method · Needs interpretation</p>
-                              <p className="text-[10px] mt-0.5" style={{ color: '#92400E' }}>
-                                Confirm whether rates apply progressively by tier, or whether total {cadence} volume selects one rate for all units.
-                              </p>
-                            </div>
-                            <button onClick={() => setEditingRule(`tier:${unitType}`)} className="text-[10px] font-semibold px-2.5 py-1 rounded-lg flex-shrink-0" style={{ background: '#1A3D2B', color: 'white' }}>
-                              Resolve
-                            </button>
-                          </div>
-                        )}
-                        {!(needsTierMethod && !tierMethodResolved) && <div className="mb-2" />}
-                        <div className="grid grid-cols-3 gap-8">
-                          {tierList.map(({ tier: t, origIdx }) => {
-                            const isEditingTier = tierEditing === origIdx
-                            const fmtRate = (r: number) => fmtUnit(r, cur)
-                            const note = t.from_unit != null
-                              ? `From unit ${t.from_unit.toLocaleString()}${t.to_unit != null ? ` to ${t.to_unit.toLocaleString()}` : '+'}`
-                              : undefined
+                      </div>
+                    )
+                  })()}
+
+                  {/* Step 17H.3D2, item 11 — the flat escalator LINE
+                      ITEM row above (isEscalatorLike) is left completely
+                      unmodified: its unit_price is frozen at 0 by
+                      lib/line-items.ts at persistence time and NOTHING
+                      updates it afterward (audited directly, not
+                      assumed — see the 17H.3D2 report's technical-debt
+                      finding), and there is no reliable, non-label-based
+                      way to match that specific DB row back to a given
+                      terms.escalators[idx] (no stable ID bridges the two
+                      tables, unlike... well, unlike nothing — the SAME
+                      absence applies to tiers, which only get matched via
+                      tier_label text, exactly what item 12 forbids
+                      inventing here). Rather than guess, this is the
+                      "minimum necessary BoM representation" item 11
+                      explicitly allows instead: reads/writes
+                      terms.escalators[idx].escalator_pct directly — the
+                      authoritative field, unambiguous array-index
+                      identity (the SAME idx saveEscalatorPct/Commercial
+                      Logic's esc:${'{i}'} already use) — via the SAME shared
+                      persistEscalatorPctCorrection Commercial Terms' own
+                      action now also calls. */}
+                  {(() => {
+                    const escalators = terms?.escalators ?? []
+                    if (escalators.length === 0) return null
+                    return (
+                      <div className="mt-3 pt-2.5" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
+                        <p className="text-[9px] font-bold text-stone/50 uppercase tracking-[0.14em] mb-2">Price escalation</p>
+                        <div className="flex flex-wrap gap-2">
+                          {escalators.map((e, idx) => {
+                            const isEditingThis = bomEscEditing === idx
                             return (
-                              <div key={origIdx} className="rounded-xl p-4 transition-all"
-                                style={isEditingTier ? { background: '#FFFBEB', border: '1px solid #F59E0B' } : { background: 'transparent' }}>
-                                <div className="flex items-center justify-between mb-2">
-                                  <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em]">{t.tier_label ?? `Tier ${origIdx + 1}`}</p>
-                                  {!isEditingTier && (
-                                    <button onClick={() => { setTierEditValue(t.rate_per_unit != null ? `${t.rate_per_unit}` : ''); setTierEditing(origIdx) }}
-                                      title="Edit this rate" className="text-stone/35 hover:text-forest transition-colors">
-                                      <i className="ti ti-pencil-minus" style={{ fontSize: 12 }} />
-                                    </button>
-                                  )}
-                                </div>
-                                {isEditingTier ? (
-                                  <div className="flex items-center gap-2 mt-1">
-                                    <input autoFocus type="text" value={tierEditValue}
-                                      onChange={e => setTierEditValue(e.target.value)}
-                                      onKeyDown={ev => { if (ev.key === 'Enter') saveTierRate(origIdx); if (ev.key === 'Escape') setTierEditing(null) }}
-                                      placeholder={terms?.number_format === 'comma' ? 'e.g. 0,035' : 'e.g. 0.035'}
-                                      className="flex-1 text-[28px] font-medium bg-transparent outline-none leading-none"
-                                      style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }} />
-                                    <button onClick={() => setTierEditing(null)} className="text-stone/50 hover:text-ink transition-colors p-1 flex-shrink-0" title="Cancel">
-                                      <i className="ti ti-x" style={{ fontSize: 13 }} />
-                                    </button>
-                                    {tierEditValue && (
-                                      <button onClick={() => saveTierRate(origIdx)} disabled={tierSaving} title="Save"
-                                        className="flex items-center justify-center w-8 h-8 rounded-lg text-white transition-colors flex-shrink-0 disabled:opacity-50"
-                                        style={{ background: '#1A3D2B' }}>
-                                        {tierSaving ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : <i className="ti ti-check" style={{ fontSize: 13 }} />}
-                                      </button>
-                                    )}
-                                  </div>
-                                ) : (
+                              <div key={idx} className="rounded-lg px-3 py-2"
+                                style={isEditingThis ? { background: '#FFFBEB', border: '1px solid #F59E0B' } : { background: '#F9FAFB', border: '1px solid rgba(26,61,43,0.08)' }}>
+                                <p className="text-[10px] text-stone">{escalators.length > 1 ? `Escalator ${idx + 1}` : 'Annual adjustment'}</p>
+                                {isEditingThis ? (
                                   <>
-                                    <div className="flex items-baseline gap-1.5">
-                                      <span className="text-[30px] font-medium leading-none" style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }}>
-                                        {t.rate_per_unit != null ? fmtRate(t.rate_per_unit) : '—'}
-                                      </span>
-                                      <span className="text-[12px] text-stone">/ {t.unit_type ?? 'unit'}</span>
+                                    <div className="flex items-center gap-1.5 mt-0.5">
+                                      <input autoFocus type="text" value={bomEscEditValue}
+                                        onChange={ev => setBomEscEditValue(ev.target.value)}
+                                        onKeyDown={ev => { if (ev.key === 'Enter') saveBomEscalatorPct(idx); if (ev.key === 'Escape') { setBomEscEditing(null); setBomEscError(null) } }}
+                                        disabled={bomEscSaving}
+                                        className="w-16 text-[13px] font-medium bg-transparent outline-none disabled:opacity-50" style={{ color: '#1A3D2B' }} />
+                                      <span className="text-[11px] text-stone">%</span>
+                                      <button onClick={() => { setBomEscEditing(null); setBomEscError(null) }} disabled={bomEscSaving}
+                                        className="text-stone/50 hover:text-ink transition-colors disabled:opacity-50" title="Cancel">
+                                        <i className="ti ti-x" style={{ fontSize: 11 }} />
+                                      </button>
+                                      {bomEscEditValue && (
+                                        // Step 17H.4A, item 15 — disabled
+                                        // while bomEscSaving prevents a
+                                        // duplicate click from firing a
+                                        // second, overlapping correction
+                                        // for the same escalator.
+                                        <button onClick={() => saveBomEscalatorPct(idx)} disabled={bomEscSaving}
+                                          className="flex items-center justify-center w-6 h-6 rounded text-white transition-colors flex-shrink-0 disabled:opacity-50" style={{ background: '#1A3D2B' }} title="Save">
+                                          {bomEscSaving ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 11 }} /> : <i className="ti ti-check" style={{ fontSize: 11 }} />}
+                                        </button>
+                                      )}
                                     </div>
-                                    {note && <p className="text-[11px] text-stone mt-1">{note}</p>}
+                                    {/* Step 17H.4A, item 4/13/16 — on
+                                        failure the editor stays open
+                                        (never closed as though saved) so
+                                        the user can see this truthful,
+                                        compact error and retry without
+                                        re-typing. */}
+                                    {bomEscError && (
+                                      <p className="text-[10px] mt-1" style={{ color: '#DC2626' }}>{bomEscError}</p>
+                                    )}
                                   </>
+                                ) : (
+                                  <div className="flex items-center gap-1.5 mt-0.5">
+                                    <span className="text-[13px] font-medium" style={{ color: '#1A3D2B' }}>{e.escalator_pct != null ? `${e.escalator_pct}%` : '—'}</span>
+                                    <button
+                                      onClick={() => { setBomEscEditValue(e.escalator_pct != null ? String(e.escalator_pct) : ''); setBomEscEditing(idx); setBomEscError(null) }}
+                                      title="Correct value" className="text-stone/35 hover:text-forest transition-colors">
+                                      <i className="ti ti-pencil-minus" style={{ fontSize: 11 }} />
+                                    </button>
+                                  </div>
                                 )}
                               </div>
                             )
                           })}
                         </div>
                       </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              )}
+                    )
+                  })()}
 
-              {/* Price escalations */}
-              {(terms?.escalators?.length ?? 0) > 0 && (
-                <div className="p-6">
-                  <SectionHeader title="Price escalations" section={src.escalators} onSection={openPDF} />
-                  <div className="grid grid-cols-3 gap-8">
-                    {terms!.escalators!.map((e, i) => {
-                      const isEditing = escEditing === i
-                      const label = e.escalator_type === 'fixed_pct' ? 'Fixed annual increase' : e.escalator_type ?? 'Escalator'
-                      const note  = e.effective_date
-                        ? `Effective ${fmtDate(e.effective_date)}${e.cap_pct ? ` · capped at ${e.cap_pct}%` : ''}`
-                        : e.description ?? undefined
-                      // The reviewer's confirmed decision governs what actually
-                      // runs (see the Confirmed billing rules section) — when that
-                      // decision was "not applied", this raw extracted row must
-                      // never look like an active billing parameter, since
-                      // nothing here re-checks the confirmed state on its own.
-                      const confirmedInactive = e.interpretation?.treatment === 'not_applied' && !e.interpretation.requires_confirmation
+                  <p className="text-[10px] text-stone/50 mt-2.5">
+                    Platform: <span className="font-medium text-stone/70">{platformLabel}</span>
+                  </p>
+                </div>
+                )
+                })()}
+
+                {isConfigured && billingPlatform === 'chargebee' && dashboardUrl && (
+                  <div className="px-6 py-4 flex items-center justify-between" style={{ background: 'rgba(26,61,43,0.04)', borderTop: '1px solid rgba(26,61,43,0.07)' }}>
+                    <div>
+                      <p className="text-[11px] font-semibold text-ink">Active subscription in Chargebee</p>
+                      {subId && <p className="text-[10px] text-stone font-mono mt-0.5">{subId}</p>}
+                    </div>
+                    <a href={dashboardUrl} target="_blank" rel="noreferrer"
+                      className="text-xs font-semibold px-4 py-2 rounded-xl text-white transition-colors"
+                      style={{ background: '#1A3D2B' }}>
+                      View in Chargebee →
+                    </a>
+                  </div>
+                )}
+              </div>
+              )
+            })()}
+
+            {/* ── Commercial Logic & Billing Rules (Step 17G.5A) ── the
+                 authoritative answer to "how are the commercial terms in
+                 the Commercial BoM interpreted and applied when Verdix
+                 calculates billing." Evolves the former "Confirmed billing
+                 rules" section (which used to render much further down
+                 this page, and only ever showed a rule once it was fully
+                 confirmed — see the explanatory comment left in its old
+                 position, below). That surface's own data/audit/edit
+                 machinery is reused verbatim here (findAudit against the
+                 same commercial_rule_interpretations records, the same
+                 setEditingRule/EditCommercialRuleDrawer edit route, the
+                 same TIER_METHOD_DISPLAY/CREDIT_TYPE_LABEL vocabularies) —
+                 just reorganized: grouped by the same BUSINESS component
+                 the Commercial BoM uses (buildCommercialComponents,
+                 lib/commercial-components.ts) rather than by internal
+                 typed mechanism, and broadened to also show a rule that is
+                 NOT yet resolved (a plain "Decision required" row wired to
+                 the existing setReviewPanelOpen — never a second decision
+                 form) instead of omitting it entirely. Reads directly from
+                 terms/ruleInterpretations — the same durable, live state
+                 the rest of this page already uses — so a ReviewPanel
+                 confirmation updates this section automatically, with no
+                 locally duplicated state (item 11).
+
+                 Provenance doctrine (item 9): a badge is only ever shown
+                 for a fact this codebase already grades with a real
+                 FieldProvenance value (tier calculation method, minimum
+                 commitment, escalator treatment, base-fee billing-period
+                 anchor, service-credit eligibility — all via
+                 commercial_rule_interpretations.decision_provenance or,
+                 for credits, CreditApplicationRule's own eligibility_
+                 provenance field). Billing timing and Invoice timing are a
+                 special but structural case: both rule types skip the
+                 AI-proposal step entirely (see ItemKind's skipsProposal,
+                 above) — the ONLY way either can ever become resolved is
+                 through an explicit reviewer decision, so once resolved
+                 their provenance is deterministically 'reviewer_policy',
+                 never a guess. Every other fact here (Pilot, Discount,
+                 Partial-period treatment, Volume adjustment, Charging
+                 rule, Overage rule, Measurement period, Derived measure,
+                 Calculation, Basis, Rate, Measurement timing) is read
+                 straight off ContractTerms with no separate provenance
+                 record anywhere in this codebase — the exact same tier
+                 base_monthly_fee itself is shown at elsewhere on this
+                 page — so none of those get a badge (provenanceLabel's own
+                 "never invent a badge for a field with no real record"
+                 rule, reused verbatim, never re-implemented). */}
+            {(() => {
+              const findAudit = (ruleType: string, unitKey: string | null) =>
+                ruleInterpretations.find(r => r.rule_type === ruleType && r.contract_unit_type === unitKey && r.is_current)
+              // Step 17G.6F, item 2 — "✓ Confirmed by X · date," a compact
+              // confirmation treatment distinct from the commercial rule
+              // text itself (never merged into the row's own value).
+              // Step 17H.4B0D4H1B4E7.1 §9 — reviewer_name/reviewer_email is
+              // real, persisted audit data (never altered), but a value
+              // left over from an internal development/acceptance pass
+              // ("E3.6 acceptance pass") must never render as if it were a
+              // real confirmer's name — looksLikeInternalTestLabel is a
+              // generic structural check, not a hardcoded match on that
+              // one string. Suppressing the name still leaves "✓
+              // Confirmed · {date}" — the fact that a human confirmed this,
+              // and when, both real and both kept.
+              const auditCaptionFor = (audit?: { reviewer_name?: string | null; reviewer_email?: string | null; created_at: string } | null) => {
+                if (!audit) return null
+                const rawName = audit.reviewer_name || audit.reviewer_email
+                const name = rawName && !looksLikeInternalTestLabel(rawName) ? rawName : null
+                return `✓ Confirmed${name ? ` by ${name}` : ''}${audit.created_at ? ` · ${fmtDate(audit.created_at)}` : ''}`
+              }
+
+              const MODE_LABEL: Record<string, string> = {
+                floor: 'Minimum charge floor', additive: 'Additive fee', minimum_spend: 'Spend commitment',
+                prepaid_commitment: 'Prepaid commitment', minimum_quantity: 'Minimum quantity',
+              }
+
+              const components = buildCommercialComponents(terms, cur)
+
+              type LogicRow = {
+                key: string; label: string; value: string; decisionRequired?: boolean
+                provenanceValue?: string | null; auditCaption?: string | null; secondaryValue?: string | null; helperText?: string | null
+                onEdit?: () => void; onViewSource?: () => void; footer?: React.ReactNode
+                // Step 17G.6A, item 2 — tags a required-operational-input
+                // row so component readiness can check it against the
+                // REAL, server-fetched operationalDataInputs list (never
+                // against period values — see that item's own scope note).
+                isRequiredInput?: boolean
+              }
+              type LogicGroup = {
+                key: string; title: string; subtitle?: string | null; category: CommercialCategory; rows: LogicRow[]
+                // Step 17H.4B0D4H1B4E7 §2 — the component's own typed
+                // mechanism summary (buildComponentMechanismSummary), set
+                // once when the group is first created from a real
+                // CommercialComponent. Left undefined for the synthetic,
+                // non-component groups (Discounts & pricing rules, Credits
+                // & adjustments, Shared / other required inputs) — those
+                // fall back to the existing row-label summary, which is
+                // the correct behavior for a group with no single
+                // "mechanism" of its own.
+                mechanismSummary?: string | null
+              }
+              const groups: LogicGroup[] = []
+              // Step 17G.6D — category is only ever set on a group's FIRST
+              // creation (matching getGroup's existing title/subtitle
+              // behavior) — every later call from a different step (tier
+              // calculation, escalator, usage source, ...) reuses whatever
+              // category the group was originally seeded with.
+              const getGroup = (key: string, title: string, category: CommercialCategory, subtitle?: string | null): LogicGroup => {
+                let g = groups.find(g => g.key === key)
+                if (!g) { g = { key, title, subtitle, category, rows: [] }; groups.push(g) }
+                return g
+              }
+
+              // 1. One group per Commercial BoM component, seeded from the
+              // SAME typed detail facts the BoM/Products-Services-Pricing
+              // already read — never re-derived. Step 17G.6C, item 3/9 —
+              // a usage component's business title is pluralized ("Issued
+              // payment requests," not "...request" — safe only here,
+              // since every usage component is by construction a
+              // countable per-unit charge; see
+              // pluralizeUsageComponentTitle's own doc). A performance
+              // component's long contractual description ("Performance
+              // share (resultatdel) — value-weighted payment rate") is
+              // split so "Performance share" leads as the title, with the
+              // full original kept as a subtitle — never discarded. Step
+              // 17G.6D — category classified from the component's own
+              // typed pricingModel (never its title text).
+              for (const c of components) {
+                let title = c.pricingModel === 'fixed' ? c.title : bomDisplayLabel(c.title)
+                let subtitle: string | null = null
+                if (c.pricingModel === 'usage') title = pluralizeUsageComponentTitle(title)
+                if (c.pricingModel === 'performance') {
+                  const split = splitComponentTitle(title)
+                  title = split.primary
+                  subtitle = split.secondary
+                }
+                const group = getGroup(c.key, title, classifyCommercialCategory(c.pricingModel), subtitle)
+                // Step 17H.4B0D4H1B4E7 §2 — replaces the old row-label-dump
+                // header summary for every REAL component group (never for
+                // the synthetic groups above, which have no single c).
+                group.mechanismSummary = buildComponentMechanismSummary(c)
+                for (const d of c.detail) {
+                  // Step 17H.4B0D4H1B4E6 §10 — "Invoice status: Blocked by
+                  // upstream decision" and "Invoice composition: Pending
+                  // recurring fixed-fee timing decision..." (lib/commercial-
+                  // components.ts's buildUsageComponents) are ALWAYS pushed
+                  // together and share exactly one upstream cause
+                  // (blockedByFixedTiming) — two rows stating the same fact.
+                  // The underlying facts stay distinct at the data layer
+                  // (commercial-components.ts/its own tests are untouched);
+                  // this only merges the DISPLAY into one row when both are
+                  // present with their known-redundant blocked pairing —
+                  // never when Invoice status is resolved (that composition
+                  // sentence is a genuinely different, non-redundant fact).
+                  if (d.label === 'Invoice composition' && d.value.startsWith('Pending recurring fixed-fee timing decision')) {
+                    const prior = group.rows[group.rows.length - 1]
+                    if (prior?.label === 'Invoice status' && prior.value === 'Blocked by upstream decision') {
+                      prior.label = 'Invoice'
+                      prior.value = 'Blocked — recurring fixed-fee timing must be resolved.'
+                      continue
+                    }
+                  }
+                  const isTimingFact = d.label === 'Recurring fixed-fee timing' || d.label === 'Invoice timing'
+                  // Step 17H.3C1 — the fixed component's full contractual
+                  // band schedule, migrated from the retired standalone
+                  // "Fixed platform fee — band selection" card. Reuses the
+                  // SAME BandTableToggle Products, Services & Pricing's
+                  // (now-removed) CommercialComponentCard used to render —
+                  // never a second table implementation — attached below the
+                  // Selected-band row it explains (resolved or
+                  // unresolved; the schedule stays inspectable either
+                  // way). Gated on c.bandTable specifically, not just
+                  // pricingModel === 'fixed', so only the component
+                  // actually backed by a band mechanism ever gets it.
+                  // Highlighting comes from c.bandResolution — the same
+                  // live resolveFixedFeeBand call this row's own value
+                  // was built from — never re-derived here, and never
+                  // shown when resolution didn't succeed.
+                  const bandFooter = (d.label === 'Selected band' && c.bandTable)
+                    ? <BandTableToggle bandTable={c.bandTable} cur={cur} selectedBand={c.bandResolution?.status === 'resolved' ? c.bandResolution.band : null} />
+                    : undefined
+                  // Step 17H.3C2 — the performance component's full
+                  // contractual rate schedule, migrated from the retired
+                  // "Products, Services & Pricing" card's RateScheduleToggle
+                  // — same component, never a second table implementation
+                  // — attached below the "Rate selection" row it explains.
+                  // Gated on c.rateSchedule specifically (set only by
+                  // buildPerformanceComponents, never by title/label
+                  // matching), so only a component actually backed by a
+                  // typed rate schedule ever gets it. No selected-rate
+                  // highlighting: the applicable rate depends on a real
+                  // period's derived metric value (numerator/denominator),
+                  // which is period-execution state this agreement-level
+                  // module has no access to and Billing Timeline alone
+                  // owns — see the 17H.3C2 report for why this is a
+                  // deliberate reference-table-only rendering, not a gap.
+                  const rateScheduleFooter = (d.label === 'Rate selection' && c.rateSchedule)
+                    ? <RateScheduleToggle rateSchedule={c.rateSchedule} />
+                    : undefined
+                  group.rows.push({
+                    key: `${c.key}:${d.label}`, label: d.label, value: d.value, decisionRequired: d.decisionRequired,
+                    provenanceValue: (isTimingFact && !d.decisionRequired) ? 'reviewer_policy' : undefined,
+                    isRequiredInput: d.value === 'Source: Manual operational input',
+                    helperText: d.helperText,
+                    footer: bandFooter ?? rateScheduleFooter,
+                  })
+                }
+              }
+
+              // 1b. Step 17H.4B0D4H1B4E2.2 §17 (category corrected in
+              // 17H.4B0D4H1B4E2.6 §2-4) — a monetary operational input can
+              // be required by one_time_fees or by an
+              // unsupported_commercial_mechanism that ISN'T an executable
+              // rolling-band migration (the only mechanism kind buildFixedComponent
+              // colocates today) — neither has any owning CommercialComponent,
+              // so it would otherwise disappear the moment the standalone
+              // Operational Inputs definition display is removed. Computed by
+              // set difference against every component's own typed
+              // consumedOperationalInputKeys (never label matching) — any
+              // leftover key is genuinely ambiguous/shared, so it gets its
+              // own explicit "Other required inputs" group rather than being
+              // silently guessed into an unrelated component. Category is
+              // its own neutral 'Shared / other required inputs' — NOT
+              // 'One-time / project fees' (the original placement was
+              // never semantically correct; it only happened to be the
+              // category in scope where this code first ran) — this input
+              // is configuration metadata, not a one-time fee.
+              const consumedInputKeys = new Set(components.flatMap(c => c.consumedOperationalInputKeys ?? []))
+              const unassignedInputs = operationalDataInputs.filter(i => !consumedInputKeys.has(i.key))
+              if (unassignedInputs.length > 0) {
+                const group = getGroup('shared_operational_inputs', 'Other required inputs', 'Shared / other required inputs', 'Not tied to a single priced component')
+                for (const input of unassignedInputs) {
+                  group.rows.push({
+                    key: `shared_operational_inputs:${input.key}`,
+                    label: humanizeKey(input.key),
+                    value: 'Source: Manual operational input',
+                    isRequiredInput: true,
+                  })
+                }
+              }
+
+              // 2. A metric charged ONLY via overage_tiers (no separate
+              // flat additional_recurring_fee of its own) has no BoM
+              // component at all yet — still needs a group to hang its
+              // tier-calculation/minimum-commitment rules on below.
+              for (const unitType of chargingGroups.keys()) {
+                const hasComponent = components.some(c => c.pricingModel !== 'fixed' && (terms?.additional_recurring_fees ?? []).some(f => f.fee_label === c.title && f.metric_name === unitType))
+                if (!hasComponent) getGroup(`unit:${unitType}`, pluralizeUsageComponentTitle(matchUsageComponentTitle(unitType, terms?.additional_recurring_fees)), 'Variable fees')
+              }
+
+              // 3. Tier calculation method + minimum commitment — resolved
+              // (real provenance + Edit/View source, same routes the old
+              // "Confirmed billing rules" cards used) or unresolved (plain
+              // Decision-required row) — per metric, routed to that
+              // metric's usage group. A single flat-rate metric (fewer
+              // than two paid tiers) has no method to disambiguate at all
+              // — the SAME guard hasUnresolvedTierCalculation (above) uses
+              // — so it's never flagged as an outstanding decision.
+              for (const [unitType, tierList] of chargingGroups.entries()) {
+                const group = getGroup(`unit:${unitType}`, pluralizeUsageComponentTitle(matchUsageComponentTitle(unitType, terms?.additional_recurring_fees)), 'Variable fees')
+                const paidTiers = tierList.filter(({ tier: t }) => (t.rate_per_unit ?? 0) > 0)
+                const tierCalc = tierList.find(({ tier: t }) => t.tier_calculation)?.tier.tier_calculation
+                if (tierCalc && !tierCalc.requires_confirmation) {
+                  const audit = findAudit('tier_calculation', unitType)
+                  group.rows.push({
+                    key: `tier:${unitType}`, label: 'Tier calculation method', value: TIER_METHOD_DISPLAY[tierCalc.method] ?? tierCalc.method,
+                    provenanceValue: audit?.decision_provenance, auditCaption: auditCaptionFor(audit),
+                    onEdit: () => setEditingRule(`tier:${unitType}`),
+                    onViewSource: src.overage_tiers ? () => openPDF(src.overage_tiers) : undefined,
+                  })
+                } else if (paidTiers.length >= 2) {
+                  group.rows.push({ key: `tier:${unitType}`, label: 'Tier calculation method', value: 'Decision required', decisionRequired: true })
+                }
+                const mc = tierList.find(({ tier: t }) => t.minimum_commitment)?.tier.minimum_commitment
+                const hasAllowance = tierList.some(({ tier: t }) => (t.rate_per_unit ?? 0) === 0)
+                if (mc && mc.mode) {
+                  if (!isMinimumCommitmentModeUnresolved(mc, hasAllowance)) {
+                    const audit = findAudit('minimum_commitment', unitType)
+                    group.rows.push({
+                      key: `min:${unitType}`, label: 'Minimum commitment',
+                      value: `${fmt(mc.amount, cur)}${ruleCadenceLabel(mc.period, tierList[0]?.tier.reset_anchor) ? ` / ${ruleCadenceLabel(mc.period, tierList[0]?.tier.reset_anchor)}` : ''} — ${MODE_LABEL[mc.mode] ?? mc.mode}`,
+                      provenanceValue: audit?.decision_provenance, auditCaption: auditCaptionFor(audit),
+                      onEdit: () => setEditingRule(`min:${unitType}`),
+                      onViewSource: src.overage_tiers ? () => openPDF(src.overage_tiers) : undefined,
+                    })
+                  } else {
+                    group.rows.push({ key: `min:${unitType}`, label: 'Minimum commitment', value: 'Decision required', decisionRequired: true })
+                  }
+                }
+              }
+
+              // 3b. Usage billing mapping (Step 17G.6A items 3/4, completed
+              // 17G.6C items 5-11) — the full contract measure -> billing
+              // metric -> configured source -> consuming-rules chain, not
+              // just the source in isolation. Reuses the SAME
+              // usageSourceCards (lib/usage-source-cards.ts, including its
+              // own already-computed `consumers` list — describeFeeConsumer
+              // /describeTierConsumer/describeRollingConsumer — never a
+              // second, duplicated dependency derivation) already computed
+              // once, above — this is now the sole authoritative renderer
+              // of usage-source mapping on this page (Step 17H.3B removed
+              // the standalone Usage Sources section, which read from this
+              // exact same array) — never a second source resolver. Iterates usage COMPONENTS
+              // rather than chargingGroups, since a flat fee with no
+              // overage tier of its own (e.g. "Completed payments" — no
+              // tier row at all) has no chargingGroups entry but still
+              // needs its mapping shown.
+              for (const c of components) {
+                if (c.pricingModel !== 'usage') continue
+                const fee = (terms?.additional_recurring_fees ?? []).find(f => f.fee_label === c.title)
+                const card = usageSourceCards.find(sc =>
+                  (fee?.semantic_input_key && sc.semanticInputKey === fee.semantic_input_key)
+                  || sc.contractUnitType === fee?.metric_name,
+                )
+                if (!card) continue
+                const title = pluralizeUsageComponentTitle(bomDisplayLabel(c.title))
+                const group = getGroup(c.key, title, 'Variable fees')
+                group.rows.push({ key: `${c.key}:measure`, label: 'Contract measure', value: title })
+                if (card.semanticInputKey) {
+                  group.rows.push({
+                    key: `${c.key}:metric`, label: 'Billing metric',
+                    value: card.semanticInputKey.replace(/_/g, ' ').replace(/^./, ch => ch.toUpperCase()),
+                    secondaryValue: card.semanticInputKey,
+                  })
+                }
+                // Unconfirmed renders as a Decision-required-style row
+                // wired to the SAME setReviewPanelOpen (item 4: reuse the
+                // existing source-mapping flow, never a second
+                // configuration form); confirmed shows the real,
+                // business-readable source name — manual usage is a
+                // first-class, valid configured state, never displayed as
+                // an error (item 9) — never a raw semantic key/endpoint,
+                // which stays secondary text on the Billing metric row
+                // above instead. Step 17H.3B — carries forward the one
+                // fact the removed standalone Usage Sources card showed
+                // that this row previously didn't (API meter vs. manual
+                // usage), so removing that section loses no information.
+                group.rows.push({
+                  key: `${c.key}:source`, label: 'Configured source',
+                  value: card.status === 'confirmed' ? card.sourceName : 'Not configured',
+                  secondaryValue: card.status === 'confirmed'
+                    ? (card.sourceType === 'api_meter' ? 'API meter' : card.sourceType === 'manual' ? 'Manual usage' : null)
+                    : null,
+                  decisionRequired: card.status !== 'confirmed',
+                  onEdit: card.status === 'confirmed' ? () => setReviewPanelOpen(true) : undefined,
+                })
+                // Which billing rules this SAME canonical fact feeds (item
+                // 11/18) — genuinely typed dependencies (a matching
+                // overage tier, an executable rolling-band mechanism
+                // referencing the same semantic_input_key), never
+                // duplicating Commercial BoM's own rate/currency figures
+                // here (item 17/31: this card owns how the metric is
+                // CONSUMED, not what it costs — also sidesteps
+                // usageSourceCards' own consumer descriptions, which
+                // hardcode a literal "€" regardless of the contract's
+                // real currency — see lib/usage-source-cards.ts's
+                // describeFeeConsumer/describeTierConsumer, a genuine,
+                // pre-existing formatter bug found while wiring this;
+                // not fixed here, since it's a shared function with other
+                // callers — flagged as a gap instead).
+                const feedsOverage = (terms?.overage_tiers ?? []).some(t =>
+                  typeof t.rate_per_unit === 'number' && t.rate_per_unit > 0
+                  && ((fee?.semantic_input_key && t.semantic_input_key === fee.semantic_input_key) || t.unit_type === fee?.metric_name),
+                )
+                const feedsRollingBand = (terms?.unsupported_commercial_mechanisms ?? []).some(m =>
+                  m.execution_status === 'executable' && m.rolling_band_migration?.aggregate?.input_key === fee?.semantic_input_key,
+                )
+                const consumerPhrases = ['Per-unit usage charge']
+                if (feedsOverage) consumerPhrases.push('Overage charge above contracted volume')
+                if (feedsRollingBand) consumerPhrases.push('Rolling volume pricing adjustment')
+                group.rows.push({ key: `${c.key}:consumers`, label: 'Used to calculate', value: consumerPhrases.map(x => `• ${x}`).join('\n') })
+              }
+
+              // 4. Price escalation — scoped to the fixed/platform
+              // component (this product's typed model has no per-usage-
+              // metric escalator concept — an escalator always escalates
+              // the recurring fee structure as a whole).
+              if (components.some(c => c.pricingModel === 'fixed')) {
+                const platformGroup = getGroup('fixed_component', 'Platform subscription', 'Fixed fee')
+                for (const [i, e] of (terms?.escalators ?? []).entries()) {
+                  const interp = e.interpretation
+                  const unresolved = !interp || interp.requires_confirmation || (interp.treatment !== 'applies' && interp.treatment !== 'not_applied')
+                  if (unresolved) {
+                    platformGroup.rows.push({ key: `esc:${i}`, label: 'Price escalation', value: 'Decision required', decisionRequired: true })
+                    continue
+                  }
+                  const notApplied = interp!.treatment === 'not_applied'
+                  const audit = findAudit('escalator', null)
+                  platformGroup.rows.push({
+                    key: `esc:${i}`, label: 'Price escalation',
+                    value: notApplied ? 'Not applied' : `${interp!.index}${interp!.cap_pct != null ? `, capped ${interp!.cap_pct}%` : ''}`,
+                    provenanceValue: audit?.decision_provenance, auditCaption: auditCaptionFor(audit),
+                    onEdit: () => setEditingRule(`esc:${i}`),
+                    onViewSource: src.escalators ? () => openPDF(src.escalators) : undefined,
+                  })
+                }
+              }
+
+              // 5. Base-fee billing-period anchor (contract-month vs
+              // calendar-month cycle) — only once resolved; while
+              // unresolved this is the SAME single decision the fixed
+              // component's own "Partial-period treatment" row already
+              // surfaces (both read terms.base_fee_proration), so no
+              // separate unresolved row is added here — that would
+              // double-count one outstanding decision as two.
+              // Step 17H.4B0D4H1B4E7.1 — once RESOLVED, this used to push
+              // a genuinely SECOND row ("Billing-period treatment") stating
+              // the same terms.base_fee_proration fact the fixed
+              // component's own "Partial-period treatment" row (lib/
+              // commercial-components.ts, built with no edit/audit/source
+              // wiring available at that pure-lib layer) already shows —
+              // a real, reported duplication (both rows visible under
+              // "Period rules" at once, near-identical text). The pure-lib
+              // row is never wrong, only incomplete (it can't carry
+              // onEdit/onViewSource/provenanceValue — this page-level
+              // scope is the only place those exist), so this now
+              // AUGMENTS that existing row in place with the richer
+              // interactive fields, rather than adding a second one.
+              // Falls back to pushing a new row only if the expected row
+              // isn't there (defensive — should not happen for a
+              // component that has a base_monthly_fee at all).
+              if (terms?.base_fee_proration && !terms.base_fee_proration.requires_confirmation && terms?.base_monthly_fee) {
+                const bfp = terms.base_fee_proration
+                const bfpWaiverExpiry = baseFeeHasExpiringWaiver(terms?.discounts)
+                const optionId = deriveSelectedOption('base_fee_proration', bfp as unknown as Record<string, unknown>, bfpWaiverExpiry)
+                const cadenceLbl = cadenceNoun(terms?.billing_frequency)
+                const periodLabel = contractMonthLabel(terms?.contract_start_date)
+                const opt = optionsForRuleType('base_fee_proration', cadenceLbl, periodLabel, bfpWaiverExpiry).find(o => o.id === optionId)
+                const audit = findAudit('base_fee_proration', BASE_FEE_PRORATION_SENTINEL)
+                const platformGroup = getGroup('fixed_component', 'Platform subscription', 'Fixed fee')
+                const resolvedValue = opt?.label ?? (bfp.reset_anchor === 'contract_start' ? 'Contract-month anchored' : 'Calendar-anchored')
+                const existingPartialPeriodRow = platformGroup.rows.find(r => r.label === 'Partial-period treatment')
+                if (existingPartialPeriodRow) {
+                  existingPartialPeriodRow.value = resolvedValue
+                  existingPartialPeriodRow.provenanceValue = audit?.decision_provenance ?? 'reviewer_policy'
+                  existingPartialPeriodRow.auditCaption = auditCaptionFor(audit)
+                  existingPartialPeriodRow.onEdit = () => setEditingRule('basefee')
+                  existingPartialPeriodRow.onViewSource = src.base_monthly_fee ? () => openPDF(src.base_monthly_fee) : undefined
+                } else {
+                  platformGroup.rows.push({
+                    key: 'basefee', label: 'Billing-period treatment', value: resolvedValue,
+                    provenanceValue: audit?.decision_provenance ?? 'reviewer_policy', auditCaption: auditCaptionFor(audit),
+                    onEdit: () => setEditingRule('basefee'),
+                    onViewSource: src.base_monthly_fee ? () => openPDF(src.base_monthly_fee) : undefined,
+                  })
+                }
+              }
+
+              // 6. Service credits — cross-cutting (a credit can apply
+              // against several BoM components at once), own group.
+              // Resolved -> real provenance from CreditApplicationRule's
+              // own typed eligibility_provenance field, edit via the same
+              // setEditingRule('credit:...') route; unresolved -> plain
+              // Decision-required row.
+              if ((terms?.service_credits ?? []).length > 0) {
+                const creditsGroup = getGroup('credits', 'Credits & rebates', 'Credits & adjustments')
+                for (const c of terms?.service_credits ?? []) {
+                  const label = c.description || CREDIT_TYPE_LABEL[c.credit_type ?? ''] || 'Service credit'
+                  if (!c.credit_rule_id || isServiceCreditUnresolved(c)) {
+                    creditsGroup.rows.push({ key: `credit:${c.credit_rule_id ?? label}`, label, value: 'Decision required', decisionRequired: true })
+                    continue
+                  }
+                  const interp = c.interpretation!
+                  const appRule = interp.application_rule!
+                  const audit = findAudit('service_credit', `credit:${c.credit_rule_id}`)
+                  const value = interp.trigger_description
+                    ?? (appRule.eligible_component_keys === 'all' ? 'Applies against all future amounts payable' : 'See interpretation')
+                  creditsGroup.rows.push({
+                    key: `credit:${c.credit_rule_id}`, label, value,
+                    provenanceValue: appRule.eligibility_provenance, auditCaption: auditCaptionFor(audit),
+                    onEdit: () => setEditingRule(`credit:${c.credit_rule_id}`),
+                    onViewSource: src.service_credits ? () => openPDF(src.service_credits) : undefined,
+                  })
+                  // Earning basis — WHAT the credit's own size is computed
+                  // from, distinct from what it may later be applied
+                  // against (the row above). Only shown when the contract
+                  // actually states a percentage-of-component basis.
+                  const computedFromKeys = Array.isArray(appRule.computed_from_component_keys) && appRule.computed_from_component_keys.length > 0
+                    ? appRule.computed_from_component_keys : null
+                  if (computedFromKeys) {
+                    const isRebate = c.credit_type === 'rebate'
+                    const basisValue = formatEarningBasisFact(computedFromKeys) + (interp.monetary_basis_recognition === 'paid' ? ' actually paid' : '')
+                    creditsGroup.rows.push({ key: `credit:${c.credit_rule_id}:basis`, label: isRebate ? 'Rebate basis' : 'Earning basis', value: basisValue })
+                    const excludedFromBasis = computeExcludedFromEarningBasisKeys({
+                      computedFromComponentKeys: computedFromKeys,
+                      eligibleComponentKeys: appRule.eligible_component_keys,
+                      excludedComponentKeys: appRule.excluded_component_keys,
+                    })
+                    if (excludedFromBasis.length > 0) {
+                      creditsGroup.rows.push({
+                        key: `credit:${c.credit_rule_id}:excluded`, label: isRebate ? 'Excluded from rebate basis' : 'Excluded from earning basis',
+                        value: formatEligibleComponentsFact(excludedFromBasis),
+                      })
+                    }
+                  }
+                  // Unused-balance policy — carries the same Organization
+                  // Rulebook promotion/override control the pre-existing
+                  // "Confirmed billing rules" card offered (Step 5D),
+                  // preserved verbatim rather than dropped along with that
+                  // card's own visual chrome.
+                  if (typeof appRule.carry_forward === 'boolean') {
+                    creditsGroup.rows.push({
+                      key: `credit:${c.credit_rule_id}:carry`, label: 'Unused balance',
+                      value: formatCarryForwardFact(appRule.carry_forward, appRule.expiry_periods, appRule.expiry_date),
+                      provenanceValue: appRule.survival_provenance,
+                      footer: (
+                        <OrganizationPolicyControls
+                          jobId={id}
+                          creditId={c.credit_rule_id}
+                          carryForward={appRule.carry_forward}
+                          survivalProvenance={appRule.survival_provenance}
+                          ruleId={appRule.survival_organization_rule_id}
+                          ruleVersion={appRule.survival_organization_rule_version}
+                          onChanged={() => { fetchJob(); fetchRuleInterpretations() }}
+                        />
+                      ),
+                    })
+                  }
+                }
+              }
+
+              // 7. One-time / project fees and one-time credits (Step
+              // 17H.3C3) — one group per terms.one_time_fees entry (each is
+              // its own discrete commercial component, unlike service
+              // credits above, which are a single cross-cutting mechanism
+              // by nature). classifyOneTimeFeeKind/deriveOneTimeFeeBillabilityRow
+              // (lib/one-time-fee-commercial-logic.ts) are the SAME pure
+              // functions Commercial BoM's line-item table calls — never a
+              // second classification model; only the React-specific bits
+              // (group creation, source-clause onClick) live here. Shows NO
+              // amount (Commercial BoM already owns that — item 8's "not
+              // already sufficiently represented by BoM") and NO
+              // description (item 16 — component identity + contractual
+              // treatment is enough). Shows NO live evidence/execution
+              // state (item 15 — "Billability: Customer acceptance" states
+              // only the contractual TRIGGER; whether that event has
+              // actually happened is Billing Timeline's parked-invoice
+              // machinery, untouched by this pass).
+              for (const f of terms?.one_time_fees ?? []) {
+                const isCredit = f.amount < 0
+                const groupKey = `one_time:${f.fee_id ?? f.fee_label}`
+                const group = getGroup(groupKey, bomDisplayLabel(f.fee_label), isCredit ? 'Credits & adjustments' : 'One-time / project fees')
+                group.rows.push({ key: `${groupKey}:treatment`, label: 'Commercial treatment', value: classifyOneTimeFeeKind(f) })
+
+                const billability = deriveOneTimeFeeBillabilityRow(f)
+                group.rows.push({
+                  key: `${groupKey}:billability`, label: 'Billability', value: billability.value,
+                  decisionRequired: billability.state === 'decision_required',
+                  helperText: billability.state !== 'resolved' ? billability.helperText : undefined,
+                  provenanceValue: billability.state === 'resolved' ? billability.provenanceValue : undefined,
+                  // A resolved row's source-clause link is the only
+                  // JSX-only concern deriveOneTimeFeeBillabilityRow can't
+                  // own (openPDF is page-local) — item 12's blocked/
+                  // decision-required states have no source click at all,
+                  // matching ReviewPanel's own established treatment.
+                  onViewSource: billability.state === 'resolved' && src.one_time_fees ? () => openPDF(src.one_time_fees) : undefined,
+                })
+              }
+
+              // 8. Discounts (Step 17H.3D1) — migrated from the legacy
+              // Commercial Terms card. Attachment to a component is
+              // resolved ONLY from Discount.affected_components
+              // (resolveDiscountComponentAttachment, lib/discount-
+              // commercial-logic.ts) — never from applies_to/description
+              // text (17H.3C4's doctrine, restated for discounts). A
+              // discount naming exactly one recognized component key,
+              // where exactly one real component of that category exists
+              // in THIS agreement, lands inside that component's own
+              // existing group (getGroup reused verbatim — never a second
+              // group for the same component). Everything else — no
+              // affected_components, more than one, an unrecognized key,
+              // or a key that matches zero/multiple real components in
+              // this agreement (e.g. "usage_fee" when there are two
+              // distinct usage components) — lands in a dedicated
+              // cross-cutting "Discounts" group, never guessed onto the
+              // first/fixed component.
+              const componentsMatchingDiscountKey = (key: 'base_recurring_fee' | 'performance_fee' | 'usage_fee' | 'overage_fee') =>
+                components.filter(c => key === 'base_recurring_fee' ? c.pricingModel === 'fixed'
+                  : key === 'performance_fee' ? c.pricingModel === 'performance'
+                  : c.pricingModel === 'usage') // usage_fee and overage_fee both resolve to Commercial Logic's single merged usage-component concept (buildUsageComponents already merges the flat fee + its matching overage tier)
+              for (const [i, d] of (terms?.discounts ?? []).entries()) {
+                const discountId = d.discount_rule_id ?? String(i)
+                const editKey = `disc:${discountId}`
+                const auditKey = `discount:${discountId}`
+                const attachment = resolveDiscountComponentAttachment(d)
+                let group: LogicGroup
+                if (attachment.kind === 'component') {
+                  const matches = componentsMatchingDiscountKey(attachment.componentKey)
+                  const target = matches.length === 1 ? matches[0] : null
+                  group = target
+                    ? getGroup(target.key, target.title, classifyCommercialCategory(target.pricingModel))
+                    : getGroup('discounts', 'Discounts', 'Discounts & pricing rules')
+                } else {
+                  group = getGroup('discounts', 'Discounts', 'Discounts & pricing rules')
+                }
+
+                const interp = d.interpretation
+                // Same binary resolution gate Commercial Terms itself
+                // uses — discountHasUnresolvedComponentScope only ever
+                // changes the UNRESOLVED message's wording (component
+                // scope vs. structure), never a separate blocking tier;
+                // preserved exactly, not reinvented.
+                if (!interp || interp.requires_confirmation) {
+                  // Step 17H.3D1.1, item 4 — raw applies_to may be
+                  // appended as supporting contract context (never a
+                  // separate structured fact, since nothing is resolved
+                  // yet) — it must never make "Decision required" read as
+                  // though the scope question were already answered, so
+                  // it's appended to the SAME unresolved helperText, not
+                  // rendered as its own row.
+                  const unresolvedReason = discountHasUnresolvedComponentScope(d)
+                    ? 'Which component(s) this discount covers has not been confirmed.'
+                    : 'This discount’s structure has not yet been interpreted.'
+                  const wordingContext = resolveDiscountContractWordingContext(d, describeDiscountComponentScope(d))
+                  // Step 17H.3D3 — same cross-cutting disambiguation as
+                  // the resolved "Type" row below; a decisionRequired row
+                  // has no secondaryValue slot (CommercialLogicRow only
+                  // renders that in its non-decisionRequired branch), so
+                  // the identifying description is folded into helperText
+                  // instead, which does render here.
+                  const identity = attachment.kind !== 'component' && d.description ? `“${d.description}” — ` : ''
+                  group.rows.push({
+                    key: `${auditKey}:status`, label: 'Discount', value: 'Decision required', decisionRequired: true,
+                    helperText: identity + (wordingContext ? `${unresolvedReason} Contract wording: “${wordingContext}”` : unresolvedReason),
+                  })
+                  continue
+                }
+
+                const audit = findAudit('discount', auditKey)
+                // Step 17H.4B0D4H1B4E7.1 §4 — moved up from below (was
+                // computed after this row was already pushed) so a
+                // temporary modifier's duration can be folded into THIS
+                // row's own value instead of pushed as a separate "Period
+                // / duration" row — "100% for 90 days" is one commercial
+                // statement, not two. Only 'introductory' discounts get
+                // this treatment; volume/negotiated discounts keep period
+                // as its own row (their duration, when present at all,
+                // isn't necessarily bound to the same "temporary
+                // modifier" framing an introductory waiver/discount is).
+                const period = resolveDiscountPeriod(d)
+                const periodValue = period.kind === 'date_range' ? `${fmtDate(period.startDate)} – ${fmtDate(period.endDate)}`
+                  : period.kind === 'duration_days' ? `${period.days} days`
+                  : period.kind === 'duration_months' ? `${period.months} months`
+                  : null
+                const isTemporaryModifier = d.discount_type === 'introductory'
+                const bareMagnitude = d.discount_pct != null ? `${d.discount_pct}%` : d.discount_amount != null ? fmt(d.discount_amount, cur) : null
+                const valueLabel = isTemporaryModifier && periodValue && bareMagnitude
+                  ? `${bareMagnitude} · ${periodValue}`
+                  : d.discount_pct != null ? `${d.discount_pct}% off` : d.discount_amount != null ? `${fmt(d.discount_amount, cur)} off` : 'Decision required'
+                // Step 17H.3D3 — final parity check found a real, if
+                // narrow, gap: several cross-cutting discounts of the SAME
+                // discount_type sharing the generic "Discounts" group
+                // would render two visually-identical "Type" rows with no
+                // way to tell them apart (Commercial Terms' own flat list
+                // gave each one a distinguishing identity label). Adding
+                // the discount's own extracted description as a secondary
+                // line — display-only disambiguation, exactly the same
+                // "raw text is fine to SHOW, never to ROUTE" boundary
+                // already established for resolveDiscountContractWordingContext
+                // — closes this without touching attachment/routing at
+                // all (already fully decided, above). Only shown for the
+                // cross-cutting case; a component-attached discount is
+                // already disambiguated by which component's group it
+                // sits in, so this stays silent there (no added noise for
+                // the common case).
+                group.rows.push({
+                  // Step 17H.4B0D4H1B4E7.1 §3/§16 — discountBusinessLabel,
+                  // not discountTypeLabel (left untouched — see that
+                  // function's own comment). "One-time · introductory" is
+                  // internal schema-shaped vocabulary; a reviewer reads
+                  // "Introductory waiver"/"Introductory discount" instead,
+                  // decided from the discount's own typed magnitude
+                  // (100% off = the fee is fully suspended = a waiver),
+                  // never a label-text guess.
+                  key: `${auditKey}:type`, label: discountBusinessLabel(d), value: valueLabel,
+                  secondaryValue: attachment.kind !== 'component' ? (d.description || null) : null,
+                  provenanceValue: audit?.decision_provenance, auditCaption: auditCaptionFor(audit),
+                  onEdit: () => setEditingRule(editKey),
+                  onViewSource: src.discounts ? () => openPDF(src.discounts) : undefined,
+                })
+                // describeDiscountComponentScopeSplit reads the SAME typed
+                // affected_components/possibly_affected_components pair
+                // the attachment decision above already used — never a
+                // second, independently-derived scope description.
+                // Step 17H.4B0D4H1B4E7.1 §6/§17 — known vs. still-open
+                // scope now render as two SEPARATE rows instead of one
+                // sentence mixing a confirmed fact with an open question
+                // ("The fixed platform fee is waived. Whether the
+                // performance-share component is also waived is not
+                // explicit.") — the reviewer should see what's settled and
+                // what isn't at a glance, not parse one run-on sentence to
+                // find the ambiguity. The unresolved note is a soft,
+                // informational warning (this discount is NOT itself
+                // decisionRequired/blocking — possibly_affected_components
+                // is a genuinely softer ambiguity than "no affected
+                // components at all," handled separately above), so it
+                // gets warning color, never a Review action of its own —
+                // resolving it is the same "Edit interpretation" action
+                // already on the row above.
+                const scope = describeDiscountComponentScopeSplit(d)
+                if (scope.known) {
+                  group.rows.push({ key: `${auditKey}:applies`, label: 'Applies to', value: scope.known })
+                }
+                if (scope.unresolvedNote) {
+                  group.rows.push({ key: `${auditKey}:applies_open`, label: 'Additional scope', value: `⚠ ${scope.unresolvedNote}` })
+                }
+                if (!scope.known && !scope.unresolvedNote) {
+                  // Step 17H.3D1.1 — no structured applicability exists
+                  // (17H.3D1's reported gap). Rather than showing nothing,
+                  // fall back to the raw extracted applies_to text — but
+                  // under a DIFFERENT label ("Contract wording," never
+                  // "Applies to") and with no onEdit/decisionRequired
+                  // affordance, so it can never be mistaken for a
+                  // confirmed structured mapping. resolveDiscountContractWordingContext
+                  // itself never repeats this when a structured scope is
+                  // already populated (checked above, via the !scope.known
+                  // && !scope.unresolvedNote guard on this whole branch),
+                  // and never reads anything but applies_to — it has no
+                  // power to change where this discount attached, which
+                  // was already decided, above, from affected_components
+                  // alone.
+                  const wordingContext = resolveDiscountContractWordingContext(d, null)
+                  // Step 17H.4B0D4H1B4E6.4 — this value is genuinely
+                  // extracted source wording (potentially a full quoted
+                  // clause fragment), the exact "long source material"
+                  // case the row layout should prefer compact provenance
+                  // for. No structured section/citation locator exists for
+                  // this field to synthesize a "§4 · Bilaga 1 §4"-style
+                  // label without inventing text not actually in the data
+                  // — so rather than fabricate one, this reuses the SAME
+                  // onViewSource affordance the row above already wires to
+                  // src.discounts (the existing "View source clause" icon
+                  // link), so the reviewer can always jump to the real PDF
+                  // location instead of only reading the inline quote.
+                  // CommercialLogicRow's value text is left-aligned by
+                  // construction now, which already handles the
+                  // readability half of this.
+                  if (wordingContext) group.rows.push({ key: `${auditKey}:wording`, label: 'Contract wording', value: wordingContext, helperText: 'Extracted source text — not a confirmed structured mapping.', onViewSource: src.discounts ? () => openPDF(src.discounts) : undefined })
+                }
+
+                // period/periodValue already computed above (needed there
+                // to decide whether to fold duration into the type row);
+                // only render the standalone "Period / duration" row when
+                // it WASN'T already folded in (isTemporaryModifier: false,
+                // or a temporary modifier with no resolvable magnitude).
+                if (periodValue && !(isTemporaryModifier && bareMagnitude)) {
+                  group.rows.push({ key: `${auditKey}:period`, label: 'Period / duration', value: periodValue })
+                }
+
+                // Step 17H.3D1, item 5 — concise interpretation only where
+                // it adds real information beyond the structured rows
+                // above (never the same fact restated as prose); a
+                // worked_example is genuinely additive (a concrete
+                // numeric walkthrough), never duplicated elsewhere.
+                // Step 17H.4B0D4H1B4E7.1 §7/§8 — worked_example is a
+                // free-text field with no validation that its content is
+                // actually a worked numeric example; a real, reported case
+                // had it holding internal test-run commentary instead
+                // ("Confirmed via E3.6 acceptance pass"), which then
+                // rendered verbatim as this row's COMMERCIAL value — the
+                // exact "Treatment must contain commercial treatment, not
+                // audit text" violation. Filtered through the same
+                // generic, structural looksLikeInternalTestLabel check
+                // already used for reviewer_name — never a match on that
+                // one literal string. tier_method is a closed, typed enum
+                // (TIER_METHOD_DISPLAY), never free text, so it needs no
+                // such filter. If filtering leaves nothing, the row is
+                // omitted entirely (§8: no distinct commercial treatment
+                // beyond what's already shown -> don't render the row).
+                const cleanWorkedExample = interp.worked_example && !looksLikeInternalTestLabel(interp.worked_example) ? interp.worked_example : null
+                if (interp.tier_method || cleanWorkedExample) {
+                  const treatmentValue = [
+                    interp.tier_method ? `Tier method: ${TIER_METHOD_DISPLAY[interp.tier_method] ?? interp.tier_method}` : null,
+                    cleanWorkedExample,
+                  ].filter(Boolean).join(' — ')
+                  group.rows.push({ key: `${auditKey}:treatment`, label: 'Treatment', value: treatmentValue })
+                }
+              }
+
+              const nonEmptyGroups = groups.filter(g => g.rows.length > 0)
+              if (nonEmptyGroups.length === 0) return null
+
+              // Step 17G.6D, items 2/3/42 — the business-level category
+              // hierarchy above the component accordions. Fixed order
+              // (never alphabetical/insertion order, so the same contract
+              // always reads the same way); a category with zero groups
+              // is simply absent from this list, never rendered as an
+              // empty heading. "Fixed fee" adapts to plural only when
+              // more than one genuinely exists — deterministic, not
+              // clever.
+              // Step 17H.4B0D4H1B4E2.6 §4 — 'Shared / other required
+              // inputs' ordered LAST: after every real commercial
+              // component family, since it's configuration metadata, not
+              // a priced economic component.
+              const CATEGORY_ORDER: CommercialCategory[] = ['Fixed fee', 'Variable fees', 'Discounts & pricing rules', 'One-time / project fees', 'Credits & adjustments', 'Shared / other required inputs']
+              const orderedGroups = CATEGORY_ORDER.flatMap(cat => nonEmptyGroups.filter(g => g.category === cat))
+              const categoryHeading = (cat: CommercialCategory): string => {
+                if (cat !== 'Fixed fee') return cat.toUpperCase()
+                const count = nonEmptyGroups.filter(g => g.category === 'Fixed fee').length
+                return (count > 1 ? 'Fixed fees' : 'Fixed fee').toUpperCase()
+              }
+
+              // Step 17G.6A, item 2 — cross-checks a required-input row
+              // (isRequiredInput, tagged in step 1 above) against the
+              // REAL, server-fetched operationalDataInputs list — never
+              // against a period value (Billing Timeline's job). Uses the
+              // exact same key->label humanization
+              // lib/commercial-components.ts's buildPerformanceComponents
+              // already applies, so a match is never missed on a casing
+              // mismatch.
+              const humanizeInputKey = (k: string) => k.replace(/_/g, ' ').replace(/^./, ch => ch.toUpperCase())
+              const configuredOperationalInputLabels = new Set(operationalDataInputs.map(i => humanizeInputKey(i.key)))
+
+              // Step 17G.6F, item 6 — readiness computed ONCE per group
+              // here (previously inline inside the render loop) so the
+              // compact summary below can aggregate the exact same,
+              // already-derived numbers the accordions themselves show —
+              // never a second, separately-computed count.
+              // Step 17H.4B0D4H1B4E2.5 §12-13 — the neutral shared/
+              // unassigned-input fallback (getGroup('shared_operational_
+              // inputs', ...), added in E2.2) is NOT a priced commercial
+              // component — it exists solely to keep an input visible when
+              // no single component ownership resolves. It must never
+              // claim "Ready for billing timeline" (that phrase asserts a
+              // priced charge is ready to execute) or be counted among
+              // "N billing components identified" — both would misrepresent
+              // it as a real economic component. Identified by its own
+              // stable key, never a label guess.
+              const SHARED_INPUT_FALLBACK_KEY = 'shared_operational_inputs'
+              const groupReadiness = new Map(orderedGroups.map(g => {
+                // Commercial-rule blockers only — a Configured-source
+                // row's own decisionRequired is a DIFFERENT readiness axis
+                // (item 2's "Needs input source"), never double-counted as
+                // a commercial decision too.
+                const blockedCount = g.rows.filter(r => r.decisionRequired && r.label !== 'Configured source').length
+                const hasUnconfiguredSource = g.rows.some(r => r.label === 'Configured source' && r.decisionRequired)
+                const hasUnconfiguredOperationalInput = g.rows.some(r => r.isRequiredInput && !configuredOperationalInputLabels.has(r.label))
+                const readiness = g.key === SHARED_INPUT_FALLBACK_KEY
+                  ? (hasUnconfiguredOperationalInput
+                      ? { state: 'needs_operational_input_configuration' as const, label: 'Needs source configuration' }
+                      : { state: 'shared_fallback_configured' as const, label: 'Source configured' })
+                  : describeComponentReadiness({ blockedDecisions: blockedCount, hasUnconfiguredSource, hasUnconfiguredOperationalInput })
+                return [g.key, { readiness, blockedCount }] as const
+              }))
+              // Both aggregates exclude the fallback group — it isn't a
+              // priced commercial component, so it must not inflate either
+              // "ready" or "identified" component counts.
+              const pricedGroups = orderedGroups.filter(g => g.key !== SHARED_INPUT_FALLBACK_KEY)
+              const readyComponentCount = pricedGroups.filter(g => groupReadiness.get(g.key)!.readiness.state === 'ready_for_billing_timeline').length
+              const totalDecisionsRemaining = pricedGroups.reduce((sum, g) => sum + groupReadiness.get(g.key)!.blockedCount, 0)
+              // Item 7 — reads the SAME "Invoice status" fact the
+              // dependent components' own rows already show, never a
+              // second, independently-derived blocker signal. Matches both
+              // the unmerged row (a component whose Invoice status/
+              // composition pair wasn't consolidated, e.g. never had a
+              // composition row to merge with) and the §10-merged single
+              // "Invoice" row — same underlying fact either way.
+              const invoiceTransmissionBlocked = orderedGroups.some(g => g.rows.some(r =>
+                (r.label === 'Invoice status' && r.value === 'Blocked by upstream decision')
+                || (r.label === 'Invoice' && r.value === 'Blocked — recurring fixed-fee timing must be resolved.')
+              ))
+
+              // Small, restrained icon per subsection heading (item 11) —
+              // Tabler icons only, never emoji; "Period rules" is the one
+              // heading with no clear icon concept, so it renders with
+              // none rather than force a mismatched glyph.
+              const SECTION_ICON: Record<string, string> = {
+                Calculation: 'ti-calculator', 'Required inputs': 'ti-gauge', 'Usage billing mapping': 'ti-plug', Timing: 'ti-clock',
+                'Pricing / discount': 'ti-discount-2', 'Pricing adjustment': 'ti-adjustments',
+              }
+
+              return (
+                <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
+                  <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
+                    <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Commercial logic &amp; billing setup</h2>
+                    <p className="text-[11px] text-stone mt-1">How contractual commercial terms are interpreted, supplied with required inputs, and prepared for billing.</p>
+                    {/* Step 17G.6F, item 6 — a compact, dynamically-derived
+                        operational status line, never a second large card.
+                        Every number here is read from groupReadiness/the
+                        components themselves, above — nothing hard-coded. */}
+                    <p className="text-[11px] text-stone/60 mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                      <span className="font-medium text-stone/80">Commercial readiness:</span>
+                      <span>{pricedGroups.length} billing component{pricedGroups.length === 1 ? '' : 's'} identified</span>
+                      <span aria-hidden="true">·</span>
+                      <span>{readyComponentCount} ready for billing timeline</span>
+                      <span aria-hidden="true">·</span>
+                      <span>{totalDecisionsRemaining} commercial decision{totalDecisionsRemaining === 1 ? '' : 's'} remaining</span>
+                      {invoiceTransmissionBlocked && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-medium" style={{ color: '#B45309' }}>Invoice transmission blocked</span>
+                        </>
+                      )}
+                    </p>
+                  </div>
+                  {/* Step 17G.5B — full-width expandable rows (accordions)
+                      replace the old fixed-column card grid, which broke
+                      on real contract data (long labels/values colliding,
+                      performance rules not fitting a narrow column). Same
+                      grouping from 17G.5A/17G.6A — reused verbatim, not a
+                      second grouping model. */}
+                  <div className="px-6 py-3">
+                    {(() => { let lastCategory: CommercialCategory | null = null; return orderedGroups.map((g, gi) => {
+                      const { readiness } = groupReadiness.get(g.key)!
+                      const isReady = readiness.state === 'ready_for_billing_timeline'
+                      // Step 17H.4B0D4H1B4E2.5 §12-13 — the shared-input
+                      // fallback's own configured state is genuinely
+                      // neutral: not the green "ready for billing
+                      // timeline" checkmark (it isn't a priced component),
+                      // and not the amber "needs attention" styling either
+                      // (nothing is actually wrong when its inputs are
+                      // configured) — a third, deliberately muted style.
+                      const isNeutralFallback = readiness.state === 'shared_fallback_configured'
+                      const isExpanded = expandedLogicGroups.has(g.key)
+                      const rawSections = sectionizeRows(g.rows)
+                      // Step 17H.4B0D4H1B4E7 §3 — the commercial snapshot:
+                      // pulled ONLY from the general (unnamed) section, so a
+                      // named section's own internal coherence (Timing,
+                      // Calculation, ...) is never fragmented by lifting one
+                      // of its rows out. When the general section still has
+                      // rows left after the snapshot, it stays in place
+                      // (under no heading, exactly as before); when the
+                      // snapshot took everything, the section is dropped
+                      // rather than rendering an empty one.
+                      const generalSection = rawSections[0]?.name === null ? rawSections[0] : null
+                      const { snapshot, remaining } = generalSection
+                        ? selectSnapshotRows(generalSection.rows)
+                        : { snapshot: [] as LogicRow[], remaining: [] as LogicRow[] }
+                      const sections = generalSection
+                        ? (remaining.length > 0 ? [{ ...generalSection, rows: remaining }, ...rawSections.slice(1)] : rawSections.slice(1))
+                        : rawSections
+                      const showCategoryHeader = g.category !== lastCategory
+                      lastCategory = g.category
                       return (
-                        <div key={i} className="rounded-xl p-4 transition-all"
-                          style={isEditing ? { background: '#FFFBEB', border: '1px solid #F59E0B' } : confirmedInactive ? { background: '#FAFAF9', opacity: 0.6 } : { background: 'transparent' }}>
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center gap-1.5">
-                              <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em]">{label}</p>
-                              {confirmedInactive && (
-                                <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full uppercase tracking-wide" style={{ background: '#F5F5F4', color: '#78716C' }}>
-                                  Source extraction · inactive
-                                </span>
-                              )}
-                            </div>
-                            {!isEditing && (
-                              <button onClick={() => { setEscEditValue(e.escalator_pct != null ? `${e.escalator_pct}` : ''); setEscEditing(i) }}
-                                title="Edit this value" className="text-stone/35 hover:text-forest transition-colors">
-                                <i className="ti ti-pencil-minus" style={{ fontSize: 12 }} />
-                              </button>
-                            )}
+                        <Fragment key={g.key}>
+                        {/* Step 17G.6D, item 6 — a restrained, single-line
+                            heading + subtle divider, never a card of its
+                            own; organizes the accordions below it without
+                            materially increasing page height. */}
+                        {showCategoryHeader && (
+                          <div className={`flex items-center gap-2 ${gi === 0 ? '' : 'mt-3'} mb-1.5`}>
+                            <span className="text-[9px] font-bold text-stone/50 uppercase tracking-[0.16em] whitespace-nowrap">{categoryHeading(g.category)}</span>
+                            <div className="flex-1 h-px" style={{ background: 'rgba(26,61,43,0.08)' }} />
                           </div>
-                          {isEditing ? (
-                            <div className="flex items-center gap-2 mt-1">
-                              <input autoFocus type="text" value={escEditValue}
-                                onChange={e => setEscEditValue(e.target.value)}
-                                onKeyDown={ev => { if (ev.key === 'Enter') saveEscalatorPct(i); if (ev.key === 'Escape') setEscEditing(null) }}
-                                placeholder="e.g. 3"
-                                className="flex-1 text-[28px] font-medium bg-transparent outline-none leading-none"
-                                style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }} />
-                              <span className="text-sm text-stone self-end pb-0.5">%</span>
-                              <button onClick={() => setEscEditing(null)} className="text-stone/50 hover:text-ink transition-colors p-1 flex-shrink-0" title="Cancel">
-                                <i className="ti ti-x" style={{ fontSize: 13 }} />
-                              </button>
-                              {escEditValue && (
-                                <button onClick={() => saveEscalatorPct(i)} disabled={escSaving} title="Save"
-                                  className="flex items-center justify-center w-8 h-8 rounded-lg text-white transition-colors flex-shrink-0 disabled:opacity-50"
-                                  style={{ background: '#1A3D2B' }}>
-                                  {escSaving ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} /> : <i className="ti ti-check" style={{ fontSize: 13 }} />}
-                                </button>
-                              )}
+                        )}
+                        <div className={`rounded-xl border overflow-hidden ${!showCategoryHeader && gi > 0 ? 'mt-2.5' : ''}`} style={{ borderColor: 'rgba(26,61,43,0.1)' }}>
+                          <button
+                            onClick={() => setExpandedLogicGroups(prev => {
+                              const next = new Set(prev)
+                              if (next.has(g.key)) next.delete(g.key); else next.add(g.key)
+                              return next
+                            })}
+                            className="w-full px-4 py-3 flex items-center justify-between gap-3 text-left"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-[10px] font-bold text-stone uppercase tracking-[0.12em]">{g.title}</p>
+                              {/* Item 3/9 — the longer contractual description,
+                                  kept available rather than dropped when the
+                                  title was shortened to a business-readable
+                                  primary label (e.g. "Performance share"). */}
+                              {g.subtitle && <p className="text-[10px] text-stone/40 mt-0.5 truncate">{g.subtitle}</p>}
+                              {/* Step 17H.4B0D4H1B4E7 §2 — a business-
+                                  readable MECHANISM summary ("Fixed
+                                  recurring · monthly billing") from typed
+                                  component data, replacing the old row-
+                                  label dump ("Charge basis · Rate
+                                  selection · Partial-period treatment +7
+                                  more") that made a reviewer read internal
+                                  field names to understand what the
+                                  mechanism even is. Falls back to the row-
+                                  label summary only for the synthetic,
+                                  non-component groups that have no single
+                                  mechanism of their own (Discounts &
+                                  pricing rules, Credits & adjustments,
+                                  Shared / other required inputs). */}
+                              <p className="text-[11px] text-stone/60 mt-0.5 truncate">{g.mechanismSummary ?? summarizeGroupRowLabels(g.rows.map(r => r.label))}</p>
                             </div>
-                          ) : (
-                            <>
-                              <div className="flex items-baseline gap-1.5">
-                                <span className="text-[30px] font-medium leading-none" style={{ color: '#1A3D2B', fontVariantNumeric: 'tabular-nums' }}>
-                                  {e.escalator_pct != null ? `${e.escalator_pct}%` : '—'}
-                                </span>
-                                <span className="text-[12px] text-stone">per year</span>
-                              </div>
-                              {note && <p className="text-[11px] text-stone mt-1">{note}</p>}
-                            </>
+                            <div className="flex items-center gap-2.5 flex-shrink-0">
+                              {/* Step 17H.4B0D4H1B4E7.1 — a proper pill
+                                  badge (tinted background + border),
+                                  matching the readiness pill treatment
+                                  already used elsewhere on this page
+                                  (BillingSafetyBanner, StatusChip), rather
+                                  than bare colored text — the same
+                                  color/icon logic, just a real badge shape. */}
+                              <span
+                                className="flex items-center gap-1.5 text-[11px] font-semibold whitespace-nowrap px-2.5 py-1 rounded-full"
+                                style={{
+                                  color: isNeutralFallback ? '#78716C' : isReady ? '#0B5C36' : '#B45309',
+                                  background: isNeutralFallback ? 'rgba(120,113,108,0.08)' : isReady ? 'rgba(11,92,54,0.1)' : 'rgba(180,83,9,0.1)',
+                                }}
+                              >
+                                <i className={`ti ${isNeutralFallback ? 'ti-circle-dashed' : isReady ? 'ti-circle-check' : 'ti-alert-triangle'}`} style={{ fontSize: 11 }} />
+                                {readiness.label}
+                              </span>
+                              <i className={`ti ti-chevron-down transition-transform flex-shrink-0 ${isExpanded ? 'rotate-180' : ''}`} style={{ fontSize: 12, color: '#9CA3AF' }} />
+                            </div>
+                          </button>
+                          {/* Step 17H.4B0D4H1B4E7.1 §3 — the commercial
+                              snapshot now sits in its own full-bleed
+                              tinted band between the header and the rule
+                              rows (matching the reference structure),
+                              instead of inheriting the rows' own left/
+                              right padding — a visually distinct "at a
+                              glance" strip, not just another block inside
+                              the rows list. Never a fixed cell count (only
+                              as many as selectSnapshotRows actually found)
+                              and never a second copy of the Commercial BoM
+                              — these are the same general-section facts
+                              that would otherwise render as ordinary rows,
+                              just surfaced first. */}
+                          {isExpanded && snapshot.length > 0 && (
+                            <div
+                              className="grid gap-x-4 gap-y-2.5 px-4 py-3"
+                              style={{
+                                gridTemplateColumns: `repeat(${Math.min(snapshot.length, 4)}, minmax(0, 1fr))`,
+                                background: 'rgba(26,61,43,0.03)',
+                                borderTop: '1px solid rgba(26,61,43,0.07)',
+                                borderBottom: '1px solid rgba(26,61,43,0.07)',
+                              }}
+                            >
+                              {snapshot.map(r => (
+                                <div key={r.key} className="min-w-0">
+                                  <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.1em]">{r.label}</p>
+                                  <p className="text-[13px] font-medium text-ink mt-0.5" style={{ overflowWrap: 'anywhere' }}>{r.value}</p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {isExpanded && (
+                            <div className="px-4 pb-3" style={snapshot.length === 0 ? { borderTop: '1px solid rgba(26,61,43,0.07)' } : undefined}>
+                              {sections.map((section, si) => {
+                                // Step 17H.4B0D4H1B4E7 §10 — a verbose NAMED
+                                // section (today, chiefly "Pricing
+                                // adjustment"'s rolling-band mechanism, 4-5
+                                // rows) collapses to its first row's own
+                                // value as a one-line summary + "View rule
+                                // details →" by default — a row-count
+                                // threshold, not a section-name/content
+                                // match, so this applies to any mechanism
+                                // that happens to need several rows to
+                                // explain, not a hardcoded list. A short
+                                // named section (2-3 rows, e.g. Timing)
+                                // renders in full, unchanged.
+                                const sectionKey = `${g.key}:${section.name ?? `general-${si}`}`
+                                const isVerbose = section.name !== null && section.rows.length > 3
+                                const sectionExpanded = !isVerbose || expandedLogicSections.has(sectionKey)
+                                return (
+                                <div key={section.name ?? `general-${si}`}>
+                                  {/* Item 4 — lightweight subheadings, only
+                                      for a category that actually has rows
+                                      in it; the un-named "general" bucket
+                                      (charging rule, tier method, ...)
+                                      gets no heading at all. */}
+                                  {section.name && (
+                                    <div className="flex items-center gap-3 mt-3 mb-0.5">
+                                      <p className="flex items-center gap-1.5 text-[9px] font-bold text-stone/40 uppercase tracking-[0.14em]">
+                                        {SECTION_ICON[section.name] && <i className={`ti ${SECTION_ICON[section.name]}`} style={{ fontSize: 10 }} />}
+                                        {section.name}
+                                      </p>
+                                      {isVerbose && (
+                                        <button
+                                          onClick={() => setExpandedLogicSections(prev => {
+                                            const next = new Set(prev)
+                                            if (next.has(sectionKey)) next.delete(sectionKey); else next.add(sectionKey)
+                                            return next
+                                          })}
+                                          className="text-[10px] font-semibold text-forest hover:underline ml-auto"
+                                        >
+                                          {sectionExpanded ? 'Hide rule details' : 'View rule details →'}
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+                                  {(sectionExpanded ? section.rows : section.rows.slice(0, 1)).map(r => (
+                                    <CommercialLogicRow
+                                      key={r.key}
+                                      label={r.label === section.name ? '' : r.label}
+                                      value={r.value}
+                                      decisionRequired={r.decisionRequired}
+                                      provenanceValue={r.provenanceValue}
+                                      auditCaption={r.auditCaption}
+                                      secondaryValue={r.secondaryValue}
+                                      helperText={r.helperText}
+                                      onReview={() => setReviewPanelOpen(true)}
+                                      onEdit={r.onEdit}
+                                      onViewSource={r.onViewSource}
+                                      footer={r.footer}
+                                    />
+                                  ))}
+                                </div>
+                                )
+                              })}
+                            </div>
                           )}
                         </div>
+                        </Fragment>
                       )
-                    })}
+                    }) })()}
                   </div>
                 </div>
-              )}
-            </div>
+              )
+            })()}
 
-            {/* ── 4. Pricing ── */}
-            {(terms?.base_monthly_fee || terms?.year_pricing ||
-              (terms?.ramp_schedule?.length ?? 0) > 0 ||
-              unconditionalOneTimeFeeTotal > 0 || conditionalOneTimeFeeTotal > 0) && (
-              <div className="bg-white rounded-2xl border border-forest/10 p-6">
-                {/* Was a plain, unlinked h2 — field_sources.base_monthly_fee/
-                    base_annual_fee has a real, matchable section reference
-                    (e.g. "3.1 Platform fee") but nothing here ever surfaced
-                    it, unlike every subsection of the Commercial Terms card
-                    above. Same SectionChip/openPDF wiring as those. */}
-                <div className="flex items-center justify-between mb-5">
-                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Pricing</h2>
-                  <SectionChip heading={src.base_monthly_fee ?? src.base_annual_fee} onClick={() => openPDF(src.base_monthly_fee ?? src.base_annual_fee)} />
-                </div>
-                <div className="grid grid-cols-3 gap-8">
-                  {terms?.base_monthly_fee && (
-                    <BigValue label="Monthly fee"
-                      value={fmt(terms.base_monthly_fee + (terms.additional_recurring_fees ?? []).reduce((s, f) => s + Number(f.amount ?? 0), 0), cur)}
-                      unit="/ month"
-                      warn={baseItem ? baseItem.confidence_score < 0.95 && !correction(baseItem.id) : false}>
-                      {baseItem && baseItem.confidence_score < 0.95 && (
-                        <CorrectionInput value={correction(baseItem.id)} onChange={v => setCorr(baseItem.id, v)} />
-                      )}
-                    </BigValue>
-                  )}
-                  {terms?.year_pricing && Object.entries(terms.year_pricing).map(([year, price]) => {
-                    const yItem = findItem(`${year} pricing`)
-                    return (
-                      <BigValue key={year} label={`${year.replace('year', 'Year ')} annual value`}
-                        value={fmt(price, cur)} unit="/ year"
-                        warn={yItem ? yItem.confidence_score < 0.95 && !correction(yItem.id) : false}>
-                        {yItem && yItem.confidence_score < 0.95 && (
-                          <CorrectionInput value={correction(yItem.id)} onChange={v => setCorr(yItem.id, v)} />
-                        )}
-                      </BigValue>
-                    )
-                  })}
-                  {terms?.ramp_schedule && terms.ramp_schedule.map((step, i) => {
-                    const disc = (terms?.discounts ?? []).find(d => {
-                      const ds = d.start_date ? parseLocalDate(d.start_date) : null
-                      const de = d.end_date   ? parseLocalDate(d.end_date)   : null
-                      const ss = parseLocalDate(step.start_date)
-                      return ds && de && ss >= ds && ss <= de
-                    })
-                    const netFee = disc?.discount_pct ? step.monthly_fee * (1 - disc.discount_pct / 100) : null
-                    return (
-                      <BigValue key={i} label={step.label ?? `Ramp ${i + 1}`} value={fmt(step.monthly_fee, cur)} unit="/ month gross"
-                        note={[
-                          `${fmtDate(step.start_date)} – ${fmtDate(step.end_date)}`,
-                          netFee ? `Net after ${disc!.discount_pct}% discount: ${fmt(netFee, cur)}/mo` : null,
-                        ].filter(Boolean).join(' · ')} />
-                    )
-                  })}
-                  {/* Item 3 — conditionality-aware, never fee-type-based:
-                      the SAME isChangeOrderConditionalFee split
-                      buildContractSummary's own oneTimeStr sentence uses,
-                      so the two can never show conflicting figures again.
-                      Conditional fees get their own, clearly-labeled card
-                      only when any exist — never silently folded into the
-                      unconditional total, and never silently dropped. */}
-                  {unconditionalOneTimeFeeTotal > 0 && (
-                    <BigValue label="Unconditional one-time fees" value={fmt(unconditionalOneTimeFeeTotal, cur)}
-                      note={`${unconditionalOneTimeFees.length} fee${unconditionalOneTimeFees.length > 1 ? 's' : ''} · one-time`} />
-                  )}
-                  {conditionalOneTimeFeeTotal > 0 && (
-                    <BigValue label="Conditional one-time fees" value={fmt(conditionalOneTimeFeeTotal, cur)}
-                      note={`${conditionalOneTimeFees.length} fee${conditionalOneTimeFees.length > 1 ? 's' : ''} · pending a signed Change Order`} />
-                  )}
-                </div>
-              </div>
-            )}
+            {/* ── Products, Services & Pricing — fully retired, Step
+                 17H.3C3 ── this heading no longer renders anywhere on the
+                 page. Its last remaining unique capability (one-time-fee/
+                 hardware/service-credit kind classification and free-text
+                 description) has been migrated: classification +
+                 description now render directly on Commercial BoM's
+                 one-time line-item rows (oneTimeFeeKindLabel, reused by
+                 both surfaces), a positive/negative amount keeps the same
+                 amber credit/adjustment treatment the old card used, and
+                 Commercial Logic & Billing Setup gained a new "One-time /
+                 project fees" / "Credits & adjustments" grouping (one group
+                 per terms.one_time_fees entry) carrying Commercial
+                 treatment + Billability (Immediate/Fixed date/the
+                 contractual event — never live evidence/execution state,
+                 which stays exclusively in Billing Timeline's parked-
+                 invoice machinery) + source-clause link + provenance. The
+                 actual confirmation workflow was never duplicated —
+                 unresolved billability still opens the same ReviewPanel
+                 confirmOneTimeFee flow it always did. See the 17H.3C3
+                 report for the full parity matrix. */}
 
-            {/* ── 5. Price calculations (collapsible) ── */}
+            {/* Step 17H.3C1 — the standalone "Fixed platform fee — band
+                selection" card that used to render here has been retired:
+                Commercial Logic & Billing Setup's Platform subscription
+                group (above) now carries the identical live band
+                resolution (lib/fixed-fee-band.ts's resolveFixedFeeBand,
+                same function, not re-derived), an explicit unresolved-band
+                warning using the resolver's own reason text (previously
+                this row silently disappeared on failure — a genuine gap,
+                fixed at the source in lib/commercial-components.ts, so
+                Products, Services & Pricing's own card gained the same
+                fix), and the complete contractual band schedule via the
+                same BandTableToggle (now app/_components/BandTableToggle.tsx),
+                collapsed by default, with the currently selected band
+                highlighted from the live resolver result — never from
+                array position or display-text matching. Nothing here was
+                a persistence or calculation change, only presentation
+                consolidation. */}
+
+            {/* ── Commercial Terms — fully retired, Step 17H.3D3 ── this
+                 heading no longer renders anywhere on the page. Every fact
+                 and action it used to show now has a proven-parity
+                 authoritative home: discount type/value/applicability/
+                 duration/interpretation/source/provenance in Commercial
+                 Logic & Billing Setup (17H.3D1/17H.3D1.1); tier
+                 calculation-method interpretation in Commercial Logic
+                 (pre-existing, 17H.3A); price-escalation interpretation
+                 in Commercial Logic (pre-existing, 17H.3A); raw tier-rate
+                 correction in Commercial BoM via the shared
+                 persistTierRateCorrection (17H.3D2); raw escalator-%
+                 correction in Commercial BoM via the shared
+                 persistEscalatorPctCorrection (17H.3D2/17H.3D2.1). The
+                 two execution-consequence calculations this card used to
+                 show inline (discountedFee/rampNote — a static "Net fee"
+                 preview) were deliberately NOT migrated: Billing Timeline
+                 (lib/billing-period-workspace.ts's computeFixedComponentForPeriod,
+                 confirmed by reading it directly) already computes the
+                 real per-period fixed amount via the SAME
+                 computeMonthlyBaseRate/computeDiscountMultiplier/
+                 computeEscalatorMultiplier pricing engine, live per
+                 period — a strictly more accurate authoritative source
+                 than this card's own simplified, escalator-blind preview
+                 ever was. See the 17H.3D3 report for the full parity
+                 matrices and the live database round-trip verification
+                 performed before this deletion. */}
+
+            {/* ── "Verify extracted amounts" / "Pricing" — REMOVED (surgical
+                 generic rule pass). It duplicated values Commercial BoM
+                 already shows: base_monthly_fee/year_pricing/ramp_schedule
+                 all feed the SAME "Recurring base fee (periods X–Y)" BoM
+                 rows via lib/line-items.ts's shared computeMonthlyBaseRate
+                 pricing engine (confirmed by direct read — hasRecurringBase
+                 is true whenever ANY of those three fields is set, and all
+                 three drive the identical period-grouped row generation);
+                 one-time fee totals were a pure sum of BoM's own one-time
+                 rows with no correction affordance of their own. The ONE
+                 genuine capability this section hosted — a name correction
+                 for a low-confidence extracted line item, via
+                 correction()/setCorr()/CorrectionInput — is now colocated
+                 directly on each BoM row (see the Commercial component
+                 cell above), keyed by the row's own real item.id rather
+                 than a fragile product-name substring guess that, for the
+                 common "Recurring base fee (periods…)" shape, never
+                 actually matched anything. Nothing about API writes,
+                 reviewer metadata, confidence state, source/provenance, or
+                 Model B+ reconciliation changed — this only relocated an
+                 existing correction affordance and removed the now-fully-
+                 redundant value display around it. */}
+
+            {/* ── Pricing formulas (collapsible) ── */}
+            {/* Step 17H.4B0D4H1B4E2 §12/§34 — renamed from "Price
+                calculations". This shows the EXTRACTED formula text (e.g.
+                "Year 2 = Year 1 x 1.05 per the escalation clause"), not a
+                live evaluated computation — the subtitle already made that
+                clear; the heading now does too, so it can't be mistaken for
+                a second commercial-authority definition next to Commercial
+                BoM/Logic. */}
             {terms?.extraction_notes && terms?.year_pricing && (() => {
               const calcRows = Object.keys(terms.year_pricing).map(yr => ({
                 label: yr.replace('year', 'Year '),
@@ -8558,7 +9754,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     style={{ borderBottom: calcExpanded ? '1px solid rgba(26,61,43,0.07)' : undefined }}
                   >
                     <div>
-                      <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Price calculations</h2>
+                      <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Pricing formulas</h2>
                       <p className="text-[11px] text-stone mt-0.5">How the contracted values were computed — formulas as extracted from the agreement</p>
                     </div>
                     <i className={`ti ti-chevron-${calcExpanded ? 'up' : 'down'} text-stone/40 flex-shrink-0 ml-4`} style={{ fontSize: 16 }} />
@@ -8579,487 +9775,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               )
             })()}
 
-            {/* ── 6. Products & Services Breakdown ── */}
-            {(terms?.base_monthly_fee || terms?.year_pricing || (terms?.ramp_schedule?.length ?? 0) > 0 ||
-              serviceFees.length > 0 || hardwareFees.length > 0 || otherPosFees.length > 0 || creditFees.length > 0) && (
-              <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
-                <div className="p-6" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Products &amp; services breakdown</h2>
-                  <p className="text-[11px] text-stone mt-0.5">All fee components extracted from the contract</p>
-                </div>
-                <div className="p-6">
-                  <table className="w-full">
-                    <thead>
-                      <tr>
-                        {(['Description', 'Amount', 'Type'] as const).map((h, i) => (
-                          <th key={h} className="text-[10px] font-semibold text-stone/60 tracking-[0.1em] pb-2 pr-4 last:pr-0"
-                            style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: i === 0 ? 'left' : 'right' }}>
-                            {h}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {terms?.base_monthly_fee && (
-                        <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                          {/* Was printing the raw section citation itself
-                              (e.g. "3.1 Platform fee") as if it were the
-                              product description, with no way to click
-                              through to it. Real product name + a real,
-                              clickable source chip instead. */}
-                          <td className="py-2.5 pr-4 text-[12px] text-ink">
-                            <span className="flex items-center gap-1.5">
-                              Platform subscription
-                              <SectionChip heading={src.base_monthly_fee ?? src.base_annual_fee} onClick={() => openPDF(src.base_monthly_fee ?? src.base_annual_fee)} />
-                            </span>
-                          </td>
-                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            {fmt(terms.base_monthly_fee, cur)}<span className="text-stone text-[10px] font-normal">/mo</span>
-                          </td>
-                          <td className="py-2.5 text-[11px] text-stone text-right">Recurring</td>
-                        </tr>
-                      )}
-                      {terms?.year_pricing && Object.entries(terms.year_pricing).map(([yr, price]) => (
-                        <tr key={yr} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                          <td className="py-2.5 pr-4 text-[12px] text-ink">
-                            Platform subscription · <span className="text-stone">{yr.replace('year', 'Year ')}</span>
-                          </td>
-                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            {fmt(price, cur)}<span className="text-stone text-[10px] font-normal">/yr</span>
-                          </td>
-                          <td className="py-2.5 text-[11px] text-stone text-right">Recurring</td>
-                        </tr>
-                      ))}
-                      {terms?.ramp_schedule && terms.ramp_schedule.map((step, i) => (
-                        <tr key={i} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                          <td className="py-2.5 pr-4 text-[12px] text-ink">
-                            {step.label ?? `Ramp stage ${i + 1}`}
-                            <span className="text-stone text-[10px] ml-2">{fmtDate(step.start_date)} – {fmtDate(step.end_date)}</span>
-                          </td>
-                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            {fmt(step.monthly_fee, cur)}<span className="text-stone text-[10px] font-normal">/mo</span>
-                          </td>
-                          <td className="py-2.5 text-[11px] text-stone text-right">Recurring</td>
-                        </tr>
-                      ))}
-                      {serviceFees.map((f, i) => (
-                        <tr key={`svc-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                          <td className="py-2.5 pr-4 text-[12px] text-ink">
-                            {f.fee_label}
-                            {f.description && <span className="text-stone text-[10px] block">{f.description}</span>}
-                          </td>
-                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            {f.manual_trigger && f.rate_per_unit
-                              ? <span>{fmt(f.rate_per_unit, cur)}<span className="text-stone font-normal">/{f.metric_name ?? 'unit'}</span></span>
-                              : fmt(f.amount, cur)}
-                          </td>
-                          <td className="py-2.5 text-[11px] text-stone text-right">
-                            {oneTimeFeeTypeLabel(f, 'Services')}
-                          </td>
-                        </tr>
-                      ))}
-                      {hardwareFees.map((f, i) => (
-                        <tr key={`hw-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                          <td className="py-2.5 pr-4 text-[12px] text-ink">
-                            {f.fee_label}
-                            {f.description && <span className="text-stone text-[10px] block">{f.description}</span>}
-                          </td>
-                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            {f.manual_trigger && f.rate_per_unit
-                              ? <span>{fmt(f.rate_per_unit, cur)}<span className="text-stone font-normal">/{f.metric_name ?? 'unit'}</span></span>
-                              : fmt(f.amount, cur)}
-                          </td>
-                          <td className="py-2.5 text-[11px] text-stone text-right">
-                            {oneTimeFeeTypeLabel(f, 'Hardware')}
-                          </td>
-                        </tr>
-                      ))}
-                      {otherPosFees.map((f, i) => (
-                        <tr key={`oth-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                          <td className="py-2.5 pr-4 text-[12px] text-ink">
-                            {f.fee_label}
-                            {f.description && <span className="text-stone text-[10px] block">{f.description}</span>}
-                          </td>
-                          <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            {f.manual_trigger && f.rate_per_unit
-                              ? <span>{fmt(f.rate_per_unit, cur)}<span className="text-stone font-normal">/{f.metric_name ?? 'unit'}</span></span>
-                              : fmt(f.amount, cur)}
-                          </td>
-                          <td className="py-2.5 text-[11px] text-stone text-right">
-                            {oneTimeFeeTypeLabel(f, 'One-time')}
-                          </td>
-                        </tr>
-                      ))}
-                      {creditFees.map((f, i) => (
-                        <tr key={`cr-${i}`} style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                          <td className="py-2.5 pr-4 text-[12px]" style={{ color: '#B45309' }}>{f.fee_label}</td>
-                          <td className="py-2.5 pr-4 text-[12px] font-medium text-right" style={{ fontVariantNumeric: 'tabular-nums', color: '#B45309' }}>{fmt(f.amount, cur)}</td>
-                          <td className="py-2.5 text-[11px] text-right" style={{ color: '#B45309' }}>Credit</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* ── 7. Billing Configuration ── */}
-            <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
-              <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
-                <div>
-                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Billing configuration</h2>
-                  <p className="text-[11px] text-stone mt-1">Line items to be configured in the billing platform</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  {items.length > 0 && (
-                    <button onClick={() => downloadBillingCSV(items, job.name, cur)}
-                      className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl transition-colors"
-                      style={{ background: '#EEF9F2', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.25)' }}>
-                      <i className="ti ti-download" style={{ fontSize: 12 }} /> Download CSV
-                    </button>
-                  )}
-                  {isConfigured && (
-                    <span className="text-xs font-semibold px-3 py-2 rounded-xl flex items-center gap-1.5"
-                      style={configuredBadgeSuffix
-                        ? { background: '#FEF3C7', color: '#92400E', border: '1px solid rgba(180,83,9,0.3)' }
-                        : { background: '#D4EAD9', color: '#1A3D2B', border: '1px solid rgba(74,124,89,0.3)' }}>
-                      <i className={`ti ${configuredBadgeSuffix ? 'ti-alert-triangle' : 'ti-circle-check'}`} style={{ fontSize: 12 }} />
-                      {hasUnresolvedTierCalculation ? 'Fixed fees configured in' : 'Configured in'} {billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : 'Stripe'}{configuredBadgeSuffix}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              {items.length > 0 && (() => {
-                // Same source of truth the Approve section's own platform
-                // control uses (item 5) — previously this fell through to
-                // 'Stripe' whenever billingPlatform was anything other than
-                // 'remembill'/'chargebee', INCLUDING the not-yet-configured
-                // case (billingPlatform undefined for a job that hasn't
-                // been approved yet), showing "Platform: Stripe" as if a
-                // provider had already been chosen/saved while the Approve
-                // footer below still correctly showed "Select platform…".
-                // Never claims a platform is configured/selected unless it
-                // actually is.
-                const platformLabel = isConfigured
-                  ? (billingPlatform === 'remembill' ? 'Remembill' : billingPlatform === 'chargebee' ? 'Chargebee' : billingPlatform === 'stripe' ? 'Stripe' : 'Not yet configured')
-                  : selectedBillingPlatform
-                    ? selectedBillingPlatform.charAt(0).toUpperCase() + selectedBillingPlatform.slice(1)
-                    : connectedBillingPlatforms.length === 1
-                      ? connectedBillingPlatforms[0].charAt(0).toUpperCase() + connectedBillingPlatforms[0].slice(1)
-                      : 'Not yet selected'
-                const periodOptions = ['monthly', 'quarterly', 'semi-annual', 'annual', 'one_time']
-                const editCellStyle = 'w-full text-right bg-transparent border-0 border-b border-forest/30 focus:outline-none focus:border-forest text-[12px] tabular-nums py-0 px-0'
-
-                // Fixed line items / Variable pricing are visually separated —
-                // a usage tier's Qty 0 / Total 0.00 reads as "nothing is
-                // configured" when shown inline with real fixed fees, but is
-                // exactly what an unconsumed pricing rule should look like on
-                // its own. Same rows, same editing behavior, grouped order only.
-                const groupOf = (item: LineItem): 'Variable pricing' | 'Fixed line items' => {
-                  // Every tariff-tier row (any metric, resolved or not)
-                  // classifies as 'overage_tier' now — classifyItem no longer
-                  // has separate minimum_commitment/partial_period/
-                  // tier_calculation branches to also check for.
-                  const k = classifyItem(item, terms?.escalators ?? [])
-                  return k === 'overage_tier' ? 'Variable pricing' : 'Fixed line items'
-                }
-                const groupOrder = ['Fixed line items', 'Variable pricing'] as const
-                const orderedItems = groupOrder.flatMap(g => items.filter(i => groupOf(i) === g))
-                let lastGroup: string | null = null
-
-                return (
-                <div className="p-6">
-                  <div className="overflow-x-auto">
-                    <table className="w-full">
-                      <thead>
-                        <tr>
-                          {(['Product', 'Qty', 'Unit price', 'Total', 'Period'] as const).map((h, idx) => (
-                            <th key={h} className="text-[10px] font-semibold text-stone/60 tracking-[0.1em] pb-2"
-                              style={{ borderBottom: '1px solid rgba(26,61,43,0.08)', textAlign: idx === 0 ? 'left' : 'right', paddingRight: idx < 4 ? 16 : 0 }}>
-                              {h}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {orderedItems.map(item => {
-                          // Classified once, with the real escalators/partial-period
-                          // context — calling classifyItem(item) bare here previously
-                          // meant an unresolved CPI escalator could never be told apart
-                          // from a resolved one, so its Total column silently rendered
-                          // the raw (often 0) total_amount as "0%" instead of flagging
-                          // that no rate exists yet.
-                          const rowKind = classifyItem(item, terms?.escalators ?? [])
-                          const isEscalator = rowKind === 'escalator'
-                          const isEscalatorUnresolved = rowKind === 'escalator_interpretation'
-                          const isVariableTier = rowKind === 'overage_tier'
-                          // Step 17B0, item D — lib/line-items.ts's unresolved
-                          // base_fee_proration marker row: the flat rate (unit_price)
-                          // IS known and shown normally, but Qty/Total are never
-                          // materialized into a concrete multi-period schedule while
-                          // the partial-period treatment is unconfirmed.
-                          const isBaseFeeProrationUnresolved = rowKind === 'base_fee_proration'
-                          // A metric whose tier method (graduated/volume/block) isn't
-                          // confirmed has no single safe Total to show — the same
-                          // rate table can legitimately produce different totals
-                          // under each method (see lib/tariff.ts) — real invoicing
-                          // already refuses to bill it (lib/usage-pull.ts). Computed
-                          // directly from the tiers now (classifyItem no longer
-                          // decides tier_calculation — see isTierCalculationUnresolvedFor).
-                          const isTierCalcUnresolved = isTierCalculationUnresolvedFor(findTierForItem(item, tiers)?.unit_type, tiers)
-                          const isVariable  = rowKind === 'one_time' && item.total_amount === 0
-                          // A reviewer's explicit "do not apply this escalator"
-                          // decision must never render as "0%", which reads as a
-                          // real configured rate rather than a deliberate exclusion.
-                          const escalatorNotApplied = isEscalator && (terms?.escalators ?? []).some(e => e.interpretation?.treatment === 'not_applied')
-                          // Both resolved and unresolved escalators get the same
-                          // non-editable-numeric-cell treatment (Qty/Unit price are
-                          // meaningless for a % rate either way) — only the Total
-                          // column's text differs between them.
-                          const isEscalatorLike = isEscalator || isEscalatorUnresolved
-                          // Qty/Unit-price cells are non-editable for the same reason
-                          // as an escalator row — Qty here would just be re-inventing
-                          // the exact concrete schedule this row exists to withhold.
-                          const isNonEditableRow = isEscalatorLike || isBaseFeeProrationUnresolved
-                          const group = groupOf(item)
-                          const showGroupHeader = group !== lastGroup
-                          lastGroup = group
-                          return (
-                          <Fragment key={item.id}>
-                          {showGroupHeader && (
-                            <tr>
-                              <td colSpan={5} className="pt-4 pb-1.5 text-[9px] font-bold text-stone/50 uppercase tracking-[0.14em]">{group}</td>
-                            </tr>
-                          )}
-                          <tr style={{ borderBottom: '1px solid rgba(26,61,43,0.05)' }}>
-                            {/* Product */}
-                            <td className="py-2.5 pr-4 text-[12px] text-ink">
-                              {item.confidence_score < 0.95 && !correction(item.id) && (
-                                <i className="ti ti-alert-triangle mr-1.5" style={{ fontSize: 11, color: '#D97706' }} />
-                              )}
-                              {correction(item.id) || item.product_name}
-                              {item.source_section && (
-                                <button onClick={() => openPDF(item.source_section)} className="ml-1.5 text-stone/40 hover:text-forest transition-colors" title="View in PDF">
-                                  <i className="ti ti-file-text" style={{ fontSize: 10 }} />
-                                </button>
-                              )}
-                            </td>
-
-                            {/* Qty — editable */}
-                            <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums', minWidth: 48 }}>
-                              {!isNonEditableRow && billingEdit?.itemId === item.id && billingEdit.field === 'quantity' ? (
-                                <input autoFocus type="number" min="0" step="1"
-                                  className={editCellStyle}
-                                  style={{ width: 56 }}
-                                  value={billingEdit.value}
-                                  onChange={e => setBillingEdit(b => b && ({ ...b, value: e.target.value }))}
-                                  onBlur={() => { saveLineItemField(item.id, 'quantity', billingEdit.value); setBillingEdit(null) }}
-                                  onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-                                />
-                              ) : (
-                                <span
-                                  className={isNonEditableRow ? '' : 'cursor-pointer hover:text-forest transition-colors'}
-                                  title={isNonEditableRow ? undefined : 'Click to edit'}
-                                  onClick={() => !isNonEditableRow && setBillingEdit({ itemId: item.id, field: 'quantity', value: String(item.quantity) })}
-                                >{isBaseFeeProrationUnresolved || (isVariableTier && item.quantity === 0) ? <span className="text-stone/40">—</span> : item.quantity}</span>
-                              )}
-                            </td>
-
-                            {/* Unit price — editable */}
-                            <td className="py-2.5 pr-4 text-[12px] text-stone text-right" style={{ fontVariantNumeric: 'tabular-nums', minWidth: 96 }}>
-                              {isBaseFeeProrationUnresolved ? (
-                                <span>{fmtUnit(item.unit_price, cur)}</span>
-                              ) : isEscalatorLike ? (
-                                <span>
-                                  {isEscalatorUnresolved
-                                    ? <span className="text-amber-600">Pending interpretation</span>
-                                    : escalatorNotApplied
-                                      ? <span className="text-stone/50">Not applied</span>
-                                      : item.unit_price != null ? `${item.unit_price}%` : '—'}
-                                </span>
-                              ) : billingEdit?.itemId === item.id && billingEdit.field === 'unit_price' ? (
-                                <input autoFocus type="number" min="0" step="any"
-                                  className={editCellStyle}
-                                  style={{ width: 96 }}
-                                  value={billingEdit.value}
-                                  onChange={e => setBillingEdit(b => b && ({ ...b, value: e.target.value }))}
-                                  onBlur={() => { saveLineItemField(item.id, 'unit_price', billingEdit.value); setBillingEdit(null) }}
-                                  onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-                                />
-                              ) : (
-                                <span
-                                  className="cursor-pointer hover:text-forest transition-colors"
-                                  title="Click to edit"
-                                  onClick={() => {
-                                    if (rowKind === 'one_time' && item.unit_price === 0) {
-                                      const termFee = allFees.find(f => f.fee_label === item.product_name)
-                                      if (termFee?.manual_trigger && termFee.rate_per_unit) {
-                                        setBillingEdit({ itemId: item.id, field: 'unit_price', value: String(termFee.rate_per_unit) })
-                                        return
-                                      }
-                                    }
-                                    setBillingEdit({ itemId: item.id, field: 'unit_price', value: String(item.unit_price) })
-                                  }}
-                                >
-                                  {rowKind === 'one_time' && item.unit_price === 0 ? (() => {
-                                    const termFee = allFees.find(f => f.fee_label === item.product_name)
-                                    if (termFee?.manual_trigger && termFee.rate_per_unit) {
-                                      return <span>{fmt(termFee.rate_per_unit, cur)}<span className="text-stone/60">/{termFee.metric_name ?? 'unit'}</span></span>
-                                    }
-                                    return fmtUnit(item.unit_price, cur)
-                                  })() : fmtUnit(item.unit_price, cur)}
-                                </span>
-                              )}
-                            </td>
-
-                            {/* Total — calculated, read-only. A variable-pricing tier
-                                with no usage yet is a pricing rule waiting to be
-                                consumed, not an invoice line for SEK 0 — showing the
-                                raw total here previously read as "nothing configured". */}
-                            <td className="py-2.5 pr-4 text-[12px] font-medium text-ink text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                              {isBaseFeeProrationUnresolved
-                                ? <span className="text-amber-600 font-normal text-[11px]">Pending interpretation</span>
-                                : isEscalatorUnresolved
-                                ? <span className="text-amber-600 font-normal text-[11px]">Pending interpretation</span>
-                                : escalatorNotApplied
-                                  ? <span className="text-stone/50 font-normal text-[11px]">Not applied</span>
-                                  : isEscalator
-                                    ? <span>{item.total_amount != null ? `${item.total_amount}%` : '—'}</span>
-                                    : isTierCalcUnresolved
-                                    ? <span className="text-amber-600 font-normal text-[11px]">Pending interpretation</span>
-                                    : isVariable
-                                    ? <span className="text-amber-600 font-normal text-[11px]">Variable — on delivery</span>
-                                    : isVariableTier && item.quantity === 0
-                                      ? <span className="text-stone/50 font-normal text-[11px]">Usage-based — not yet billed</span>
-                                      : fmt(item.total_amount, cur)}
-                            </td>
-
-                            {/* Period — editable via select */}
-                            <td className="py-2.5 text-[11px] text-stone text-right">
-                              {isEscalator ? (
-                                <span className="capitalize">{item.billing_period}</span>
-                              ) : (
-                                <select
-                                  value={item.billing_period ?? 'monthly'}
-                                  onChange={e => saveLineItemField(item.id, 'billing_period', e.target.value)}
-                                  className="bg-transparent border-0 text-[11px] text-stone text-right focus:outline-none cursor-pointer hover:text-forest transition-colors capitalize appearance-none"
-                                  style={{ direction: 'rtl' }}
-                                >
-                                  {periodOptions.map(p => (
-                                    <option key={p} value={p} style={{ direction: 'ltr' }}>{p.replace('_', ' ')}</option>
-                                  ))}
-                                </select>
-                              )}
-                            </td>
-                          </tr>
-                          </Fragment>
-                        )})}
-                      </tbody>
-                      {/* Item 3 (final amendment) — this footer previously
-                          summed `tcv` (the potential total, including any
-                          Change-Order-conditional fee — the table above
-                          lists that fee as its own row) under the bare
-                          label "Fixed fees", which is exactly the
-                          unqualified 1,258,000-as-"Fixed fees" claim this
-                          fix removes. Uses the SAME committedFixedFeeTotal/
-                          conditionalFixedFeeTotal already computed once
-                          near the top of this component via the TCV
-                          commitment model (lib/contract-tcv-calc.ts) —
-                          never re-summed independently here. */}
-                      <tfoot>
-                        <tr style={{ borderTop: '2px solid rgba(26,61,43,0.10)' }}>
-                          <td colSpan={3} className="pt-3 text-[10px] font-bold text-stone uppercase tracking-[0.1em]">Committed fixed fees</td>
-                          <td className="pt-3 text-[13px] font-semibold text-ink text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            {/* Step 17E, item 6 — this is the whole-initial-
-                                term contract-level committed total (never a
-                                current-period charge — see computeCommittedFixedFees'
-                                own doc), but previously rendered a bare
-                                fmt(0, cur) with no context whenever it
-                                genuinely computed to zero (e.g. a dated
-                                pilot/waiver covering the entire committed
-                                span) — indistinguishable from "nothing
-                                configured". Every OTHER rendering of this
-                                same figure on this page (Card A, the
-                                Contract Overview Stat) already withholds/
-                                caveats a zero total; this table footer did
-                                not. */}
-                            {committedFixedFeeReadiness.status === 'unresolved'
-                              ? <span className="text-amber-600 font-normal text-[11px]">Not yet determinable</span>
-                              : committedFixedFeeTotal === 0
-                                ? <span className="text-stone/50 font-normal text-[11px]">{baseFeeHasExpiringWaiver(terms?.discounts) ? 'Pilot waiver active' : 'None'}</span>
-                                : fmt(committedFixedFeeTotal, cur)}
-                          </td>
-                          <td />
-                        </tr>
-                        {conditionalFixedFeeTotal > 0 && (
-                          <tr>
-                            <td colSpan={3} className="pt-1.5 text-[10px] font-semibold text-stone uppercase tracking-[0.1em]">Conditional — pending signed Change Order</td>
-                            <td className="pt-1.5 text-[12px] font-medium text-stone text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                              {fmt(conditionalFixedFeeTotal, cur)}
-                            </td>
-                            <td />
-                          </tr>
-                        )}
-                        {conditionalFixedFeeTotal > 0 && (
-                          <tr>
-                            <td colSpan={3} className="pt-1.5 text-[10px] font-semibold text-stone uppercase tracking-[0.1em]">Potential total</td>
-                            <td className="pt-1.5 text-[12px] font-medium text-stone text-right pr-4" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                              {fmt(committedFixedFeeTotal + conditionalFixedFeeTotal, cur)}
-                            </td>
-                            <td />
-                          </tr>
-                        )}
-                      </tfoot>
-                    </table>
-                  </div>
-
-                  {/* Commercial rules — pricing tiers and minimum/escalator
-                      rules are configuration, not usage actuals, so they're
-                      never represented as an ordinary qty × unit-price row.
-                      Same confirmed-rule data as the Commercial Terms section. */}
-                  {(() => {
-                    const confirmed = tiers.filter(t => t.unit_type && t.minimum_commitment && !t.minimum_commitment.requires_confirmation)
-                    const seen = new Set<string>()
-                    const rules = confirmed.filter(t => t.unit_type && !seen.has(t.unit_type) && seen.add(t.unit_type))
-                    if (rules.length === 0) return null
-                    return (
-                      <div className="mt-5 pt-4" style={{ borderTop: '1px solid rgba(26,61,43,0.07)' }}>
-                        <p className="text-[9px] font-bold text-stone/50 uppercase tracking-[0.14em] mb-2">Commercial rules</p>
-                        <div className="flex flex-wrap gap-2">
-                          {rules.map(t => (
-                            <span key={t.unit_type} className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full"
-                              style={{ background: '#F6FAF4', color: '#0B5C36', border: '1px solid rgba(74,124,89,0.25)' }}>
-                              <i className="ti ti-shield-check" style={{ fontSize: 11 }} />
-                              {t.unit_type} · {fmt(t.minimum_commitment!.amount, cur)} {ruleModeShortLabel(t.minimum_commitment!.mode)}{ruleCadenceLabel(t.minimum_commitment!.period, t.reset_anchor) ? ` / ${ruleCadenceLabel(t.minimum_commitment!.period, t.reset_anchor)}` : ''} · Confirmed
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )
-                  })()}
-
-                  <p className="text-[10px] text-stone/50 mt-4">
-                    Platform: <span className="font-medium text-stone/70">{platformLabel}</span>
-                  </p>
-                </div>
-              )})()}
-
-              {isConfigured && billingPlatform === 'chargebee' && dashboardUrl && (
-                <div className="px-6 py-4 flex items-center justify-between" style={{ background: 'rgba(26,61,43,0.04)', borderTop: '1px solid rgba(26,61,43,0.07)' }}>
-                  <div>
-                    <p className="text-[11px] font-semibold text-ink">Active subscription in Chargebee</p>
-                    {subId && <p className="text-[10px] text-stone font-mono mt-0.5">{subId}</p>}
-                  </div>
-                  <a href={dashboardUrl} target="_blank" rel="noreferrer"
-                    className="text-xs font-semibold px-4 py-2 rounded-xl text-white transition-colors"
-                    style={{ background: '#1A3D2B' }}>
-                    View in Chargebee →
-                  </a>
-                </div>
-              )}
-            </div>
-
             {/* ── Step 17E, items 1/2/9/13/14 (regated in 17E.1, item A;
                  widened in 17F.8, item 1) — persistent, post-review
                  operating sections. Deliberately OUTSIDE ReviewPanel
@@ -9078,69 +9793,28 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                  below shows its own blocked/pending state for whatever's
                  actually unresolved — it never means "everything is
                  ready." ── */}
-            {hasOperationalBillingModel && (
-              <>
-                {/* Step 17F, items 4/5/6/7/9/10/13 — the period-based
-                    operating surface. Placed first in this block since it
-                    is meant to be the PRIMARY place a reviewer now acts
-                    (item 4/6) — OperationalInputsSection right below
-                    remains as a contract-level summary, unchanged. */}
-                {terms && <BillingPeriodWorkspaceCard jobId={id} terms={terms as unknown as ContractTerms} currency={cur} usageSourceCards={usageSourceCards} performanceShareResults={performanceShareStatus} />}
-                <OperationalInputsSection
-                  jobId={id}
-                  inputs={operationalDataInputs}
-                  fees={terms?.additional_recurring_fees ?? []}
-                  contractStartDate={terms?.contract_start_date}
-                />
-                <PerformanceShareDisplay jobId={id} currency={cur} onLoaded={setPerformanceShareStatus} />
-                {(() => {
-                  const rollingBandMechanisms = (terms?.unsupported_commercial_mechanisms ?? []).filter(
-                    (m): m is UnsupportedCommercialMechanism & { rolling_band_migration: RollingBandMigrationConfig } =>
-                      m.execution_status === 'executable' && !!m.rolling_band_migration,
-                  )
-                  if (rollingBandMechanisms.length === 0) return null
-                  return (
-                    <div className="bg-white rounded-2xl border border-forest/10 p-6 space-y-4">
-                      <div>
-                        <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Commercial monitoring</h2>
-                        <p className="text-[11px] text-stone mt-1">Rolling volume-band pricing transitions this agreement is currently being monitored against.</p>
-                      </div>
-                      <div className="space-y-3">
-                        {rollingBandMechanisms.map((m, i) => (
-                          <RollingBandMigrationCard
-                            key={`rbm-persistent:${i}`}
-                            jobId={id}
-                            mechanismKind={m.kind}
-                            title={humanizeMechanismKind(m.kind)}
-                            description={m.description}
-                            sourceClause={m.source_clause}
-                            requiredInputs={m.required_operational_inputs}
-                            config={m.rolling_band_migration}
-                            sections={m.source_sections}
-                            onViewSource={openPDF}
-                            currency={cur}
-                            contractedVolume={terms?.base_fee_committed_volume}
-                            contractStartDate={terms?.contract_start_date}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })()}
-              </>
-            )}
-
-            {/* ── 8. Billing Setup ── */}
+            {/* ── 6. Billing Timeline ──
+                 Step 17H.4B0D4H1B4E2.3 — renamed from "Billing Setup",
+                 which collided with "Commercial Logic & Billing Setup"
+                 above (two different things sharing one name). This is
+                 exclusively the WHEN surface: BillingSummaryCard IS
+                 "Billing Timeline" (its own single internal heading —
+                 Step 17H.4B0D4H1B4E2.4 §18 removed a short-lived second,
+                 competing "Billing execution" outer heading once audited),
+                 and now also hosts what used to be three separate
+                 top-level pre-Timeline sections — Performance Share's
+                 evaluated runtime result (inside each period's own
+                 "Performance / outcome" detail) and Rolling-band
+                 evaluation's runtime state (a new cross-period section
+                 inside the same card) — since both are genuinely runtime/
+                 execution state, not configuration. See
+                 BillingSummaryCard.tsx's own doc comments for the full
+                 rationale and for why no hard technical blocker prevented
+                 this move (every 'ready'/'waived' performance-share result
+                 always carries a real periodStart the existing per-period
+                 join already matches against). */}
             {isConfigured && (billingPlatform === 'stripe' || billingPlatform === 'remembill') && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (
               <>
-                {parkedInvoices.length > 0 && (
-                  <ParkedInvoicesCard
-                    jobId={id}
-                    parkedInvoices={parkedInvoices}
-                    onEvidenceRecorded={() => setParkedEvidenceTick(t => t + 1)}
-                  />
-                )}
-                <ManualInvoiceCard jobId={id} />
                 {/* Step 17F.8, item 3/14 — ConsumptionTimelineCard removed:
                     the billing-period workspace above (Step 17F.8) is now
                     the single authoritative period timeline, sourced from
@@ -9154,7 +9828,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     (actual sent/draft objects, VAT, hosted PDF links),
                     a genuinely different fact from "what should happen
                     this period." */}
-                <BillingSummaryCard jobId={id} key={(rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial') + ':' + parkedEvidenceTick} onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} onSentOneTimeInvoices={setSentOneTimeInvoices} />
+                <BillingSummaryCard
+                  jobId={id} terms={terms as unknown as ContractTerms} usageSourceCards={usageSourceCards}
+                  key={(rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial') + ':' + parkedEvidenceTick}
+                  onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} onSentOneTimeInvoices={setSentOneTimeInvoices} onViewSource={openPDF}
+                  // Step E8.3 §4/§6 — same anchor/pattern MeterMappingPanel's
+                  // own onNavigateToOperationalInputs already uses below;
+                  // BillingSummaryCard isn't inside a drawer, so a direct
+                  // scroll (no onClose/double-rAF) is enough.
+                  onNavigateToOperationalInputs={() => {
+                    document.getElementById('operational-inputs-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                  }}
+                />
                 {/* Rebuild banner — shown when customer exists but no planned schedule yet */}
                 {!subId && !rebuildDone && scheduleExists === false && (() => {
                   const missingForRebuild: string[] = []
@@ -9176,20 +9861,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                       )}
                       {rebuildError && <p className="text-xs text-red-600 mb-2">{rebuildError}</p>}
                       <button
-                        onClick={async () => {
-                          setRebuilding(true)
-                          setRebuildError(null)
-                          try {
-                            const res = await fetch(`/api/jobs/${id}/rebuild-schedule`, { method: 'POST' })
-                            const data = await res.json()
-                            if (!res.ok) setRebuildError(data.error ?? 'Rebuild failed')
-                            else setRebuildDone(true)
-                          } catch {
-                            setRebuildError('Network error — please try again')
-                          } finally {
-                            setRebuilding(false)
-                          }
-                        }}
+                        onClick={handleRebuildSchedule}
                         disabled={rebuilding || missingForRebuild.length > 0}
                         className="inline-flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-xl transition-colors disabled:opacity-40"
                         style={{ background: '#1A3D2B', color: '#fff' }}
@@ -9204,6 +9876,64 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 })()}
               </>
             )}
+
+            {/* ── 7. Billing Operations ──
+                 Step 17H.4B0D4H1B4E2.3 §8 — manual/cross-period operational
+                 entry (ManualInputEntry, via OperationalInputsSection) is
+                 neither HOW (Commercial Logic) nor WHEN (Billing Timeline)
+                 — it's an ACTION a reviewer takes, so it moves here,
+                 alongside Parked Invoices and Manual Invoice (the other two
+                 existing operational actions). Deliberately kept on its
+                 OWN, broader hasOperationalBillingModel gate rather than
+                 folded into the narrower isConfigured/billingPlatform/subId
+                 gate ParkedInvoicesCard/ManualInvoiceCard use below — that
+                 broader gate is what let a reviewer pre-enter/backfill
+                 operational values for a fully-reviewed-but-not-yet-pushed
+                 contract before this pass, and narrowing it purely to
+                 achieve one shared visual gate would be a real visibility
+                 regression, not a presentation-only change. Both blocks
+                 read as one "Billing Operations" section whenever both are
+                 visible; OperationalInputsSection can still appear on its
+                 own in the narrower window where review is complete but no
+                 billing platform/customer exists yet. */}
+            {hasOperationalBillingModel && (
+              <OperationalInputsSection
+                jobId={id}
+                inputs={operationalDataInputs}
+                contractStartDate={terms?.contract_start_date}
+              />
+            )}
+            {isConfigured && (billingPlatform === 'stripe' || billingPlatform === 'remembill') && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (parkedInvoices.length > 0) && (
+              <ParkedInvoicesCard
+                jobId={id}
+                parkedInvoices={parkedInvoices}
+                onEvidenceRecorded={() => setParkedEvidenceTick(t => t + 1)}
+              />
+            )}
+            {isConfigured && (billingPlatform === 'stripe' || billingPlatform === 'remembill') && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (
+              <ManualInvoiceCard jobId={id} />
+            )}
+
+            {/* ── 8. Historical Billing Execution / Reconciliation ──
+                 Step 17H.4B0D4H1B4E2.4 §13-15 — relocated from directly
+                 below the top-level readiness/billing-safety area (where
+                 it previously sat, ahead of Contract Brief/BoM/Commercial
+                 Logic — i.e. ahead of the CURRENT commercial workflow) to
+                 its own semantically correct place: this panel states what
+                 was PREVIOUSLY EXECUTED vs. what's currently configured —
+                 a historical fact, not a current/future blocker. Its own
+                 internal severity split (BillingReconciliationPanel.tsx)
+                 is unchanged and still does the real work: a neutral,
+                 no-detected-monetary-impact difference renders as a small
+                 collapsed "View details" row (never a big card interrupting
+                 the workflow); operation_outcome_uncertain/
+                 partially_executed/executed_plan_changed-with-a-real-
+                 monetary-difference still render as a full, prominent
+                 warning card — moving its POSITION never demotes that
+                 visual weight. billing_hold (BillingSafetyBanner) is a
+                 SEPARATE, unrelated mechanism — current/future billing
+                 safety — and stays exactly where it was, near the top. */}
+            <BillingReconciliationPanel jobId={id} currency={cur} onResolved={fetchJob} />
 
             {/* ── Warning: missing dates ── */}
             {(!terms?.contract_start_date || !terms?.contract_end_date) && (
@@ -9231,13 +9961,18 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                  second editable panel — two independent full MeterMappingPanel
                  mounts here previously meant two independent fetches and two
                  independent confirm actions for the same underlying data.
-                 Step 17F, item 1 — once every metric is confirmed AND the
-                 Usage sources section below has cards to show, this chip is
-                 pure duplication of that section (same total/confirmed
-                 facts, no additional information) — suppressed at that
-                 point. Still shown while anything is unconfirmed (it's the
-                 call-to-action to go resolve it) or before Usage sources
-                 has anything to render yet. */}
+                 Step 17F, item 1 (Step 17H.3B: the standalone Usage sources
+                 section this originally deduplicated against has been
+                 removed — Commercial Logic & Billing Setup's own "Usage
+                 billing mapping" rows below are the current deduplication
+                 target) — once every metric is confirmed AND
+                 usageSourceCards has entries (i.e. Commercial Logic will
+                 render its own per-metric mapping rows), this chip is pure
+                 duplication of that (same total/confirmed facts, no
+                 additional information) — suppressed at that point. Still
+                 shown while anything is unconfirmed (it's the call-to-
+                 action to go resolve it) or before there's anything to
+                 render yet. */}
             {tiers.length > 0 && !(meterMappingSummary.total > 0 && meterMappingSummary.confirmed >= meterMappingSummary.total && usageSourceCards.length > 0) && (
               <MeterMappingStatusChip
                 total={meterMappingSummary.total}
@@ -9270,12 +10005,16 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               // provenance/survival_provenance) — never fabricated for rule
               // types that don't track it (minimum commitment, tier
               // calculation, discount, escalator), since inventing a
-              // "Clear from source"/"Reviewer policy" label for a field with
-              // no actual provenance record would misrepresent it.
+              // "Clear from source"/"Reviewer confirmed" label for a field
+              // with no actual provenance record would misrepresent it.
               // 'organization_rulebook' (Step 5C) reads "Organization
               // policy" — an org's own confirmed default, not AI
               // interpretation, not the contract itself.
-              const provenanceLabel = (p?: string | null) => p === 'contract_derived' ? 'Clear from source' : p === 'reviewer_policy' ? 'Reviewer policy' : p === 'organization_rulebook' ? 'Organization policy' : null
+              // Step 17H.4B0D4H1B4E6 §20 — this used to be a SECOND, local
+              // copy of the module-level provenanceLabel() (already in
+              // scope here, same file) — two independent copies of the same
+              // wording is exactly the "drift" risk this pass elsewhere
+              // fixes; now just uses the shared function directly.
               const confirmedRuleLines: { label: string; value: string }[] = []
               for (const [unitType, tierList] of chargingGroups.entries()) {
                 const mc = tierList.find(({ tier: t }) => t.minimum_commitment)?.tier.minimum_commitment
@@ -9405,641 +10144,150 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               // "waiting for inputs": no eligible billing period exists
               // yet at all, so there is nothing to ask the reviewer for.
               const periodNotStartedEntry = (performanceShareStatus ?? []).find(f => f.status === 'not_started')
+              // Step 17H.4B0D4H1B4E6 §2/§33 — this panel only ever renders
+              // once every commercial decision is ALREADY confirmed (the
+              // gate above) — a "success" state, per this pass's own
+              // doctrine ("success = less UI"). It used to unconditionally
+              // dump the full itemized rule list (confirmedRuleLines) plus
+              // all four status lines every time, duplicating detail that
+              // is already authoritative in Commercial Logic & Billing
+              // Setup (see that section's own comment). Now defaults to a
+              // compact 5-line summary; the full detail (unchanged, byte-
+              // for-byte the same JSX as before) moves behind "View
+              // configuration summary" — nothing removed, only reordered.
+              const mappingsLine = meterMappingSummary.total > 0
+                ? `${meterMappingSummary.confirmed}/${meterMappingSummary.total} configured`
+                : 'None required'
               return (
                 <div className="bg-white rounded-2xl border px-7 py-5" style={{ borderColor: 'rgba(11,92,54,0.2)', background: '#F8FDF9' }}>
-                  <p className="text-sm font-semibold flex items-center gap-1.5 mb-1" style={{ color: '#0B5C36' }}>
+                  <p className="text-sm font-semibold flex items-center gap-1.5 mb-3" style={{ color: '#0B5C36' }}>
                     <i className="ti ti-circle-check-filled" style={{ fontSize: 15 }} /> Rule interpretations confirmed
                   </p>
-                  <p className="text-[11px] text-stone mb-3">
-                    Every minimum floor, tier method, escalator, discount, service credit, rule interaction, and usage meter has a reviewer decision on file.
-                  </p>
                   <div className="grid gap-x-8 gap-y-1.5 text-[12px]" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
-                    {confirmedRuleLines.map((line, i) => (
-                      <p key={i}><span className="text-stone">{line.label}:</span> <span className="font-medium text-ink">{line.value}</span></p>
-                    ))}
+                    <p><span className="text-stone">Commercial decisions:</span> <span className="font-medium" style={{ color: '#0B5C36' }}>✓ Confirmed</span></p>
+                    <p><span className="text-stone">Contract configuration:</span> <span className="font-medium" style={{ color: configurationReady ? '#0B5C36' : '#92400E' }}>{configurationReady ? '✓ Ready' : vatConfigured !== true ? 'VAT treatment required' : 'Credit adjustment unsupported'}</span></p>
+                    <p><span className="text-stone">Operational mappings:</span> <span className="font-medium text-ink">{mappingsLine}</span></p>
+                    <p><span className="text-stone">Billing platform:</span> <span className="font-medium" style={{ color: selectedBillingPlatform ? '#0B5C36' : '#92400E' }}>{selectedBillingPlatform ?? 'Not selected'}</span></p>
+                    <p><span className="text-stone">Billing starts:</span> <span className="font-medium text-ink">{terms?.contract_start_date ? fmtDate(terms.contract_start_date) : '—'}</span></p>
                   </div>
-
-                  {/* Contract configuration readiness — static config only. */}
-                  <div className="mt-3 pt-3 flex items-center gap-1.5" style={{ borderTop: '1px solid rgba(11,92,54,0.12)' }}>
-                    <i className={`ti ${configurationReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: configurationReady ? '#0B5C36' : '#D97706' }} />
-                    <p className="text-[11px] font-medium" style={{ color: configurationReady ? '#0B5C36' : '#92400E' }}>
-                      {vatConfigured !== true
-                        ? 'Contract configuration: VAT treatment still required'
-                        : configurationReady
-                          ? 'Contract configuration: Ready'
-                          : `Contract configuration: normal invoices ready — invoices carrying a credit will fail closed (${selectedBillingPlatform} cannot yet represent a contractual credit adjustment)`}
-                    </p>
-                  </div>
-
-                  {/* Billing platform selection — item 12: never implied by
-                      configuration readiness above, shown as its own fact. */}
-                  <div className="mt-2 flex items-center gap-1.5">
-                    <i className={`ti ${selectedBillingPlatform ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: selectedBillingPlatform ? '#0B5C36' : '#D97706' }} />
-                    <p className="text-[11px] font-medium" style={{ color: selectedBillingPlatform ? '#0B5C36' : '#92400E' }}>
-                      {selectedBillingPlatform ? `Billing platform: ${selectedBillingPlatform}` : 'Billing platform: not yet selected'}
-                    </p>
-                  </div>
-
-                  {/* Current-period billing readiness — item 5: an entirely
-                      separate, runtime question from the two above. Never
-                      hidden behind a "configured" state once review is
-                      complete — but PerformanceShareDisplay (the sole
-                      source of performanceShareStatus) only ever mounts
-                      once hasOperationalBillingModel is true (Step 17F.8,
-                      item 1 — reviewComplete OR already pushed), so before
-                      that performanceShareStatus can never resolve away
-                      from null. Without this guard that read as a
-                      perpetual "checking…" spinner for every
-                      not-yet-operational contract, not a genuine in-flight
-                      fetch. Step 17E.1, item B — a contract whose start
-                      date hasn't arrived yet gets its own "Not started"
-                      state, never "waiting for <inputs>" (there is no
-                      eligible period to enter them for). */}
-                  <div className="mt-2 flex items-center gap-1.5">
-                    <i className={`ti ${!hasOperationalBillingModel ? 'ti-clock' : performanceShareStatus === null ? 'ti-loader-2' : periodNotStartedEntry ? 'ti-clock' : periodReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: !hasOperationalBillingModel || periodNotStartedEntry ? '#A8A29E' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }} />
-                    <p className="text-[11px] font-medium" style={{ color: !hasOperationalBillingModel || periodNotStartedEntry ? '#78716C' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }}>
-                      {!hasOperationalBillingModel
-                        ? 'Current-period billing: Available after contract configuration'
-                        : performanceShareStatus === null
-                          ? 'Current-period billing: checking…'
-                          : periodNotStartedEntry
-                            ? `Current-period billing: Not started — begins ${periodNotStartedEntry.contractStartDate ? fmtDate(periodNotStartedEntry.contractStartDate) : 'later'}`
-                            : periodReady
-                              ? 'Current-period billing: Ready'
-                              : `Current-period billing: waiting for ${periodBlockers.join(', ')}`}
-                    </p>
-                  </div>
-
-                  {hasServiceCredits && (
-                    <div className="mt-2 flex items-center gap-1.5">
-                      <i className={`ti ${creditCapability === 'supported' ? 'ti-circle-check-filled' : 'ti-shield-exclamation'}`} style={{ fontSize: 13, color: creditCapability === 'supported' ? '#0B5C36' : '#D97706' }} />
-                      <p className="text-[11px]" style={{ color: creditCapability === 'supported' ? '#0B5C36' : '#92400E' }}>
-                        {selectedBillingPlatform
-                          ? `${selectedBillingPlatform} credit-adjustment capability: ${creditCapability === 'supported' ? 'Supported' : 'Unsupported — pending vendor guidance'}`
-                          : 'Credit-adjustment capability: unknown until a billing platform is selected'}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )
-            })()}
-
-            {/* ── Confirmed billing rules ── Persistent, one-rule-at-a-time
-                 counterpart to the "Rule interpretations confirmed" banner
-                 above. That banner deliberately only renders once EVERY
-                 commercial rule on the contract is resolved, and even then
-                 shows one compact text line per rule — by design, it never
-                 shows the executable interpretation, the source clause, or
-                 per-field provenance. Confirming an individual rule via
-                 Review contract terms used to make its detail vanish
-                 entirely from the main GUI the moment requires_confirmation
-                 flipped to false, with nowhere left to see how the
-                 agreement is actually configured short of re-opening that
-                 rule for editing. This section shows each rule's card as
-                 soon as THAT rule is confirmed — independent of whether
-                 other rules are still outstanding — reading straight from
-                 contract_terms (the durable operational value), so it can
-                 never disagree with what invoicing itself uses and never
-                 goes blank on reload. "Edit interpretation" re-opens the
-                 same EditCommercialRuleDrawer used everywhere else in this
-                 file: confirming a change there writes a NEW audit revision
-                 (commercial_rule_interpretations.is_current), never
-                 overwrites the prior one, and requires stepping back through
-                 propose→review→confirm before the change takes effect. */}
-            {(() => {
-              const findAudit = (ruleType: string, unitKey: string | null) =>
-                ruleInterpretations.find(r => r.rule_type === ruleType && r.contract_unit_type === unitKey && r.is_current)
-
-              const MODE_LABEL: Record<string, string> = {
-                floor: 'Minimum charge floor', additive: 'Additive fee', minimum_spend: 'Spend commitment',
-                prepaid_commitment: 'Prepaid commitment', minimum_quantity: 'Minimum quantity',
-              }
-              const MODE_INTERPRETATION: Record<string, string> = {
-                floor: 'Floor, not additive — the greater of actual usage charges or this minimum is billed each period.',
-                additive: 'Charged on top of the usage charge every period, regardless of actual usage.',
-                minimum_spend: 'Usage draws down against this committed spend; any shortfall is billed as a true-up.',
-                prepaid_commitment: 'This amount is prepaid; usage draws down from the prepaid balance.',
-                minimum_quantity: 'A minimum unit quantity is committed (take-or-pay), independent of usage.',
-              }
-
-              // Short VALUE-only string for the "Value" params row below —
-              // concision pass: this used to build a full "Worth X% of Y."
-              // sentence for a redundant prose line under the card title;
-              // that prose is gone (everything it said is now a params row),
-              // so this only needs the value itself.
-              const describeCreditValue = (interp: ServiceCreditInterp, stated_pct: number | null | undefined, stated_amount: number | null | undefined): string | null => {
-                const v = interp.credit_value
-                if (interp.credit_basis === 'pct_of_affected_component' && (v != null || stated_pct != null)) {
-                  return `${v ?? stated_pct}% of ${interp.basis_component ?? 'the affected component'}`
-                }
-                if (interp.credit_basis === 'pct_of_period_fee' && (v != null || stated_pct != null)) return `${v ?? stated_pct}% of the period fee`
-                if (interp.credit_basis === 'fixed_amount_per_unit' && v != null) return `${fmt(v, cur)} per unit`
-                if (interp.credit_basis === 'usage_units' && v != null) return `${v} units`
-                if (v != null) return fmt(v, cur)
-                if (stated_amount != null) return fmt(stated_amount, cur)
-                return null
-              }
-
-              type Card = {
-                key: string; icon: string; typeLabel: string; title: string; sourceClause?: string | null; interpretation: string
-                params: { label: string; value: string }[]; provenance: { label: string; value?: string | null }[]
-                auditReviewer?: string | null; auditDate?: string | null; onViewSource?: () => void; onEdit: () => void
-                footer?: React.ReactNode
-              }
-              const cards: Card[] = []
-
-              // 1. Transaction pricing — tier structure + calculation method,
-              // per metric. Only once the method itself is resolved
-              // (requires_confirmation === false); a metric with a single
-              // flat rate has no method to disambiguate at all.
-              for (const [unitType, tierList] of chargingGroups.entries()) {
-                const tierCalc = tierList.find(({ tier: t }) => t.tier_calculation)?.tier.tier_calculation
-                if (!tierCalc || tierCalc.requires_confirmation) continue
-                const paidTiers = tierList.filter(({ tier: t }) => (t.rate_per_unit ?? 0) > 0)
-                const audit = findAudit('tier_calculation', unitType)
-                cards.push({
-                  key: `tier:${unitType}`,
-                  icon: 'ti-chart-bar',
-                  // Step 16A — generic category label, matching every other
-                  // typeLabel in this file (e.g. line 4007's identical
-                  // 'Tier calculation method' for the same concept) — never
-                  // hard-coded to "Transaction," which was wrong for any
-                  // non-transaction unit type (e.g. this contract's SQMs).
-                  // The specific unit type is already named in `title` below.
-                  typeLabel: 'Tier calculation method',
-                  title: `${TIER_METHOD_DISPLAY[tierCalc.method] ?? tierCalc.method} · ${unitType}`,
-                  sourceClause: tierCalc.source_clause,
-                  interpretation: tierCalc.method === 'volume'
-                    ? volumeTierCopy(unitType)
-                    : tierCalc.method === 'graduated'
-                      ? 'Each unit is billed at the rate for the tier it falls into — rates apply progressively as usage crosses each threshold.'
-                      : tierCalc.method === 'block'
-                        ? 'Usage is billed in fixed blocks at each block’s rate.'
-                        : 'Custom calculation — see source clause.',
-                  params: paidTiers.map(({ tier: t }) => ({
-                    label: t.tier_label ?? (t.from_unit != null ? `${t.from_unit.toLocaleString()}–${t.to_unit != null ? t.to_unit.toLocaleString() : '+'}` : 'Rate'),
-                    value: `${fmtUnit(t.rate_per_unit, cur)} / ${unitType}`,
-                  })),
-                  provenance: [{ label: 'Pricing method', value: audit?.decision_provenance }],
-                  auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
-                  onViewSource: src.overage_tiers ? () => openPDF(src.overage_tiers) : undefined,
-                  onEdit: () => setEditingRule(`tier:${unitType}`),
-                })
-              }
-
-              // 2. Minimum charge floor — per metric, mode/amount/cadence
-              // plus (when calendar-anchored) partial-period treatment.
-              for (const [unitType, tierList] of chargingGroups.entries()) {
-                const mc = tierList.find(({ tier: t }) => t.minimum_commitment)?.tier.minimum_commitment
-                const t0 = tierList[0]?.tier
-                if (!mc || !mc.mode) continue
-                const hasAllowance = tierList.some(({ tier: t }) => (t.rate_per_unit ?? 0) === 0)
-                if (isMinimumCommitmentModeUnresolved(mc, hasAllowance)) continue
-                const audit = findAudit('minimum_commitment', unitType)
-                const params: { label: string; value: string }[] = [{ label: 'Applies to', value: unitType }]
-                if (t0?.reset_anchor === 'calendar') {
-                  // Readiness audit fix — mc.prorate_partial_periods being
-                  // unclear/null does NOT by itself mean a reviewer decision
-                  // is outstanding; it only does when the contract's own
-                  // dates actually create a partial first/last calendar
-                  // window for this cadence (partialPeriodMetrics, computed
-                  // once above via the SAME date-aware
-                  // isMinimumCommitmentProrationUnresolved check readiness
-                  // itself uses — never a second, duplicated date
-                  // calculation). A contract that starts and ends exactly on
-                  // calendar-period boundaries (e.g. 1 Oct – 30 Sep) has no
-                  // partial window at all, so this can never manufacture a
-                  // provenance value or a reviewer decision for a scenario
-                  // that cannot occur — it only ever changes which of two
-                  // purely-descriptive strings is shown.
-                  const provenValue = mc.prorate_partial_periods === true ? 'Prorated by days'
-                    : mc.prorate_partial_periods === false ? 'Full amount charged'
-                    : partialPeriodMetricsTop.has(unitType) ? 'Decision required'
-                    : 'Not applicable — full calendar periods'
-                  params.push({ label: 'Partial-period treatment', value: provenValue })
-                }
-                cards.push({
-                  key: `min:${unitType}`,
-                  icon: 'ti-shield',
-                  typeLabel: MODE_LABEL[mc.mode] ?? mc.mode,
-                  title: `${fmt(mc.amount, cur)}${ruleCadenceLabel(mc.period, t0?.reset_anchor) ? ` / ${ruleCadenceLabel(mc.period, t0?.reset_anchor)}` : ''} — ${unitType}`,
-                  sourceClause: mc.source_clause,
-                  interpretation: MODE_INTERPRETATION[mc.mode] ?? '',
-                  params,
-                  provenance: [{ label: 'Minimum rule', value: audit?.decision_provenance }],
-                  auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
-                  onViewSource: src.overage_tiers ? () => openPDF(src.overage_tiers) : undefined,
-                  onEdit: () => setEditingRule(`min:${unitType}`),
-                })
-              }
-
-              // Price escalation — only once a genuinely valid treatment
-              // ('applies' or 'not_applied') is on record; an interpretation
-              // predating the treatment field (or otherwise missing it) is
-              // not safe to render as confirmed, it needs re-resolving via
-              // Edit interpretation instead of being displayed as-is.
-              for (const [i, e] of (terms?.escalators ?? []).entries()) {
-                const interp = e.interpretation
-                if (!interp || interp.requires_confirmation || (interp.treatment !== 'applies' && interp.treatment !== 'not_applied')) continue
-                const notApplied = interp.treatment === 'not_applied'
-                const audit = findAudit('escalator', null)
-                const sourceTerm = e.escalator_type
-                  ? `${e.escalator_type.replace(/_/g, ' ').replace(/\bcpi\b/i, 'CPI')}-linked escalation detected`
-                  : e.description || null
-                cards.push({
-                  key: `esc:${i}`,
-                  icon: 'ti-trending-up',
-                  typeLabel: 'Price escalation',
-                  title: notApplied ? 'Not applied' : `${interp.index}${interp.cap_pct != null ? `, capped ${interp.cap_pct}%` : interp.index !== 'other' ? ', uncapped' : ''}`,
-                  sourceClause: sourceTerm,
-                  interpretation: notApplied
-                    ? 'Reviewer decision: exclude the escalation clause — what the extraction found is preserved above even though it does not run.'
-                    : (interp.calculation_method ?? ''),
-                  params: notApplied ? [] : [
-                    { label: 'Frequency', value: interp.frequency ?? '—' },
-                    ...(interp.effective_date ? [{ label: 'Effective', value: fmtDate(interp.effective_date) }] : []),
-                  ],
-                  provenance: [{ label: 'Escalation treatment', value: audit?.decision_provenance }],
-                  auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
-                  onViewSource: src.escalators ? () => openPDF(src.escalators) : undefined,
-                  onEdit: () => setEditingRule(`esc:${i}`),
-                })
-              }
-
-              // 3. Platform fee — billing-period anchor/treatment. Reuses the
-              // same deriveSelectedOption/optionsForRuleType lookup the
-              // review card itself uses, so this can never describe a
-              // different treatment than what was actually confirmed.
-              if (terms?.base_fee_proration && !terms.base_fee_proration.requires_confirmation && terms?.base_monthly_fee) {
-                const bfp = terms.base_fee_proration
-                const bfpWaiverExpiry = baseFeeHasExpiringWaiver(terms?.discounts)
-                const optionId = deriveSelectedOption('base_fee_proration', bfp as unknown as Record<string, unknown>, bfpWaiverExpiry)
-                const cadenceLabel = cadenceNoun(terms?.billing_frequency)
-                const periodLabel = contractMonthLabel(terms?.contract_start_date)
-                const opt = optionsForRuleType('base_fee_proration', cadenceLabel, periodLabel, bfpWaiverExpiry).find(o => o.id === optionId)
-                const audit = findAudit('base_fee_proration', BASE_FEE_PRORATION_SENTINEL)
-                cards.push({
-                  key: 'basefee',
-                  icon: 'ti-wallet',
-                  typeLabel: 'Platform fee',
-                  title: `${fmt(terms.base_monthly_fee, cur)} / ${cadenceLabel}`,
-                  sourceClause: bfp.source_clause,
-                  interpretation: opt?.description ?? (bfp.reset_anchor === 'contract_start' ? 'Billed on the contract-month cycle, anchored to the contract start date.' : 'Billed on calendar-month boundaries.'),
-                  params: [{ label: 'Billing period', value: opt?.label ?? (periodLabel ? `Contract month, ${periodLabel}` : 'Calendar month') }],
-                  provenance: [{ label: 'Billing-period treatment', value: audit?.decision_provenance ?? 'reviewer_policy' }],
-                  auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
-                  onViewSource: src.base_monthly_fee ? () => openPDF(src.base_monthly_fee) : undefined,
-                  onEdit: () => setEditingRule('basefee'),
-                })
-              }
-
-              // 4/5/6. Service credits (Annual Rebate / Growth Credit /
-              // Service Availability Credit, or any other credit_type) —
-              // only once BOTH the trigger/basis interpretation and its
-              // application_rule (eligibility + unused-balance survival) are
-              // fully resolved (isServiceCreditUnresolved false); a credit
-              // still missing its application scope stays in Review contract
-              // terms until that's resolved, rather than showing an
-              // incomplete card here.
-              for (const c of terms?.service_credits ?? []) {
-                if (!c.credit_rule_id || isServiceCreditUnresolved(c)) continue
-                const interp = c.interpretation!
-                const appRule = interp.application_rule!
-                const audit = findAudit('service_credit', `credit:${c.credit_rule_id}`)
-                const params: { label: string; value: string }[] = []
-                if (interp.trigger_description) params.push({ label: 'Trigger', value: interp.trigger_description })
-                const value = describeCreditValue(interp, c.stated_pct, c.stated_amount)
-                if (value) params.push({ label: 'Value', value })
-                const cap = interp.cap_amount != null ? fmt(interp.cap_amount, cur) : interp.cap_pct != null ? `${interp.cap_pct}%` : null
-                if (cap) params.push({ label: `Cap${interp.settlement_period ? ` (${interp.settlement_period})` : ''}`, value: cap })
-                // Earning basis vs. application scope (2026-08-30 UI fix) —
-                // rendered as up to three DISTINCT rows rather than the
-                // previous "Eligible components"/"Excluded" pair, which
-                // conflated what a percentage credit's SIZE is computed
-                // from with what the resulting credit may later reduce.
-                // Only shown when computed_from_component_keys actually
-                // carries data — a credit with no percentage-of-component
-                // basis (flat_amount, usage_units, ...) has no earning-
-                // basis concept to display, and behaves exactly as before
-                // (falls straight through to "Can be applied against").
-                const computedFromKeys = Array.isArray(appRule.computed_from_component_keys) && appRule.computed_from_component_keys.length > 0
-                  ? appRule.computed_from_component_keys : null
-                if (computedFromKeys) {
-                  const isRebate = c.credit_type === 'rebate'
-                  const basisValue = formatEarningBasisFact(computedFromKeys) + (interp.monetary_basis_recognition === 'paid' ? ' actually paid' : '')
-                  params.push({ label: isRebate ? 'Rebate basis' : 'Earning basis', value: basisValue })
-                  const excludedFromBasis = computeExcludedFromEarningBasisKeys({
-                    computedFromComponentKeys: computedFromKeys,
-                    eligibleComponentKeys: appRule.eligible_component_keys,
-                    excludedComponentKeys: appRule.excluded_component_keys,
-                  })
-                  if (excludedFromBasis.length > 0) {
-                    params.push({ label: isRebate ? 'Excluded from rebate basis' : 'Excluded from earning basis', value: formatEligibleComponentsFact(excludedFromBasis) })
-                  }
-                }
-                params.push({
-                  label: 'Can be applied against',
-                  value: appRule.eligible_component_keys === 'all' ? 'All future amounts payable'
-                    : Array.isArray(appRule.eligible_component_keys) ? formatEligibleComponentsFact(appRule.eligible_component_keys) : 'Decision required',
-                })
-                params.push({ label: 'Repeatable', value: appRule.one_time === true ? 'No — one-time' : appRule.one_time === false ? 'Yes' : 'Decision required' })
-                if (typeof appRule.carry_forward === 'boolean') {
-                  // Short-form (matches every other param row on this card,
-                  // and is what this exact regression was found against) —
-                  // formatCarryForwardFact, not describeSurvivalResolution's
-                  // full-sentence prose. Both were corrected for the same
-                  // false-case semantic bug; this switch is a legitimate
-                  // consistency fix (short values throughout this list), not
-                  // an unrelated change.
-                  params.push({ label: 'Unused balance', value: formatCarryForwardFact(appRule.carry_forward, appRule.expiry_periods, appRule.expiry_date) })
-                  // Step 5C/5D — plain informational id/version text here
-                  // (a real, clickable "View policy" action now lives in
-                  // OrganizationPolicyControls, this card's footer — see
-                  // item 11). Only ever present when this field was
-                  // actually resolved by an org policy.
-                  if (appRule.survival_provenance === 'organization_rulebook' && appRule.survival_organization_rule_id) {
-                    params.push({
-                      label: 'Organization policy',
-                      value: `Rule ${appRule.survival_organization_rule_id.slice(0, 8)}${appRule.survival_organization_rule_version ? ` · v${appRule.survival_organization_rule_version}` : ''}`,
-                    })
-                  }
-                }
-                // Application timing — REMOVED (Contract B acceptance
-                // blocker). This row used to derive its value directly from
-                // carry_forward (true -> "Future invoices", false -> "Next
-                // invoice") — the exact bilateral violation the Global
-                // Rulebook's credit.next_invoice_timing_ne_carry_forward
-                // anti-inference rule already guards the OTHER direction of
-                // (timing must never establish carry_forward): a survival
-                // override silently rewrote what looked like an independent
-                // "when does this apply" fact. Audited and confirmed there is
-                // currently no independently extracted/persisted application-
-                // timing fact anywhere in this codebase — availability
-                // (lib/types.ts) is a hardcoded 'next_period' execution-
-                // scheduling constant, identical for every credit on every
-                // contract, never contract-derived, never variable. "Future
-                // invoices" was never a real stored fact; it was purely this
-                // buggy derivation's output. Rather than manufacture a
-                // constant/generic value with no real data behind it, this
-                // row is removed entirely until a genuine, independently
-                // sourced/provenanced timing field exists — do not
-                // reintroduce a carry_forward-derived (or any other
-                // survival-derived) value here.
-                // Cash settlement (Step 1.5, corrected) — a standalone fact
-                // about the credit itself, never blended with invoice
-                // application timing/scope. A resolved boolean
-                // shows its real answer; 'unclear' (contract silent) no
-                // longer keeps the credit off this card at all — cash isn't
-                // required to apply the credit against future invoices (see
-                // lib/commercial-rule-status.ts's requiredServiceCreditFields)
-                // — so it's shown here too, but as plain informational
-                // metadata, not a flagged/blocking value.
-                params.push({
-                  label: 'Cash settlement allowed',
-                  value: interp.cash_redeemable === true ? 'Yes'
-                    : interp.cash_redeemable === false ? 'No'
-                      : 'Not specified',
-                })
-                // Monetary basis recognition (2026-08-30 correction) — WHAT
-                // monetary state (paid / stated component amount) the
-                // percentage applies to, shown as its own fact/provenance
-                // row, separate from Paid-basis finalization below (WHEN a
-                // paid basis freezes). Only shown when the question
-                // actually applies (isMonetaryBasisRecognitionApplicable);
-                // this card is only reached once isServiceCreditUnresolved
-                // is false, so 'component_amount' here means a resolved
-                // DECISION that's still capability-blocked from execution —
-                // never silently hidden just because it's not yet executable.
-                if (isMonetaryBasisRecognitionApplicable(interp)) {
-                  params.push({
-                    label: 'Monetary basis',
-                    value: interp.monetary_basis_recognition === 'paid' ? 'Actually paid'
-                      : interp.monetary_basis_recognition === 'component_amount' ? 'Stated component amount (execution blocked — no verified path yet)'
-                      : 'Decision required',
-                  })
-                }
-                // Paid-basis finalization (2026-08-24 audit) — only shown
-                // for a credit the question actually applies to (see
-                // isPaidBasisFinalizationApplicable, which itself requires
-                // monetary_basis_recognition === 'paid'); this card is only
-                // reached once isServiceCreditUnresolved is false, so a
-                // 'full_attribution' row here means a resolved DECISION
-                // that's still capability-blocked from execution (see
-                // computeCommercialRuleWorkload's serviceCreditCapabilityBlockers) —
-                // never silently hidden just because it's not yet executable.
-                if (isPaidBasisFinalizationApplicable(interp)) {
-                  params.push({
-                    label: 'Paid-basis finalization',
-                    value: interp.earn_rule?.paid_basis_finalization_policy === 'deadline_cutoff' ? 'Cut off at calculation deadline'
-                      : interp.earn_rule?.paid_basis_finalization_policy === 'full_attribution' ? 'Include late Contract-Year payments (execution blocked — no invoice-terminality model yet)'
-                      : 'Decision required',
-                  })
-                }
-                cards.push({
-                  key: `credit:${c.credit_rule_id}`,
-                  icon: CREDIT_TYPE_ICON[c.credit_type ?? ''] ?? 'ti-receipt-refund',
-                  typeLabel: CREDIT_TYPE_LABEL[c.credit_type ?? ''] ?? CREDIT_BASIS_LABEL[c.credit_type ?? 'other'] ?? 'Service credit',
-                  title: c.description || CREDIT_TYPE_LABEL[c.credit_type ?? ''] || 'Service credit',
-                  sourceClause: c.source_clause,
-                  // No lead prose sentence — every fact it used to restate
-                  // (trigger, value, eligibility, survival) is already a
-                  // params row above (concision pass).
-                  interpretation: '',
-                  params,
-                  provenance: [
-                    { label: 'Eligibility', value: appRule.eligibility_provenance },
-                    { label: 'Unused-balance policy', value: appRule.survival_provenance },
-                    { label: 'Cash redeemability', value: interp.cash_redeemable_provenance },
-                    ...(isMonetaryBasisRecognitionApplicable(interp) ? [{ label: 'Monetary basis', value: interp.monetary_basis_recognition_provenance }] : []),
-                    ...(isPaidBasisFinalizationApplicable(interp) ? [{ label: 'Paid-basis finalization', value: interp.earn_rule?.paid_basis_finalization_provenance }] : []),
-                  ],
-                  auditReviewer: audit?.reviewer_name ?? audit?.reviewer_email, auditDate: audit ? fmtDate(audit.created_at) : null,
-                  onViewSource: src.service_credits ? () => openPDF(src.service_credits) : undefined,
-                  onEdit: () => setEditingRule(`credit:${c.credit_rule_id}`),
-                  footer: c.credit_rule_id ? (
-                    <OrganizationPolicyControls
-                      jobId={id}
-                      creditId={c.credit_rule_id}
-                      carryForward={appRule.carry_forward}
-                      survivalProvenance={appRule.survival_provenance}
-                      ruleId={appRule.survival_organization_rule_id}
-                      ruleVersion={appRule.survival_organization_rule_version}
-                      onChanged={() => { fetchJob(); fetchRuleInterpretations() }}
-                    />
-                  ) : undefined,
-                })
-              }
-
-              if (cards.length === 0) return null
-
-              // Step 17E.3, item 4 — "N rule(s) confirmed" previously
-              // implied a blanket claim regardless of what actually settled
-              // each card (a mix of reviewer_policy and contract_derived
-              // provenance across different card types). Derived from each
-              // card's own already-typed provenance rows via the shared,
-              // unit-tested lib/confirmed-rules-label.ts — never a second,
-              // separately-invented count.
-              const confirmedCountLabel = deriveConfirmedRulesLabel(cards.length, cards.flatMap(c => c.provenance.map(p => p.value)))
-
-              return (
-                <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
                   <button
-                    onClick={() => setConfirmedRulesExpanded(v => !v)}
-                    className="w-full p-6 flex items-center justify-between text-left"
-                    style={confirmedRulesExpanded ? { borderBottom: '1px solid rgba(26,61,43,0.07)' } : undefined}
+                    onClick={() => setShowRuleConfirmationDetail(v => !v)}
+                    className="mt-3 text-[11px] font-medium text-forest hover:underline flex items-center gap-1"
                   >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <i className={`ti ti-chevron-right text-stone/50 transition-transform flex-shrink-0 ${confirmedRulesExpanded ? 'rotate-90' : ''}`} style={{ fontSize: 12 }} />
-                      <div className="min-w-0">
-                        <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Confirmed billing rules</h2>
-                        <p className="text-[11px] text-stone mt-1">How this agreement is currently configured to bill — updates immediately as each rule is confirmed or edited.</p>
-                      </div>
-                    </div>
-                    <span className="text-[11px] text-stone flex-shrink-0">{confirmedCountLabel}</span>
+                    {showRuleConfirmationDetail ? 'Hide configuration summary' : 'View configuration summary'}
+                    <i className={`ti ti-chevron-down transition-transform ${showRuleConfirmationDetail ? 'rotate-180' : ''}`} style={{ fontSize: 11 }} />
                   </button>
-                  {confirmedRulesExpanded && (
+                  {showRuleConfirmationDetail && (
                     <>
-                      <div className="p-6 grid grid-cols-2 gap-5" style={{ background: '#FAF8F4' }}>
-                        {cards.map(c => (
-                          <ConfirmedRuleCard
-                            key={c.key}
-                            icon={c.icon}
-                            typeLabel={c.typeLabel}
-                            title={c.title}
-                            sourceClause={c.sourceClause}
-                            interpretation={c.interpretation}
-                            params={c.params}
-                            provenance={c.provenance}
-                            auditReviewer={c.auditReviewer}
-                            auditDate={c.auditDate}
-                            onViewSource={c.onViewSource}
-                            onEdit={c.onEdit}
-                            footer={c.footer}
-                          />
+                      <p className="text-[11px] text-stone mt-3 mb-2">
+                        Every minimum floor, tier method, escalator, discount, service credit, rule interaction, and usage meter has a reviewer decision on file.
+                      </p>
+                      <div className="grid gap-x-8 gap-y-1.5 text-[12px]" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+                        {confirmedRuleLines.map((line, i) => (
+                          <p key={i}><span className="text-stone">{line.label}:</span> <span className="font-medium text-ink">{line.value}</span></p>
                         ))}
                       </div>
+
+                      {/* Contract configuration readiness — static config only. */}
+                      <div className="mt-3 pt-3 flex items-center gap-1.5" style={{ borderTop: '1px solid rgba(11,92,54,0.12)' }}>
+                        <i className={`ti ${configurationReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: configurationReady ? '#0B5C36' : '#D97706' }} />
+                        <p className="text-[11px] font-medium" style={{ color: configurationReady ? '#0B5C36' : '#92400E' }}>
+                          {vatConfigured !== true
+                            ? 'Contract configuration: VAT treatment still required'
+                            : configurationReady
+                              ? 'Contract configuration: Ready'
+                              : `Contract configuration: normal invoices ready — invoices carrying a credit will fail closed (${selectedBillingPlatform} cannot yet represent a contractual credit adjustment)`}
+                        </p>
+                      </div>
+
+                      {/* Billing platform selection — item 12: never implied by
+                          configuration readiness above, shown as its own fact. */}
+                      <div className="mt-2 flex items-center gap-1.5">
+                        <i className={`ti ${selectedBillingPlatform ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: selectedBillingPlatform ? '#0B5C36' : '#D97706' }} />
+                        <p className="text-[11px] font-medium" style={{ color: selectedBillingPlatform ? '#0B5C36' : '#92400E' }}>
+                          {selectedBillingPlatform ? `Billing platform: ${selectedBillingPlatform}` : 'Billing platform: not yet selected'}
+                        </p>
+                      </div>
+
+                      {/* Current-period billing readiness — item 5: an entirely
+                          separate, runtime question from the two above. Never
+                          hidden behind a "configured" state once review is
+                          complete — but the performance-share fetch effect
+                          (the sole source of performanceShareStatus) only ever
+                          runs once hasOperationalBillingModel is true (Step
+                          17F.8, item 1 — reviewComplete OR already pushed), so
+                          before that performanceShareStatus can never resolve
+                          away from null. Without this guard that read as a
+                          perpetual "checking…" spinner for every
+                          not-yet-operational contract, not a genuine in-flight
+                          fetch. Step 17E.1, item B — a contract whose start
+                          date hasn't arrived yet gets its own "Not started"
+                          state, never "waiting for <inputs>" (there is no
+                          eligible period to enter them for). */}
+                      <div className="mt-2 flex items-center gap-1.5">
+                        <i className={`ti ${!hasOperationalBillingModel ? 'ti-clock' : performanceShareStatus === null ? 'ti-loader-2' : periodNotStartedEntry ? 'ti-clock' : periodReady ? 'ti-circle-check-filled' : 'ti-alert-triangle'}`} style={{ fontSize: 13, color: !hasOperationalBillingModel || periodNotStartedEntry ? '#A8A29E' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }} />
+                        <p className="text-[11px] font-medium" style={{ color: !hasOperationalBillingModel || periodNotStartedEntry ? '#78716C' : performanceShareStatus === null ? '#57534E' : periodReady ? '#0B5C36' : '#92400E' }}>
+                          {!hasOperationalBillingModel
+                            ? 'Current-period billing: Available after contract configuration'
+                            : performanceShareStatus === null
+                              ? 'Current-period billing: checking…'
+                              : periodNotStartedEntry
+                                ? `Current-period billing: Not started — begins ${periodNotStartedEntry.contractStartDate ? fmtDate(periodNotStartedEntry.contractStartDate) : 'later'}`
+                                : periodReady
+                                  ? 'Current-period billing: Ready'
+                                  : `Current-period billing: waiting for ${periodBlockers.join(', ')}`}
+                        </p>
+                      </div>
+
+                      {hasServiceCredits && (
+                        <div className="mt-2 flex items-center gap-1.5">
+                          <i className={`ti ${creditCapability === 'supported' ? 'ti-circle-check-filled' : 'ti-shield-exclamation'}`} style={{ fontSize: 13, color: creditCapability === 'supported' ? '#0B5C36' : '#D97706' }} />
+                          <p className="text-[11px]" style={{ color: creditCapability === 'supported' ? '#0B5C36' : '#92400E' }}>
+                            {selectedBillingPlatform
+                              ? `${selectedBillingPlatform} credit-adjustment capability: ${creditCapability === 'supported' ? 'Supported' : 'Unsupported — pending vendor guidance'}`
+                              : 'Credit-adjustment capability: unknown until a billing platform is selected'}
+                          </p>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
               )
             })()}
 
-            {/* ── Usage sources (Step 17F, item 1) ──
-                 The authoritative usage-configuration section: which
-                 semantic usage metric is supplied by which meter (or
-                 manual entry). Standalone and always visible (never
-                 nested inside "Confirmed billing rules," which can
-                 legitimately render zero cards) — this is exactly the
-                 "usage sources = configuration" responsibility item 1
-                 establishes, distinct from "billing-period usage" (a
-                 specific period's runtime measurement, shown in the
-                 Billing period workspace below). MeterMappingStatusChip
-                 right below is suppressed once every metric is confirmed
-                 AND this section has cards to show — at that point it
-                 would be pure duplication of what's rendered here. */}
-            {usageSourceCards.length > 0 && (
-              <div className="bg-white rounded-2xl border border-forest/10 p-6">
-                <div className="mb-3">
-                  <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Usage sources</h2>
-                  <p className="text-[11px] text-stone mt-1">Which semantic usage metric is supplied by which meter — the configuration every usage-based charge and billing-period measurement reads from.</p>
-                </div>
-                <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
-                  {usageSourceCards.map(c => (
-                    <UsageSourceCardTile key={c.key} card={c} onConfirm={() => setReviewPanelOpen(true)} />
-                  ))}
-                </div>
-              </div>
-            )}
+            {/* Step 17G.5A — the "Confirmed billing rules" surface that
+                 used to render here (provenance-aware reviewer-decision
+                 cards, one per resolved commercial rule) has moved and
+                 been broadened into "Commercial Logic & Billing Rules",
+                 immediately after Commercial BoM above — grouped by BoM
+                 component instead of a flat grid, and now also showing a
+                 rule that is NOT yet resolved (a "Decision required" row),
+                 not only confirmed ones. Same underlying data/audit/edit
+                 mechanism (commercial_rule_interpretations, setEditingRule,
+                 EditCommercialRuleDrawer) — nothing here was rebuilt. */}
 
-            {/* ── Pricing dependencies (Step 17F, item 3) ──
-                 Replaces the broad "Variable pricing" label (still used
-                 below, unchanged, for the platform-push line-items table —
-                 a different job: configuring what gets sent to Stripe/
-                 Remembill) with a clear split of what each commercial
-                 component actually DEPENDS ON to produce an amount: a
-                 fixed schedule figure, a usage-meter reading, or an
-                 operational-input-derived performance calculation.
-                 lib/pricing-dependency.ts derives this from the same typed
-                 additional_recurring_fees/overage_tiers already used
-                 everywhere else on this page, and looks up each usage-meter
-                 component's source from the SAME usageSourceCards computed
-                 above — never a second, independent meter lookup. */}
-            {(() => {
-              const groups = buildPricingDependencyGroups({
-                baseMonthlyFee: terms?.base_monthly_fee, fees: terms?.additional_recurring_fees ?? [],
-                tiers: terms?.overage_tiers ?? [], usageSources: usageSourceCards,
-              })
-              if (groups.fixed.length === 0 && groups.usageMeter.length === 0 && groups.performanceBased.length === 0) return null
-              return (
-                <div className="bg-white rounded-2xl border border-forest/10 p-6">
-                  <div className="mb-4">
-                    <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Pricing dependencies</h2>
-                    <p className="text-[11px] text-stone mt-1">What each commercial component&apos;s amount actually depends on.</p>
-                  </div>
-                  <div className="space-y-5">
-                    {groups.fixed.length > 0 && (
-                      <div>
-                        <p className="text-[10px] font-semibold text-stone uppercase tracking-wide mb-2">Fixed pricing</p>
-                        <div className="space-y-1.5">
-                          {groups.fixed.map(f => (
-                            <div key={f.key} className="flex items-center justify-between text-[12px]">
-                              <span className="text-ink">{f.label}</span>
-                              <span className="text-stone tabular-nums">{fmt(f.amount, cur)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {groups.usageMeter.length > 0 && (
-                      <div>
-                        <p className="text-[10px] font-semibold text-stone uppercase tracking-wide mb-2">Usage-meter pricing</p>
-                        <div className="space-y-2">
-                          {groups.usageMeter.map(u => (
-                            <div key={u.key} className="text-[12px]">
-                              <p className="text-ink">{u.label}</p>
-                              <p className="text-stone/70 text-[11px]">
-                                {fmtUnit(u.ratePerUnit, cur)} × {typeof u.includedUnits === 'number' ? `max(${u.semanticInputKey ?? 'usage'} − ${u.includedUnits.toLocaleString()}, 0)` : (u.semanticInputKey ?? 'usage')}
-                              </p>
-                              <p className="text-stone/50 text-[11px]">Source: {u.sourceName ?? 'Not yet confirmed'}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {groups.performanceBased.length > 0 && (
-                      <div>
-                        <p className="text-[10px] font-semibold text-stone uppercase tracking-wide mb-2">Performance-based pricing</p>
-                        <div className="space-y-2">
-                          {groups.performanceBased.map(p => (
-                            <div key={p.key} className="text-[12px]">
-                              <p className="text-ink">{p.label}</p>
-                              <p className="text-stone/70 text-[11px]">
-                                Inputs: {p.numeratorKey} (operational input) · {p.denominatorKey} (operational input)
-                              </p>
-                              <p className="text-stone/50 text-[11px]">Derived rate → contractual rate schedule → percentage of {p.basisKey}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )
-            })()}
+            {/* Step 17H.3B — the standalone "Usage sources" and "Pricing
+                 dependencies" sections that used to render here have been
+                 retired: the 17H.3A audit found both fully superseded —
+                 Commercial Logic & Billing Setup's "Usage billing mapping"
+                 rows above (which read the SAME usageSourceCards this page
+                 still computes) are now the sole authoritative renderer of
+                 contract measure -> billing metric -> configured source ->
+                 consumers, including the Change/Confirm action (same
+                 setReviewPanelOpen -> ReviewPanel -> MeterMappingPanel ->
+                 POST /meter-mappings persistence path both surfaces always
+                 shared). lib/pricing-dependency.ts's
+                 buildPricingDependencyGroups remains load-bearing —
+                 unchanged — for Billing Timeline's period execution model
+                 (lib/billing-period-workspace.ts's derivePeriodExecutionModel).
+                 Nothing here was a persistence or calculation change, only
+                 duplicate presentation removal. */}
 
-            {/* ── VAT (pre-approval) ── Surfaced here, not only after push,
-                 so it can actually block Approve rather than only failing
-                 closed server-side after the reviewer has already clicked
-                 it. Staged on the job itself (pending_vat_*) until a real
-                 billing customer exists; promoted into customer_vat_config
-                 at approve time. BillingSummaryCard renders the same
-                 component post-approval, reading/writing the real
-                 customer_vat_config row directly — never both at once. */}
-            {!isConfigured && (
-              <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
-                <VatConfigRow jobId={id} onStatusChange={setVatConfigured} refreshSignal={refreshSignal} onSaved={handleVatSaved} />
-              </div>
-            )}
+            {/* Step 17G.3 — the standalone pre-approval VAT card that used
+                to live here has moved into Contract Setup → Billing
+                details (one VatConfigRow instance now covers both pre-
+                and post-approval state, since useVatConfig already
+                resolves the right persistence target server-side). */}
 
             {/* ── Billing summary KPI cards + Approve footer ──
                  Three visually consistent cards (same height/padding/icon
@@ -10370,7 +10618,6 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
           discounts={terms?.discounts}
           serviceCredits={terms?.service_credits}
           baseFeeAmount={terms?.base_monthly_fee ?? terms?.base_annual_fee ?? null}
-          baseFeeCommittedVolume={terms?.base_fee_committed_volume}
           baseFeeProration={terms?.base_fee_proration}
           fixedFeeBillingTiming={terms?.fixed_fee_billing_timing}
           additionalRecurringFees={terms?.additional_recurring_fees}
@@ -10395,9 +10642,10 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
       )}
 
       {/* ── Edit commercial rule drawer ────────────────────────────────────
-           Editing an already-confirmed rule from the main Commercial Terms
-           view — a distinct experience from first-time review, not a return
-           trip to the Review panel (see EditCommercialRuleDrawer above). */}
+           Editing an already-confirmed rule from Commercial Logic &
+           Billing Setup's own rows — a distinct experience from
+           first-time review, not a return trip to the Review panel (see
+           EditCommercialRuleDrawer above). */}
       {editingRule && (() => {
         const isMin = editingRule.startsWith('min:')
         const isTier = editingRule.startsWith('tier:')

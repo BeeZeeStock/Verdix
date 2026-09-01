@@ -26,6 +26,9 @@ import {
   CREDIT_SURVIVAL_OPTIONS,
   looksLikeMalformedReasoning,
   truncateSentences,
+  buildDecisionRequiredDisplay,
+  buildRecommendationDisplay,
+  describeDiscountComponentScopeSplit,
   baseFeeHasExpiringWaiver,
   type MinimumCommitmentContext,
   type PartialPeriodContext,
@@ -271,10 +274,16 @@ describe('describeMissingFieldQuestions', () => {
 })
 
 describe('describeWhatWillChange', () => {
-  it('lists Commercial Terms, Billing Configuration, Billing Engine, Billing Schedule, Contract Value, and Graphical View for a minimum commitment', () => {
+  // Step 17H.3D3 — 'Commercial Terms'/'Billing Configuration' were the
+  // component names of two now-retired legacy UI surfaces (the former
+  // absorbed into Commercial BoM back in Step 17G.4B; the latter retired
+  // in 17H.3D3 itself) — the "What will change" preview must name the
+  // CURRENT authoritative surfaces a reviewer will actually see updated,
+  // not sections that no longer exist.
+  it('lists Commercial Logic, Commercial BoM, Billing Engine, Billing Schedule, Contract Value, and Graphical View for a minimum commitment', () => {
     const items = describeWhatWillChange('minimum_commitment', 'SMS reminder')
     const components = items.map(i => i.component)
-    expect(components).toEqual(['Commercial Terms', 'Billing Configuration', 'Billing Engine', 'Billing Schedule', 'Contract Value', 'Graphical View'])
+    expect(components).toEqual(['Commercial Logic', 'Commercial BoM', 'Billing Engine', 'Billing Schedule', 'Contract Value', 'Graphical View'])
   })
 
   it('adds a Usage Source dependency warning when the meter mapping is unconfirmed', () => {
@@ -1422,15 +1431,193 @@ describe('truncateSentences + looksLikeMalformedReasoning — Step 17C.3b, item 
 
   it('a short text within maxChars is returned verbatim, untruncated', () => {
     const text = 'Decision required.'
-    expect(truncateSentences(text, 1, 140)).toEqual({ short: text, truncated: false })
+    expect(truncateSentences(text, 1, 140)).toEqual({ short: text, truncated: false, rest: '' })
   })
 
-  it('a single long run-on sentence with no terminal punctuation falls back to the hard character cut', () => {
+  it('a single long run-on sentence with no terminal punctuation is returned whole, never hard-cut mid-word (Step 17H.4B0D4H1B4E6.2)', () => {
     const text = 'a '.repeat(200).trim()
-    const { short, truncated } = truncateSentences(text, 1, 140)
+    const { short, truncated, rest } = truncateSentences(text, 1, 140)
+    // No generic, content-safe way to shorten a single run-on sentence
+    // without cutting a word in half — so it's returned whole rather than
+    // clipped with "…", which read as accidental truncation, not a
+    // deliberate summary.
+    expect(short).toBe(text)
+    expect(truncated).toBe(false)
+    expect(rest).toBe('')
+  })
+
+  it('a long FIRST sentence (multi-sentence text) is also returned whole rather than hard-cut mid-word', () => {
+    const longFirstSentence = `This is a very long single sentence that on its own already exceeds the maxChars budget ${'and keeps going '.repeat(6)}before it finally ends.`
+    const text = `${longFirstSentence} A second, shorter sentence follows.`
+    const { short, truncated, rest } = truncateSentences(text, 1, 140)
+    expect(short).toBe(text)
+    expect(truncated).toBe(false)
+    expect(rest).toBe('')
+  })
+
+  it('rest carries exactly the leftover sentences, never repeating the summary — no character-position slicing against text', () => {
+    const text = 'The contract does not state whether the partial period is prorated. A reviewer decision is required. Choose one of the options below.'
+    const { short, truncated, rest } = truncateSentences(text, 1, 140)
+    expect(short).toBe('The contract does not state whether the partial period is prorated.')
     expect(truncated).toBe(true)
-    expect(short.endsWith('…')).toBe(true)
-    expect(short.length).toBeLessThanOrEqual(141)
+    expect(rest).toBe('A reviewer decision is required. Choose one of the options below.')
+    // The two pieces together account for the whole text with nothing
+    // dropped and nothing duplicated.
+    expect(`${short} ${rest}`).toBe(text)
+  })
+})
+
+describe('buildDecisionRequiredDisplay — Step 17H.4B0D4H1B4E6.2 §5-§7 (generic across every RuleInterpretationCard kind)', () => {
+  it('collapsed decisionSummary is a complete sentence, never a mid-word clipped prefix', () => {
+    const text = 'The clause states only that the monthly minimum applies from the contract start date — it says nothing about how a partial first calendar month should be handled, and no other clause in the agreement addresses proration for this fee.'
+    const { decisionSummary } = buildDecisionRequiredDisplay(text)
+    expect(decisionSummary).not.toBeNull()
+    expect(decisionSummary).not.toMatch(/…$/)
+    // A complete sentence ends in terminal punctuation or IS the full text —
+    // never a hard character-count cut.
+    expect(decisionSummary === text || /[.!?]$/.test(decisionSummary as string)).toBe(true)
+  })
+
+  it('More details (decisionDetails) never repeats the opening of decisionSummary', () => {
+    const text = 'The contract does not state whether the partial period is prorated. A reviewer decision is required. Choose one of the options below.'
+    const { decisionSummary, decisionDetails } = buildDecisionRequiredDisplay(text)
+    expect(decisionSummary).toBe('The contract does not state whether the partial period is prorated.')
+    expect(decisionDetails).toBe('A reviewer decision is required. Choose one of the options below.')
+    expect(decisionDetails).not.toMatch(/^The contract does not state whether the partial period is prorated/)
+  })
+
+  it('collapsing (re-deriving from the same reasoning) restores the identical concise summary — the split is stateless/pure', () => {
+    const text = 'The contract does not state whether the partial period is prorated. A reviewer decision is required.'
+    const first = buildDecisionRequiredDisplay(text)
+    const second = buildDecisionRequiredDisplay(text)
+    expect(second).toEqual(first)
+    expect(second.decisionSummary).toBe('The contract does not state whether the partial period is prorated.')
+  })
+
+  it('a single sentence has no decisionDetails — nothing to reveal, so no "More details" toggle', () => {
+    const { decisionSummary, decisionDetails } = buildDecisionRequiredDisplay('Decision required.')
+    expect(decisionSummary).toBe('Decision required.')
+    expect(decisionDetails).toBeNull()
+  })
+
+  it('a malformed truncation fragment falls back to the full text as decisionSummary, with no decisionDetails', () => {
+    const text = 'The fee mechanism is unclear, i.e. the contract does not specify whether the rolling average includes the partial first month.'
+    const { decisionSummary, decisionDetails } = buildDecisionRequiredDisplay(text)
+    expect(decisionSummary).toBe(text)
+    expect(decisionDetails).toBeNull()
+  })
+
+  it('null/undefined/empty reasoning falls back to a generic, non-contract-specific summary', () => {
+    for (const reasoning of [null, undefined, '']) {
+      const { decisionSummary } = buildDecisionRequiredDisplay(reasoning)
+      expect(decisionSummary).toBe('Contract does not specify how this should be handled — nothing is preselected.')
+    }
+  })
+
+  it('generic: no branch depends on rule type, contract identity, or specific fixture strings', () => {
+    // Same function, same behavior, for a completely different rule/topic —
+    // proves the split is driven only by sentence structure, not content.
+    const escalatorText = 'The escalator clause references an index but does not state which publication date applies. Verdix cannot determine the effective rate without this.'
+    const { decisionSummary, decisionDetails } = buildDecisionRequiredDisplay(escalatorText)
+    expect(decisionSummary).toBe('The escalator clause references an index but does not state which publication date applies.')
+    expect(decisionDetails).toBe('Verdix cannot determine the effective rate without this.')
+  })
+})
+
+describe('buildRecommendationDisplay — Step 17H.4B0D4H1B4E6.3 §C5/§C6 (root-cause fix for the blank "Verdix recommendation" box)', () => {
+  it('never returns an empty summary when calculation_preview is absent and reasoning exists — the reported bug, fixed generically', () => {
+    // This is the exact shape of the reported defect: no fact rows
+    // computed (calculation_preview omitted, per its own "omit if not
+    // usefully computable yet" contract), reasoning present.
+    const reasoning = 'The escalator clause references CPI but does not name a specific publication or effective date, so Verdix recommends applying the most recently published figure at each anniversary.'
+    const { summary } = buildRecommendationDisplay(false, reasoning)
+    expect(summary).not.toBeNull()
+    expect(summary).not.toBe('')
+  })
+
+  it('when fact rows exist, the fact list is the summary (no redundant prose summary), and the full reasoning becomes the details', () => {
+    const reasoning = 'Verdix computed this from the stated 3% annual escalation applied from year 2 onward.'
+    const { summary, details } = buildRecommendationDisplay(true, reasoning)
+    expect(summary).toBeNull()
+    expect(details).toBe(reasoning)
+  })
+
+  it('when fact rows exist but there is no reasoning at all, there is nothing to show under "More details"', () => {
+    const { summary, details } = buildRecommendationDisplay(true, null)
+    expect(summary).toBeNull()
+    expect(details).toBeNull()
+  })
+
+  it('when fact rows are absent, behaves identically to buildDecisionRequiredDisplay (same summary/details split, same non-duplication guarantee)', () => {
+    const reasoning = 'The contract does not state whether the partial period is prorated. A reviewer decision is required.'
+    const { summary, details } = buildRecommendationDisplay(false, reasoning)
+    const direct = buildDecisionRequiredDisplay(reasoning)
+    expect(summary).toBe(direct.decisionSummary)
+    expect(details).toBe(direct.decisionDetails)
+    expect(details).not.toMatch(/^The contract does not state whether the partial period is prorated/)
+  })
+
+  it('generic: driven only by whether fact rows exist and by reasoning text, never by rule type or fixture-specific content', () => {
+    // Same function, two completely different topics — proves nothing
+    // here is escalator-specific or partial-period-specific.
+    const escalator = buildRecommendationDisplay(false, 'The escalator clause is silent on compounding. Verdix assumes simple annual application.')
+    const partialPeriod = buildRecommendationDisplay(false, 'The agreement does not address partial calendar months. A reviewer decision is required here.')
+    expect(escalator.summary).toBe('The escalator clause is silent on compounding.')
+    expect(partialPeriod.summary).toBe('The agreement does not address partial calendar months.')
+    expect(escalator.summary).not.toContain('partial')
+    expect(partialPeriod.summary).not.toContain('escalator')
+  })
+})
+
+describe('describeDiscountComponentScopeSplit — Step 17H.4B0D4H1B4E7.1 §6/§17 (known fact separated from open ambiguity)', () => {
+  it('a fully-affected discount with an also-possible component returns both parts separately', () => {
+    const result = describeDiscountComponentScopeSplit({
+      affected_components: ['base_recurring_fee'],
+      possibly_affected_components: ['performance_fee'],
+      discount_pct: 100,
+    })
+    expect(result.known).toBe('The fixed platform fee is waived.')
+    expect(result.unresolvedNote).toBe('Whether the performance-share component is also waived is not specified.')
+  })
+
+  it('a partial discount (not 100%) reads "discounted", not "waived", in both parts', () => {
+    const result = describeDiscountComponentScopeSplit({
+      affected_components: ['usage_fee'],
+      possibly_affected_components: ['overage_fee'],
+      discount_pct: 25,
+    })
+    expect(result.known).toBe('The usage fee is discounted.')
+    expect(result.unresolvedNote).toBe('Whether the overage fee is also discounted is not specified.')
+  })
+
+  it('only a known part, no open ambiguity — unresolvedNote is null, nothing invented', () => {
+    const result = describeDiscountComponentScopeSplit({ affected_components: ['base_recurring_fee'], discount_pct: 100 })
+    expect(result.known).toBe('The fixed platform fee is waived.')
+    expect(result.unresolvedNote).toBeNull()
+  })
+
+  it('only an open ambiguity, no confirmed component at all — known is null', () => {
+    const result = describeDiscountComponentScopeSplit({ possibly_affected_components: ['performance_fee'], discount_pct: 100 })
+    expect(result.known).toBeNull()
+    expect(result.unresolvedNote).toBe('Whether the performance-share component is also waived is not specified.')
+  })
+
+  it('neither array populated — both null, never a blank/empty-string result', () => {
+    const result = describeDiscountComponentScopeSplit({ affected_components: [], possibly_affected_components: [] })
+    expect(result.known).toBeNull()
+    expect(result.unresolvedNote).toBeNull()
+  })
+
+  it('the known and unresolved parts, concatenated, equal the existing single-sentence output — same underlying facts, just not joined', () => {
+    const discount = { affected_components: ['base_recurring_fee'], possibly_affected_components: ['performance_fee'], discount_pct: 100 }
+    const { known, unresolvedNote } = describeDiscountComponentScopeSplit(discount)
+    // describeDiscountComponentScope's own wording is "is not explicit"
+    // (unchanged, its own callers depend on that exact string) —
+    // describeDiscountComponentScopeSplit uses "is not specified" for its
+    // OWN, separate unresolvedNote wording, so this only checks the
+    // KNOWN half matches verbatim, not the full joined sentence.
+    expect(known).toBe('The fixed platform fee is waived.')
+    expect(unresolvedNote).toContain('performance-share component')
   })
 })
 

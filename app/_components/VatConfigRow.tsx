@@ -96,3 +96,97 @@ export function VatConfigRow({
     </div>
   )
 }
+
+// Step 17G.3a — a FOURTH presentation of the exact same useVatConfig hook
+// (see this file's header comment for the other three), matching the
+// hover-reveal-pencil grid-tile pattern every other Contract Setup field
+// already uses (EditableStat, and the inline Currency/date editors) —
+// VatConfigRow's own always-visible "Edit"/"Configure" button and
+// full-width bordered-row chrome read as visually inconsistent sitting
+// inside that grid. Same persistence, same hook, same
+// onStatusChange/refreshSignal/onSaved contract as VatConfigRow — this is
+// presentation-only, never a second VAT data path.
+export function VatEditableStat({
+  jobId, onStatusChange, refreshSignal, onSaved,
+}: {
+  jobId: string
+  onStatusChange?: (configured: boolean) => void
+  refreshSignal?: number
+  onSaved?: () => void
+}) {
+  const vat = useVatConfig(jobId, refreshSignal, onStatusChange)
+  const { treatment, loading, editing, startEdit, cancelEdit, draftMode, setDraftMode, draftRate, setDraftRate, saving, saveError, configured } = vat
+
+  const handleSave = async () => {
+    const ok = await vat.save()
+    if (ok) onSaved?.()
+  }
+
+  if (loading) return null
+
+  if (editing) {
+    return (
+      <div>
+        <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">VAT</p>
+        <div className="space-y-2">
+          <div className="flex items-center gap-3 flex-wrap">
+            <label className="flex items-center gap-1.5 text-[12px] text-ink cursor-pointer">
+              <input type="radio" checked={draftMode === 'rate'} onChange={() => setDraftMode('rate')} /> Rate
+            </label>
+            {draftMode === 'rate' && (
+              <input
+                autoFocus
+                type="number" min={0} max={100} step="0.01" value={draftRate}
+                onChange={e => setDraftRate(e.target.value)}
+                className="w-16 text-[12px] border rounded-lg px-2 py-1 outline-none"
+                style={{ borderColor: 'rgba(26,61,43,0.15)' }}
+              />
+            )}
+            {draftMode === 'rate' && <span className="text-[12px] text-stone">%</span>}
+            <label className="flex items-center gap-1.5 text-[12px] text-ink cursor-pointer">
+              <input type="radio" checked={draftMode === 'zero_rated'} onChange={() => setDraftMode('zero_rated')} /> Zero-rated
+            </label>
+          </div>
+          {saveError && <p className="text-[11px]" style={{ color: '#DC2626' }}>{saveError}</p>}
+          <div className="flex items-center gap-1.5">
+            <button onClick={cancelEdit} disabled={saving} className="text-stone/50 hover:text-ink p-1 transition-colors flex-shrink-0" title="Cancel">
+              <i className="ti ti-x" style={{ fontSize: 13 }} />
+            </button>
+            <button
+              onClick={handleSave} disabled={saving}
+              className="flex items-center justify-center w-7 h-7 rounded-lg text-white flex-shrink-0 transition-colors disabled:opacity-40"
+              style={{ background: '#1A3D2B' }}
+              title="Save"
+            >
+              {saving ? <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 12 }} /> : <i className="ti ti-check" style={{ fontSize: 12 }} />}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="group">
+      <p className="text-[10px] font-semibold text-stone uppercase tracking-[0.12em] mb-1.5">VAT</p>
+      <div className="flex items-start gap-1">
+        <p
+          onClick={startEdit}
+          title={configured ? 'Change VAT' : 'Configure VAT'}
+          className={`text-[15px] font-medium leading-snug cursor-pointer rounded -mx-1 px-1 hover:bg-forest/5 transition-colors ${configured ? 'text-ink' : 'text-amber-600 hover:text-amber-700'}`}
+        >
+          {configured
+            ? (treatment!.mode === 'zero_rated' ? '0% (zero-rated)' : `${treatment!.ratePct}%`)
+            : 'Not configured'}
+        </p>
+        <button
+          onClick={startEdit}
+          title={configured ? 'Change VAT' : 'Configure VAT'}
+          className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 p-1 rounded hover:bg-forest/5 mt-0.5"
+        >
+          <i className="ti ti-pencil-minus" style={{ fontSize: 11, color: '#9CA3AF' }} />
+        </button>
+      </div>
+    </div>
+  )
+}

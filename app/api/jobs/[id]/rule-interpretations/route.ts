@@ -2,8 +2,8 @@
  * GET /api/jobs/[id]/rule-interpretations
  *
  * Read-only: every revision (current and historical) of every commercial
- * rule confirmed on this job, so downstream views (Commercial Terms'
- * "Confirmed rules" card, the Edit-commercial-rule drawer) can show who
+ * rule confirmed on this job, so downstream views (Commercial Logic &
+ * Billing Setup's own rows, the Edit-commercial-rule drawer) can show who
  * confirmed the current interpretation and when, link back to the source
  * clause, and browse prior versions — without duplicating that bookkeeping
  * into contract_terms/contract_meter_mappings, which only hold the current

@@ -9,10 +9,11 @@
 // with each other the way two hand-rolled booleans could.
 import { isEscalatorUnresolved, type EscalatorLike } from './escalator-status'
 import { findCadenceWindowContaining, isPartialWindow } from './tariff'
-import type { FieldProvenance, BillabilityCondition, BillabilityEventType } from './types'
+import type { FieldProvenance, BillabilityCondition, BillabilityEventType, VariableInvoiceTimingRule } from './types'
 import { getBillabilityExecutionCapability } from './billability-condition'
 import { resolveOperationalEventEvidence, type OperationalEventEvidence } from './operational-event-evidence'
 import { isMonetaryBasisRecognitionApplicable, isPaidBasisFinalizationApplicable } from './paid-basis-finalization'
+import { isVariableInvoiceTimingConfirmed } from './rule-interpretation'
 
 // The single place "is this field actually resolved" is decided, for any
 // field carrying a FieldProvenance. AI confidence is not provenance: a
@@ -352,7 +353,14 @@ function isOneTimeFeeAmountUnresolved(fee: OneTimeFeeLike): boolean {
 // conflated"). Legacy records (billability_condition still undefined) keep
 // the EXACT pre-Step-12 manual_trigger-gated check, byte for byte, so
 // nothing about this change reopens a historical record (item 19).
-function isOneTimeFeeBillabilityUnresolved(fee: OneTimeFeeLike): boolean {
+// Step 17H.3C3 — exported (previously module-private) so Commercial Logic
+// & Billing Setup can show a one-time fee's Billability row with the same
+// precise, field-specific resolution check ReviewPanel's own one-time-fee
+// card already used inline — never a second, reimplemented classification
+// (isOneTimeFeeUnresolved alone conflates amount- and billability-
+// unresolved into one boolean, too coarse for a row that only concerns
+// billability). No behavior change — same function, same logic.
+export function isOneTimeFeeBillabilityUnresolved(fee: OneTimeFeeLike): boolean {
   if (fee.billability_condition !== undefined) {
     return fee.billability_provenance !== undefined && !isProvenanceResolved(fee.billability_provenance)
   }
@@ -389,7 +397,7 @@ export type CommercialRuleTerms = {
   // treated) — a fee can have one resolved and the other not. Same
   // ProrationLike-shaped requires_confirmation check as every other item
   // in this function.
-  additional_recurring_fees?: Array<{ fee_label?: string; amount?: number; proration?: ProrationLike; variable_invoice_timing?: ProrationLike }> | null
+  additional_recurring_fees?: Array<{ fee_label?: string; amount?: number; proration?: ProrationLike; variable_invoice_timing?: VariableInvoiceTimingRule | null }> | null
   // Step 11 — optional so every existing caller/fixture that predates
   // OneTimeFee-awareness keeps behaving identically (absent/empty means
   // zero one-time-fee items counted, exactly like today).
@@ -609,6 +617,27 @@ export function computeCommercialRuleWorkload(
   // this concept exists yet; every real production call site and every
   // Step 13 test passes an explicit value.
   asOf: Date = new Date(),
+  // Step 17H.4B0D4H1B4E2.5 §14-16 — closes a real undercounting bug: the
+  // Commercial Logic UI's own "Recurring fixed-fee timing" row
+  // (lib/commercial-components.ts's buildFixedComponent) has always
+  // treated an ABSENT fixed_fee_billing_timing as unresolved (never
+  // scheduler-assumed — Step 17F.3's own doctrine), but this function's
+  // countItem call below was gated on the field merely EXISTING, silently
+  // skipping the decision entirely when it was never extracted at all —
+  // undercounting totalToConfirm by exactly the cases where the component-
+  // level badge correctly showed "Decision required" and the global count
+  // didn't. Unlike base_fee_proration (whose own isBaseFeeProrationUnresolved
+  // doc explicitly states absence is NOT unresolved — most contracts
+  // genuinely have no partial-period question), every contract WITH a
+  // fixed fee genuinely does need an invoice-timing decision, so absence
+  // only counts as unresolved when the caller confirms a fixed fee exists
+  // (terms.base_monthly_fee/base_annual_fee — not carried by
+  // CommercialRuleTerms itself, so threaded in explicitly rather than
+  // guessed from this narrower type). Defaults to false so every existing
+  // caller/fixture that doesn't pass it keeps its exact prior behavior
+  // byte-for-byte; this parameter only ever ADDS a blocker, never removes
+  // one, so passing it can only strengthen the approve-gate's safety.
+  hasFixedFee: boolean = false,
 ): CommercialRuleWorkload {
   const tiers = terms?.overage_tiers ?? []
   const groups = groupTiersByUnitType(tiers)
@@ -658,9 +687,14 @@ export function computeCommercialRuleWorkload(
   // remain a commercial blocker, same discipline as base_fee_proration
   // itself: it prevents "Contract configuration: Ready" and creation of
   // an authoritative fixed-fee invoice date until a reviewer confirms it
-  // (or the contract already states it explicitly).
+  // (or the contract already states it explicitly). Step 17H.4B0D4H1B4E2.5
+  // §14-16 — when a fixed fee genuinely exists (hasFixedFee), an ABSENT
+  // fixed_fee_billing_timing counts as unresolved too, matching the
+  // Commercial Logic UI's own doctrine exactly (never scheduler-assumed).
   if (terms?.fixed_fee_billing_timing) {
     countItem('fixed_fee_billing_timing', !!terms.fixed_fee_billing_timing.requires_confirmation)
+  } else if (hasFixedFee) {
+    countItem('fixed_fee_billing_timing', true)
   }
   for (const fee of terms?.additional_recurring_fees ?? []) {
     if (!fee.proration) continue
@@ -673,9 +707,22 @@ export function computeCommercialRuleWorkload(
   // "review complete" contract that later acquires this rule (attached
   // retroactively via compileExecutableCommercialMechanisms) must not
   // silently stay "Ready" while it's open.
+  //
+  // Step 17H.4B0D4H1B4E5.2 — this used to count ONLY requires_confirmation,
+  // which meant a reviewer-confirmed but non-executable value
+  // ('invoice_at_period_end' — see isVariableInvoiceTimingConfirmed's own
+  // header for exactly why that one value has no execution path today)
+  // cleared this decision from the outstanding count even though
+  // lib/performance-share-pull.ts's real billing code still holds the fee
+  // forever. requires_confirmation:false does NOT mean executable — this
+  // now requires BOTH (isVariableInvoiceTimingConfirmed is the single
+  // shared predicate every execution/readiness consumer uses, never a
+  // second, possibly-diverging check), so the review workload accurately
+  // keeps flagging "needs configuration" instead of silently reporting
+  // ready.
   for (const fee of terms?.additional_recurring_fees ?? []) {
     if (!fee.variable_invoice_timing) continue
-    countItem(`variable_invoice_timing:${fee.fee_label}`, !!fee.variable_invoice_timing.requires_confirmation)
+    countItem(`variable_invoice_timing:${fee.fee_label}`, !isVariableInvoiceTimingConfirmed(fee.variable_invoice_timing))
   }
 
   const escalator = terms?.escalators?.[0]

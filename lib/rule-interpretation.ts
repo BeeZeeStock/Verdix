@@ -6,6 +6,7 @@
 // must never diverge between what the API reports and what the UI shows).
 
 import { cadenceNoun, contractMonthLabel } from './cadence-labels'
+import type { VariableInvoiceTimingRule } from './types'
 // Step 7 — the ONE canonical Verdix Global Rulebook AI-guidance renderer;
 // this file never duplicates instruction text itself. Only ever called
 // with a RuleInterpretationContext, never with organization-scoped data —
@@ -295,6 +296,44 @@ export function describeDiscountComponentScope(
   return sentences.join(' ')
 }
 
+// Step 17H.4B0D4H1B4E7.1 §6/§17 — describeDiscountComponentScope above
+// joins the confirmed part (affected_components) and the still-open part
+// (possibly_affected_components) into ONE sentence — correct for its
+// existing callers (a compact label/fallback description), but wrong for
+// a surface that wants to visually separate "what is known" from "what is
+// unclear," which is exactly Commercial Logic's own "Applies to"/waiver-
+// scope row. A SEPARATE function, not a signature change to the existing
+// one — three other call sites already depend on the single-sentence
+// shape (ReviewPanel's discount summary/description fallback,
+// Commercial Terms' confirmedRuleLines), and none of them asked for this
+// split. Reuses the identical verb/joinComponentNames logic — never a
+// second, differently-worded description of the same fact.
+export function describeDiscountComponentScopeSplit(
+  discount: {
+    affected_components?: string[] | null
+    possibly_affected_components?: string[] | null
+    discount_pct?: number | null
+  } | null | undefined,
+): { known: string | null; unresolvedNote: string | null } {
+  const affected = discount?.affected_components ?? []
+  const possible = discount?.possibly_affected_components ?? []
+  if (affected.length === 0 && possible.length === 0) return { known: null, unresolvedNote: null }
+
+  const verb = discount?.discount_pct === 100 ? 'waived' : 'discounted'
+
+  let known: string | null = null
+  if (affected.length > 0) {
+    const { text, plural } = joinComponentNames(affected)
+    known = `The ${text} ${plural ? 'are' : 'is'} ${verb}.`
+  }
+  let unresolvedNote: string | null = null
+  if (possible.length > 0) {
+    const { text, plural } = joinComponentNames(possible)
+    unresolvedNote = `Whether the ${text} ${plural ? 'are' : 'is'} also ${verb} is not specified.`
+  }
+  return { known, unresolvedNote }
+}
+
 // Same distinction as DISCOUNT_OPTIONS, applied to pricing tiers — the
 // ambiguity is identical whether the tier table sets a price, a discount, or
 // an overage rate, so it is asked the same way and never given a different
@@ -381,19 +420,67 @@ export const RULE_INTERACTION_OPTIONS: StructuredOption[] = [
 // isVariableInvoiceTimingConfirmed) rather than silently executing it on
 // the wrong cycle. A reviewer choosing 'other' stays 'unclear'/held, same
 // as never confirming at all.
+// Step 17G.6A, item 13 — labels reworded to the plain business question
+// ("When should the calculated variable charge be invoiced?", asked at
+// the RuleInterpretationCard call site — see page.tsx) rather than naming
+// the mechanism ("next period's usage charges"). Canonical ids/values
+// unchanged; the underlying execution semantics documented above this
+// block are unaffected — 'invoice_at_period_end' still has no execution
+// path, only its label changed.
 export const VARIABLE_INVOICE_TIMING_OPTIONS: StructuredOption[] = [
-  { id: 'invoice_at_next_period_start', label: 'Invoice alongside next period’s usage charges', description: 'Bill alongside the prior period’s closed-window usage overage, on the next period’s invoice — the same cycle every other variable charge on this contract already uses.' },
-  { id: 'invoice_at_period_end', label: 'Invoice immediately at period end', description: 'Issue as soon as the measurement period closes, rather than waiting for the next period’s invoice run.' },
+  { id: 'invoice_at_next_period_start', label: 'At the start of the next billing period', description: 'Bill alongside the prior period’s closed-window usage overage, on the next period’s invoice — the same cycle every other variable charge on this contract already uses.' },
+  { id: 'invoice_at_period_end', label: 'At the end of the measured billing period', description: 'Issue as soon as the measurement period closes, rather than waiting for the next period’s invoice run.' },
   { id: 'other', label: 'Other / unclear', description: 'The agreement does not establish precise invoice timing — leave unresolved pending further review.' },
 ]
 
-// Step 17F.3, item 2 — a reviewer's choice for WHEN a fixed recurring
-// fee's invoice is issued relative to its own billing period. Never
-// inferred from cadence ("monthly") or payment terms ("30 days") — see
-// lib/types.ts's FixedFeeBillingTimingRule.
+// Step 17H.4B0D4H1B4E5.2 — the ONE canonical home for this predicate,
+// reused everywhere "is this timing value actually executable" needs
+// answering (previously only defined in lib/performance-share-pull.ts,
+// which cannot be imported from a client-shared module like this one or
+// lib/commercial-rule-status.ts/lib/commercial-components.ts without
+// pulling that file's supabaseServer import into the browser bundle — the
+// exact class of bug this file's own header comment already guards
+// against, "same discipline as lib/tariff.ts"). lib/performance-share-pull.ts
+// re-exports this unchanged so no existing caller's import path changes.
+//
+// 'invoice_at_next_period_start' is the only timing value with a real
+// execution path today: app/api/admin/invoice-scheduler/route.ts's
+// backward arrears scan attaches a just-closed period's performance-share
+// amount to the NEXT period's own regular invoice — there is no mechanism
+// anywhere in this codebase that generates a standalone invoice the
+// instant a period closes (independent of the next period's own due-date
+// trigger), which is what 'invoice_at_period_end' would require. Building
+// that is a materially larger architectural change (a new invoice_type/
+// trigger mechanism, akin to terminal_settlement's own dedicated path) —
+// deliberately NOT built here (17H.4B0D4H1B4E5.2 §4: report the gap, don't
+// fake an execution path). requires_confirmation:false is BOTH required
+// (a fee whose rule was reset to 'unclear' pending re-review must never
+// execute merely because requires_confirmation briefly reads false from
+// stale data) — a confirmed-but-still-'unclear' timing (should never
+// happen, but not structurally impossible) must never be treated as
+// authorization either. 'invoice_at_period_end' is a resolvable, genuinely
+// reviewer-confirmable VALUE (a contract can state this arrangement, and
+// confirm-rule correctly persists it with requires_confirmation:false —
+// that part of the review question IS answered) but is NOT an executable
+// one — every consumer of this predicate treats "resolved" and
+// "executable" as the same question by design, which is exactly what lets
+// readiness/Commercial Logic correctly keep flagging it as needing
+// configuration rather than silently reporting "ready for billing
+// timeline" while it can never actually be billed.
+export function isVariableInvoiceTimingConfirmed(rule: VariableInvoiceTimingRule | null | undefined): boolean {
+  return !!rule && !rule.requires_confirmation && rule.timing === 'invoice_at_next_period_start'
+}
+
+// Step 17F.3, item 2 (reworded 17G.6A, item 7 — "At the beginning/end of
+// each billing period", matching Commercial Logic & Billing Setup's
+// "Recurring fixed-fee timing" fact and Billing Timeline's identical
+// wording; no "settlement timing"/"billing anchor" jargon) — a reviewer's
+// choice for WHEN a fixed recurring fee's invoice is issued relative to
+// its own billing period. Never inferred from cadence ("monthly") or
+// payment terms ("30 days") — see lib/types.ts's FixedFeeBillingTimingRule.
 export const FIXED_FEE_BILLING_TIMING_OPTIONS: StructuredOption[] = [
-  { id: 'bill_at_period_start', label: 'Bill at beginning of billing period', description: 'Invoice issued at the start of each period, in advance.' },
-  { id: 'bill_at_period_end', label: 'Bill at end of billing period', description: 'Invoice issued at the end of each period, in arrears.' },
+  { id: 'bill_at_period_start', label: 'At the beginning of each billing period', description: 'Invoice issued at the start of each period, in advance.' },
+  { id: 'bill_at_period_end', label: 'At the end of each billing period', description: 'Invoice issued at the end of each period, in arrears.' },
   { id: 'other', label: 'Other / unclear', description: 'The agreement does not establish precise billing timing — leave unresolved pending further review.' },
 ]
 
@@ -573,6 +660,15 @@ export type EscalatorContext = {
   capPct: number | null
   effectiveDate: string | null
   appliesFromYear: number | null
+}
+
+// Step 17H.4B0D4H1B4E5 — job-level, like base_fee_proration/PartialPeriodContext's
+// fee case: WHEN the recurring fixed fee's invoice is issued relative to its
+// own billing period (start vs end), never WHAT the amount is or how a
+// partial period is treated (base_fee_proration, a separate question). No
+// contractUnitType/currency/tiers — this question has none of those.
+export type FixedFeeBillingTimingContext = {
+  sourceClause: string | null
 }
 
 export type DiscountContext = {
@@ -779,6 +875,77 @@ Rules:
 - discretion: "automatic" only if the reviewer's instruction (or the source clause) states the increase applies without a separate decision each time. "requires_renewal_approval" if the clause uses discretionary language ("may be increased") or the reviewer says it needs approval at renewal. "not_exercised" if the reviewer is explicitly declining to apply a discretionary clause for now.
 - renewal_triggered: true only when the increase is tied to renewal specifically (e.g. "on renewal, the fee may be increased by...") rather than an ordinary annual escalator recurring during the original term.
 - Never invent a cap percentage or rate the reviewer didn't state — use null and describe it as uncapped/unknown in calculation_method instead.
+- Respond with ONLY the JSON object, no other text.`
+}
+
+// Step 17H.4B0D4H1B4E5 — free-text path only. A known structured choice
+// ("At the beginning/end of each billing period") is fully self-explanatory
+// and is mapped deterministically client-side (see the review drawer's own
+// applyDeterministicFixedFeeTiming) — this prompt exists solely for the
+// "Other / unclear" + custom-instruction case, where the reviewer describes
+// something the two structured options don't cover. "timing" is never
+// omitted from the schema (unlike other prompts' optional fields): it
+// always has a concrete answer — either a confident start/end reading or
+// the honest "unclear" — so REQUIRED_FIELDS['fixed_fee_billing_timing']
+// stays [] (nothing to re-prompt for) and this can never dead-end in a
+// missing-field loop.
+export function buildFixedFeeBillingTimingPrompt(
+  context: FixedFeeBillingTimingContext,
+  reviewerInput: string,
+): string {
+  return `A SaaS contract has a recurring fixed platform/subscription fee. The agreement does not state WHEN each period's invoice should be issued relative to that billing period — at the start of the period (in advance) or at the end of the period (in arrears). A human reviewer is resolving this with a custom instruction (the two ordinary "start of period" / "end of period" readings didn't fit).
+
+Source clause: ${context.sourceClause ?? '(not captured)'}
+Reviewer's instruction: "${reviewerInput}"
+
+Translate the reviewer's instruction into a structured JSON object with EXACTLY these fields:
+{
+  "timing": "bill_at_period_start" | "bill_at_period_end" | "unclear",
+  "calculation_summary": "<one-sentence plain-English description>"
+}
+
+Rules:
+- Use ONLY what the reviewer's instruction actually says. Never invent a timing the reviewer didn't specify.
+- "bill_at_period_start" means the invoice is issued at the beginning of each billing period, in advance.
+- "bill_at_period_end" means the invoice is issued at the end of each billing period, in arrears.
+- If the reviewer's instruction does not clearly and safely resolve to one of those two readings, set "timing" to "unclear" and use calculation_summary to say what additional configuration this actually needs — never guess a start/end reading from an ambiguous or unsupported instruction.
+- Respond with ONLY the JSON object, no other text.`
+}
+
+// Step 17H.4B0D4H1B4E5.1 — free-text path only, mirroring
+// buildFixedFeeBillingTimingPrompt exactly. A known structured choice ("At
+// the start of the next billing period" / "At the end of the measured
+// billing period") is mapped deterministically client-side (see the review
+// drawer's applyDeterministicVariableInvoiceTiming) — this prompt exists
+// solely for "Other / unclear" + a genuine custom instruction. "timing" is
+// never omitted from the schema — always a concrete answer, either a
+// confident reading or the honest "unclear" — so REQUIRED_FIELDS
+// ['variable_invoice_timing'] stays [] (nothing to re-prompt for).
+export type VariableInvoiceTimingContext = {
+  contractUnitType: string
+  sourceClause: string | null
+}
+
+export function buildVariableInvoiceTimingPrompt(
+  context: VariableInvoiceTimingContext,
+  reviewerInput: string,
+): string {
+  return `A SaaS contract has a variable/usage-based charge ("${context.contractUnitType}") that is calculated after its measurement period closes. The agreement does not state WHEN the resulting invoice is actually issued — as soon as the measurement period ends, or on the next regular billing period's invoice run alongside other charges. A human reviewer is resolving this with a custom instruction (the two ordinary readings didn't fit).
+
+Source clause: ${context.sourceClause ?? '(not captured)'}
+Reviewer's instruction: "${reviewerInput}"
+
+Translate the reviewer's instruction into a structured JSON object with EXACTLY these fields:
+{
+  "timing": "invoice_at_next_period_start" | "invoice_at_period_end" | "unclear",
+  "calculation_summary": "<one-sentence plain-English description>"
+}
+
+Rules:
+- Use ONLY what the reviewer's instruction actually says. Never invent a timing the reviewer didn't specify.
+- "invoice_at_next_period_start" means the charge is billed on the next billing period's own invoice, alongside that period's other charges — the same cycle every other variable charge on this contract already uses.
+- "invoice_at_period_end" means the charge is issued as soon as its own measurement period closes, rather than waiting for the next period's invoice run.
+- If the reviewer's instruction does not clearly and safely resolve to one of those two readings, set "timing" to "unclear" and use calculation_summary to say what additional configuration this actually needs — never guess a reading from an ambiguous or unsupported instruction.
 - Respond with ONLY the JSON object, no other text.`
 }
 
@@ -1082,7 +1249,7 @@ export function describeWhatWillChange(
 ): Array<{ component: string; change: string }> {
   const items: Array<{ component: string; change: string }> = ruleType === 'rule_interaction'
     ? []
-    : [{ component: 'Commercial Terms', change: 'Add confirmed rule to the Commercial Terms view' }]
+    : [{ component: 'Commercial Logic', change: 'Add confirmed rule to Commercial Logic & Billing Setup' }]
   // Whether this rule type feeds the shared contract-value model
   // (lib/contract-value.ts) — every rule that can change fixed fees or
   // minimum-commitment totals must show these two surfaces, per the "no
@@ -1092,36 +1259,53 @@ export function describeWhatWillChange(
   const affectsContractValue = ruleType === 'minimum_commitment' || ruleType === 'partial_period' || ruleType === 'discount' || ruleType === 'service_credit'
   if (ruleType === 'minimum_commitment' || ruleType === 'partial_period') {
     items.push(
-      { component: 'Billing Configuration', change: `Add the confirmed minimum to the ${contractUnitType ?? 'metric'} component` },
+      { component: 'Commercial BoM', change: `Add the confirmed minimum to the ${contractUnitType ?? 'metric'} component` },
       { component: 'Billing Engine', change: 'Apply the confirmed minimum after tier calculation' },
       { component: 'Billing Schedule', change: 'Reflect the confirmed treatment in upcoming usage periods' },
     )
   } else if (ruleType === 'discount') {
     items.push(
-      { component: 'Billing Configuration', change: 'Update the discount rule and its tier structure' },
+      { component: 'Commercial BoM', change: 'Update the discount rule and its tier structure' },
       { component: 'Billing Engine', change: 'Apply the confirmed tier method (graduated/volume/block) when calculating the discount' },
       { component: 'Billing Schedule', change: 'Reflect the confirmed discount in upcoming invoices' },
     )
   } else if (ruleType === 'tier_calculation') {
     items.push(
-      { component: 'Billing Configuration', change: `Set the confirmed calculation method on the ${contractUnitType ?? 'metric'} price table` },
+      { component: 'Commercial BoM', change: `Set the confirmed calculation method on the ${contractUnitType ?? 'metric'} price table` },
       { component: 'Billing Engine', change: 'Apply the confirmed graduated/volume/block method when calculating usage charges' },
       { component: 'Billing Schedule', change: 'Reflect the confirmed calculation in upcoming usage periods' },
     )
   } else if (ruleType === 'service_credit') {
     items.push(
-      { component: 'Billing Configuration', change: 'Add the confirmed service credit and its calculation basis' },
+      { component: 'Commercial BoM', change: 'Add the confirmed service credit and its calculation basis' },
       { component: 'Billing Engine', change: 'Apply the confirmed credit against qualifying invoices' },
       { component: 'Billing Schedule', change: 'Reflect the credit on the next qualifying settlement period' },
     )
   } else if (ruleType === 'rule_interaction') {
     items.push(
-      { component: 'Commercial Terms', change: "Record the resolved basis on the service credit's own interpretation" },
+      { component: 'Commercial Logic', change: "Record the resolved basis on the service credit's own interpretation" },
       { component: 'Billing Engine', change: 'Use the resolved basis when calculating the credit against overlapping periods' },
+    )
+  } else if (ruleType === 'fixed_fee_billing_timing') {
+    // Step 17H.4B0D4H1B4E5 — this used to fall through to the generic
+    // `else` branch below (escalator-specific wording: "Update the
+    // escalator's calculation method" / "Apply the confirmed escalation
+    // formula..."), a live-reproduced defect from before this rule type had
+    // any interpret-rule support at all. Timing never changes a rate/amount
+    // — only WHEN the existing fixed-fee amount is invoiced.
+    items.push(
+      { component: 'Billing Timeline', change: 'Apply the confirmed invoice timing to the fixed fee’s future billing periods' },
+    )
+  } else if (ruleType === 'variable_invoice_timing') {
+    // Step 17H.4B0D4H1B4E5.1 — same fix as fixed_fee_billing_timing above;
+    // this ruleType had the identical gap (no case here, fell through to
+    // escalator-specific wording).
+    items.push(
+      { component: 'Billing Timeline', change: `Apply the confirmed invoice timing to ${contractUnitType ?? 'this'}'s future charges` },
     )
   } else {
     items.push(
-      { component: 'Billing Configuration', change: "Update the escalator's calculation method" },
+      { component: 'Commercial BoM', change: "Update the escalator's calculation method" },
       { component: 'Billing Engine', change: 'Apply the confirmed escalation formula to future periods' },
       { component: 'Billing Schedule', change: 'Reflect the new rate from its effective date' },
     )
@@ -1529,15 +1713,91 @@ export function looksLikeMalformedReasoning(text: string): boolean {
 // meaningless single-token fragment "e." — callers must run this
 // function's `short` result through looksLikeMalformedReasoning before
 // rendering it, never trust it unconditionally.
-export function truncateSentences(text: string, maxSentences = 3, maxChars = 220): { short: string; truncated: boolean } {
+//
+// Surgical fix (Step 17H.4B0D4H1B4E6.2) — this used to have a second
+// fallback: when even the sentence-boundary cut was longer than maxChars
+// (a single long run-on clause, or several short sentences joined by
+// something other than terminal punctuation — e.g. an em dash — so the
+// regex can't split them), it hard-cut mid-word at maxChars and appended
+// "…". That is exactly the "arbitrary clipped prefix" defect: it looks
+// like accidental truncation, not a deliberate summary, and there is no
+// generic, content-safe way to shorten prose without cutting a word or
+// clause in half. There is no such thing as "a complete sentence that is
+// also short" for a genuinely long run-on sentence — so this no longer
+// invents one. It returns the untruncated text instead: still a complete,
+// honest unit, just not shortened. `rest` is new — the leftover sentences
+// beyond the summary, computed directly from the same sentence array
+// (never by re-slicing the trimmed `short` string against `text`, which
+// would be one more brittle character-position assumption) — so a caller
+// can render "More details" as a CONTINUATION of the summary, never a
+// repeat of it from the beginning.
+export function truncateSentences(text: string, maxSentences = 3, maxChars = 220): { short: string; truncated: boolean; rest: string } {
   const sentences = text.match(/[^.!?]+[.!?]+(\s|$)/g) ?? [text]
-  const bySentence = sentences.length > maxSentences ? sentences.slice(0, maxSentences).join('').trim() : text
-  if (bySentence.length <= maxChars) return { short: bySentence, truncated: bySentence !== text }
-  // A hard character-length safety net — a single long run-on sentence (or
-  // several short ones with no terminal punctuation the regex could split
-  // on) would otherwise sail through the sentence-count check untouched.
-  const hardCut = bySentence.slice(0, maxChars).replace(/\s+\S*$/, '')
-  return { short: `${hardCut}…`, truncated: true }
+  if (sentences.length <= maxSentences) return { short: text, truncated: false, rest: '' }
+  const bySentence = sentences.slice(0, maxSentences).join('').trim()
+  if (bySentence.length <= maxChars) return { short: bySentence, truncated: true, rest: sentences.slice(maxSentences).join('').trim() }
+  // The first maxSentences sentences alone are still longer than maxChars
+  // (or there was no terminal punctuation at all, so `sentences` is just
+  // `[text]` and this branch is unreachable via the length check above —
+  // reaching here means a genuinely long leading sentence). No safe,
+  // generic way to shorten it further without a mid-word/mid-clause cut,
+  // so the full text stands as the (complete, if long) summary, and there
+  // is nothing left to reveal as "more".
+  return { short: text, truncated: false, rest: '' }
+}
+
+// Step 17H.4B0D4H1B4E6.2 §7 — the presentation-level decisionSummary/
+// decisionDetails split for a RuleInterpretationCard's "Decision required"
+// callout. RuleProposal itself carries exactly one indivisible field
+// (`reasoning: string`) — there is no separable summary/detail pair
+// upstream to preserve, and this never invents commercial meaning, only a
+// display split of existing prose (truncateSentences + the malformed-
+// fragment guard, both already generic across every rule type/kind). Pure
+// and directly unit-testable so the "collapsed text is a complete
+// sentence" / "expanding never repeats the summary" / "collapsing shows
+// the identical summary again" guarantees can be verified without
+// rendering the (large, fetch-driven) RuleInterpretationCard component
+// itself. `decisionSummary` is null only when even the full reasoning text
+// is unusable (looksLikeMalformedReasoning) — the caller falls back to its
+// own deterministic headline ("Decision required") with no explanatory
+// paragraph, exactly as before this change.
+export function buildDecisionRequiredDisplay(reasoning: string | null | undefined): { decisionSummary: string | null; decisionDetails: string | null } {
+  const text = reasoning || 'Contract does not specify how this should be handled — nothing is preselected.'
+  const { short, truncated, rest } = truncateSentences(text, 1, 140)
+  const shortIsMalformed = looksLikeMalformedReasoning(short)
+  const textIsMalformed = looksLikeMalformedReasoning(text)
+  // A malformed `short` means the SPLIT broke, not the content — fall back
+  // to the full text as the (single, complete) summary rather than hiding
+  // real content behind a details toggle for no reason.
+  const decisionSummary = textIsMalformed ? null : (shortIsMalformed ? text : short)
+  const decisionDetails = !shortIsMalformed && truncated && rest.length > 0 && !looksLikeMalformedReasoning(rest) ? rest : null
+  return { decisionSummary, decisionDetails }
+}
+
+// Step 17H.4B0D4H1B4E6.3 §C6 — the "Verdix recommendation"/"Clear from
+// source" callout's own summary/details split, generalizing
+// buildDecisionRequiredDisplay to the fact that this callout has TWO
+// possible summary sources: a structured fact list (calculation_preview,
+// preferred — see §C5's "prefer existing structured fields") and, only
+// when that's empty, the same prose reasoning fallback Decision Required
+// already uses. This is the direct, unit-testable root-cause fix for the
+// reported bug: calculation_preview is documented as optional ("omit if
+// not usefully computable yet"), so a rule type whose recommendation
+// genuinely has nothing precomputed (escalator was the reported case, but
+// this is not escalator-specific — any rule type can omit it) used to
+// render a badge with NO summary at all and only a "More details" link to
+// reveal the real content. hasFactRows is a plain boolean, not the rows
+// themselves — this function only decides WHICH text (if any) supplements
+// or replaces the fact list, never how to render the facts.
+export function buildRecommendationDisplay(hasFactRows: boolean, reasoning: string | null | undefined): { summary: string | null; details: string | null } {
+  if (hasFactRows) {
+    // The fact list IS the summary (structured, already concise) — the
+    // full reasoning paragraph, if any, is genuinely additional content,
+    // never a repeat of anything already on screen.
+    return { summary: null, details: reasoning || null }
+  }
+  const { decisionSummary, decisionDetails } = buildDecisionRequiredDisplay(reasoning)
+  return { summary: decisionSummary, details: decisionDetails }
 }
 
 // The one detector this module trusts to ground UnresolvedReason
