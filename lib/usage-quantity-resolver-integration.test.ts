@@ -244,6 +244,43 @@ describeIf('Step 17D.1, item 9/18 — one usage fact feeds multiple commercial r
     expect(resolved.ready).toBe(false)
   })
 
+  // Step E9E — regression test for the gap acceptance testing found: a
+  // usage-manual-fallback per-unit fee (rate_per_unit + semantic_input_key,
+  // no confirmed meter mapping, no finalized manual usage value) used to be
+  // silently OMITTED from a real (finalize:true) invoice — never blocking
+  // it — exactly the failure mode Step E9B already fixed in lib/usage-
+  // pull.ts's manual-fallback branch and lib/performance-share-pull.ts's
+  // not_ready branch, but this file (lib/per-unit-fee-pull.ts) never
+  // received the same fix until now. Real billing must fail closed.
+  it('E9E — a required per-unit usage fee with no ready source fails CLOSED for real billing (finalize:true), never silently omitted from the invoice', async () => {
+    const orgId = await createTestOrg('E9E per-unit-fee missing-source org')
+    const jobId = await createTestJob(orgId)
+
+    const terms = {
+      currency: 'SEK',
+      additional_recurring_fees: [{
+        fee_label: 'API transaction fee', amount: 0, description: null,
+        metric_name: 'completed_payment', rate_per_unit: 1.0,
+        semantic_input_key: 'completed_payment_count',
+      }],
+    } as unknown as ContractTerms
+
+    // Preview (finalize:false/undefined) must be COMPLETELY unaffected —
+    // still silently skips, exactly as before this fix.
+    const previewItems = await computePerUnitFeeLineItemsForPeriod({
+      jobId, orgId, terms, currency: 'SEK', periodStart: '2027-01-01', periodEnd: '2027-01-31',
+      asOf: '2027-02-01T00:00:00Z',
+    })
+    expect(previewItems).toHaveLength(0)
+
+    // Real billing (finalize:true) must fail closed, not silently omit
+    // the fee from the invoice it's building.
+    await expect(computePerUnitFeeLineItemsForPeriod({
+      jobId, orgId, terms, currency: 'SEK', periodStart: '2027-01-01', periodEnd: '2027-01-31',
+      asOf: '2027-02-01T00:00:00Z', finalize: true,
+    })).rejects.toThrow(/\[usage_source\]/)
+  })
+
   it('manual usage_period_values fallback resolves when no confirmed meter mapping exists', async () => {
     const orgId = await createTestOrg('17D.1 manual-usage org')
     const jobId = await createTestJob(orgId)
