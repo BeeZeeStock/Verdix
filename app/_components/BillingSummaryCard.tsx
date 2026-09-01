@@ -5,6 +5,8 @@ import { partialPeriodLabel } from '@/lib/cadence-labels'
 import { useVatConfig } from './useVatConfig'
 import { resolveInvoiceVatDisplay } from '@/lib/vat'
 import { isGenuinelyIssuedInvoice, isManualOriginInvoice } from '@/lib/invoice-history-classification'
+import { isHeldScheduledInvoice, describeInvoiceHold, describeInvoiceFailure } from '@/lib/invoice-hold-status'
+import { resolveLineItemAuthorityState } from '@/lib/invoice-line-item-authority'
 import { FinancialAmount } from './FinancialAmount'
 import { EVIDENCE_RECORDED_LABELS, EVIDENCE_WAITING_LABELS } from '@/lib/billability-event-labels'
 import { buildParkedTimelineEntry, type ParkedInvoiceSummary, type BillingTimelineEntry } from '@/lib/billing-timeline-entry'
@@ -188,6 +190,11 @@ function StatusBadge({ status }: { status: string | null }) {
     // deliberately distinct from "Draft" (an actual invoice row awaiting
     // issue): there's nothing to invoice yet, just a known future charge.
     scheduled:     { icon: 'ti-calendar-time', color: '#9CA3AF', label: 'Scheduled' },
+    // Step E9B §5A — an ordinary period invoice the real scheduler
+    // couldn't yet complete (see this file's own isHeld/renderEntry
+    // comment for the exact condition). Deliberately amber, not red — a
+    // temporary, self-recovering hold, not a failure.
+    parked:        { icon: 'ti-clock-pause',   color: '#D97706', label: 'Parked' },
     // Step 17H.2A items 8/9/10/14 — parked-invoice display states, minimally
     // extending this existing map rather than building a second parallel
     // status-to-icon system. Reuses ti-clock-pause (already the Parked
@@ -817,6 +824,16 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
           if (status === 'draft')   return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
           if (status === 'pending') return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
           if (status === 'scheduled') return { icon: 'ti-calendar-time', color: '#9CA3AF' }
+          // Step E9B §5A — a genuinely HELD ordinary period invoice (the
+          // real scheduler reverted it to status='scheduled' with an
+          // error_message starting 'Held: ' — see app/api/admin/invoice-
+          // scheduler/route.ts's own QuantitySourceNotReadyError catch
+          // block). Reuses the SAME icon shape (ti-clock-pause) the
+          // existing one-time/event Parked Invoices card already uses for
+          // its own parked states — same visual vocabulary, deliberately
+          // NOT the same status value or UI section (see this entry's own
+          // §5A addendum: the two tracks must never be merged).
+          if (status === 'parked')  return { icon: 'ti-clock-pause',   color: '#D97706' }
           return { icon: 'ti-circle-dashed', color: '#9CA3AF' }
         }
 
@@ -865,6 +882,20 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
           const candidates = entries.filter(o => o.kind === 'subscription' && o.periodStart && o.periodStart > e.periodEnd!)
           if (candidates.length === 0) return null
           return candidates.reduce((earliest, c) => (c.periodStart! < earliest.periodStart! ? c : earliest))
+        }
+
+        // Step E9 — the mirror of nextPeriodEntryAfter: the real, already-
+        // present timeline entry whose measurement window closed
+        // immediately before this one opened. Used to find, for a
+        // DESTINATION invoice `e`, the SOURCE period whose usage/
+        // performance is due to land on it — never fabricates a prior
+        // period that doesn't exist on this timeline (the job's first
+        // period correctly returns null here, per §4).
+        const prevPeriodEntryBefore = (e: TLEntry): TLEntry | null => {
+          if (!e.periodStart) return null
+          const candidates = entries.filter(o => o.kind === 'subscription' && o.periodEnd && o.periodEnd <= e.periodStart!)
+          if (candidates.length === 0) return null
+          return candidates.reduce((latest, c) => (c.periodEnd! > latest.periodEnd! ? c : latest))
         }
 
         // Step 17H.2B items 5-21 — the enriched recurring-period hierarchy,
@@ -1168,12 +1199,71 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
         }
 
         const renderEntry = (e: TLEntry, isPast: boolean) => {
+          // Step E9B §5A / E9B.1 §6 — a genuinely held ordinary period
+          // invoice: the real scheduler (app/api/admin/invoice-scheduler/
+          // route.ts) reverts a row it can't yet complete to
+          // status='scheduled' with error_message='Held: ...' (the SAME
+          // QuantitySourceNotReadyError recovery path lib/usage-pull.ts's
+          // and lib/performance-share-pull.ts's E9B fixes now throw into)
+          // rather than moving it anywhere else — so it stays in this
+          // exact chronological position (overduePlanned/upcomingPlanned)
+          // exactly as required. Detected here, presentation-only: never
+          // changes e.status itself or which section this entry renders
+          // in, only how THIS row reads once it's already there.
+          // isHeldScheduledInvoice (lib/invoice-hold-status.ts) is the
+          // ONE shared predicate for this — never a raw inline string
+          // check, so Timeline and a future Dashboard queue (E9C) can't
+          // drift on what "held" means. Deliberately excludes
+          // kind:'one-time' — that track already has its own real 'parked'
+          // status/UI (ParkedInvoicesCard) and must not be double-labelled.
+          const isHeld = !isPast && e.kind !== 'commercial-rule' && e.kind !== 'one-time'
+            && isHeldScheduledInvoice(e)
           // Verdix terminology: contract date is the gate.
           // Past date + Stripe open/paid = Issued (sent to customer, awaiting payment)
           // Past date + Stripe paid      = Paid
           // Future date                  = Draft (not yet issued, regardless of Stripe status)
-          const effectiveStatus = e.kind === 'commercial-rule' ? 'scheduled' : (isPast ? e.status : 'draft')
+          const effectiveStatus = e.kind === 'commercial-rule' ? 'scheduled' : isHeld ? 'parked' : (isPast ? e.status : 'draft')
+          // Step E9B.1 §12 — the complete, tested authority rule for the
+          // Invoice Projection variable-line section (see lib/invoice-
+          // line-item-authority.ts's own header for the full 4-state
+          // rationale) — computed once here, not re-derived at each of
+          // the ternary chain's branch conditions below.
+          const authorityState = resolveLineItemAuthorityState({
+            hasRealLineItems: e.overageLineItems.length > 0,
+            isFailed: effectiveStatus === 'failed',
+            isPast,
+          })
           const canPark = !isPast && e.kind === 'one-time'
+          // Step E9B §5A/E9 §17 — computed once, shared by the header
+          // summary figure below AND the Invoice Projection tfoot further
+          // down, so the two can never disagree (the exact risk the prior
+          // E9 comment on this branch flagged). Only ever non-empty for a
+          // subscription/period entry that hasn't produced real overage
+          // line items yet (isPast is false — draft, scheduled, or held) —
+          // a real invoice's own real line items are never adjusted here.
+          let carriedForwardReadyTotal = 0
+          let carriedForwardBlockingCount = 0
+          if (e.kind === 'subscription' && e.periodStart && e.overageLineItems.length === 0 && !isPast) {
+            const prevEntryForTotal = prevPeriodEntryBefore(e)
+            const prevModelForTotal = prevEntryForTotal ? periodExecutionFor(prevEntryForTotal) : null
+            if (prevModelForTotal) {
+              const prevPhaseForTotal = deriveMeasurementPhase(prevModelForTotal.workspace.period.start, prevModelForTotal.workspace.period.end)
+              const incomingForTotal = buildDeferredItems({
+                usage: prevModelForTotal.workspace.usage, performance: prevModelForTotal.workspace.performance,
+                phase: prevPhaseForTotal,
+              })
+              carriedForwardReadyTotal = incomingForTotal.filter(i => i.state.state === 'ready').reduce((s, i) => s + (i.amount ?? 0), 0)
+              carriedForwardBlockingCount = incomingForTotal.filter(i => i.state.state !== 'ready').length
+            }
+          }
+          // Step E9 §17 (revised) — known, ready carried-forward amounts
+          // now actually contribute to the displayed projected total
+          // (previously frozen at e.amount alone, deliberately never
+          // including them at all) — an unresolved item's amount is never
+          // guessed or defaulted to zero here, it simply doesn't
+          // contribute until it's genuinely ready, exactly like every
+          // other "no fake zero" rule in this file.
+          const displayAmount = e.amount + carriedForwardReadyTotal
           const isOpen = expanded.has(e.id)
           // Step 17F.8 — a not-yet-issued fixed-fee entry must never claim
           // a definite "Will be issued <date>" while fixed_fee_billing_timing
@@ -1234,12 +1324,64 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
                         </>
                       )}
                     </p>
-                    {effectiveStatus === 'failed' && e.errorMessage && (
-                      <p className="text-[10px] mt-1 flex items-start gap-1" style={{ color: '#DC2626' }}>
-                        <i className="ti ti-alert-triangle flex-shrink-0" style={{ fontSize: 11, marginTop: 1 }} />
-                        <span>{e.errorMessage}</span>
-                      </p>
-                    )}
+                    {/* Step E9B.1 §7 — business-facing copy ONLY
+                        (lib/invoice-hold-status.ts's describeInvoiceFailure)
+                        — never the raw Error.message, which can carry a
+                        job id, an internal function-name prefix, or other
+                        implementation detail. That raw text is still
+                        offered, but only behind an explicit, visually
+                        subordinate "Technical details" disclosure — never
+                        hidden outright (a reader who needs it can still
+                        get it), never the PRIMARY thing shown. */}
+                    {effectiveStatus === 'failed' && (() => {
+                      const failure = describeInvoiceFailure(e)
+                      if (!failure.failed) return null
+                      return (
+                        <div className="mt-1">
+                          <p className="text-[10px] flex items-start gap-1" style={{ color: '#DC2626' }}>
+                            <i className="ti ti-alert-triangle flex-shrink-0" style={{ fontSize: 11, marginTop: 1 }} />
+                            <span>{failure.businessReason}</span>
+                          </p>
+                          {failure.technicalReason && (
+                            <details className="mt-0.5 ml-4">
+                              <summary className="text-[9px] text-stone/50 cursor-pointer select-none">Technical details</summary>
+                              <p className="text-[9px] text-stone/50 font-mono mt-0.5 break-all">{failure.technicalReason}</p>
+                            </details>
+                          )}
+                        </div>
+                      )
+                    })()}
+                    {/* Step E9B §5A / E9B.1 §6/§7 — the specific blocker
+                        holding this invoice, via the SAME centralized
+                        helper (lib/invoice-hold-status.ts's
+                        describeInvoiceHold) Timeline's own isHeld check
+                        above uses — never a re-derived or guessed reason.
+                        Business-facing copy is primary (amber, not red: a
+                        held invoice is an expected, temporary, self-
+                        recovering state — the next scheduler run, or the
+                        targeted recheck a Billing Operations finalize
+                        already requests, retries automatically once the
+                        blocker clears — never a genuine failure); the
+                        scheduler's own raw message stays available as
+                        secondary technical detail only. */}
+                    {effectiveStatus === 'parked' && (() => {
+                      const hold = describeInvoiceHold(e)
+                      if (!hold.held) return null
+                      return (
+                        <div className="mt-1">
+                          <p className="text-[10px] flex items-start gap-1" style={{ color: '#B45309' }}>
+                            <i className="ti ti-clock-pause flex-shrink-0" style={{ fontSize: 11, marginTop: 1 }} />
+                            <span>{hold.businessReason}</span>
+                          </p>
+                          {hold.technicalReason && (
+                            <details className="mt-0.5 ml-4">
+                              <summary className="text-[9px] text-stone/50 cursor-pointer select-none">Technical details</summary>
+                              <p className="text-[9px] text-stone/50 font-mono mt-0.5 break-all">{hold.technicalReason}</p>
+                            </details>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 flex-shrink-0">
@@ -1255,8 +1397,13 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
                       </span>
                     ) : (
                       <div className="flex flex-col items-end">
+                        {effectiveStatus === 'parked' && (
+                          <span className="text-[9px] font-semibold uppercase tracking-wide mb-0.5" style={{ color: '#B45309' }}>
+                            Parked{carriedForwardBlockingCount > 0 ? ` · ${carriedForwardBlockingCount} action required` : ''}
+                          </span>
+                        )}
                         <span className="text-[13px] font-semibold text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                          {fmt(e.amount, e.currency)}
+                          {fmt(displayAmount, e.currency)}
                         </span>
                         {/* Step 17H.4B0D4H1B4E8.1 §2-4 — audited what e.amount
                             actually is: the exact same value the Invoice
@@ -1271,7 +1418,7 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
                             entry (open/paid/past_due/...) states the settled
                             fact plainly, never "projected". */}
                         <span className="text-[9px] text-stone/50 uppercase tracking-wide mt-0.5">
-                          {effectiveStatus === 'draft' || effectiveStatus === 'scheduled' ? 'Net projected' : 'Net'}
+                          {effectiveStatus === 'draft' || effectiveStatus === 'scheduled' || effectiveStatus === 'parked' ? 'Net projected' : 'Net'}
                         </span>
                       </div>
                     )}
@@ -1360,7 +1507,7 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
                             <td className="px-3 py-2 text-right text-stone" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.baseAmount, e.currency)}</td>
                             <td className="px-3 py-2 text-right font-medium text-ink" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(e.baseAmount, e.currency)}</td>
                           </tr>
-                          {e.overageLineItems.length > 0 ? (
+                          {authorityState === 'authoritative' ? (
                             e.overageLineItems.map((item, i) => {
                               const billable = item.billable_units ?? Math.max(0, item.total_units - item.included_units)
                               const rate     = item.rate_per_unit ?? (billable > 0 ? item.amount / billable : 0)
@@ -1373,28 +1520,113 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
                                 </tr>
                               )
                             })
-                          ) : isPast ? (
+                          ) : authorityState === 'failed_unknown' ? (
+                            // Step E9B (E9 §17 audit), formalized by E9B.1
+                            // §12 — an empty overageLineItems array is NOT
+                            // reliable proof that this period genuinely had
+                            // zero usage: a 'failed' invoice's computation
+                            // never completed — see the real error banner
+                            // already shown above this table. Claiming "No
+                            // usage overage" here would flatly contradict
+                            // that banner, which is exactly the card-level/
+                            // component-level contradiction §5A warns
+                            // against. Shown only when this period
+                            // genuinely has usage/overage terms at all —
+                            // same hasOverageTerms gate the confirmed-zero
+                            // branch below already uses.
+                            hasOverageTerms && (
+                              <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                                <td className="px-3 py-2 text-stone/50" colSpan={4}>Not calculated — invoice failed before usage could be computed (see above)</td>
+                              </tr>
+                            )
+                          ) : authorityState === 'confirmed_zero' ? (
                             hasOverageTerms && meterTypes.map(mt => (
                               <tr key={mt} style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
                                 <td className="px-3 py-2 text-ink">{mt} overage</td>
                                 <td className="px-3 py-2 text-right text-stone/40" colSpan={3}>No usage overage for this period</td>
                               </tr>
                             ))
-                          ) : (
-                            // Step 17H.4B0D4H1B4E8 §16 — this table is
-                            // Invoice Projection: only lines genuinely
-                            // expected on THIS invoice. An upcoming
-                            // period's usage/overage isn't measured yet and
-                            // doesn't belong on this invoice at all — it
-                            // used to render a pseudo-line here ("— / — /
-                            // Will be calculated at the end of the billing
-                            // cycle"), which is exactly the anti-pattern
-                            // this section must avoid. That fact now
-                            // surfaces once, honestly, in the Deferred
-                            // section below (buildDeferredItems) instead of
-                            // as a fake row in a monetary table.
-                            null
-                          )}
+                          ) : (() => {
+                            // Step E9 — this row used to render nothing at
+                            // all once e.overageLineItems was empty (the
+                            // real per-provider computation hasn't run
+                            // yet), which is exactly the reported gap: the
+                            // SOURCE period's own "Deferred to next
+                            // invoice" section names this exact invoice as
+                            // the destination, but nothing here ever
+                            // corroborated it — the obligation appeared to
+                            // vanish between the two screens. Root-caused
+                            // via app/api/admin/invoice-scheduler/route.ts
+                            // (Stage B already correctly attaches the
+                            // PRIOR closed period's usage/performance to
+                            // THIS invoice at real send-time — runtime was
+                            // never wrong) — this is a live PREVIEW of that
+                            // same, already-correct arrears relationship,
+                            // computed from the prior period's own
+                            // workspace via the SAME buildDeferredItems
+                            // the prior period's own Deferred section
+                            // already calls (§18: one shared helper, two
+                            // render sites, never two independently-
+                            // computed lists that could drift apart).
+                            // Never rendered once a real invoice exists
+                            // (e.overageLineItems.length > 0, handled
+                            // above) — a genuinely sent invoice's real
+                            // line items are shown, never a stale preview
+                            // alongside them (§15/§20).
+                            const prevEntry = prevPeriodEntryBefore(e)
+                            if (!prevEntry) return null // job's first period — nothing to carry forward (§4)
+                            const prevModel = periodExecutionFor(prevEntry)
+                            if (!prevModel) return null
+                            const prevPhase = deriveMeasurementPhase(prevModel.workspace.period.start, prevModel.workspace.period.end)
+                            const incoming = buildDeferredItems({
+                              usage: prevModel.workspace.usage, performance: prevModel.workspace.performance,
+                              phase: prevPhase,
+                            })
+                            if (incoming.length === 0) return null
+                            return (
+                              <>
+                                <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                                  <td className="px-3 py-1.5 text-stone/50" colSpan={4} style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                                    Carried forward · {prevEntry.label}
+                                  </td>
+                                </tr>
+                                {incoming.map(item => (
+                                  <tr key={item.key} style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                                    <td className="px-3 py-2 text-ink" colSpan={3}>{item.label} · {prevEntry.label}</td>
+                                    <td
+                                      className="px-3 py-2 text-right font-medium"
+                                      style={{ fontVariantNumeric: 'tabular-nums', color: item.state.state === 'ready' ? '#1C1917' : item.state.state === 'attention' ? '#B45309' : '#78716C' }}
+                                    >
+                                      {item.state.state === 'ready' && item.amount != null ? fmt(item.amount, e.currency) : item.state.label}
+                                    </td>
+                                  </tr>
+                                ))}
+                                {incoming.some(i => i.kind === 'performance' && i.state.state === 'attention') && onNavigateToOperationalInputs && (
+                                  <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                                    <td className="px-3 py-2 text-right" colSpan={4}>
+                                      <button type="button" onClick={onNavigateToOperationalInputs} className="text-[10px] font-medium text-forest hover:underline">
+                                        Enter performance inputs →
+                                      </button>
+                                    </td>
+                                  </tr>
+                                )}
+                                {/* Step E9 §17 — the header/Net figure above
+                                    (frozen, untouched) never included these
+                                    rows to begin with, so it can't newly
+                                    disagree with them — this note exists
+                                    only so a reader scanning the total
+                                    doesn't assume it already reflects
+                                    what's still pending directly below it. */}
+                                {incoming.some(i => i.state.state !== 'ready') && (
+                                  <tr style={{ borderTop: '1px solid rgba(26,61,43,0.06)' }}>
+                                    <td className="px-3 py-1.5 text-stone/50" colSpan={4} style={{ fontSize: 10 }}>
+                                      Excludes charges awaiting measurement — the total above does not yet include them.
+                                    </td>
+                                  </tr>
+                                )}
+                              </>
+                            )
+                          })()}
                         </>
                       ) : e.kind === 'commercial-rule' && e.commercialRule ? (
                         <>
@@ -1462,8 +1694,19 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
                       // Net/VAT/gross — see lib/vat.ts's resolveInvoiceVatDisplay
                       // for the full "prefer the immutable snapshot over a
                       // live projection" rationale.
+                      // Step E9B (E9 §17) — displayAmount, not e.amount: for
+                      // a not-yet-real entry with nothing carried forward
+                      // it's numerically identical (carriedForwardReadyTotal
+                      // is 0), so this is a no-op for every existing case;
+                      // it only changes the figure once a prior period's
+                      // genuinely-computed usage/performance is ready to
+                      // carry into THIS invoice (§5A). A real, already-sent
+                      // invoice always has e.vatMode set, which the snapshot
+                      // branch below prefers wholesale over this figure —
+                      // so a real invoice's own actual VAT breakdown is
+                      // never affected by this change either.
                       const display = resolveInvoiceVatDisplay(
-                        e.amount,
+                        displayAmount,
                         e.vatMode ? { vatMode: e.vatMode, vatRatePct: e.vatRatePct ?? null, netAmount: e.netAmount ?? null, vatAmount: e.vatAmount ?? null, grossAmount: e.grossAmount ?? null } : null,
                         vat.treatment,
                       )
@@ -1480,7 +1723,7 @@ export function BillingSummaryCard({ jobId, terms, usageSourceCards, onHasSchedu
                           <tr style={{ borderTop: '1px solid rgba(26,61,43,0.1)', background: 'rgba(26,61,43,0.02)' }}>
                             <td className="px-3 py-2 font-semibold text-stone" colSpan={3}>Net</td>
                             <td className="px-3 py-2 text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                              <FinancialAmount amount={e.amount} currency={e.currency} basis="net" size="sm" />
+                              <FinancialAmount amount={displayAmount} currency={e.currency} basis="net" size="sm" />
                             </td>
                           </tr>
                           {display ? (

@@ -165,13 +165,37 @@ export interface DeferredItem {
   // only ITS calculation timing, never repeats "→ {destination}" — that
   // was the reported "repetitive and slightly contradictory" pattern.
   timingText: string
+  // Step E9 §14/§18 — the SAME state vocabulary the calculation-basis
+  // table already uses (describeUsageComponentState/
+  // describePerformanceComponentState below) — reused, never re-derived,
+  // so this item reads identically regardless of which section renders
+  // it (the source period's own Deferred list, or a later destination
+  // invoice's incoming-obligation preview — see buildComponentDetailRows'
+  // own doc and BillingSummaryCard's Invoice Projection rendering).
+  state: ComponentRowState
+  // Real computed amount — present ONLY once state.state === 'ready'
+  // (status genuinely 'computed'). An item still in progress must never
+  // carry a monetary value here: zero is an economic result, never an
+  // "unknown/not yet calculable" placeholder (§6).
+  amount?: number | null
+  kind: 'usage' | 'performance'
 }
 
-// Step §19-22 — items destined for a LATER invoice than the one Invoice
-// Projection represents. The destination itself is rendered by the
-// caller, once, in the section heading — this function only decides
-// WHICH items are deferred and their own timing text, never a
-// destination string.
+// Step §19-22, revised E9 §14/§18/§23 — items belonging to a LATER invoice
+// than the one Invoice Projection for the SOURCE period represents. The
+// destination itself is rendered by the caller, once, in the section
+// heading — this function only decides WHICH items carry forward and
+// their own state/timing, never a destination string. Step E9 — a
+// genuinely computed/final item is no longer excluded: the prior
+// exclusion ("it already belongs on this invoice") was the exact root
+// cause of the reported bug — once usage/performance reaches its final,
+// calculated state, it must keep appearing (now as "Final"/"ready",
+// carrying its real amount) until it is actually shown on its real
+// destination invoice, never silently vanish in between. Called with
+// EXACTLY the same usage/performance arrays for both call sites (the
+// source period's own Deferred section, and the destination invoice's
+// incoming-obligation preview) — one shared computation, never two
+// independently-derived lists that could drift apart.
 export function buildDeferredItems(params: {
   usage: UsageComponentState[]
   performance: PerformanceComponentState[]
@@ -180,23 +204,37 @@ export function buildDeferredItems(params: {
 }): DeferredItem[] {
   const items: DeferredItem[] = []
   for (const u of params.usage) {
-    if (u.status === 'computed' || u.status === 'awaiting_source') continue
-    const sub = params.phase === 'not_started' && params.measurementStartLabel
-      ? `Measurement starts ${params.measurementStartLabel}`
-      : params.phase === 'not_started' ? 'Not started' : 'Measured this period'
-    items.push({ key: `usage:${u.key}`, label: u.label, sub, timingText: 'Calculated after period close' })
+    if (u.status === 'awaiting_source') continue
+    const state = describeUsageComponentState(u.status, params.phase)
+    const sub = u.status === 'computed'
+      ? 'Measured this period'
+      : params.phase === 'not_started' && params.measurementStartLabel
+        ? `Measurement starts ${params.measurementStartLabel}`
+        : params.phase === 'not_started' ? 'Not started' : 'Measured this period'
+    items.push({
+      key: `usage:${u.key}`, label: u.label, sub,
+      timingText: u.status === 'computed' ? 'Ready' : 'Calculated after period close',
+      state, amount: u.status === 'computed' ? (u.amount ?? 0) : null, kind: 'usage',
+    })
   }
   for (const p of params.performance) {
-    if (p.status === 'computed' || p.status === 'waived' || p.status === 'not_started') continue
+    if (p.status === 'waived' || p.status === 'not_started') continue
+    const state = describePerformanceComponentState(p.status, params.phase)
     items.push({
-      key: `performance:${p.feeLabel}`,
+      // Step E9B — prefers the fee's stable recurring_fee_id (when the
+      // contract extraction assigned one) over feeLabel, which is mutable
+      // display text that can collide or drift across a re-extraction —
+      // audited per E9's own flagged concern. Falls back to feeLabel only
+      // for older data with no id, preserving today's exact key for it.
+      key: `performance:${p.recurringFeeId ?? p.feeLabel}`,
       label: p.feeLabel,
       sub: 'Performance / outcome charge',
       // Provisional: only bills once required operational inputs actually
       // arrive — never the same unconditional "Calculated after period
       // close" a usage measurement (which WILL close regardless of input
       // availability) correctly gets.
-      timingText: 'Awaiting input',
+      timingText: p.status === 'computed' ? 'Ready' : 'Awaiting input',
+      state, amount: p.status === 'computed' ? (p.amount ?? 0) : null, kind: 'performance',
     })
   }
   return items
@@ -365,7 +403,7 @@ export function buildComponentDetailRows(params: {
   for (const p of params.performance) {
     const blocked = p.status === 'pending_operational_inputs' || p.status === 'not_started'
     rows.push({
-      key: `performance:${p.feeLabel}`,
+      key: `performance:${p.recurringFeeId ?? p.feeLabel}`,
       component: p.feeLabel,
       basis: p.numeratorKey && p.denominatorKey
         ? [p.numeratorKey, p.denominatorKey].map(humanizeKey).join(' ÷ ')

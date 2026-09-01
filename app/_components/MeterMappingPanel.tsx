@@ -108,7 +108,15 @@ type OperationalInputValueRow = {
 // API, same append/revoke/finality discipline) instead of a second
 // persistence path — this component was previously only reachable inside
 // the review drawer, which is precisely the bug item 1 fixes.
-export function ManualInputEntry({ jobId, inputKey }: { jobId: string; inputKey: string }) {
+// Step E9B.1 §4 — onFinalized is called ONLY after a genuinely FINAL save
+// (never a draft — a draft can never release a held invoice, see
+// lib/operational-input-binding.ts's finalized_at gate) whose recheck the
+// server has already attempted inline (see the POST route's own comment).
+// The caller (app/(dashboard)/configure/[id]/page.tsx) uses this purely to
+// refetch Billing Timeline — the SAME "bump a tick, include it in
+// BillingSummaryCard's remount key" idiom already used for parked-invoice
+// evidence recording, never a new refresh mechanism.
+export function ManualInputEntry({ jobId, inputKey, onFinalized }: { jobId: string; inputKey: string; onFinalized?: () => void }) {
   const [periodStart, setPeriodStart] = useState('')
   const [periodEnd, setPeriodEnd] = useState('')
   const [value, setValue] = useState('')
@@ -146,9 +154,25 @@ export function ManualInputEntry({ jobId, inputKey }: { jobId: string; inputKey:
     }).catch(() => null)
     setSaving(null)
     if (!res?.ok) { setMsg('Save failed — try again.'); return }
-    setMsg(isFinal ? 'Marked final.' : 'Draft saved.')
+    // Step E9B.1 §1/§2/§4 — a FINAL save's response already carries the
+    // server-side readiness-recheck outcome (the POST route awaits it
+    // inline — one request, not a second round trip). `recheck: null`
+    // means this was a draft, which never attempts one.
+    const body = await res.json().catch(() => null) as { recheck?: { ok: boolean } | null } | null
+    if (isFinal && body?.recheck) {
+      setMsg(body.recheck.ok
+        ? 'Marked final. Billing readiness rechecked.'
+        : 'Marked final. Recheck did not complete — the daily billing run will retry automatically.')
+    } else {
+      setMsg(isFinal ? 'Marked final.' : 'Draft saved.')
+    }
     setValue('')
     load()
+    // Step E9B.1 §4 — only a genuinely final save can have changed
+    // whether a held invoice is now ready; a draft save never does (see
+    // this function's own onFinalized doc comment), so the caller's
+    // Billing Timeline refetch is triggered only here, not on every save.
+    if (isFinal) onFinalized?.()
   }
 
   return (
@@ -187,7 +211,7 @@ export function ManualInputEntry({ jobId, inputKey }: { jobId: string; inputKey:
           onClick={() => save(true)} disabled={saving !== null}
           className="text-[11px] font-medium text-white px-2 py-1 rounded bg-forest hover:bg-sage disabled:opacity-50"
         >
-          {saving === 'final' ? 'Saving…' : 'Mark final'}
+          {saving === 'final' ? 'Saving & rechecking readiness…' : 'Mark final'}
         </button>
       </div>
       {msg && <p className="text-[10px] text-stone/70 mt-1">{msg}</p>}
@@ -265,7 +289,21 @@ function ManualUsageEntry({ jobId, semanticInputKey }: { jobId: string; semantic
     }).catch(() => null)
     setSaving(null)
     if (!res?.ok) { setMsg('Save failed — try again.'); return }
-    setMsg(isFinal ? 'Marked final.' : 'Draft saved.')
+    // Step E9B.1 §1/§2/§4 — same server-side inline readiness recheck as
+    // ManualInputEntry's identical POST /usage-values change; see that
+    // component's own comment. This widget lives inside the Review
+    // drawer, a separate component tree from Billing Timeline, so it
+    // doesn't trigger Billing Timeline's own refetch the way Billing
+    // Operations' ManualInputEntry does — the recheck itself still runs
+    // either way, and the daily scheduler remains the fallback regardless.
+    const body = await res.json().catch(() => null) as { recheck?: { ok: boolean } | null } | null
+    if (isFinal && body?.recheck) {
+      setMsg(body.recheck.ok
+        ? 'Marked final. Billing readiness rechecked.'
+        : 'Marked final. Recheck did not complete — the daily billing run will retry automatically.')
+    } else {
+      setMsg(isFinal ? 'Marked final.' : 'Draft saved.')
+    }
     setQuantity('')
     load()
   }
@@ -301,7 +339,7 @@ function ManualUsageEntry({ jobId, semanticInputKey }: { jobId: string; semantic
           onClick={() => save(true)} disabled={saving !== null}
           className="text-[11px] font-medium text-white px-2 py-1 rounded bg-forest hover:bg-sage disabled:opacity-50"
         >
-          {saving === 'final' ? 'Saving…' : 'Mark final'}
+          {saving === 'final' ? 'Saving & rechecking readiness…' : 'Mark final'}
         </button>
       </div>
       {msg && <p className="text-[10px] text-stone/70 mt-1">{msg}</p>}

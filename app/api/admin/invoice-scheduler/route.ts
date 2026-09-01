@@ -23,11 +23,11 @@ import { computePerformanceShareLineItemsForPeriod } from '@/lib/performance-sha
 import { computePerUnitFeeLineItemsForPeriod } from '@/lib/per-unit-fee-pull'
 import { evaluateRollingBandMigrations, persistTriggeredRollingBandMigrations, reconcileActiveRollingBandTransitions } from '@/lib/rolling-band-migration-pull'
 import { resolveUsageQuantityForPeriod } from '@/lib/usage-quantity-resolver'
-import { QuantitySourceNotReadyError } from '@/lib/commercial-quantity-source'
+import { classifySchedulerCatchOutcome } from '@/lib/invoice-scheduler-error-classification'
 import { applyCreditLedgerForPeriod } from '@/lib/credit-ledger-service'
 import type { ContractTerms } from '@/lib/types'
 import { isAuthorizedCronRequest } from '@/lib/cron-auth'
-import { resolveSchedulerScope } from '@/lib/invoice-scheduler-scope'
+import { resolveSchedulerScope, type SchedulerScope } from '@/lib/invoice-scheduler-scope'
 import { isHeldHistoricalTerminalSettlement } from '@/lib/terminal-settlement-guard'
 import { resolveFixedFeeSchedulingDecision } from '@/lib/fixed-fee-invoice-scheduling'
 import { resolveVatTreatment, computeVat, reconcileGrossAmount } from '@/lib/vat'
@@ -71,8 +71,22 @@ export async function GET(req: NextRequest) {
   if (!scopeResolution.ok) {
     return NextResponse.json({ error: scopeResolution.error }, { status: scopeResolution.status })
   }
-  const scope = scopeResolution.scope
+  return runInvoiceSchedulerSweep(scopeResolution.scope)
+}
 
+// Step E9B.1 §1/§2 — extracted verbatim from the rest of the former GET
+// body (a pure cut at the auth/scope-resolution boundary — `req` was used
+// ONLY above this point, confirmed by grepping the whole file for `req.`
+// before making this change; nothing below here ever touched it, so this
+// is behavior-neutral for the existing cron path). Exported so an internal
+// server-side caller — a targeted post-finalization readiness recheck (see
+// lib/invoice-readiness-recheck.ts) — can reuse the EXACT SAME claim/
+// billing_hold/execution_payload/credit-ledger/VAT/Stripe/Remembill
+// machinery below, in-process, with no HTTP round-trip, no new secret
+// handling, and no parallel invoice-engine logic. Still returns a
+// NextResponse (unchanged shape) so the GET handler above can return it
+// directly; an internal caller awaits it and reads .status/.json() itself.
+export async function runInvoiceSchedulerSweep(scope: SchedulerScope) {
   // Captured exactly once for the whole run, not re-read per row — the
   // same explicit "as of" reference threads through period selection,
   // usage calculation, and the closure invariant below, so a single
@@ -1076,25 +1090,24 @@ export async function GET(req: NextRequest) {
       // required here for the next run to naturally re-select and retry it.
       // Generic — nothing here or in QuantitySourceNotReadyError itself
       // knows what a qualified unit, an SQM, or a meeting is.
-      if (err instanceof QuantitySourceNotReadyError) {
-        console.log(`[invoice-scheduler] planned_invoice ${row.id} held — commercial quantity source not yet ready: ${err.message}`)
-        await supabaseServer
-          .from('planned_invoices')
-          .update({ status: 'scheduled', processing_started_at: null, error_message: `Held: ${err.message}` })
-          .eq('id', row.id)
-        results.push({ id: row.id, ok: false, held: true, error: `Held: ${err.message}` })
-        continue
+      // Step E9B.1 §9/§10/§11 — the retryable-hold vs. terminal-failure
+      // decision itself is made by lib/invoice-scheduler-error-
+      // classification.ts's pure classifySchedulerCatchOutcome, directly
+      // unit-tested there; this block only acts on it (the DB update and
+      // results.push are mechanical, not independent decisions).
+      const outcome = classifySchedulerCatchOutcome(err)
+      if (outcome.held) {
+        console.log(`[invoice-scheduler] planned_invoice ${row.id} held — commercial quantity source not yet ready: ${err instanceof Error ? err.message : String(err)}`)
+      } else {
+        console.error(`[invoice-scheduler] failed for planned_invoice ${row.id}`, err)
       }
-
-      const message = err instanceof Error ? err.message : String(err)
-      console.error(`[invoice-scheduler] failed for planned_invoice ${row.id}`, err)
-
       await supabaseServer
         .from('planned_invoices')
-        .update({ status: 'failed', error_message: message })
+        .update(outcome.held
+          ? { status: outcome.status, processing_started_at: null, error_message: outcome.errorMessage }
+          : { status: outcome.status, error_message: outcome.errorMessage })
         .eq('id', row.id)
-
-      results.push({ id: row.id, ok: false, error: message })
+      results.push({ id: row.id, ok: false, held: outcome.held || undefined, error: outcome.errorMessage })
     }
   }
 

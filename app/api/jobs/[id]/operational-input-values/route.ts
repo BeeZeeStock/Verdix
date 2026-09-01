@@ -28,6 +28,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
+import { requestInvoiceReadinessRecheck } from '@/lib/invoice-readiness-recheck'
 
 // Verifies the job genuinely belongs to the CALLER's own org (never a
 // client-supplied org_id) — the actual tenant-isolation boundary, per this
@@ -115,5 +116,18 @@ export async function POST(
   })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  return NextResponse.json({ value: data })
+  // Step E9B.1 §1/§2 — a FINAL value may be exactly what a held/PARKED
+  // period invoice for this job was waiting on. Requesting a targeted
+  // recheck now (rather than waiting for the next daily cron pass) is a
+  // pure UX improvement, never the value's own persistence — the RPC
+  // above already committed durably; this call only asks the existing
+  // scheduler machinery to look again. Never awaited-to-failure: a
+  // recheck error must not turn a successful save into an error response,
+  // and never blocks/replaces the daily cron fallback (§3). Skipped for a
+  // draft save — a non-final value can never release a held invoice (see
+  // lib/operational-input-binding.ts's resolveInputRowAsOf finalized_at
+  // gate), so rechecking then would only be a wasted no-op sweep.
+  const recheck = body.is_final ? await requestInvoiceReadinessRecheck(jobId) : null
+
+  return NextResponse.json({ value: data, recheck })
 }

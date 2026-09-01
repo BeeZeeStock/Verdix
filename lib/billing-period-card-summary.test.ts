@@ -139,9 +139,21 @@ describe('buildPerformanceTile — Step 17H.4B0D4H1B4E8 §7', () => {
 })
 
 describe('buildDeferredItems — Step 17H.4B0D4H1B4E8.1 §9/§10/§19-22 (no per-row destination — the caller states it once, in the section heading)', () => {
-  it('a computed usage item is never deferred — it already belongs on this invoice', () => {
-    const usage: UsageComponentState = { key: 'a', label: 'Issued requests', semanticInputKey: null, sourceName: null, status: 'computed' }
-    expect(buildDeferredItems({ usage: [usage], performance: [] })).toHaveLength(0)
+  // Step E9 — REVISED: a computed usage item used to be excluded here on
+  // the theory that it "already belongs on this invoice" — but the real
+  // arrears relationship (app/api/admin/invoice-scheduler/route.ts) means
+  // a computed item from THIS period belongs on the NEXT invoice, not this
+  // one; excluding it here was the exact root cause of the reported "item
+  // disappears between source period and destination invoice" bug. It now
+  // stays present, carrying its real amount and a "ready" state.
+  it('a computed usage item still appears here — ready, with its real amount, never silently dropped', () => {
+    const usage: UsageComponentState = { key: 'a', label: 'Issued requests', semanticInputKey: null, sourceName: null, status: 'computed', amount: 342.6 }
+    const items = buildDeferredItems({ usage: [usage], performance: [] })
+    expect(items).toHaveLength(1)
+    expect(items[0].state.state).toBe('ready')
+    expect(items[0].state.label).toBe('Final')
+    expect(items[0].amount).toBe(342.6)
+    expect(items[0].kind).toBe('usage')
   })
 
   it('an awaiting_source usage item is never deferred either — it is blocked, not scheduled for a later invoice', () => {
@@ -170,11 +182,19 @@ describe('buildDeferredItems — Step 17H.4B0D4H1B4E8.1 §9/§10/§19-22 (no per
     expect(items[0].sub).toBe('Measured this period')
   })
 
-  it('a computed or waived performance item is never deferred', () => {
-    const computed: PerformanceComponentState = { feeLabel: 'Performance share', status: 'computed' }
+  // Step E9 — REVISED: waived stays excluded (nothing to carry forward —
+  // there is no charge at all), but a computed performance item, like
+  // computed usage above, now stays present as a ready, real-amount row —
+  // the same root-cause fix.
+  it('a waived performance item is never deferred (nothing to carry forward); a computed one now IS, ready with its real amount', () => {
+    const computed: PerformanceComponentState = { feeLabel: 'Performance share', status: 'computed', amount: 475 }
     const waived: PerformanceComponentState = { feeLabel: 'Performance share', status: 'waived' }
-    expect(buildDeferredItems({ usage: [], performance: [computed] })).toHaveLength(0)
     expect(buildDeferredItems({ usage: [], performance: [waived] })).toHaveLength(0)
+    const items = buildDeferredItems({ usage: [], performance: [computed] })
+    expect(items).toHaveLength(1)
+    expect(items[0].state.state).toBe('ready')
+    expect(items[0].amount).toBe(475)
+    expect(items[0].kind).toBe('performance')
   })
 
   it('a not_started performance item is never deferred — it has no relationship to a specific future invoice yet', () => {
@@ -191,6 +211,56 @@ describe('buildDeferredItems — Step 17H.4B0D4H1B4E8.1 §9/§10/§19-22 (no per
 
   it('nothing deferred at all returns an empty array — the caller omits the section entirely, never a "None" row', () => {
     expect(buildDeferredItems({ usage: [], performance: [] })).toEqual([])
+  })
+
+  // Step E9B — audit of the E9-flagged concern: performance:${feeLabel} is
+  // a mutable display string, not a stable id. When the contract extraction
+  // assigned a real recurring_fee_id, the item's key must use it instead —
+  // so two fees that happen to share a label (or a re-extraction that only
+  // changed wording) never collide or get silently conflated.
+  it('§ E9B — a performance item WITH a stable recurringFeeId keys off the id, not the (mutable) feeLabel', () => {
+    const computed: PerformanceComponentState = { feeLabel: 'Performance share', recurringFeeId: 'rf_abc123', status: 'computed', amount: 475 }
+    const items = buildDeferredItems({ usage: [], performance: [computed] })
+    expect(items[0].key).toBe('performance:rf_abc123')
+  })
+
+  it('§ E9B — a performance item with NO recurringFeeId (older data) falls back to feeLabel, preserving the prior key exactly', () => {
+    const computed: PerformanceComponentState = { feeLabel: 'Performance share', status: 'computed', amount: 475 }
+    const items = buildDeferredItems({ usage: [], performance: [computed] })
+    expect(items[0].key).toBe('performance:Performance share')
+  })
+
+  it('§ E9B — two performance items sharing a feeLabel but each with a distinct recurringFeeId produce distinct, non-colliding keys', () => {
+    const a: PerformanceComponentState = { feeLabel: 'Performance share', recurringFeeId: 'rf_a', status: 'computed', amount: 100 }
+    const b: PerformanceComponentState = { feeLabel: 'Performance share', recurringFeeId: 'rf_b', status: 'computed', amount: 200 }
+    const items = buildDeferredItems({ usage: [], performance: [a, b] })
+    expect(items.map(i => i.key)).toEqual(['performance:rf_a', 'performance:rf_b'])
+  })
+
+  // Step E9B.1 §13 — proves the exact arithmetic
+  // app/_components/BillingSummaryCard.tsx's displayAmount formula
+  // (e.amount + carriedForwardReadyTotal) relies on: summing only
+  // state:'ready' items' real amounts, and an unresolved item
+  // contributing NOTHING (never a fake zero standing in for "unknown" —
+  // it simply isn't part of the sum at all, distinct from a genuine
+  // amount of 0).
+  it('§ E9B.1 §13 — only ready items sum toward a caller-computed total; an unresolved item contributes nothing (not a fake zero)', () => {
+    const readyUsage: UsageComponentState = { key: 'transactions', label: 'Transactions', semanticInputKey: null, sourceName: null, status: 'computed', amount: 500 }
+    const blockedUsage: UsageComponentState = { key: 'chargebacks', label: 'Chargebacks', semanticInputKey: null, sourceName: null, status: 'awaiting_source' }
+    const readyPerf: PerformanceComponentState = { feeLabel: 'Performance share', status: 'computed', amount: 250 }
+    const blockedPerf: PerformanceComponentState = { feeLabel: 'Uptime credit', status: 'pending_operational_inputs' }
+    const items = buildDeferredItems({ usage: [readyUsage, blockedUsage], performance: [readyPerf, blockedPerf] })
+    const readyTotal = items.filter(i => i.state.state === 'ready').reduce((s, i) => s + (i.amount ?? 0), 0)
+    expect(readyTotal).toBe(750) // 500 + 250 — the blocked items excluded entirely, not summed as 0
+    const unresolved = items.filter(i => i.state.state !== 'ready')
+    expect(unresolved.every(i => i.amount == null)).toBe(true) // never a numeric placeholder
+  })
+
+  it('§ E9B.1 §13 — nothing ready at all sums to exactly 0 (a caller adding this to a known base amount is a genuine no-op, not a hidden discrepancy)', () => {
+    const blocked: PerformanceComponentState = { feeLabel: 'Performance share', status: 'pending_operational_inputs' }
+    const items = buildDeferredItems({ usage: [], performance: [blocked] })
+    const readyTotal = items.filter(i => i.state.state === 'ready').reduce((s, i) => s + (i.amount ?? 0), 0)
+    expect(readyTotal).toBe(0)
   })
 })
 

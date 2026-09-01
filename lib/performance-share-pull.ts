@@ -14,6 +14,8 @@ import { isMonetaryOperationalInput } from '@/lib/operational-data-inputs'
 import { PERFORMANCE_SHARE_FEE_COMPONENT } from '@/lib/performance-share-materiality'
 import type { ContractTerms } from '@/lib/types'
 import type { OverageLineItem } from '@/lib/usage-pull'
+import { QuantitySourceNotReadyError } from '@/lib/commercial-quantity-source'
+import { classifyCurrencyProblem, classifyPerformanceShareResultStatus } from '@/lib/performance-share-readiness'
 // Step 17H.4B0D4H1B4E5.2 — moved to lib/rule-interpretation.ts (the
 // established client-safe, zero-supabaseServer home — see that file's own
 // header) so lib/commercial-rule-status.ts and lib/commercial-components.ts
@@ -100,8 +102,28 @@ export async function computePerformanceShareLineItemsForPeriod(params: {
       const detail = currencyProblem.problem === 'missing'
         ? `input '${currencyProblem.input_key}' has a recorded value with no currency set`
         : `input '${currencyProblem.input_key}' was recorded in ${currencyProblem.rowCurrency}, expected ${currency}`
-      console.error(`[performance-share-pull] '${fee.fee_label}' currency problem for job ${jobId}, period ${periodStart}–${periodEnd}: ${detail}`)
-      continue
+      // Step E9B — this file's own header documents "skip and log, never
+      // throw" as a deliberate discipline, but that was calibrated for a
+      // hypothetical preview caller this function never actually has (the
+      // real preview route, app/api/jobs/[id]/performance-share/route.ts,
+      // calls computePerformanceShareFee directly — confirmed by reading
+      // it, not assumed) — every real caller of THIS function is
+      // invoice-scheduler's own real-billing path. A currency mismatch on
+      // an already-ENTERED value is a genuine data-integrity problem —
+      // unlike a merely-not-yet-entered input, retrying it unattended
+      // tomorrow will not fix it, so this deliberately throws a PLAIN
+      // Error (not QuantitySourceNotReadyError): invoice-scheduler's
+      // existing generic catch-all marks the row 'failed' with this
+      // message, correctly surfacing it for a human to actually correct
+      // the recorded value, rather than silently retrying it forever as
+      // "held" or dropping the charge from the sent invoice either way.
+      // Step E9B.1 §9 — the retryable/non-retryable decision itself is
+      // made by lib/performance-share-readiness.ts's pure
+      // classifyCurrencyProblem, directly unit-tested there. [currency_
+      // mismatch] is the stable marker lib/invoice-hold-status.ts's
+      // describeInvoiceFailure matches on for business-facing copy.
+      const currencyOutcome = classifyCurrencyProblem(detail)
+      throw new Error(`'${fee.fee_label}' currency problem for job ${jobId}, period ${periodStart}–${periodEnd}: ${currencyOutcome.reason}`)
     }
 
     const result = computePerformanceShareFee({
@@ -109,13 +131,42 @@ export async function computePerformanceShareLineItemsForPeriod(params: {
       contractStartDate: terms.contract_start_date, contractEndDate: terms.contract_end_date,
     })
 
-    if (result.status === 'not_ready') {
-      console.warn(`[performance-share-pull] '${fee.fee_label}' held for job ${jobId}, period ${periodStart}–${periodEnd}: ${result.reason}`)
-      continue
-    }
-    if (result.status === 'invalid') {
-      console.error(`[performance-share-pull] '${fee.fee_label}' invalid for job ${jobId}, period ${periodStart}–${periodEnd}: ${result.reason}`)
-      continue
+    // Step E9B.1 §8/§9 — the retryable/non-retryable decision for BOTH
+    // 'not_ready' and 'invalid' is made by lib/performance-share-
+    // readiness.ts's pure classifyPerformanceShareResultStatus, directly
+    // unit-tested there — this call site only acts on it. CORRECTS an
+    // incomplete prior edit: 'invalid' was still throwing
+    // QuantitySourceNotReadyError (retryable/held) until this pass,
+    // contradicting the currency-mismatch branch just above (and the E9B
+    // closing report, which incorrectly claimed both were already
+    // converted) — 'invalid' means computePerformanceShareFee itself
+    // judged the data malformed, not merely absent, the same "won't self-
+    // resolve by waiting" reasoning as a currency mismatch. (Currently
+    // unreachable — computePerformanceShareFee has no call site that
+    // returns 'invalid' today, confirmed by reading lib/performance-
+    // share-fee.ts in full — but the type contract declares it possible,
+    // so this stays correctly classified rather than silently wrong the
+    // day a future change starts producing it.)
+    // Checked as `result.status === ... || ...` (not via a separately
+    // computed boolean) so TypeScript still narrows `result` itself to
+    // 'ready' | 'waived' below this block — the classify call still makes
+    // the actual retryable/reason decision, this shape is only about
+    // preserving the compiler's own narrowing.
+    if (result.status === 'not_ready' || result.status === 'invalid') {
+      const resultOutcome = classifyPerformanceShareResultStatus(result.status, result.reason)
+      if (resultOutcome.blocked && resultOutcome.retryable) {
+        // Step E9B — the core fix: a performance fee still missing a
+        // required manual operational input used to be silently omitted
+        // from the real invoice (documented above as deliberate — correct
+        // for "held pending a reviewer's commercial timing decision" a few
+        // lines up, but wrong here, where the input is simply not entered
+        // yet). Reusing the identical error/recovery path as usage-pull.ts's
+        // own E9B fix — see that file's comment for the full rationale.
+        throw new QuantitySourceNotReadyError({
+          ready: false, provenance: 'external_usage', metricKey: fee.fee_label, periodStart, periodEnd, reason: resultOutcome.reason,
+        })
+      }
+      throw new Error(`'${fee.fee_label}' invalid for job ${jobId}, period ${periodStart}–${periodEnd}: ${resultOutcome.blocked ? resultOutcome.reason : 'unknown'}`)
     }
     if (result.amount <= 0 && !includeZeroAmount) continue
 

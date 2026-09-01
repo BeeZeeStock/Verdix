@@ -223,6 +223,12 @@ export type PerformanceComponentStatus = 'not_started' | 'pending_operational_in
 
 export interface PerformanceComponentState {
   feeLabel: string
+  // Step E9B — the fee's stable AdditionalRecurringFee.recurring_fee_id,
+  // when the contract extraction/re-extraction assigned one; null/undefined
+  // for older data that predates it. Consumers needing a stable identity
+  // (e.g. lib/billing-period-card-summary.ts's DeferredItem.key) must
+  // prefer this over feeLabel, which is mutable display text, not an id.
+  recurringFeeId?: string | null
   status: PerformanceComponentStatus
   missingKeys?: string[]
   amount?: number | null
@@ -491,6 +497,7 @@ function findMatchingConsumptionItem(
 
 function performanceStatusOf(r: {
   feeLabel: string
+  recurringFeeId?: string | null
   status: 'ready' | 'waived' | 'not_ready' | 'invalid' | 'not_started'
   missingKeys?: string[]
   amount?: number
@@ -510,7 +517,7 @@ function performanceStatusOf(r: {
     : r.status === 'not_started' ? 'not_started'
     : 'pending_operational_inputs'
   return {
-    feeLabel: r.feeLabel, status, missingKeys: r.missingKeys, amount: r.amount,
+    feeLabel: r.feeLabel, recurringFeeId: r.recurringFeeId ?? null, status, missingKeys: r.missingKeys, amount: r.amount,
     numeratorKey: r.numeratorKey, numeratorValue: r.numeratorValue,
     denominatorKey: r.denominatorKey, denominatorValue: r.denominatorValue,
     derivedPct: r.derivedPct, selectedRatePct: r.selectedRatePct, currency: r.currency,
@@ -543,6 +550,8 @@ export interface ConsumptionPeriodLike {
 
 export interface PerformanceShareResultLike {
   feeLabel: string
+  // Step E9B — see PerformanceComponentState's identical field/comment.
+  recurringFeeId?: string | null
   status: 'ready' | 'waived' | 'not_ready' | 'invalid' | 'not_started'
   reason?: string
   missingKeys?: string[]
@@ -646,7 +655,7 @@ export function derivePeriodExecutionModel(params: {
   ) ?? null
   const performance: PerformanceComponentState[] = resultsForThisPeriod && resultsForThisPeriod.length > 0
     ? resultsForThisPeriod.map(r => performanceStatusOf({ ...r, timingUnresolved: r.variableInvoiceTimingUnresolved }))
-    : pricingGroups.performanceBased.map(p => ({ feeLabel: p.label, status: started ? 'pending_operational_inputs' as const : 'not_started' as const }))
+    : pricingGroups.performanceBased.map(p => ({ feeLabel: p.label, recurringFeeId: p.recurringFeeId ?? null, status: started ? 'pending_operational_inputs' as const : 'not_started' as const }))
 
   const workspace = buildBillingPeriodWorkspace({
     period, started, alreadyInvoiced: consumptionPeriod?.status === 'past', fixed, usage, performance,

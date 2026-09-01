@@ -56,6 +56,11 @@ export async function GET(
     return NextResponse.json({
       fees: feesWithConfig.map(fee => ({
         feeLabel: fee.fee_label, status: 'not_started' as const,
+        // Step E9B — the stable identity, when the contract states one,
+        // rather than the mutable, non-unique fee_label alone (audited per
+        // E9's own flagged concern — see lib/billing-period-card-summary.ts's
+        // buildDeferredItems, the sole consumer this threads to).
+        recurringFeeId: fee.recurring_fee_id ?? null,
         contractStartDate: terms?.contract_start_date,
         variableInvoiceTimingUnresolved: !isVariableInvoiceTimingConfirmed(fee.variable_invoice_timing),
         // Step 17H.4B0D4H1B4E5.2 §7 — the raw confirmed value (never just
@@ -107,10 +112,11 @@ export async function GET(
         contractStartDate: terms?.contract_start_date, contractEndDate: terms?.contract_end_date,
       })
       if (result.status === 'not_ready' || result.status === 'invalid') {
-        return { feeLabel: fee.fee_label, status: result.status, reason: result.reason, periodStart, periodEnd, variableInvoiceTimingUnresolved, variableInvoiceTiming }
+        return { feeLabel: fee.fee_label, recurringFeeId: fee.recurring_fee_id ?? null, status: result.status, reason: result.reason, periodStart, periodEnd, variableInvoiceTimingUnresolved, variableInvoiceTiming }
       }
       return {
         feeLabel: fee.fee_label,
+        recurringFeeId: fee.recurring_fee_id ?? null,
         status: result.status, // 'ready' | 'waived'
         periodStart, periodEnd,
         currency: currency.toUpperCase(),
@@ -135,7 +141,7 @@ export async function GET(
     // generic "pending" state.
     const everFinalized = new Set(valueRows.filter(r => r.status === 'active' && r.finalized_at != null).map(r => r.input_key))
     const missingKeys = requiredKeys.filter(k => !everFinalized.has(k))
-    return { feeLabel: fee.fee_label, status: 'not_ready' as const, reason: 'Pending operational inputs', periodStart: null, periodEnd: null, missingKeys, variableInvoiceTimingUnresolved, variableInvoiceTiming }
+    return { feeLabel: fee.fee_label, recurringFeeId: fee.recurring_fee_id ?? null, status: 'not_ready' as const, reason: 'Pending operational inputs', periodStart: null, periodEnd: null, missingKeys, variableInvoiceTimingUnresolved, variableInvoiceTiming }
   })
 
   return NextResponse.json({ fees: results })

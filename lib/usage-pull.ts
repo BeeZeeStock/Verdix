@@ -8,7 +8,8 @@ import { computeMetricOverage, describeTieredUsage, enumerateCadenceWindows, fin
 import { pullMeterQuantity } from '@/lib/meter-quantity-pull'
 import { finalizeClosedPeriodUsageQuantity, resolveUsageQuantityForPeriod } from '@/lib/usage-quantity-resolver'
 import { resolveQualifiedUnitAggregateQuantitySource } from '@/lib/qualified-unit-aggregation-service'
-import { resolveCommercialQuantity, requireReadyCommercialQuantity } from '@/lib/commercial-quantity-source'
+import { resolveCommercialQuantity, requireReadyCommercialQuantity, QuantitySourceNotReadyError } from '@/lib/commercial-quantity-source'
+import { classifyUsageSourceOutcome } from '@/lib/usage-source-readiness'
 import { resolveEffectiveCommercialStateForPeriod } from '@/lib/rolling-band-migration-pull'
 import type { ContractTerms, MinimumCommitment, TierCalculationMethod } from '@/lib/types'
 
@@ -405,15 +406,56 @@ export async function resolveUsageMeasurementWindows(params: {
                 periodStart: window.measureStart, periodEnd: new Date(windowEndUnix * 1000),
                 asOf: billingAsOf, mode: isRealBilling ? 'closed_period_finalize' : 'live',
               })
-              if (manualResolved.ready) {
-                totalUnits = manualResolved.quantity
+              // Step E9B.1 §9 — the actual decision (ready/blocking/skip)
+              // is made by lib/usage-source-readiness.ts's pure
+              // classifyUsageSourceOutcome, directly unit-tested there
+              // (no supabaseServer coupling in the decision itself); this
+              // call site only acts on its result.
+              const outcome = classifyUsageSourceOutcome({ pullReason: pulled.reason, manualResolved, isRealBilling })
+              if (outcome.ready) {
+                totalUnits = outcome.quantity
                 usedManualFallback = true // resolveUsageQuantityForPeriod already finalized (mode-dependent) — the meter-finalize call below must not also run.
                 metricSource = 'manual_entry'
+              } else if (outcome.blocking) {
+                // Step E9B — this branch used to `continue` unconditionally
+                // (documented as deliberate: "same continue-with-a-log-line-
+                // never-throw discipline" above), which is correct for a
+                // PREVIEW call but was silently applying to REAL billing too
+                // — a required obligation with no ready meter AND no ready
+                // manual value would simply be omitted from the invoice
+                // Verdix actually sends, with no record that anything was
+                // ever missing. Real billing now fails closed exactly like
+                // the qualified_unit_aggregate branch above (line ~342) —
+                // the identical, already-proven QuantitySourceNotReadyError
+                // invoice-scheduler's own catch block already reverts to
+                // 'scheduled' (never 'failed') and logs as held, so this
+                // reuses existing, tested recovery — never a new mechanism.
+                throw new QuantitySourceNotReadyError({
+                  ready: false, provenance: 'external_usage', metricKey: cfg.meter_key,
+                  periodStart: window.measureStart.toISOString().slice(0, 10),
+                  periodEnd: new Date(windowEndUnix * 1000).toISOString().slice(0, 10),
+                  reason: outcome.reason,
+                })
               } else {
-                console.warn(`[usage-pull] ${pulled.reason}; manual fallback also not ready: ${manualResolved.reason}`)
+                // Preview keeps its exact prior behavior unchanged.
+                console.warn(`[usage-pull] ${outcome.reason}`)
                 continue
               }
             } else {
+              // Step E9B — same fix as immediately above: a real meter_key
+              // IS configured but the pull itself reported not-ready
+              // (connector error, measurement not finalized, etc., or —
+              // the `!cfg.semantic_input_key` case — no manual fallback is
+              // even possible). Fails closed for real billing only.
+              const outcome = classifyUsageSourceOutcome({ pullReason: pulled.reason, manualResolved: null, isRealBilling })
+              if (outcome.blocking) {
+                throw new QuantitySourceNotReadyError({
+                  ready: false, provenance: 'external_usage', metricKey: cfg.meter_key,
+                  periodStart: window.measureStart.toISOString().slice(0, 10),
+                  periodEnd: new Date(windowEndUnix * 1000).toISOString().slice(0, 10),
+                  reason: outcome.reason,
+                })
+              }
               console.warn(`[usage-pull] ${pulled.reason}`)
               continue
             }

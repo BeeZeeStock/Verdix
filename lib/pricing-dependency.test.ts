@@ -44,6 +44,7 @@ describe('buildPricingDependencyGroups', () => {
 
     expect(result.performanceBased).toEqual([{
       kind: 'performance_based', key: 'Performance share', label: 'Performance share',
+      recurringFeeId: null,
       numeratorKey: 'paid_invoice_value', denominatorKey: 'total_invoice_value_of_issued_requests', basisKey: 'total_invoice_value_of_issued_requests',
     }])
   })

@@ -20,6 +20,8 @@ import type { UsageSourceCard } from './usage-source-cards'
 // canonical type.
 export interface PricingDependencyFee {
   fee_label: string
+  // Step E9B — see PerformanceBasedPricingFact.recurringFeeId's comment.
+  recurring_fee_id?: string | null
   amount?: number | null
   rate_per_unit?: number | null
   semantic_input_key?: string | null
@@ -63,6 +65,10 @@ export interface PerformanceBasedPricingFact {
   kind: 'performance_based'
   key: string
   label: string
+  // Step E9B — see PerformanceComponentState's identical field/comment
+  // (lib/billing-period-workspace.ts) for why this, not `label`, is the
+  // stable identity a caller like buildDeferredItems should key off.
+  recurringFeeId?: string | null
   numeratorKey: string
   denominatorKey: string
   basisKey: string
@@ -125,6 +131,7 @@ export function buildPricingDependencyGroups(params: {
     const c = fee.percentage_of_basis
     performanceBased.push({
       kind: 'performance_based', key: fee.fee_label, label: fee.fee_label,
+      recurringFeeId: fee.recurring_fee_id ?? null,
       numeratorKey: c.derived_metric.numerator_input_key,
       denominatorKey: c.derived_metric.denominator_input_key,
       basisKey: c.basis_input_key,

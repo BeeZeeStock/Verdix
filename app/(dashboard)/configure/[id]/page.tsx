@@ -980,11 +980,12 @@ function humanizeKey(key: string): string {
 // period's value from one place, not just the currently-open one. A
 // minimal label stays so the entry widget is identifiable at a glance.
 function OperationalInputCard({
-  jobId, input, contractStartDate,
+  jobId, input, contractStartDate, onFinalized,
 }: {
   jobId: string
   input: { key: string }
   contractStartDate?: string | null
+  onFinalized?: () => void
 }) {
   // Step 17E.3, item 1 — reuses the SAME hasContractStarted function the
   // Performance Share readiness banner uses (lib/performance-share-
@@ -998,7 +999,7 @@ function OperationalInputCard({
     <div className="rounded-xl border p-4" style={{ borderColor: 'rgba(26,61,43,0.1)' }}>
       <p className="text-sm font-medium text-ink">{humanizeKey(input.key)}</p>
       {started ? (
-        <ManualInputEntry jobId={jobId} inputKey={input.key} />
+        <ManualInputEntry jobId={jobId} inputKey={input.key} onFinalized={onFinalized} />
       ) : (
         <div className="mt-2 pt-2 border-t" style={{ borderColor: 'rgba(26,61,43,0.06)' }}>
           <p className="text-[11px] font-medium" style={{ color: '#78716C' }}>Awaiting first billing period</p>
@@ -1016,11 +1017,12 @@ function OperationalInputCard({
 // consumer relationship is established at the owning component, not
 // repeated per-input in this entry list.
 function OperationalInputsSection({
-  jobId, inputs, contractStartDate,
+  jobId, inputs, contractStartDate, onFinalized,
 }: {
   jobId: string
   inputs: Array<{ key: string; sources: string[] }>
   contractStartDate?: string | null
+  onFinalized?: () => void
 }) {
   if (inputs.length === 0) return null
   const started = hasContractStarted(contractStartDate)
@@ -1048,6 +1050,7 @@ function OperationalInputsSection({
             jobId={jobId}
             input={input}
             contractStartDate={contractStartDate}
+            onFinalized={onFinalized}
           />
         ))}
       </div>
@@ -6568,6 +6571,15 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
   // without a full page reload. Evidence recording itself never calls
   // Stripe/Remembill/the scheduler — this only refreshes the READ model.
   const [parkedEvidenceTick, setParkedEvidenceTick] = useState(0)
+  // Step E9B.1 §4 — bumped after a manual operational-input value is
+  // finalized in Billing Operations (OperationalInputsSection), whose own
+  // POST already requested a targeted server-side readiness recheck (see
+  // lib/invoice-readiness-recheck.ts). Included in BillingSummaryCard's
+  // remount key exactly like parkedEvidenceTick above — the SAME existing
+  // "bump a tick, remount, refetch" idiom, not a new refresh mechanism —
+  // so a period invoice that was PARKED can show its new state (Ready, or
+  // still parked on a different blocker) without a page reload.
+  const [readinessRecheckTick, setReadinessRecheckTick] = useState(0)
   const [sentOneTimeInvoices, setSentOneTimeInvoices] = useState<{ feeLabel: string | null; amount: number }[]>([])
 
   // Audit-trail metadata (reviewer, timestamp, source clause) for every
@@ -9830,7 +9842,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                     this period." */}
                 <BillingSummaryCard
                   jobId={id} terms={terms as unknown as ContractTerms} usageSourceCards={usageSourceCards}
-                  key={(rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial') + ':' + parkedEvidenceTick}
+                  key={(rebuildDone ? 'rebuilt' : approved ? 'approved' : 'initial') + ':' + parkedEvidenceTick + ':' + readinessRecheckTick}
                   onHasSchedule={setScheduleExists} onParkedInvoices={setParkedInvoices} onSentOneTimeInvoices={setSentOneTimeInvoices} onViewSource={openPDF}
                   // Step E8.3 §4/§6 — same anchor/pattern MeterMappingPanel's
                   // own onNavigateToOperationalInputs already uses below;
@@ -9901,6 +9913,7 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
                 jobId={id}
                 inputs={operationalDataInputs}
                 contractStartDate={terms?.contract_start_date}
+                onFinalized={() => setReadinessRecheckTick(t => t + 1)}
               />
             )}
             {isConfigured && (billingPlatform === 'stripe' || billingPlatform === 'remembill') && (!!subId || !!job.billing_customer_id || !!approved?.customerId) && (parkedInvoices.length > 0) && (

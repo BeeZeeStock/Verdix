@@ -27,6 +27,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase'
 import { requireOrg } from '@/lib/org'
 import { resolveRecognizedOperationalInputKey } from '@/lib/operational-input-canonicalization'
+import { requestInvoiceReadinessRecheck } from '@/lib/invoice-readiness-recheck'
 
 async function loadOwnedJob(jobId: string, orgId: string): Promise<{ id: string } | null> {
   const { data: job } = await supabaseServer
@@ -108,5 +109,12 @@ export async function POST(
   })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  return NextResponse.json({ value: data })
+  // Step E9B.1 §1/§2 — see operational-input-values/route.ts's identical
+  // comment: a final manual usage value may be exactly what a held/PARKED
+  // period invoice was waiting on (lib/usage-pull.ts's manual-fallback
+  // branch). Best-effort only, never blocks the save or replaces the
+  // daily cron fallback; skipped for a draft.
+  const recheck = body.is_final ? await requestInvoiceReadinessRecheck(jobId) : null
+
+  return NextResponse.json({ value: data, recheck })
 }

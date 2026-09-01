@@ -334,13 +334,22 @@ describe('BillingSummaryCard — enriched recurring-period entries (Step 17H.2B)
     // matching the tile's own aggregate wording, with the real measured
     // amount as secondary detail. No combined fixed+usage total renders
     // anywhere now that the bottom summary is removed.
-    expect(screen.getByText('Final')).toBeInTheDocument()
-    expect(screen.getByText(/SEK\s*50\.00/)).toBeInTheDocument()
+    expect(screen.getAllByText('Final').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/SEK\s*50\.00/).length).toBeGreaterThan(0)
     expect(screen.queryByText(/SEK\s*5,050\.00/)).not.toBeInTheDocument()
-    // Step 17H.4B0D4H1B4E8 §21 — every component is already computed/
-    // final this period; nothing is deferred, so the section is omitted
-    // entirely rather than rendering an empty "Deferred to next invoice / None".
-    expect(screen.queryByText('Deferred to next invoice')).not.toBeInTheDocument()
+    // Step E9 — REVISED: a genuinely computed usage component is NEVER
+    // billed on ITS OWN period's invoice under the arrears model (only the
+    // fixed fee is) — it is always destined for the next invoice, so it
+    // must keep appearing in "Deferred to next invoice" (now correctly as
+    // "Ready", carrying its real amount) rather than disappearing the
+    // moment it becomes computed. The old assumption here ("nothing is
+    // deferred once everything is computed/final") was the exact root
+    // cause of the reported "obligation vanishes between source period and
+    // destination invoice" bug — this fixture has only one period on the
+    // timeline, so there is no real next-invoice entry to move it to yet,
+    // but it correctly stays visible until one exists and absorbs it.
+    expect(screen.getByText('Deferred to next invoice')).toBeInTheDocument()
+    expect(screen.getAllByText('Ready').length).toBeGreaterThan(0)
   })
 
   it('an unconfigured usage source shows "No confirmed usage source" and readiness "Parked" — never a fabricated amount', async () => {
@@ -596,6 +605,132 @@ describe('BillingSummaryCard — Timeline final polish (Step E8.3)', () => {
   })
 })
 
+// Step E9 — deferred obligation → destination invoice continuity. Root
+// cause traced to app/api/admin/invoice-scheduler/route.ts: real Stage-B
+// execution already correctly attaches a closed period's usage/performance
+// to the NEXT invoice — this was a projection-only gap, never a runtime
+// one. These tests prove the destination invoice's own Invoice Projection
+// now surfaces what the source period's own "Deferred to next invoice"
+// section already promised, using the SAME buildDeferredItems computation
+// for both (never two independently-derived views that could drift).
+describe('BillingSummaryCard — deferred obligation continuity (Step E9)', () => {
+  const SEPT_INVOICE = {
+    id: 'inv-period-2', number: null, status: 'draft', amount: 5000, currency: 'SEK', dueDate: null,
+    created: '2026-09-01T00:00:00.000Z', periodEnd: '2026-09-30', pdfUrl: null, hostedUrl: null,
+    feeLabel: null, yearNum: 1, scheduledDate: '2026-09-01',
+    baseAmount: 5000, overageLineItems: [], overageTotal: 0,
+  }
+
+  it('§4 — first invoice: no nonexistent prior-period obligation is manufactured when no earlier period exists', async () => {
+    mockSummary({ invoices: [PERIOD_INVOICE] }, { consumptionPeriods: [] })
+    render(<BillingSummaryCard jobId="job-1" terms={PERIOD_TERMS as never} usageSourceCards={PERIOD_USAGE_SOURCE_CARDS as never} />)
+    await waitFor(() => expect(screen.getByText('Aug 2026')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Aug 2026'))
+    await waitFor(() => expect(screen.getByText(/Platform fee · Aug 2026/)).toBeInTheDocument())
+    expect(screen.queryByText(/Carried forward/)).not.toBeInTheDocument()
+  })
+
+  it('§5/§9/§18/§23 — second invoice: current fixed fee plus the prior period\'s CALCULATED usage, with its real amount, matching the source period\'s own Deferred section', async () => {
+    mockSummary(
+      { invoices: [PERIOD_INVOICE, SEPT_INVOICE] },
+      { consumptionPeriods: [{ periodStart: '2026-08-01', periodEnd: '2026-08-31', status: 'pending', overageItems: [{ meter_key: 'api_calls', rate_per_unit: 0.1, total_units: 500, amount: 50 }], overageTotal: 50 }] },
+    )
+    render(<BillingSummaryCard jobId="job-1" terms={PERIOD_TERMS as never} usageSourceCards={PERIOD_USAGE_SOURCE_CARDS as never} />)
+    await waitFor(() => expect(screen.getByText('Sept 2026')).toBeInTheDocument())
+    // Source period (Aug) — confirm it names Sep as the destination.
+    fireEvent.click(screen.getByText('Aug 2026'))
+    await waitFor(() => expect(screen.getByText('Deferred to next invoice')).toBeInTheDocument())
+    expect(screen.getAllByText('Sept 2026').length).toBeGreaterThan(0)
+    // Destination period (Sep) — the SAME obligation must appear here too.
+    // The entry's own clickable heading is the LAST "Sept 2026" match —
+    // earlier ones are the destination badge inside Aug's own Deferred section.
+    const sept2026Matches = screen.getAllByText('Sept 2026')
+    fireEvent.click(sept2026Matches[sept2026Matches.length - 1])
+    await waitFor(() => expect(screen.getByText(/Platform fee · Sept 2026/)).toBeInTheDocument())
+    expect(screen.getByText(/Carried forward.*Aug 2026/)).toBeInTheDocument()
+    expect(screen.getByText(/API calls.*Aug 2026/)).toBeInTheDocument()
+    expect(screen.getByText(/SEK\s*50\.00/)).toBeInTheDocument()
+  })
+
+  it('§6/§7/§23 — unresolved prior usage appears as pending, never as a fake SEK 0.00', async () => {
+    mockSummary(
+      { invoices: [PERIOD_INVOICE, SEPT_INVOICE] },
+      { consumptionPeriods: [{ periodStart: '2026-08-01', periodEnd: '2026-08-31', status: 'current', overageItems: [{ meter_key: 'api_calls', rate_per_unit: 0.1, total_units: 500, amount: 50 }], overageTotal: 50 }] },
+    )
+    render(<BillingSummaryCard jobId="job-1" terms={PERIOD_TERMS as never} usageSourceCards={PERIOD_USAGE_SOURCE_CARDS as never} />)
+    await waitFor(() => expect(screen.getByText('Sept 2026')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Sept 2026'))
+    await waitFor(() => expect(screen.getByText(/Carried forward.*Aug 2026/)).toBeInTheDocument())
+    // Still open/live — not yet a final amount; must read as a lifecycle
+    // state, never a monetary zero.
+    expect(screen.getByText('Measuring')).toBeInTheDocument()
+    expect(screen.queryByText(/SEK\s*0\.00/)).not.toBeInTheDocument()
+  })
+
+  it('§10/§23 — a performance component awaiting input on the source period shows "Awaiting input" on the destination invoice, with a CTA to Billing Operations', async () => {
+    mockSummary(
+      { invoices: [PERIOD_INVOICE, SEPT_INVOICE] },
+      { performanceShareFees: [{ feeLabel: 'Payment success fee', status: 'not_ready', periodStart: '2026-08-01', periodEnd: '2026-08-31', currency: 'SEK', missingKeys: ['successful_payments_value'] }] },
+    )
+    const onNavigate = vi.fn()
+    render(<BillingSummaryCard jobId="job-1" terms={PERFORMANCE_TERMS as never} usageSourceCards={PERIOD_USAGE_SOURCE_CARDS as never} onNavigateToOperationalInputs={onNavigate} />)
+    await waitFor(() => expect(screen.getByText('Sept 2026')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Sept 2026'))
+    await waitFor(() => expect(screen.getByText(/Carried forward.*Aug 2026/)).toBeInTheDocument())
+    expect(screen.getAllByText('Awaiting input').length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByText('Enter performance inputs →'))
+    expect(onNavigate).toHaveBeenCalledTimes(1)
+  })
+
+  it('§7/§23 — a fully computed performance component carries forward with its real amount', async () => {
+    mockSummary(
+      { invoices: [PERIOD_INVOICE, SEPT_INVOICE] },
+      {
+        performanceShareFees: [{
+          feeLabel: 'Payment success fee', status: 'ready', periodStart: '2026-08-01', periodEnd: '2026-08-31',
+          currency: 'SEK', numeratorKey: 'successful_payments_value', numeratorValue: 9500,
+          denominatorKey: 'total_payments_value', denominatorValue: 10000,
+          derivedPct: 95, selectedRatePct: 5, amount: 475,
+        }],
+      },
+    )
+    render(<BillingSummaryCard jobId="job-1" terms={PERFORMANCE_TERMS as never} usageSourceCards={PERIOD_USAGE_SOURCE_CARDS as never} />)
+    await waitFor(() => expect(screen.getByText('Sept 2026')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Sept 2026'))
+    await waitFor(() => expect(screen.getByText(/Carried forward.*Aug 2026/)).toBeInTheDocument())
+    expect(screen.getByText(/Payment success fee.*Aug 2026/)).toBeInTheDocument()
+    expect(screen.getAllByText(/SEK\s*475\.00/).length).toBeGreaterThan(0)
+  })
+
+  it('§15/§20 — once a real invoice already carries its own overage line items, the carry-forward preview never also renders (no duplicate/stale preview alongside real sent data)', async () => {
+    const sentSept = {
+      ...SEPT_INVOICE,
+      overageLineItems: [{ meter_key: 'api_calls', rate_per_unit: 0.1, total_units: 500, amount: 50, currency: 'SEK', description: null }],
+      overageTotal: 50,
+    }
+    mockSummary(
+      { invoices: [PERIOD_INVOICE, sentSept] },
+      { consumptionPeriods: [{ periodStart: '2026-08-01', periodEnd: '2026-08-31', status: 'pending', overageItems: [{ meter_key: 'api_calls', rate_per_unit: 0.1, total_units: 500, amount: 50 }], overageTotal: 50 }] },
+    )
+    render(<BillingSummaryCard jobId="job-1" terms={PERIOD_TERMS as never} usageSourceCards={PERIOD_USAGE_SOURCE_CARDS as never} />)
+    await waitFor(() => expect(screen.getByText('Sept 2026')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Sept 2026'))
+    await waitFor(() => expect(screen.getByText(/Platform fee · Sept 2026/)).toBeInTheDocument())
+    expect(screen.queryByText(/Carried forward/)).not.toBeInTheDocument()
+  })
+
+  it('§17 — a caveat note appears only while the destination invoice still has an unresolved carried-forward item', async () => {
+    mockSummary(
+      { invoices: [PERIOD_INVOICE, SEPT_INVOICE] },
+      { consumptionPeriods: [{ periodStart: '2026-08-01', periodEnd: '2026-08-31', status: 'current', overageItems: [{ meter_key: 'api_calls', rate_per_unit: 0.1, total_units: 500, amount: 50 }], overageTotal: 50 }] },
+    )
+    render(<BillingSummaryCard jobId="job-1" terms={PERIOD_TERMS as never} usageSourceCards={PERIOD_USAGE_SOURCE_CARDS as never} />)
+    await waitFor(() => expect(screen.getByText('Sept 2026')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Sept 2026'))
+    await waitFor(() => expect(screen.getByText(/Excludes charges awaiting measurement/)).toBeInTheDocument())
+  })
+})
+
 // Step 17H.2B.1 — Refresh semantics: measurement-preview only, never a
 // billing calculation/finalization.
 describe('BillingSummaryCard — Refresh refreshes live measurement, never finalizes it (Step 17H.2B.1)', () => {
@@ -821,7 +956,11 @@ describe('BillingSummaryCard — Performance execution inside Billing Timeline (
     // Step E8.2 §2/§3 — the old "Performance / outcome" heading and its
     // mechanism prose are gone; the same facts live as one compact detail
     // row (component / basis / source / state) in the shared table.
-    await waitFor(() => expect(screen.getByText('Payment success fee')).toBeInTheDocument())
+    // Step E9 — REVISED: a genuinely computed performance item is never
+    // billed on its own period's invoice (arrears), so it also legitimately
+    // appears a second time in "Deferred to next invoice" now that computed
+    // items are no longer excluded there — getAllByText, not getByText.
+    await waitFor(() => expect(screen.getAllByText('Payment success fee').length).toBeGreaterThan(0))
     expect(screen.queryByText('Performance / outcome')).not.toBeInTheDocument()
     expect(screen.getByText(/Successful payments value/)).toBeInTheDocument()
     expect(screen.getByText(/Total payments value/)).toBeInTheDocument()
