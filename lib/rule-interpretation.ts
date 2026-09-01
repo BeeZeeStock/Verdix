@@ -1259,25 +1259,25 @@ export function describeWhatWillChange(
   const affectsContractValue = ruleType === 'minimum_commitment' || ruleType === 'partial_period' || ruleType === 'discount' || ruleType === 'service_credit'
   if (ruleType === 'minimum_commitment' || ruleType === 'partial_period') {
     items.push(
-      { component: 'Commercial BoM', change: `Add the confirmed minimum to the ${contractUnitType ?? 'metric'} component` },
+      { component: 'Commercial Structure', change: `Add the confirmed minimum to the ${contractUnitType ?? 'metric'} component` },
       { component: 'Billing Engine', change: 'Apply the confirmed minimum after tier calculation' },
       { component: 'Billing Schedule', change: 'Reflect the confirmed treatment in upcoming usage periods' },
     )
   } else if (ruleType === 'discount') {
     items.push(
-      { component: 'Commercial BoM', change: 'Update the discount rule and its tier structure' },
+      { component: 'Commercial Structure', change: 'Update the discount rule and its tier structure' },
       { component: 'Billing Engine', change: 'Apply the confirmed tier method (graduated/volume/block) when calculating the discount' },
       { component: 'Billing Schedule', change: 'Reflect the confirmed discount in upcoming invoices' },
     )
   } else if (ruleType === 'tier_calculation') {
     items.push(
-      { component: 'Commercial BoM', change: `Set the confirmed calculation method on the ${contractUnitType ?? 'metric'} price table` },
+      { component: 'Commercial Structure', change: `Set the confirmed calculation method on the ${contractUnitType ?? 'metric'} price table` },
       { component: 'Billing Engine', change: 'Apply the confirmed graduated/volume/block method when calculating usage charges' },
       { component: 'Billing Schedule', change: 'Reflect the confirmed calculation in upcoming usage periods' },
     )
   } else if (ruleType === 'service_credit') {
     items.push(
-      { component: 'Commercial BoM', change: 'Add the confirmed service credit and its calculation basis' },
+      { component: 'Commercial Structure', change: 'Add the confirmed service credit and its calculation basis' },
       { component: 'Billing Engine', change: 'Apply the confirmed credit against qualifying invoices' },
       { component: 'Billing Schedule', change: 'Reflect the credit on the next qualifying settlement period' },
     )
@@ -1305,7 +1305,7 @@ export function describeWhatWillChange(
     )
   } else {
     items.push(
-      { component: 'Commercial BoM', change: "Update the escalator's calculation method" },
+      { component: 'Commercial Structure', change: "Update the escalator's calculation method" },
       { component: 'Billing Engine', change: 'Apply the confirmed escalation formula to future periods' },
       { component: 'Billing Schedule', change: 'Reflect the new rate from its effective date' },
     )

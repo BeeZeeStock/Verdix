@@ -280,10 +280,10 @@ describe('describeWhatWillChange', () => {
   // in 17H.3D3 itself) — the "What will change" preview must name the
   // CURRENT authoritative surfaces a reviewer will actually see updated,
   // not sections that no longer exist.
-  it('lists Commercial Logic, Commercial BoM, Billing Engine, Billing Schedule, Contract Value, and Graphical View for a minimum commitment', () => {
+  it('lists Commercial Logic, Commercial Structure, Billing Engine, Billing Schedule, Contract Value, and Graphical View for a minimum commitment', () => {
     const items = describeWhatWillChange('minimum_commitment', 'SMS reminder')
     const components = items.map(i => i.component)
-    expect(components).toEqual(['Commercial Logic', 'Commercial BoM', 'Billing Engine', 'Billing Schedule', 'Contract Value', 'Graphical View'])
+    expect(components).toEqual(['Commercial Logic', 'Commercial Structure', 'Billing Engine', 'Billing Schedule', 'Contract Value', 'Graphical View'])
   })
 
   it('adds a Usage Source dependency warning when the meter mapping is unconfirmed', () => {

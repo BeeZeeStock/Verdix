@@ -2310,7 +2310,7 @@ function RuleInterpretationCard({
         <p className="text-sm font-medium flex items-center gap-1.5" style={{ color: '#0B5C36' }}>
           <i className="ti ti-circle-check-filled" style={{ fontSize: 15 }} /> Rule confirmed and applied
         </p>
-        <p className="text-[11px] text-stone mt-1">Updated: Commercial Logic · Commercial BoM · Billing Schedule</p>
+        <p className="text-[11px] text-stone mt-1">Updated: Commercial Logic · Commercial Structure · Billing Schedule</p>
       </div>
     )
   }
@@ -4122,7 +4122,7 @@ function EditCommercialRuleDrawer({
               <p className="text-sm font-medium flex items-center gap-1.5" style={{ color: '#0B5C36' }}>
                 <i className="ti ti-circle-check-filled" style={{ fontSize: 15 }} /> Change confirmed and applied
               </p>
-              <p className="text-[11px] text-stone mt-1">Updated: Commercial Logic · Commercial BoM · Billing Schedule</p>
+              <p className="text-[11px] text-stone mt-1">Updated: Commercial Logic · Commercial Structure · Billing Schedule</p>
             </div>
           )}
 
@@ -6168,7 +6168,7 @@ function ReviewPanel({
                               </div>
                               <p className="text-[10px] font-semibold uppercase tracking-widest text-stone/60 mb-1">Affected configuration</p>
                               <ul className="text-[11px] text-stone space-y-0.5">
-                                <li>• Commercial BoM</li>
+                                <li>• Commercial Structure</li>
                                 <li>• Commercial Logic</li>
                               </ul>
                             </div>
@@ -8003,8 +8003,8 @@ export default function ConfigureResultsPage({ params }: { params: Promise<{ id:
               <div className="bg-white rounded-2xl border border-forest/10 overflow-hidden">
                 <div className="px-6 py-3.5 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(26,61,43,0.07)' }}>
                   <div>
-                    <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Commercial BoM</h2>
-                    <p className="text-[11px] text-stone mt-0.5">High-level view of the agreement&apos;s commercial components, quantities and determinable value.</p>
+                    <h2 className="text-[10px] font-bold text-stone uppercase tracking-[0.14em]">Commercial Structure</h2>
+                    <p className="text-[11px] text-stone mt-0.5">Commercial components, pricing and billing terms in the agreement.</p>
                   </div>
                   {items.length > 0 && (
                     <button onClick={() => downloadBillingCSV(items, job.name, cur)}
