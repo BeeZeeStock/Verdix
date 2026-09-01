@@ -50,9 +50,13 @@ export interface InvoiceHoldDescription {
 // on for meaning. Unrecognized text (a future throw site that forgets to
 // tag itself, or a truly generic error) falls back to a still-honest,
 // still-generic business phrase — never a guess dressed up as specific.
+// Step E9D §4 — shortened to the business-facing phrasing the Dashboard
+// card now uses ("Usage data required" / "Performance input required"),
+// dropping the previous "measurement not yet final"/plural "inputs"
+// wording — same tags, same classification, copy only.
 function classifyHoldReason(technicalReason: string): string {
-  if (technicalReason.includes('[usage_source]')) return 'Usage measurement not yet final'
-  if (technicalReason.includes('[performance_input]')) return 'Performance inputs required'
+  if (technicalReason.includes('[usage_source]')) return 'Usage data required'
+  if (technicalReason.includes('[performance_input]')) return 'Performance input required'
   if (technicalReason.includes('quantity source (qualified_unit_aggregate)')) return 'Billing source temporarily unavailable'
   return 'Awaiting a required billing input'
 }
@@ -95,9 +99,14 @@ export interface InvoiceFailureDescription {
   technicalReason: string | null
 }
 
+// Step E9D §4 — shortened, business-facing phrasing for the two known
+// tags ("Currency mismatch" / "Invalid billing data"); the fallback stays
+// EXACTLY "Operational correction required" — deliberately unchanged and
+// deliberately generic, since nothing more specific is safely knowable
+// for an untagged failure (never fabricate specificity here).
 function classifyFailureReason(technicalReason: string): string {
-  if (technicalReason.includes('[currency_mismatch]')) return 'Billing currency mismatch — needs correction'
-  if (technicalReason.includes('[invalid_data]')) return 'Invalid billing data — needs correction'
+  if (technicalReason.includes('[currency_mismatch]')) return 'Currency mismatch'
+  if (technicalReason.includes('[invalid_data]')) return 'Invalid billing data'
   return 'Operational correction required'
 }
 

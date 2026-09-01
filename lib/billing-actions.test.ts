@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   deriveInvoiceActions, deriveManualInputActions, deriveEventActions, combineBillingActions,
+  resolveCustomerDisplayName,
   type PlannedInvoiceActionRow, type ManualInputComponentRow, type EventActionRow,
 } from './billing-actions'
 
@@ -18,7 +19,7 @@ describe('deriveInvoiceActions', () => {
     expect(actions).toHaveLength(1)
     expect(actions[0].actionType).toBe('invoice_parked')
     expect(actions[0].severity).toBe('attention')
-    expect(actions[0].description).toBe('Performance inputs required')
+    expect(actions[0].description).toBe('Performance input required')
   })
 
   it('a failed invoice produces exactly one invoice_failed (critical) action', () => {
@@ -81,7 +82,7 @@ describe('deriveManualInputActions (Step E9C.1)', () => {
     const actions = deriveManualInputActions([base])
     expect(actions).toHaveLength(1)
     expect(actions[0].actionType).toBe('manual_input_required')
-    expect(actions[0].description).toBe('Performance inputs required')
+    expect(actions[0].description).toBe('Performance input required')
   })
 
   it('§4 — one of two required fields saved as draft produces ONE manual_input_finalize action, not manual_input_required', () => {
@@ -285,5 +286,118 @@ describe('source vs destination period retained correctly', () => {
     const [action] = deriveInvoiceActions([row])
     expect(action.dueDate).toBe('2026-11-01')
     expect(action.invoicePeriodLabel).toBe('Nov 2026')
+  })
+})
+
+// Step E9D §10 — card hierarchy and business-facing copy regression tests.
+describe('Step E9D — Billing Action card hierarchy and copy', () => {
+  it('§2 — FAILED renders as a SEPARATE status badge, never concatenated into the title string', () => {
+    const row: PlannedInvoiceActionRow = {
+      id: 'inv-1', jobId: 'job-1', customerName: 'Meridian Health', invoiceType: 'period',
+      status: 'failed', errorMessage: '[invalid_data] bad value',
+      periodStart: '2026-02-01', periodEnd: '2026-02-28',
+    }
+    const [action] = deriveInvoiceActions([row])
+    expect(action.title).toBe('Feb 2026 invoice')
+    expect(action.title).not.toContain('FAILED')
+    expect(action.statusBadge).toEqual({ label: 'FAILED', severity: 'critical' })
+  })
+
+  it('§2 — PARKED renders as a SEPARATE status badge, never concatenated into the title string', () => {
+    const row: PlannedInvoiceActionRow = {
+      id: 'inv-1', jobId: 'job-1', customerName: 'Meridian Health', invoiceType: 'period',
+      status: 'scheduled', errorMessage: 'Held: [performance_input] missing input',
+      periodStart: '2026-02-01', periodEnd: '2026-02-28',
+    }
+    const [action] = deriveInvoiceActions([row])
+    expect(action.title).toBe('Feb 2026 invoice')
+    expect(action.title).not.toContain('PARKED')
+    expect(action.statusBadge).toEqual({ label: 'PARKED', severity: 'attention' })
+  })
+
+  it('§3 — FAILED CTA is "Review invoice", never "Review failure"', () => {
+    const row: PlannedInvoiceActionRow = {
+      id: 'inv-1', jobId: 'job-1', customerName: 'Acme', invoiceType: 'period',
+      status: 'failed', errorMessage: 'x', periodStart: '2026-02-01', periodEnd: '2026-02-28',
+    }
+    const [action] = deriveInvoiceActions([row])
+    expect(action.ctaLabel).toBe('Review invoice')
+  })
+
+  it('§3 — PARKED CTA is "Resolve billing blocker"', () => {
+    const row: PlannedInvoiceActionRow = {
+      id: 'inv-1', jobId: 'job-1', customerName: 'Acme', invoiceType: 'period',
+      status: 'scheduled', errorMessage: 'Held: x', periodStart: '2026-02-01', periodEnd: '2026-02-28',
+    }
+    const [action] = deriveInvoiceActions([row])
+    expect(action.ctaLabel).toBe('Resolve billing blocker')
+  })
+
+  it('§3 — manual_input_required CTA is "Enter inputs"; manual_input_finalize CTA is "Finish inputs"', () => {
+    const requiredRow: ManualInputComponentRow = {
+      jobId: 'job-1', customerName: 'Acme', componentLabel: 'Performance share', recurringFeeId: 'rf_1', mechanismKind: 'performance',
+      periodStart: '2026-02-01', periodEnd: '2026-02-28', requiredKeys: ['k'], finalizedKeys: [], draftKeys: [], asOf: ASOF,
+    }
+    const draftRow: ManualInputComponentRow = { ...requiredRow, draftKeys: ['k'] }
+    expect(deriveManualInputActions([requiredRow])[0].ctaLabel).toBe('Enter inputs')
+    expect(deriveManualInputActions([draftRow])[0].ctaLabel).toBe('Finish inputs')
+  })
+
+  it('§3 — event confirmation CTA is "Review event"', () => {
+    const row: EventActionRow = { id: 'fee-1', jobId: 'job-1', customerName: 'Acme', feeLabel: 'Acceptance Fee', satisfied: false, createdAt: '2026-01-01' }
+    expect(deriveEventActions([row])[0].ctaLabel).toBe('Review event')
+  })
+
+  it('§5 — event action title is "Event confirmation required" (primary), fee context moves to description', () => {
+    const row: EventActionRow = { id: 'fee-1', jobId: 'job-1', customerName: 'Acme', feeLabel: 'Acceptance Fee', satisfied: false, createdAt: '2026-01-01' }
+    const [action] = deriveEventActions([row])
+    expect(action.title).toBe('Event confirmation required')
+    expect(action.description).toContain('Acceptance Fee')
+  })
+
+  it('§5 — event action with no fee label still gives a truthful, non-fabricated description', () => {
+    const row: EventActionRow = { id: 'fee-1', jobId: 'job-1', customerName: 'Acme', feeLabel: null, satisfied: false, createdAt: '2026-01-01' }
+    const [action] = deriveEventActions([row])
+    expect(action.description).toBe('Relates to a one-time fee')
+  })
+
+  it('§9 — deep-link destinations are unchanged by the copy/hierarchy pass', () => {
+    const invoiceRow: PlannedInvoiceActionRow = {
+      id: 'inv-1', jobId: 'job-1', customerName: 'Acme', invoiceType: 'period',
+      status: 'failed', errorMessage: 'x', periodStart: '2026-02-01', periodEnd: '2026-02-28',
+    }
+    expect(deriveInvoiceActions([invoiceRow])[0].destination).toBe('/configure/job-1#billing-timeline-invoice-inv-1')
+
+    const manualRow: ManualInputComponentRow = {
+      jobId: 'job-1', customerName: 'Acme', componentLabel: 'Performance share', recurringFeeId: 'rf_1', mechanismKind: 'performance',
+      periodStart: '2026-02-01', periodEnd: '2026-02-28', requiredKeys: ['k'], finalizedKeys: [], draftKeys: [], asOf: ASOF,
+    }
+    expect(deriveManualInputActions([manualRow])[0].destination).toBe('/configure/job-1?input_period_start=2026-02-01&input_period_end=2026-02-28#operational-inputs-section')
+
+    const eventRow: EventActionRow = { id: 'fee-1', jobId: 'job-1', customerName: 'Acme', feeLabel: 'X', satisfied: false, createdAt: '2026-01-01' }
+    expect(deriveEventActions([eventRow])[0].destination).toBe('/configure/job-1#parked-invoices-section')
+  })
+})
+
+describe('resolveCustomerDisplayName (Step E9D §2/§9)', () => {
+  it('prefers a real, structured customer name when extraction has populated one', () => {
+    expect(resolveCustomerDisplayName('Meridian Health', 'contract-scan-final-v3')).toBe('Meridian Health')
+  })
+
+  it('falls back to jobs.name (truthfully, no invented specificity) when customer_name is null', () => {
+    expect(resolveCustomerDisplayName(null, 'contract-scan-final-v3')).toBe('contract-scan-final-v3')
+  })
+
+  it('falls back to jobs.name when customer_name is undefined', () => {
+    expect(resolveCustomerDisplayName(undefined, 'contract-scan-final-v3')).toBe('contract-scan-final-v3')
+  })
+
+  it('falls back to jobs.name when customer_name is empty or whitespace-only', () => {
+    expect(resolveCustomerDisplayName('', 'contract-scan-final-v3')).toBe('contract-scan-final-v3')
+    expect(resolveCustomerDisplayName('   ', 'contract-scan-final-v3')).toBe('contract-scan-final-v3')
+  })
+
+  it('trims a valid customer name rather than keeping incidental whitespace', () => {
+    expect(resolveCustomerDisplayName('  Meridian Health  ', 'contract-scan-final-v3')).toBe('Meridian Health')
   })
 })

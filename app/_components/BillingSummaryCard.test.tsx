@@ -1130,7 +1130,7 @@ describe('BillingSummaryCard — FAILED invoice retry (Step E9C)', () => {
     render(<BillingSummaryCard jobId="job-1" terms={PERIOD_TERMS as never} usageSourceCards={PERIOD_USAGE_SOURCE_CARDS as never} />)
     await waitFor(() => expect(screen.getByText('Aug 2026')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Aug 2026'))
-    await waitFor(() => expect(screen.getByText('Billing currency mismatch — needs correction')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Currency mismatch')).toBeInTheDocument())
     // The raw technical string exists only behind the subordinate
     // "Technical details" disclosure, never as the primary visible copy.
     expect(screen.getByText('Technical details')).toBeInTheDocument()

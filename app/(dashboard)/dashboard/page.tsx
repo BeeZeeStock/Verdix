@@ -209,9 +209,11 @@ export default async function DashboardPage() {
           notification — an action simply stops appearing once its
           underlying condition resolves (input finalized, invoice
           requeued/sent, event evidence recorded). Distinct from "Needs
-          attention" below, which is about JOB/CONTRACT review status
-          (ReviewPanel/configuration concerns) — this section is
-          exclusively about OPERATIONAL billing execution (§25). */}
+          contract review" below (renamed from "Needs attention" in Step
+          E9D §6 for exactly this reason), which is about JOB/CONTRACT
+          review status (ReviewPanel/configuration concerns) — this
+          section is exclusively about OPERATIONAL billing execution
+          (§25). */}
       <div className="bg-white border border-forest/10 rounded-2xl overflow-hidden mb-6">
         <div className="flex items-center justify-between px-6 py-4 border-b border-forest/10">
           <div className="flex items-center gap-2">
@@ -241,23 +243,34 @@ export default async function DashboardPage() {
                 >
                   <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: isCritical ? '#DC2626' : '#D97706' }} />
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm text-ink font-medium truncate max-w-[200px]">{action.customerName}</span>
-                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md flex-shrink-0" style={{ background: '#F0EFED', color: '#1A1A1A' }}>
-                        {action.title}
-                      </span>
+                    {/* Step E9D §2 — customer/agreement identity is the
+                        PRIMARY heading, on its own line — never sharing a
+                        row with the invoice period. */}
+                    <div className="text-sm text-ink font-medium truncate">{action.customerName}</div>
+                    {/* Step E9D §2 — invoice period is a plain, neutral
+                        fact; FAILED/PARKED is a SEPARATE, distinctly-
+                        colored status tag, never concatenated into one
+                        string ("Feb 2026 invoice · FAILED"). */}
+                    <div className="flex items-center gap-2 flex-wrap mt-0.5">
+                      <span className="text-[11px] text-stone">{action.title}</span>
+                      {action.statusBadge && (
+                        <span
+                          className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md flex-shrink-0"
+                          style={{
+                            background: action.statusBadge.severity === 'critical' ? '#FEE2E2' : '#FEF3C7',
+                            color: action.statusBadge.severity === 'critical' ? '#DC2626' : '#B45309',
+                          }}
+                        >
+                          {action.statusBadge.label}
+                        </span>
+                      )}
                     </div>
                     <div className="text-[11px] mt-0.5 font-medium" style={{ color: isCritical ? '#DC2626' : '#B45309' }}>
                       {action.description}
                     </div>
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0 text-[11px] font-medium" style={{ color: isCritical ? '#DC2626' : '#B45309' }}>
-                    <span>
-                      {action.actionType === 'invoice_failed' ? 'Review failure'
-                        : action.actionType === 'invoice_parked' ? 'Review invoice'
-                        : action.actionType === 'event_confirmation_required' ? 'Review event'
-                        : 'Enter inputs'}
-                    </span>
+                    <span>{action.ctaLabel}</span>
                     <i className="ti ti-arrow-right" style={{ fontSize: 11 }} />
                   </div>
                 </Link>
@@ -341,12 +354,19 @@ export default async function DashboardPage() {
           </div>
         )}
 
-        {/* Needs attention */}
+        {/* Step E9D §6 — renamed from "Needs attention": this list is
+            agreement/commercial SETUP requiring reviewer approval
+            (ReviewPanel-class concerns — execute_status/open findings),
+            a semantically different thing from Billing Actions above
+            (billing EXECUTION intervention). "Needs attention" read as if
+            it might be the same kind of thing as Billing Actions; naming
+            it what it actually is avoids that collision. Filtering/status
+            logic below is untouched — copy only. */}
         {actionItems.length > 0 && (
           <div>
             <div className="px-6 pt-4 pb-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: '#B45309' }}>
-                Needs attention · {actionItems.length}
+                Needs contract review · {actionItems.length}
               </span>
             </div>
             <div className="px-3 pb-2">

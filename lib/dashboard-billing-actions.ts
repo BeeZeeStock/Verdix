@@ -46,6 +46,7 @@ import { unwrapEmbedded } from '@/lib/postgrest-helpers'
 import { isMonetaryOperationalInput } from '@/lib/operational-data-inputs'
 import {
   deriveInvoiceActions, deriveManualInputActions, deriveEventActions, combineBillingActions,
+  resolveCustomerDisplayName,
   type BillingAction, type PlannedInvoiceActionRow, type ManualInputComponentRow, type EventActionRow,
 } from '@/lib/billing-actions'
 import { oldestUnresolvedPeriod, type ClosedPeriod } from '@/lib/operational-action-due-state'
@@ -62,10 +63,24 @@ type AdditionalRecurringFeeLike = {
 }
 
 export async function loadDashboardBillingActions(orgId: string): Promise<BillingAction[]> {
-  const { data: jobRows } = await supabaseServer.from('jobs').select('id, name').eq('org_id', orgId)
+  // Step E9D §2/§9 — jobs.name is the UPLOADED FILENAME with its extension
+  // stripped (confirmed by reading app/(dashboard)/configure/new/page.tsx's
+  // own upload call: `name: file.name.replace(/\.[^/.]+$/, '')`) — never a
+  // real customer/business name. contract_terms.customer_name is the real,
+  // extracted business identity (lib/types.ts) and is preferred wherever
+  // extraction has actually populated it; jobs.name is used ONLY as the
+  // truthful fallback for a job with no contract_terms row yet (e.g. still
+  // being reviewed) — never guessed from the filename text beyond that.
+  const { data: jobRows } = await supabaseServer
+    .from('jobs')
+    .select('id, name, contract_terms(customer_name)')
+    .eq('org_id', orgId)
   const jobs = jobRows ?? []
   const jobIds = jobs.map(j => j.id)
-  const nameOf = new Map(jobs.map(j => [j.id, j.name as string]))
+  const nameOf = new Map(jobs.map(j => {
+    const terms = unwrapEmbedded(j.contract_terms as unknown as { customer_name?: string | null } | { customer_name?: string | null }[] | null)
+    return [j.id, resolveCustomerDisplayName(terms?.customer_name, j.name as string)]
+  }))
   if (jobIds.length === 0) return []
 
   const [

@@ -10,6 +10,23 @@
 import { classifyInvoiceLifecycleState, describeInvoiceHold, describeInvoiceFailure } from '@/lib/invoice-hold-status'
 import { classifyOperationalActionState, componentStableId } from '@/lib/operational-action-due-state'
 
+// Step E9D §2/§9 — the ONE place "what customer/agreement name do we show
+// on a Billing Action card" is decided, extracted as a pure, directly
+// tested function (this codebase has no supabaseServer-mocking
+// convention, so lib/dashboard-billing-actions.ts's own orchestration
+// stays untested directly — this is the testable decision it delegates
+// to). `jobName` is jobs.name, confirmed by reading app/(dashboard)/
+// configure/new/page.tsx's own upload call to be the UPLOADED FILENAME
+// with its extension stripped — never a real customer name — so it is
+// used ONLY as the last-resort fallback when contract extraction hasn't
+// populated a real customer_name yet (or ever produced a blank one).
+// Never guesses a name from the filename text itself beyond using it
+// verbatim as a placeholder.
+export function resolveCustomerDisplayName(customerName: string | null | undefined, jobName: string): string {
+  const trimmed = customerName?.trim()
+  return trimmed || jobName
+}
+
 export type BillingActionType =
   | 'invoice_failed'
   | 'invoice_parked'
@@ -18,6 +35,17 @@ export type BillingActionType =
   | 'event_confirmation_required'
 
 export type BillingActionSeverity = 'critical' | 'attention'
+
+// Step E9D §2 — a status word (FAILED/PARKED) is a distinct visual TAG,
+// never concatenated into the title string (the exact "Feb 2026 invoice ·
+// FAILED" collapse this pass fixes). Present only where a real status
+// concept applies (invoice_failed/invoice_parked) — a manual-input or
+// event action's own title already reads as a complete phrase and needs
+// no separate badge.
+export interface BillingActionStatusBadge {
+  label: string
+  severity: BillingActionSeverity
+}
 
 export interface BillingAction {
   // Step E9C §4 — deterministic: derived from stable business identity
@@ -32,7 +60,13 @@ export interface BillingAction {
   actionType: BillingActionType
   severity: BillingActionSeverity
   title: string
+  statusBadge?: BillingActionStatusBadge
   description: string
+  // Step E9D §3 — action-specific business wording, computed once here
+  // (never re-derived per action type in the render layer, which is what
+  // let a stale "Review failure" survive on an invoice a user is actually
+  // reviewing, not "reviewing a failure" in the abstract).
+  ctaLabel: string
   destination: string
   invoiceId?: string
   invoicePeriodLabel?: string
@@ -94,8 +128,15 @@ export function deriveInvoiceActions(rows: PlannedInvoiceActionRow[]): BillingAc
         id: `billing-action:invoice-failed:${row.id}`,
         jobId: row.jobId, customerName: row.customerName,
         actionType: 'invoice_failed', severity: 'critical',
-        title: `${periodLabel} invoice · FAILED`,
+        // Step E9D §2 — status is now a separate badge, never concatenated
+        // into the title (title alone must read as a plain fact: "Feb
+        // 2026 invoice").
+        title: `${periodLabel} invoice`,
+        statusBadge: { label: 'FAILED', severity: 'critical' },
         description: failure.businessReason || 'Billing data requires correction',
+        // Step E9D §3 — "Review invoice", never "Review failure": the
+        // user is reviewing the INVOICE, not an abstract failure.
+        ctaLabel: 'Review invoice',
         destination, invoiceId: row.id, invoicePeriodLabel: periodLabel,
         dueDate: row.periodStart,
       })
@@ -105,8 +146,10 @@ export function deriveInvoiceActions(rows: PlannedInvoiceActionRow[]): BillingAc
         id: `billing-action:invoice-parked:${row.id}`,
         jobId: row.jobId, customerName: row.customerName,
         actionType: 'invoice_parked', severity: 'attention',
-        title: `${periodLabel} invoice · PARKED`,
+        title: `${periodLabel} invoice`,
+        statusBadge: { label: 'PARKED', severity: 'attention' },
         description: hold.businessReason || 'Awaiting a required billing input',
+        ctaLabel: 'Resolve billing blocker',
         destination, invoiceId: row.id, invoicePeriodLabel: periodLabel,
         blockedBySourcePeriodStart: row.priorPeriodStart, blockedBySourcePeriodEnd: row.priorPeriodEnd,
         dueDate: row.periodStart,
@@ -141,7 +184,7 @@ export interface ManualInputComponentRow {
   recurringFeeId: string | null
   // Step E9C.2 §1/§3 — which real, execution-gated mechanism this
   // requirement belongs to, so Dashboard/Commercial Logic copy stays
-  // truthful to what's actually being asked for ("Performance inputs
+  // truthful to what's actually being asked for ("Performance input
   // required" vs "Usage input required") rather than a one-size-fits-all
   // performance-flavored sentence.
   mechanismKind: ManualInputMechanismKind
@@ -153,8 +196,13 @@ export interface ManualInputComponentRow {
   asOf?: Date
 }
 
+// Step E9D §4 — singular "Performance input required" (was plural
+// "inputs"), matching the SAME business-facing phrasing lib/invoice-hold-
+// status.ts's classifyHoldReason now uses for the identical underlying
+// concept — one consistent phrase for "you need to provide performance
+// data," never two different-sounding versions across Dashboard cards.
 const MECHANISM_DESCRIPTION: Record<ManualInputMechanismKind, { required: string; draft: string }> = {
-  performance: { required: 'Performance inputs required', draft: 'Draft inputs awaiting finalization' },
+  performance: { required: 'Performance input required', draft: 'Draft inputs awaiting finalization' },
   usage_manual_fallback: { required: 'Usage input required', draft: 'Draft usage value awaiting finalization' },
 }
 
@@ -195,6 +243,9 @@ export function deriveManualInputActions(rows: ManualInputComponentRow[]): Billi
       actionType: isDraft ? 'manual_input_finalize' : 'manual_input_required', severity: 'attention',
       title: `${row.componentLabel} — ${periodLabel}`,
       description: isDraft ? copy.draft : copy.required,
+      // Step E9D §3 — "Enter inputs" vs "Finish inputs": distinct wording
+      // for "nothing entered yet" vs "a draft already exists."
+      ctaLabel: isDraft ? 'Finish inputs' : 'Enter inputs',
       destination, sourcePeriodLabel: periodLabel,
       dueDate: row.periodStart,
     })
@@ -224,8 +275,15 @@ export function deriveEventActions(rows: EventActionRow[]): BillingAction[] {
     id: `billing-action:event:${row.id}`,
     jobId: row.jobId, customerName: row.customerName,
     actionType: 'event_confirmation_required' as const, severity: 'attention' as const,
-    title: row.feeLabel ?? 'One-time fee',
-    description: 'Customer/business event confirmation required',
+    // Step E9D §5 — "Event confirmation required" is now the PRIMARY
+    // wording (was the secondary description, with the fee label as
+    // title) — the fee/commercial context moves to the description line
+    // instead, so the card's own hierarchy (what's needed, then which
+    // fee it's for) matches every other action type's title/description
+    // split.
+    title: 'Event confirmation required',
+    description: row.feeLabel ? `Relates to ${row.feeLabel}` : 'Relates to a one-time fee',
+    ctaLabel: 'Review event',
     destination: `/configure/${row.jobId}#parked-invoices-section`,
     dueDate: row.createdAt,
   }))

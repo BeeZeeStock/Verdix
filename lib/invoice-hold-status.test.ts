@@ -21,18 +21,18 @@ describe('describeInvoiceHold', () => {
     expect(describeInvoiceHold({ status: 'scheduled', errorMessage: null })).toEqual({ held: false, businessReason: '', technicalReason: null })
   })
 
-  it('[usage_source] tag maps to "Usage measurement not yet final", strips the Held: prefix, preserves raw text as technicalReason', () => {
+  it('[usage_source] tag maps to "Usage data required", strips the Held: prefix, preserves raw text as technicalReason', () => {
     const result = describeInvoiceHold({ status: 'scheduled', errorMessage: "Held: [usage_source] connector timeout; manual fallback also not ready: no finalized value on record" })
     expect(result.held).toBe(true)
-    expect(result.businessReason).toBe('Usage measurement not yet final')
+    expect(result.businessReason).toBe('Usage data required')
     expect(result.technicalReason).toBe('[usage_source] connector timeout; manual fallback also not ready: no finalized value on record')
     // Never leaks the raw technical text as the primary/business copy.
     expect(result.businessReason).not.toContain('connector timeout')
   })
 
-  it('[performance_input] tag maps to "Performance inputs required"', () => {
+  it('[performance_input] tag maps to "Performance input required"', () => {
     const result = describeInvoiceHold({ status: 'scheduled', errorMessage: 'Held: [performance_input] missing required input: paid_invoice_value' })
-    expect(result.businessReason).toBe('Performance inputs required')
+    expect(result.businessReason).toBe('Performance input required')
   })
 
   it('qualified_unit_aggregate provenance (the pre-existing SQM branch, untouched by E9B) maps to "Billing source temporarily unavailable"', () => {
@@ -57,14 +57,14 @@ describe('describeInvoiceFailure', () => {
   it('[currency_mismatch] tag maps to a business-facing currency-mismatch message, raw text kept as technicalReason', () => {
     const result = describeInvoiceFailure({ status: 'failed', errorMessage: "'Performance share' currency problem for job abc123, period 2026-09-01–2026-09-30: [currency_mismatch] input 'paid_invoice_value' was recorded in USD, expected SEK" })
     expect(result.failed).toBe(true)
-    expect(result.businessReason).toBe('Billing currency mismatch — needs correction')
+    expect(result.businessReason).toBe('Currency mismatch')
     expect(result.technicalReason).toContain('abc123')
     expect(result.businessReason).not.toContain('abc123')
   })
 
   it('[invalid_data] tag maps to a business-facing invalid-data message', () => {
     const result = describeInvoiceFailure({ status: 'failed', errorMessage: "'Performance share' invalid for job abc123, period 2026-09-01–2026-09-30: [invalid_data] derived percentage outside configured band" })
-    expect(result.businessReason).toBe('Invalid billing data — needs correction')
+    expect(result.businessReason).toBe('Invalid billing data')
   })
 
   it('a status=failed row for an unrelated reason (not this module\'s concern) still gets a generic, honest fallback', () => {
